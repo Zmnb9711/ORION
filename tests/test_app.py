@@ -39,3 +39,19 @@ def test_ingest_and_read_latest_telemetry() -> None:
     assert accepted.json()["aircraft_type"] == "FA-18C_hornet"
     assert latest.status_code == 200
     assert latest.json()["state"]["callsign"] == "Enfield 1-1"
+
+
+def test_allowed_command_is_sent() -> None:
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/commands",
+            json={"command": "show_message", "message": "ORION online"},
+        )
+    assert response.status_code == 202
+    assert response.json() == {"status": "sent", "command": "show_message"}
+
+
+def test_unknown_command_is_rejected() -> None:
+    with TestClient(app) as client:
+        response = client.post("/v1/commands", json={"command": "spawn_unit"})
+    assert response.status_code == 422
