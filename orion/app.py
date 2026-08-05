@@ -5,6 +5,7 @@ from fastapi import FastAPI, HTTPException, Query
 from orion import __version__
 from orion.commands import CommandDispatcher, DcsCommand
 from orion.config import settings
+from orion.dialogue import DialogueRequest, DialogueResult, classify_dialogue
 from orion.events import EventJournal
 from orion.mission import Coalition, MissionPosition, MissionSnapshot, MissionUnit
 from orion.mission_store import mission_store
@@ -44,10 +45,7 @@ def health() -> dict[str, str]:
 @app.post("/v1/telemetry", status_code=202)
 def ingest_telemetry(payload: TelemetryEnvelope) -> dict[str, str]:
     store_telemetry(payload)
-    return {
-        "status": "accepted",
-        "aircraft_type": payload.state.aircraft_type,
-    }
+    return {"status": "accepted", "aircraft_type": payload.state.aircraft_type}
 
 
 @app.get("/v1/telemetry/latest", response_model=TelemetryEnvelope)
@@ -62,6 +60,19 @@ def send_command(command: DcsCommand) -> dict[str, str]:
     _dispatcher.send(command)
     _journal.append("command", command.model_dump(mode="json", exclude_none=True))
     return {"status": "sent", "command": command.command.value}
+
+
+@app.post("/v1/dialogue", response_model=DialogueResult)
+def process_dialogue(payload: DialogueRequest) -> DialogueResult:
+    result = classify_dialogue(payload)
+    _journal.append(
+        "dialogue",
+        {
+            "request": payload.model_dump(mode="json"),
+            "result": result.model_dump(mode="json"),
+        },
+    )
+    return result
 
 
 @app.put("/v1/mission", response_model=MissionSnapshot)
