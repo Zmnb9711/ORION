@@ -3,15 +3,21 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 
 from orion import __version__
+from orion.commands import CommandDispatcher, DcsCommand
+from orion.config import settings
+from orion.events import EventJournal
 from orion.models import TelemetryEnvelope
 from orion.udp_bridge import start_udp_bridge
 
 _latest: TelemetryEnvelope | None = None
+_journal = EventJournal(settings.event_log_path)
+_dispatcher = CommandDispatcher()
 
 
 def store_telemetry(payload: TelemetryEnvelope) -> None:
     global _latest
     _latest = payload
+    _journal.append("telemetry", payload.model_dump(mode="json"))
 
 
 @asynccontextmanager
@@ -45,3 +51,10 @@ def latest_telemetry() -> TelemetryEnvelope:
     if _latest is None:
         raise HTTPException(status_code=404, detail="No telemetry received")
     return _latest
+
+
+@app.post("/v1/commands", status_code=202)
+def send_command(command: DcsCommand) -> dict[str, str]:
+    _dispatcher.send(command)
+    _journal.append("command", command.model_dump(mode="json", exclude_none=True))
+    return {"status": "sent", "command": command.command.value}
