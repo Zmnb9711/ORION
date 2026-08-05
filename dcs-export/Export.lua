@@ -2,11 +2,15 @@
 -- Install by loading this file from Saved Games/DCS/Scripts/Export.lua.
 
 local socket = require("socket")
-local udp = socket.udp()
-udp:settimeout(0)
+local telemetryUdp = socket.udp()
+telemetryUdp:settimeout(0)
+
+local commandUdp = socket.udp()
+commandUdp:settimeout(0)
+commandUdp:setsockname("127.0.0.1", 45101)
 
 local ORION_HOST = "127.0.0.1"
-local ORION_PORT = 45100
+local ORION_TELEMETRY_PORT = 45100
 local previousLuaExportAfterNextFrame = LuaExportAfterNextFrame
 
 local function jsonString(value)
@@ -14,9 +18,32 @@ local function jsonString(value)
     return string.format("%q", tostring(value))
 end
 
+local function extractJsonString(payload, key)
+    return payload:match('"' .. key .. '"%s*:%s*"([^"]*)"')
+end
+
+local function handleCommand(payload)
+    local command = extractJsonString(payload, "command")
+    if command == "ping" then
+        log.write("ORION", log.INFO, "Ping received")
+    elseif command == "request_status" then
+        log.write("ORION", log.INFO, "Status requested")
+    elseif command == "show_message" then
+        local message = extractJsonString(payload, "message") or ""
+        log.write("ORION", log.INFO, "Message: " .. message:sub(1, 240))
+    else
+        log.write("ORION", log.WARNING, "Rejected unsupported command")
+    end
+end
+
 function LuaExportAfterNextFrame()
     if previousLuaExportAfterNextFrame then
         previousLuaExportAfterNextFrame()
+    end
+
+    local commandPayload = commandUdp:receive()
+    if commandPayload then
+        handleCommand(commandPayload)
     end
 
     local selfData = LoGetSelfData()
@@ -39,5 +66,5 @@ function LuaExportAfterNextFrame()
         velocity.y
     )
 
-    udp:sendto(payload, ORION_HOST, ORION_PORT)
+    telemetryUdp:sendto(payload, ORION_HOST, ORION_TELEMETRY_PORT)
 end
