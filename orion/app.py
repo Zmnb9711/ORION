@@ -6,10 +6,11 @@ from orion import __version__
 from orion.commands import CommandDispatcher, DcsCommand
 from orion.config import settings
 from orion.events import EventJournal
-from orion.mission import Coalition, MissionSnapshot, MissionUnit
+from orion.mission import Coalition, MissionPosition, MissionSnapshot, MissionUnit
 from orion.mission_store import mission_store
 from orion.models import TelemetryEnvelope
 from orion.support import SupportRequest, SupportRequestCreate, support_requests
+from orion.threats import ThreatAssessment, assess_threats
 from orion.udp_bridge import start_udp_bridge
 
 _latest: TelemetryEnvelope | None = None
@@ -84,6 +85,44 @@ def list_mission_units(
     alive_only: bool = Query(default=True),
 ) -> list[MissionUnit]:
     return mission_store.units(coalition=coalition, alive_only=alive_only)
+
+
+@app.get("/v1/mission/threats", response_model=list[ThreatAssessment])
+def list_threats(
+    latitude: float | None = Query(default=None, ge=-90, le=90),
+    longitude: float | None = Query(default=None, ge=-180, le=180),
+    altitude_m: float | None = Query(default=None),
+    own_coalition: Coalition = Query(default=Coalition.BLUE),
+    horizon_s: float = Query(default=60, ge=0, le=600),
+) -> list[ThreatAssessment]:
+    snapshot = mission_store.get()
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="No mission snapshot received")
+
+    if latitude is None or longitude is None:
+        if _latest is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Provide latitude and longitude or ingest own-aircraft telemetry first",
+            )
+        own_position = MissionPosition(
+            latitude=_latest.state.position.latitude,
+            longitude=_latest.state.position.longitude,
+            altitude_m=_latest.state.position.altitude_m,
+        )
+    else:
+        own_position = MissionPosition(
+            latitude=latitude,
+            longitude=longitude,
+            altitude_m=altitude_m or 0,
+        )
+
+    return assess_threats(
+        snapshot=snapshot,
+        own_position=own_position,
+        own_coalition=own_coalition,
+        horizon_s=horizon_s,
+    )
 
 
 @app.post("/v1/support-requests", response_model=SupportRequest, status_code=201)
