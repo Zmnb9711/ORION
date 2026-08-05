@@ -2,46 +2,31 @@
 
 ORION is an AI-assisted mission control and virtual ATC platform for DCS World.
 
-## Build 001
+## Build 001 capabilities
 
-The first development build provides:
-
-- a FastAPI-based ORION Core service;
-- validated aircraft telemetry models;
-- a localhost UDP telemetry bridge;
-- a prototype DCS `Export.lua` sender;
-- health and latest-aircraft-state API endpoints;
-- basic automated tests;
-- initial architecture documentation.
+- Local DCS telemetry ingestion over UDP
+- FastAPI health, telemetry and command endpoints
+- Mission snapshots and coalition-aware unit queries
+- Threat assessment with distance, bearing, priority and movement prediction
+- Structured AWACS, tanker, laser and smoke support requests
+- Russian and English free-form dialogue intent routing
+- Append-only mission event journal
+- Safe command allowlist for the DCS export environment
+- CI on Python 3.11 and 3.12
 
 ## Local development
 
-Requirements: Python 3.11 or newer.
-
 ```powershell
-python -m venv .venv
-.venv\Scripts\Activate.ps1
-python -m pip install -e ".[dev]"
-pytest
-uvicorn orion.app:app --host 127.0.0.1 --port 8000
+py -3.11 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+pip install -e ".[dev]"
+pytest -q
+uvicorn orion.app:app --reload
 ```
 
-Health check:
+The service listens on `http://127.0.0.1:8000` by default. Interactive API documentation is available at `/docs`.
 
-```text
-GET http://127.0.0.1:8000/health
-```
+The dialogue prototype is available through `POST /v1/dialogue`. It classifies Russian and English free-form requests but does not directly execute dangerous actions. Laser and smoke intents are marked as requiring confirmation.
 
-Latest telemetry:
-
-```text
-GET http://127.0.0.1:8000/v1/telemetry/latest
-```
-
-## DCS integration
-
-The prototype exporter is located at `dcs-export/Export.lua`. It sends versioned JSON telemetry to `127.0.0.1:45100`.
-
-Do not overwrite an existing DCS export configuration blindly. The final installer will merge ORION into the user's existing `Saved Games/DCS/Scripts/Export.lua` safely.
-
-See [docs/architecture.md](docs/architecture.md) for the current architecture and roadmap.
+Development work is proposed through pull requests before it reaches `main`.
