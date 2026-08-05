@@ -1,10 +1,29 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, HTTPException
 
 from orion import __version__
 from orion.models import TelemetryEnvelope
+from orion.udp_bridge import start_udp_bridge
 
-app = FastAPI(title="ORION Core", version=__version__)
 _latest: TelemetryEnvelope | None = None
+
+
+def store_telemetry(payload: TelemetryEnvelope) -> None:
+    global _latest
+    _latest = payload
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    transport, _ = await start_udp_bridge(store_telemetry)
+    try:
+        yield
+    finally:
+        transport.close()
+
+
+app = FastAPI(title="ORION Core", version=__version__, lifespan=lifespan)
 
 
 @app.get("/health")
@@ -14,8 +33,7 @@ def health() -> dict[str, str]:
 
 @app.post("/v1/telemetry", status_code=202)
 def ingest_telemetry(payload: TelemetryEnvelope) -> dict[str, str]:
-    global _latest
-    _latest = payload
+    store_telemetry(payload)
     return {
         "status": "accepted",
         "aircraft_type": payload.state.aircraft_type,
