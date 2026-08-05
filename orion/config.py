@@ -14,12 +14,17 @@ class Settings:
 
     @classmethod
     def from_env(cls) -> "Settings":
+        defaults = cls()
         return cls(
-            telemetry_host=os.getenv("ORION_TELEMETRY_HOST", cls.telemetry_host),
-            telemetry_port=int(os.getenv("ORION_TELEMETRY_PORT", cls.telemetry_port)),
-            command_host=os.getenv("ORION_COMMAND_HOST", cls.command_host),
-            command_port=int(os.getenv("ORION_COMMAND_PORT", cls.command_port)),
-            event_log_path=os.getenv("ORION_EVENT_LOG_PATH", cls.event_log_path),
+            telemetry_host=os.getenv("ORION_TELEMETRY_HOST", defaults.telemetry_host),
+            telemetry_port=int(
+                os.getenv("ORION_TELEMETRY_PORT", str(defaults.telemetry_port))
+            ),
+            command_host=os.getenv("ORION_COMMAND_HOST", defaults.command_host),
+            command_port=int(
+                os.getenv("ORION_COMMAND_PORT", str(defaults.command_port))
+            ),
+            event_log_path=os.getenv("ORION_EVENT_LOG_PATH", defaults.event_log_path),
         )
 
 
