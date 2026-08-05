@@ -5,6 +5,13 @@ from fastapi import FastAPI, HTTPException, Query
 from orion import __version__
 from orion.commands import CommandDispatcher, DcsCommand
 from orion.config import settings
+from orion.confirmations import (
+    ConfirmationDecision,
+    ConfirmationStatus,
+    PendingAction,
+    PendingActionCreate,
+    confirmation_store,
+)
 from orion.dialogue import DialogueRequest, DialogueResult, classify_dialogue
 from orion.events import EventJournal
 from orion.mission import Coalition, MissionPosition, MissionSnapshot, MissionUnit
@@ -67,12 +74,32 @@ def process_dialogue(payload: DialogueRequest) -> DialogueResult:
     result = classify_dialogue(payload)
     _journal.append(
         "dialogue",
-        {
-            "request": payload.model_dump(mode="json"),
-            "result": result.model_dump(mode="json"),
-        },
+        {"request": payload.model_dump(mode="json"), "result": result.model_dump(mode="json")},
     )
     return result
+
+
+@app.post("/v1/pending-actions", response_model=PendingAction, status_code=201)
+def create_pending_action(payload: PendingActionCreate) -> PendingAction:
+    action = confirmation_store.create(payload)
+    _journal.append("pending_action", action.model_dump(mode="json"))
+    return action
+
+
+@app.get("/v1/pending-actions", response_model=list[PendingAction])
+def list_pending_actions(
+    status: ConfirmationStatus | None = Query(default=None),
+) -> list[PendingAction]:
+    return confirmation_store.list(status=status)
+
+
+@app.post("/v1/pending-actions/{action_id}/decision", response_model=PendingAction)
+def decide_pending_action(action_id: str, decision: ConfirmationDecision) -> PendingAction:
+    action = confirmation_store.resolve(action_id, decision.confirm)
+    if action is None:
+        raise HTTPException(status_code=404, detail="Pending action not found or already resolved")
+    _journal.append("pending_action_decision", action.model_dump(mode="json"))
+    return action
 
 
 @app.put("/v1/mission", response_model=MissionSnapshot)
