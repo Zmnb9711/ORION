@@ -3,6 +3,10 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Query
 
 from orion import __version__
+from orion.capabilities import (
+    MissionPackRegistration,
+    capability_registry,
+)
 from orion.commands import CommandDispatcher, DcsCommand
 from orion.config import settings
 from orion.confirmations import (
@@ -15,6 +19,7 @@ from orion.confirmations import (
 from orion.dialogue import DialogueRequest, DialogueResult, classify_dialogue
 from orion.events import EventJournal
 from orion.mission import Coalition, MissionPosition, MissionSnapshot, MissionUnit
+from orion.mission_bridge import MissionCommand, mission_bridge
 from orion.mission_store import mission_store
 from orion.models import TelemetryEnvelope
 from orion.support import SupportRequest, SupportRequestCreate, support_requests
@@ -49,24 +54,52 @@ def health() -> dict[str, str]:
     return {"status": "ok", "version": __version__}
 
 
-@app.post("/v1/telemetry", status_code=202)
+@app.post("/v1/flight-bridge/telemetry", status_code=202)
+@app.post("/v1/telemetry", status_code=202, include_in_schema=False)
 def ingest_telemetry(payload: TelemetryEnvelope) -> dict[str, str]:
     store_telemetry(payload)
     return {"status": "accepted", "aircraft_type": payload.state.aircraft_type}
 
 
-@app.get("/v1/telemetry/latest", response_model=TelemetryEnvelope)
+@app.get("/v1/flight-bridge/telemetry/latest", response_model=TelemetryEnvelope)
+@app.get("/v1/telemetry/latest", response_model=TelemetryEnvelope, include_in_schema=False)
 def latest_telemetry() -> TelemetryEnvelope:
     if _latest is None:
         raise HTTPException(status_code=404, detail="No telemetry received")
     return _latest
 
 
-@app.post("/v1/commands", status_code=202)
+@app.post("/v1/flight-bridge/commands", status_code=202)
+@app.post("/v1/commands", status_code=202, include_in_schema=False)
 def send_command(command: DcsCommand) -> dict[str, str]:
     _dispatcher.send(command)
-    _journal.append("command", command.model_dump(mode="json", exclude_none=True))
+    _journal.append("flight_bridge_command", command.model_dump(mode="json", exclude_none=True))
     return {"status": "sent", "command": command.command.value}
+
+
+@app.put("/v1/mission-pack/registration", response_model=MissionPackRegistration)
+def register_mission_pack(registration: MissionPackRegistration) -> MissionPackRegistration:
+    capability_registry.register(registration)
+    _journal.append("mission_pack_registration", registration.model_dump(mode="json"))
+    return registration
+
+
+@app.get("/v1/mission-pack/registration", response_model=MissionPackRegistration)
+def get_mission_pack_registration() -> MissionPackRegistration:
+    registration = capability_registry.get()
+    if registration is None:
+        raise HTTPException(status_code=404, detail="Mission Pack not detected")
+    return registration
+
+
+@app.post("/v1/mission-bridge/commands", status_code=202)
+def send_mission_command(command: MissionCommand) -> dict[str, str]:
+    try:
+        mission_bridge.send(command)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    _journal.append("mission_bridge_command", command.model_dump(mode="json", exclude_none=True))
+    return {"status": "sent", "command": command.command.value, "command_id": str(command.command_id)}
 
 
 @app.post("/v1/dialogue", response_model=DialogueResult)
