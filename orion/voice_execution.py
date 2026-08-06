@@ -6,6 +6,7 @@ from typing import Protocol
 from pydantic import BaseModel, Field
 
 from orion.voice_core import VoiceAgent, VoiceCommand
+from orion.voice_mission_queries import execute_mission_query
 
 
 class ExecutionState(StrEnum):
@@ -21,7 +22,7 @@ class ExecutionOutcome(BaseModel):
     intent: str
     adapter: str
     message: str
-    payload: dict[str, str | int | float | bool | None] = Field(default_factory=dict)
+    payload: dict[str, object] = Field(default_factory=dict)
 
 
 class VoiceCommandExecutor(Protocol):
@@ -49,25 +50,55 @@ class BridgeExecutor:
         )
 
 
+class MissionInformationExecutor:
+    """Answers current-mission informational requests from live Mission Bridge data."""
+
+    adapter = "mission-information"
+    supported_intents = {
+        "find_unit_frequency",
+        "find_unit_callsign",
+        "find_unit_callsigns_near_landmark",
+    }
+
+    def execute(self, command: VoiceCommand) -> ExecutionOutcome:
+        result = execute_mission_query(command)
+        return ExecutionOutcome(
+            state=ExecutionState.COMPLETED if result.completed else ExecutionState.REJECTED,
+            agent=command.agent,
+            intent=command.intent,
+            adapter=self.adapter,
+            message=result.spoken_text,
+            payload={
+                "command_id": str(command.command_id),
+                "spoken_text": result.spoken_text,
+                **result.data,
+            },
+        )
+
+
 class ConversationExecutor:
+    adapter = "ai-dialogue"
+
     def execute(self, command: VoiceCommand) -> ExecutionOutcome:
         return ExecutionOutcome(
             state=ExecutionState.ACCEPTED,
             agent=command.agent,
             intent=command.intent,
-            adapter="ai-dialogue",
+            adapter=self.adapter,
             message="Command accepted by the dialogue engine",
             payload={"command_id": str(command.command_id), "transcript": command.transcript},
         )
 
 
 class SystemExecutor:
+    adapter = "orion-system"
+
     def execute(self, command: VoiceCommand) -> ExecutionOutcome:
         return ExecutionOutcome(
             state=ExecutionState.ACCEPTED,
             agent=command.agent,
             intent=command.intent,
-            adapter="orion-system",
+            adapter=self.adapter,
             message="System command accepted",
             payload={"command_id": str(command.command_id)},
         )
@@ -95,10 +126,14 @@ class VoiceExecutionDispatcher:
         self._executors: dict[VoiceAgent, VoiceCommandExecutor] = {
             agent: BridgeExecutor(adapter) for agent, adapter in bridge_agents.items()
         }
+        self._mission_information = MissionInformationExecutor()
         self._executors[VoiceAgent.GENERAL_CONVERSATION] = ConversationExecutor()
         self._executors[VoiceAgent.SYSTEM] = SystemExecutor()
 
     def execute(self, command: VoiceCommand) -> ExecutionOutcome:
+        if command.intent in self._mission_information.supported_intents:
+            return self._mission_information.execute(command)
+
         executor = self._executors.get(command.agent)
         if executor is None:
             return ExecutionOutcome(
@@ -111,10 +146,12 @@ class VoiceExecutionDispatcher:
         return executor.execute(command)
 
     def adapters(self) -> dict[str, str]:
-        return {
+        adapters = {
             agent.value: getattr(executor, "adapter", executor.__class__.__name__)
             for agent, executor in self._executors.items()
         }
+        adapters["mission_information"] = self._mission_information.adapter
+        return adapters
 
 
 voice_execution = VoiceExecutionDispatcher()
