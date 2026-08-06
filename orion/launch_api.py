@@ -21,7 +21,10 @@ launch_router = APIRouter(prefix="/v1/launch-profiles", tags=["DCS launch profil
 
 @launch_router.post("", response_model=DcsLaunchProfile, status_code=201)
 def create_launch_profile(payload: DcsLaunchProfileCreate) -> DcsLaunchProfile:
-    return launch_profiles.create(payload)
+    try:
+        return launch_profiles.create(payload)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @launch_router.get("", response_model=list[DcsLaunchProfile])
@@ -42,7 +45,10 @@ def preview_launch_plan(profile_id: UUID) -> DcsLaunchPlan:
     profile = launch_profiles.get(profile_id)
     if profile is None:
         raise HTTPException(status_code=404, detail="Launch profile not found")
-    return build_launch_plan(profile)
+    try:
+        return build_launch_plan(profile)
+    except KeyError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @launch_router.delete("/{profile_id}", status_code=status.HTTP_204_NO_CONTENT)
