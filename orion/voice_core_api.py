@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 
 from orion.voice_context import VoiceConversationContext, voice_contexts
 from orion.voice_core import VoiceCommand, VoiceCommandCreate, voice_commands
+from orion.voice_execution import ExecutionOutcome, voice_execution
 from orion.voice_understanding import ParsedVoiceRequest, parse_transcript
 
 router = APIRouter(prefix="/v1/voice-commands", tags=["Voice Core"])
@@ -23,6 +24,11 @@ class SubmittedTranscript(BaseModel):
     parsed: ParsedVoiceRequest
     commands: list[VoiceCommand]
     context: VoiceConversationContext
+
+
+class VoiceExecutionResponse(BaseModel):
+    command: VoiceCommand
+    outcome: ExecutionOutcome
 
 
 @router.post("", response_model=VoiceCommand, status_code=201)
@@ -61,9 +67,27 @@ def clear_voice_context(session_id: str) -> VoiceConversationContext:
     return voice_contexts.clear(session_id)
 
 
+@router.get("/executors", response_model=dict[str, str])
+def list_voice_executors() -> dict[str, str]:
+    return voice_execution.adapters()
+
+
+@router.post("/execute-next", response_model=VoiceExecutionResponse | None)
+def execute_next_voice_command() -> VoiceExecutionResponse | None:
+    command = voice_commands.start_next()
+    if command is None:
+        return None
+    return VoiceExecutionResponse(command=command, outcome=voice_execution.execute(command))
+
+
 @router.get("", response_model=list[VoiceCommand])
 def list_voice_commands() -> list[VoiceCommand]:
     return voice_commands.list()
+
+
+@router.post("/next", response_model=VoiceCommand | None)
+def start_next_voice_command() -> VoiceCommand | None:
+    return voice_commands.start_next()
 
 
 @router.get("/{command_id}", response_model=VoiceCommand)
@@ -72,11 +96,6 @@ def get_voice_command(command_id: UUID) -> VoiceCommand:
     if command is None:
         raise HTTPException(status_code=404, detail="Voice command not found")
     return command
-
-
-@router.post("/next", response_model=VoiceCommand | None)
-def start_next_voice_command() -> VoiceCommand | None:
-    return voice_commands.start_next()
 
 
 @router.post("/{command_id}/complete", response_model=VoiceCommand)
