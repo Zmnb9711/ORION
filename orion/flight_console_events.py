@@ -5,7 +5,7 @@ from threading import Condition, RLock
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class FlightConsoleEvent(BaseModel):
@@ -14,6 +14,15 @@ class FlightConsoleEvent(BaseModel):
     event_type: str
     state: dict[str, Any]
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+    @field_validator("state", mode="before")
+    @classmethod
+    def serialize_state_model(cls, value: Any) -> Any:
+        # Flight Console publishes Pydantic state objects, while the event
+        # envelope deliberately stores an immutable JSON-ready snapshot.
+        if isinstance(value, BaseModel):
+            return value.model_dump(mode="json")
+        return value
 
 
 class FlightConsoleEventStream:
@@ -24,7 +33,7 @@ class FlightConsoleEventStream:
         self._lock = RLock()
         self._condition = Condition(self._lock)
 
-    def publish(self, event_type: str, launch_id: UUID, state: dict[str, Any]) -> FlightConsoleEvent:
+    def publish(self, event_type: str, launch_id: UUID, state: dict[str, Any] | BaseModel) -> FlightConsoleEvent:
         with self._condition:
             self._sequence += 1
             event = FlightConsoleEvent(
