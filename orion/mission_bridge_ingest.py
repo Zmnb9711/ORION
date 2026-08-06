@@ -6,6 +6,7 @@ from threading import RLock
 from pydantic import BaseModel, Field
 
 from orion.coalition_radio import CoalitionRadioUnit, MissionLandmark, coalition_radio
+from orion.navigation_channels import NavigationPresetChannel, navigation_channels
 
 
 DEFAULT_STALE_AFTER_SECONDS = 10.0
@@ -19,6 +20,7 @@ class MissionBridgeSnapshot(BaseModel):
     generated_at: datetime
     units: list[CoalitionRadioUnit] = Field(default_factory=list)
     landmarks: list[MissionLandmark] = Field(default_factory=list)
+    preset_channels: list[NavigationPresetChannel] = Field(default_factory=list)
 
 
 class MissionBridgeHeartbeat(BaseModel):
@@ -37,6 +39,8 @@ class MissionBridgeDelta(BaseModel):
     remove_unit_ids: list[str] = Field(default_factory=list)
     upsert_landmarks: list[MissionLandmark] = Field(default_factory=list)
     remove_landmark_ids: list[str] = Field(default_factory=list)
+    upsert_preset_channels: list[NavigationPresetChannel] = Field(default_factory=list)
+    remove_preset_ids: list[str] = Field(default_factory=list)
 
 
 class MissionBridgeState(BaseModel):
@@ -51,6 +55,7 @@ class MissionBridgeState(BaseModel):
     stale_after_seconds: float = DEFAULT_STALE_AFTER_SECONDS
     unit_count: int = 0
     landmark_count: int = 0
+    preset_channel_count: int = 0
 
 
 class MissionBridgeIngestResult(BaseModel):
@@ -113,6 +118,7 @@ class MissionBridgeTelemetryStore:
             stale_after_seconds=self._state.stale_after_seconds,
             unit_count=len(coalition_radio.list()),
             landmark_count=len(coalition_radio.list_landmarks()),
+            preset_channel_count=len(navigation_channels.list()),
         )
         return self._state.model_copy(deep=True)
 
@@ -122,6 +128,7 @@ class MissionBridgeTelemetryStore:
                 return self._rejected()
             coalition_radio.replace(snapshot.units)
             coalition_radio.replace_landmarks(snapshot.landmarks)
+            navigation_channels.replace(snapshot.preset_channels)
             state = self._commit(
                 session_id=snapshot.session_id,
                 sequence=snapshot.sequence,
@@ -157,8 +164,15 @@ class MissionBridgeTelemetryStore:
             for landmark in delta.upsert_landmarks:
                 landmarks[landmark.landmark_id] = landmark
 
+            presets = {item.preset_id: item for item in navigation_channels.list()}
+            for preset_id in delta.remove_preset_ids:
+                presets.pop(preset_id, None)
+            for preset in delta.upsert_preset_channels:
+                presets[preset.preset_id] = preset
+
             coalition_radio.replace(list(units.values()))
             coalition_radio.replace_landmarks(list(landmarks.values()))
+            navigation_channels.replace(list(presets.values()))
             state = self._commit(
                 session_id=delta.session_id,
                 sequence=delta.sequence,
@@ -211,6 +225,7 @@ class MissionBridgeTelemetryStore:
             if clear_indexes:
                 coalition_radio.replace([])
                 coalition_radio.replace_landmarks([])
+                navigation_channels.replace([])
             stale_after = self._state.stale_after_seconds
             self._state = MissionBridgeState(stale_after_seconds=stale_after)
             return self._state.model_copy(deep=True)
