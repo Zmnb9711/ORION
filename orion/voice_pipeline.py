@@ -101,7 +101,13 @@ def _update_context(
             entities["landmark_id"] = landmark_id
             entities["last_landmark_id"] = landmark_id
 
-    subject = entities.get("callsign") or entities.get("landmark_name")
+    # For a spatial query the landmark is the conversational subject even when
+    # the result also contains nearby units. For direct unit queries, keep the
+    # unit callsign as the subject.
+    if command.intent == "find_unit_callsigns_near_landmark":
+        subject = entities.get("landmark_name") or entities.get("callsign")
+    else:
+        subject = entities.get("callsign") or entities.get("landmark_name")
     if subject is None and command.agent.value not in {"system", "general_conversation"}:
         subject = command.agent.value
 
