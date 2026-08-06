@@ -8,6 +8,7 @@ from orion.mission_bridge_ingest import (
     MissionBridgeState,
     mission_bridge_telemetry,
 )
+from orion.mission_readiness import MissionReadiness, assess_mission_readiness
 
 router = APIRouter(prefix="/v1/mission-bridge", tags=["Mission Bridge"])
 
@@ -30,6 +31,11 @@ def ingest_mission_bridge_heartbeat(payload: MissionBridgeHeartbeat) -> MissionB
 @router.get("/state", response_model=MissionBridgeState)
 def get_mission_bridge_state() -> MissionBridgeState:
     return mission_bridge_telemetry.state()
+
+
+@router.get("/readiness", response_model=MissionReadiness)
+def get_mission_bridge_readiness() -> MissionReadiness:
+    return assess_mission_readiness()
 
 
 @router.put("/stale-timeout", response_model=MissionBridgeState)
