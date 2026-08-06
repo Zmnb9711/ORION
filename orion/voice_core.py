@@ -93,6 +93,17 @@ class VoiceCommandQueue:
             command = self._commands.get(command_id)
             return command.model_copy(deep=True) if command else None
 
+    def start(self, command_id: UUID) -> VoiceCommand:
+        with self._lock:
+            command = self._commands.get(command_id)
+            if command is None:
+                raise KeyError("Voice command not found")
+            if command.state is not CommandState.QUEUED:
+                raise ValueError("Voice command is not queued")
+            command.state = CommandState.RUNNING
+            command.updated_at = datetime.now(UTC)
+            return command.model_copy(deep=True)
+
     def start_next(self) -> VoiceCommand | None:
         with self._lock:
             queued = [item for item in self._commands.values() if item.state is CommandState.QUEUED]
