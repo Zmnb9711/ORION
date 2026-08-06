@@ -1,4 +1,4 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
 from orion.coalition_radio import (
     CallsignLookupQuery,
@@ -22,8 +22,25 @@ from orion.mission_bridge_state import (
     MissionBridgeStatus,
     mission_bridge_state,
 )
+from orion.mission_readiness import assess_mission_readiness, require_current_mission_data
 
 router = APIRouter(prefix="/v1/coalition-control", tags=["Coalition Control"])
+
+
+def _require_live_mission_data() -> None:
+    """Reject mission-aware reads when their source telemetry is unavailable or stale."""
+    try:
+        require_current_mission_data()
+    except RuntimeError as exc:
+        readiness = assess_mission_readiness()
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "mission_data_unavailable",
+                "message": str(exc),
+                "readiness": readiness.model_dump(mode="json"),
+            },
+        ) from exc
 
 
 @router.post("/translate", response_model=SemanticCommandPlan)
@@ -33,6 +50,7 @@ def translate_coalition_command(payload: SemanticCommandRequest) -> SemanticComm
 
 @router.get("/radio-units", response_model=list[CoalitionRadioUnit])
 def list_radio_units() -> list[CoalitionRadioUnit]:
+    _require_live_mission_data()
     return coalition_radio.list()
 
 
@@ -48,16 +66,19 @@ def upsert_radio_unit(payload: CoalitionRadioUnit) -> CoalitionRadioUnit:
 
 @router.post("/radio-units/lookup", response_model=RadioLookupResult)
 def lookup_radio_unit(payload: RadioLookupQuery) -> RadioLookupResult:
+    _require_live_mission_data()
     return coalition_radio.lookup(payload)
 
 
 @router.post("/callsigns/lookup", response_model=CallsignLookupResult)
 def lookup_callsigns(payload: CallsignLookupQuery) -> CallsignLookupResult:
+    _require_live_mission_data()
     return coalition_radio.lookup_callsigns(payload)
 
 
 @router.get("/landmarks", response_model=list[MissionLandmark])
 def list_landmarks() -> list[MissionLandmark]:
+    _require_live_mission_data()
     return coalition_radio.list_landmarks()
 
 
@@ -73,6 +94,7 @@ def upsert_landmark(payload: MissionLandmark) -> MissionLandmark:
 
 @router.post("/callsigns/near-landmark", response_model=NearbyCallsignResult)
 def lookup_callsigns_near_landmark(payload: NearbyCallsignQuery) -> NearbyCallsignResult:
+    _require_live_mission_data()
     return coalition_radio.lookup_near_landmark(payload)
 
 
