@@ -5,6 +5,7 @@ import json
 import shutil
 import tempfile
 from datetime import UTC, datetime
+from enum import StrEnum
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, BadZipFile, ZipFile
 
@@ -13,6 +14,13 @@ from pydantic import BaseModel
 
 PACK_ARCHIVE_PATH = "l10n/DEFAULT/ORION_MissionPack.lua"
 MANIFEST_ARCHIVE_PATH = "orion/manifest.json"
+MISSION_ARCHIVE_PATH = "mission"
+
+
+class MissionActivationStatus(StrEnum):
+    NOT_PREPARED = "not_prepared"
+    EMBEDDED_ONLY = "embedded_only"
+    TRIGGER_DETECTED = "trigger_detected"
 
 
 class MissionPreparationRequest(BaseModel):
@@ -20,6 +28,17 @@ class MissionPreparationRequest(BaseModel):
     mission_pack_script: str
     output_directory: str | None = None
     overwrite_existing_copy: bool = False
+
+
+class MissionInspectionResult(BaseModel):
+    mission_path: str
+    valid_archive: bool
+    mission_entry_present: bool
+    mission_pack_present: bool
+    manifest_present: bool
+    activation_status: MissionActivationStatus
+    activation_reference: str | None = None
+    warnings: list[str]
 
 
 class MissionPreparationResult(BaseModel):
@@ -30,6 +49,7 @@ class MissionPreparationResult(BaseModel):
     prepared_sha256: str
     mission_pack_archive_path: str = PACK_ARCHIVE_PATH
     activation_required: bool = True
+    inspection: MissionInspectionResult
     message: str
 
 
@@ -62,6 +82,71 @@ def _prepared_name(source: Path) -> str:
     return f"{stem} (ORION){source.suffix}"
 
 
+def _decode_mission_text(raw: bytes) -> str:
+    for encoding in ("utf-8-sig", "utf-8", "cp1251", "latin-1"):
+        try:
+            return raw.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("latin-1", errors="replace")
+
+
+def inspect_mission(mission_path: str) -> MissionInspectionResult:
+    path = Path(mission_path).expanduser().resolve()
+    _validate_miz(path)
+
+    warnings: list[str] = []
+    mission_entry_present = False
+    mission_pack_present = False
+    manifest_present = False
+    activation_reference: str | None = None
+
+    with ZipFile(path, "r") as archive:
+        members = set(archive.namelist())
+        mission_entry_present = MISSION_ARCHIVE_PATH in members
+        mission_pack_present = PACK_ARCHIVE_PATH in members
+        manifest_present = MANIFEST_ARCHIVE_PATH in members
+
+        if mission_entry_present:
+            mission_text = _decode_mission_text(archive.read(MISSION_ARCHIVE_PATH))
+            references = (
+                PACK_ARCHIVE_PATH,
+                "ORION_MissionPack.lua",
+                "ORION_MISSION_PACK",
+            )
+            activation_reference = next(
+                (reference for reference in references if reference in mission_text),
+                None,
+            )
+        else:
+            warnings.append("The .miz archive has no mission entry")
+
+    if not mission_pack_present:
+        status = MissionActivationStatus.NOT_PREPARED
+        warnings.append("ORION Mission Pack is not embedded")
+    elif activation_reference:
+        status = MissionActivationStatus.TRIGGER_DETECTED
+    else:
+        status = MissionActivationStatus.EMBEDDED_ONLY
+        warnings.append(
+            "Mission Pack is embedded but no activation reference was detected in the mission data"
+        )
+
+    if mission_pack_present and not manifest_present:
+        warnings.append("ORION manifest is missing")
+
+    return MissionInspectionResult(
+        mission_path=str(path),
+        valid_archive=True,
+        mission_entry_present=mission_entry_present,
+        mission_pack_present=mission_pack_present,
+        manifest_present=manifest_present,
+        activation_status=status,
+        activation_reference=activation_reference,
+        warnings=warnings,
+    )
+
+
 def prepare_mission(request: MissionPreparationRequest) -> MissionPreparationResult:
     source = Path(request.source_mission).expanduser().resolve()
     pack = Path(request.mission_pack_script).expanduser().resolve()
@@ -83,7 +168,7 @@ def prepare_mission(request: MissionPreparationRequest) -> MissionPreparationRes
     if prepared.exists() and not request.overwrite_existing_copy:
         raise FileExistsError(f"Prepared mission already exists: {prepared}")
 
-    # A byte-identical backup is created even though the original mission is never edited.
+    # The original mission is never edited. The backup is byte-identical to it.
     shutil.copy2(source, backup)
 
     source_hash = _sha256(source)
@@ -93,7 +178,7 @@ def prepare_mission(request: MissionPreparationRequest) -> MissionPreparationRes
         "source_name": source.name,
         "source_sha256": source_hash,
         "mission_pack_file": PACK_ARCHIVE_PATH,
-        "activation": "pending-trigger-injection",
+        "activation": "embedded-only",
     }
 
     temporary_path: Path | None = None
@@ -120,15 +205,23 @@ def prepare_mission(request: MissionPreparationRequest) -> MissionPreparationRes
         if temporary_path is not None and temporary_path.exists():
             temporary_path.unlink()
 
+    inspection = inspect_mission(str(prepared))
+    activation_required = (
+        inspection.activation_status is not MissionActivationStatus.TRIGGER_DETECTED
+    )
+
     return MissionPreparationResult(
         source_mission=str(source),
         prepared_mission=str(prepared),
         backup_mission=str(backup),
         source_sha256=source_hash,
         prepared_sha256=_sha256(prepared),
-        activation_required=True,
+        activation_required=activation_required,
+        inspection=inspection,
         message=(
-            "Mission Pack embedded in a separate ORION copy. "
-            "Automatic Mission Editor trigger injection is not implemented yet."
+            "Mission Pack embedded and archive validated. "
+            "A DCS trigger is still required before mission-level commands can run."
+            if activation_required
+            else "Mission Pack embedded and an activation reference was detected."
         ),
     )
