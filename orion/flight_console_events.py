@@ -2,18 +2,17 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from threading import Condition, RLock
+from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, Field
-
-from orion.flight_console import FlightConsoleState
 
 
 class FlightConsoleEvent(BaseModel):
     sequence: int
     launch_id: UUID
     event_type: str
-    state: FlightConsoleState
+    state: dict[str, Any]
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
@@ -25,12 +24,12 @@ class FlightConsoleEventStream:
         self._lock = RLock()
         self._condition = Condition(self._lock)
 
-    def publish(self, event_type: str, state: FlightConsoleState) -> FlightConsoleEvent:
+    def publish(self, event_type: str, launch_id: UUID, state: dict[str, Any]) -> FlightConsoleEvent:
         with self._condition:
             self._sequence += 1
             event = FlightConsoleEvent(
                 sequence=self._sequence,
-                launch_id=state.launch_id,
+                launch_id=launch_id,
                 event_type=event_type,
                 state=state,
             )
