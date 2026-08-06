@@ -18,6 +18,7 @@ _RULES: tuple[tuple[tuple[str, ...], str, VoiceAgent, CommandPriority], ...] = (
     (("terrain", "земля", "pull up", "тяни"), "terrain_warning", VoiceAgent.THREAT_ANALYZER, CommandPriority.CRITICAL),
     (("fire", "пожар"), "fire_warning", VoiceAgent.THREAT_ANALYZER, CommandPriority.CRITICAL),
     (("stall", "срыв"), "stall_warning", VoiceAgent.FLIGHT_ADVISOR, CommandPriority.CRITICAL),
+    (("позывные юнитов около", "позывные около", "кто у нас рядом с", "кто рядом с", "units near", "callsigns near", "who is near", "units around"), "find_unit_callsigns_near_landmark", VoiceAgent.COALITION_AIRCRAFT, CommandPriority.NORMAL),
     (("какой позывной", "какие позывные", "назови позывной", "назови позывные", "callsign", "callsigns"), "find_unit_callsign", VoiceAgent.COALITION_AIRCRAFT, CommandPriority.NORMAL),
     (("второй", "wingman two", "two,", "second wingman"), "command_wingman", VoiceAgent.WINGMAN, CommandPriority.HIGH),
     (("звено", "flight,"), "command_flight", VoiceAgent.FLIGHT, CommandPriority.HIGH),
@@ -67,7 +68,7 @@ def _parse_single(text: str, context: VoiceConversationContext | None) -> VoiceC
 
 
 def _command(text: str, intent: str, agent: VoiceAgent, priority: CommandPriority, context: VoiceConversationContext | None) -> VoiceCommandCreate:
-    payload: dict[str, str | int | float | bool | None] = {"parser": "rules-v4"}
+    payload: dict[str, str | int | float | bool | None] = {"parser": "rules-v5"}
     if context is not None:
         payload["session_id"] = context.session_id
         payload["active_subject"] = context.active_subject
