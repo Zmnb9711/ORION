@@ -1,12 +1,10 @@
 from contextlib import asynccontextmanager
+from uuid import UUID
 
 from fastapi import FastAPI, HTTPException, Query
 
 from orion import __version__
-from orion.capabilities import (
-    MissionPackRegistration,
-    capability_registry,
-)
+from orion.capabilities import MissionPackRegistration, capability_registry
 from orion.commands import CommandDispatcher, DcsCommand
 from orion.config import settings
 from orion.confirmations import (
@@ -20,6 +18,10 @@ from orion.dialogue import DialogueRequest, DialogueResult, classify_dialogue
 from orion.events import EventJournal
 from orion.mission import Coalition, MissionPosition, MissionSnapshot, MissionUnit
 from orion.mission_bridge import MissionCommand, mission_bridge
+from orion.mission_command_status import (
+    MissionCommandResult,
+    mission_command_statuses,
+)
 from orion.mission_store import mission_store
 from orion.models import TelemetryEnvelope
 from orion.support import SupportRequest, SupportRequestCreate, support_requests
@@ -92,23 +94,42 @@ def get_mission_pack_registration() -> MissionPackRegistration:
     return registration
 
 
-@app.post("/v1/mission-bridge/commands", status_code=202)
-def send_mission_command(command: MissionCommand) -> dict[str, str]:
+@app.post("/v1/mission-bridge/commands", response_model=MissionCommandResult, status_code=202)
+def send_mission_command(command: MissionCommand) -> MissionCommandResult:
     try:
-        mission_bridge.send(command)
+        result = mission_bridge.send(command)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     _journal.append("mission_bridge_command", command.model_dump(mode="json", exclude_none=True))
-    return {"status": "sent", "command": command.command.value, "command_id": str(command.command_id)}
+    return result
+
+
+@app.get("/v1/mission-bridge/commands", response_model=list[MissionCommandResult])
+def list_mission_command_results() -> list[MissionCommandResult]:
+    return mission_command_statuses.list()
+
+
+@app.get("/v1/mission-bridge/commands/{command_id}", response_model=MissionCommandResult)
+def get_mission_command_result(command_id: UUID) -> MissionCommandResult:
+    result = mission_command_statuses.get(command_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Mission command not found")
+    return result
+
+
+@app.put("/v1/mission-bridge/commands/{command_id}/status", response_model=MissionCommandResult)
+def update_mission_command_result(command_id: UUID, result: MissionCommandResult) -> MissionCommandResult:
+    if result.command_id != command_id:
+        raise HTTPException(status_code=400, detail="Command ID mismatch")
+    stored = mission_command_statuses.set(command_id, result.status, result.message)
+    _journal.append("mission_bridge_command_status", stored.model_dump(mode="json"))
+    return stored
 
 
 @app.post("/v1/dialogue", response_model=DialogueResult)
 def process_dialogue(payload: DialogueRequest) -> DialogueResult:
     result = classify_dialogue(payload)
-    _journal.append(
-        "dialogue",
-        {"request": payload.model_dump(mode="json"), "result": result.model_dump(mode="json")},
-    )
+    _journal.append("dialogue", {"request": payload.model_dump(mode="json"), "result": result.model_dump(mode="json")})
     return result
 
 
@@ -120,9 +141,7 @@ def create_pending_action(payload: PendingActionCreate) -> PendingAction:
 
 
 @app.get("/v1/pending-actions", response_model=list[PendingAction])
-def list_pending_actions(
-    status: ConfirmationStatus | None = Query(default=None),
-) -> list[PendingAction]:
+def list_pending_actions(status: ConfirmationStatus | None = Query(default=None)) -> list[PendingAction]:
     return confirmation_store.list(status=status)
 
 
@@ -151,10 +170,7 @@ def get_mission() -> MissionSnapshot:
 
 
 @app.get("/v1/mission/units", response_model=list[MissionUnit])
-def list_mission_units(
-    coalition: Coalition | None = Query(default=None),
-    alive_only: bool = Query(default=True),
-) -> list[MissionUnit]:
+def list_mission_units(coalition: Coalition | None = Query(default=None), alive_only: bool = Query(default=True)) -> list[MissionUnit]:
     return mission_store.units(coalition=coalition, alive_only=alive_only)
 
 
@@ -169,31 +185,17 @@ def list_threats(
     snapshot = mission_store.get()
     if snapshot is None:
         raise HTTPException(status_code=404, detail="No mission snapshot received")
-
     if latitude is None or longitude is None:
         if _latest is None:
-            raise HTTPException(
-                status_code=400,
-                detail="Provide latitude and longitude or ingest own-aircraft telemetry first",
-            )
+            raise HTTPException(status_code=400, detail="Provide latitude and longitude or ingest own-aircraft telemetry first")
         own_position = MissionPosition(
             latitude=_latest.state.position.latitude,
             longitude=_latest.state.position.longitude,
             altitude_m=_latest.state.position.altitude_m,
         )
     else:
-        own_position = MissionPosition(
-            latitude=latitude,
-            longitude=longitude,
-            altitude_m=altitude_m or 0,
-        )
-
-    return assess_threats(
-        snapshot=snapshot,
-        own_position=own_position,
-        own_coalition=own_coalition,
-        horizon_s=horizon_s,
-    )
+        own_position = MissionPosition(latitude=latitude, longitude=longitude, altitude_m=altitude_m or 0)
+    return assess_threats(snapshot=snapshot, own_position=own_position, own_coalition=own_coalition, horizon_s=horizon_s)
 
 
 @app.post("/v1/support-requests", response_model=SupportRequest, status_code=201)
