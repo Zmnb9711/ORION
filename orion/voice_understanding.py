@@ -47,6 +47,7 @@ _RULES: tuple[tuple[tuple[str, ...], str, VoiceAgent, CommandPriority], ...] = (
 
 _SPLIT_RE = re.compile(r"\s*(?:;|\band then\b|\bthen\b|\bзатем\b|\bпотом\b)\s*", re.IGNORECASE)
 _PRONOUNS = ("его", "нему", "у него", "он", "его сейчас", "that one", "it", "its", "him")
+_NAMED_FREQUENCY_RE = re.compile(r"(?:частот(?:а|у|ы)?|frequency)\s+(?:of\s+)?([\w][\w .-]*\d[\w .-]*|[A-Za-z][A-Za-z .-]+\s+\d+)", re.IGNORECASE)
 
 
 def parse_transcript(transcript: str, context: VoiceConversationContext | None = None) -> ParsedVoiceRequest:
@@ -61,13 +62,19 @@ def _parse_single(text: str, context: VoiceConversationContext | None) -> VoiceC
     if context and context.active_subject:
         refers_to_subject = any(token in normalized for token in _PRONOUNS)
         if refers_to_subject or normalized in {"а частота", "частота", "frequency", "а где", "где сейчас"}:
+            contextual_agent = context.active_agent or VoiceAgent.COALITION_AIRCRAFT
             if any(token in normalized for token in ("частот", "frequency")):
-                return _command(text, "find_unit_frequency", VoiceAgent.COALITION_AIRCRAFT, CommandPriority.NORMAL, context)
+                return _command(text, "find_unit_frequency", contextual_agent, CommandPriority.NORMAL, context)
             if any(token in normalized for token in ("карте", "карту", "map")):
-                return _command(text, "show_unit_on_map", VoiceAgent.COALITION_AIRCRAFT, CommandPriority.NORMAL, context)
+                return _command(text, "show_unit_on_map", contextual_agent, CommandPriority.NORMAL, context)
             if any(token in normalized for token in ("где", "положен", "координат", "where", "position", "location")):
-                return _command(text, "find_unit_position", VoiceAgent.COALITION_AIRCRAFT, CommandPriority.NORMAL, context)
-            return _command(text, "context_follow_up", context.active_agent or VoiceAgent.COALITION_AIRCRAFT, CommandPriority.NORMAL, context)
+                return _command(text, "find_unit_position", contextual_agent, CommandPriority.NORMAL, context)
+            return _command(text, "context_follow_up", contextual_agent, CommandPriority.NORMAL, context)
+
+    # A frequency request that explicitly names a callsign/unit is a mission-information
+    # lookup, not an implicit tanker request (for example: "Дай частоту Colt 1").
+    if _NAMED_FREQUENCY_RE.search(text):
+        return _command(text, "find_unit_frequency", VoiceAgent.COALITION_AIRCRAFT, CommandPriority.NORMAL, context)
 
     for keywords, intent, agent, priority in _RULES:
         if any(keyword in normalized for keyword in keywords):
