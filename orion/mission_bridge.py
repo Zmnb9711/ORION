@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import socket
 from enum import StrEnum
 from uuid import UUID, uuid4
@@ -9,6 +8,11 @@ from pydantic import BaseModel, Field, model_validator
 
 from orion.capabilities import MissionCapability, capability_registry
 from orion.config import settings
+from orion.mission_command_status import (
+    MissionCommandResult,
+    MissionCommandStatus,
+    mission_command_statuses,
+)
 
 
 class MissionCommandType(StrEnum):
@@ -45,7 +49,7 @@ class MissionCommand(BaseModel):
 
 
 class MissionBridge:
-    def send(self, command: MissionCommand) -> None:
+    def send(self, command: MissionCommand) -> MissionCommandResult:
         capability = COMMAND_CAPABILITY[command.command]
         if not capability_registry.supports(capability):
             raise ValueError(f"Mission capability is unavailable: {capability.value}")
@@ -53,6 +57,12 @@ class MissionBridge:
         payload = command.model_dump_json(exclude_none=True).encode("utf-8")
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
             sock.sendto(payload, (settings.mission_bridge_host, settings.mission_bridge_port))
+
+        return mission_command_statuses.set(
+            command.command_id,
+            MissionCommandStatus.QUEUED,
+            "Command sent to Mission Bridge transport",
+        )
 
 
 mission_bridge = MissionBridge()
