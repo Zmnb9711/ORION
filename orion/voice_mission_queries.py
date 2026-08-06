@@ -11,6 +11,7 @@ from orion.coalition_radio import (
     coalition_radio,
 )
 from orion.mission_readiness import require_current_mission_data
+from orion.navigation_channels import NavigationChannelQuery, NavigationChannelSystem, navigation_channels
 from orion.voice_core import VoiceCommand
 
 
@@ -28,7 +29,6 @@ _LANDMARK_PATTERNS = (
 
 
 def execute_mission_query(command: VoiceCommand) -> VoiceMissionQueryResult:
-    """Resolve informational voice intents against current Mission Bridge indexes."""
     try:
         require_current_mission_data()
     except RuntimeError:
@@ -36,6 +36,28 @@ def execute_mission_query(command: VoiceCommand) -> VoiceMissionQueryResult:
             completed=False,
             spoken_text="Данные Mission Bridge недоступны или устарели.",
             data={"reason": "mission_data_unavailable"},
+        )
+
+    preset_systems = {
+        "find_radio_preset_channel": NavigationChannelSystem.RADIO,
+        "find_rsbn_channel": NavigationChannelSystem.RSBN,
+        "find_adf_channel": NavigationChannelSystem.ADF,
+    }
+    if command.intent in preset_systems:
+        query_text = _preset_query_text(command.transcript)
+        result = navigation_channels.lookup(
+            NavigationChannelQuery(text=query_text, system=preset_systems[command.intent])
+        )
+        if not result.found:
+            return VoiceMissionQueryResult(
+                completed=False,
+                spoken_text="В данных текущей миссии подходящий предустановленный канал не найден.",
+                data={"reason": "preset_channel_not_found", "system": preset_systems[command.intent].value},
+            )
+        return VoiceMissionQueryResult(
+            completed=True,
+            spoken_text=result.message,
+            data={"channels": [item.model_dump(mode="json") for item in result.channels]},
         )
 
     if command.intent == "find_unit_frequency":
@@ -57,71 +79,30 @@ def execute_mission_query(command: VoiceCommand) -> VoiceMissionQueryResult:
     if command.intent in {"find_unit_position", "show_unit_on_map"}:
         unit = _find_context_unit(command)
         if unit is None:
-            return VoiceMissionQueryResult(
-                completed=False,
-                spoken_text="Не удалось определить, о каком юните идёт речь.",
-                data={"reason": "unit_context_missing"},
-            )
+            return VoiceMissionQueryResult(completed=False, spoken_text="Не удалось определить, о каком юните идёт речь.", data={"reason": "unit_context_missing"})
         if unit.point is None:
-            return VoiceMissionQueryResult(
-                completed=False,
-                spoken_text=f"Для {unit.callsign}, {unit.spoken_type}, координаты в текущих данных миссии отсутствуют.",
-                data={"reason": "unit_position_missing", "unit": unit.model_dump(mode="json")},
-            )
+            return VoiceMissionQueryResult(completed=False, spoken_text=f"Для {unit.callsign}, {unit.spoken_type}, координаты в текущих данных миссии отсутствуют.", data={"reason": "unit_position_missing", "unit": unit.model_dump(mode="json")})
         coordinates = {"x_m": unit.point.x_m, "z_m": unit.point.z_m}
         if command.intent == "show_unit_on_map":
             text = f"Показываю {unit.callsign}, {unit.spoken_type}, на карте."
             action = "show_unit_on_map"
         else:
-            text = (
-                f"{unit.callsign}, {unit.spoken_type}: координаты X {unit.point.x_m:.0f}, "
-                f"Z {unit.point.z_m:.0f} метров."
-            )
+            text = f"{unit.callsign}, {unit.spoken_type}: координаты X {unit.point.x_m:.0f}, Z {unit.point.z_m:.0f} метров."
             action = "report_unit_position"
-        return VoiceMissionQueryResult(
-            completed=True,
-            spoken_text=text,
-            data={
-                "action": action,
-                "unit": unit.model_dump(mode="json"),
-                "coordinates": coordinates,
-            },
-        )
+        return VoiceMissionQueryResult(completed=True, spoken_text=text, data={"action": action, "unit": unit.model_dump(mode="json"), "coordinates": coordinates})
 
     if command.intent == "find_unit_callsigns_near_landmark":
         landmark = _extract_landmark(command.transcript)
         if not landmark:
-            return VoiceMissionQueryResult(
-                completed=False,
-                spoken_text="Не удалось определить ориентир. Назовите город, аэродром или точку миссии.",
-                data={"reason": "landmark_missing"},
-            )
-        result = coalition_radio.lookup_near_landmark(
-            NearbyCallsignQuery(
-                landmark=landmark,
-                radius_km=_extract_radius_km(command.transcript),
-            )
-        )
-        return VoiceMissionQueryResult(
-            completed=result.found,
-            spoken_text=result.message,
-            data={
-                "landmark": result.landmark.model_dump(mode="json") if result.landmark else None,
-                "units": [item.model_dump(mode="json") for item in result.units],
-            },
-        )
+            return VoiceMissionQueryResult(completed=False, spoken_text="Не удалось определить ориентир. Назовите город, аэродром или точку миссии.", data={"reason": "landmark_missing"})
+        result = coalition_radio.lookup_near_landmark(NearbyCallsignQuery(landmark=landmark, radius_km=_extract_radius_km(command.transcript)))
+        return VoiceMissionQueryResult(completed=result.found, spoken_text=result.message, data={"landmark": result.landmark.model_dump(mode="json") if result.landmark else None, "units": [item.model_dump(mode="json") for item in result.units]})
 
-    return VoiceMissionQueryResult(
-        completed=False,
-        spoken_text="Этот информационный запрос пока не поддерживается.",
-        data={"reason": "unsupported_intent"},
-    )
+    return VoiceMissionQueryResult(completed=False, spoken_text="Этот информационный запрос пока не поддерживается.", data={"reason": "unsupported_intent"})
 
 
 def _find_context_unit(command: VoiceCommand):
-    subject = _context_subject(command)
-    if not subject:
-        subject = _query_text(command.transcript)
+    subject = _context_subject(command) or _query_text(command.transcript)
     result = coalition_radio.lookup_callsigns(CallsignLookupQuery(text=subject))
     return result.units[0] if result.units else None
 
@@ -140,9 +121,7 @@ def _subject_or_query(command: VoiceCommand) -> str:
 
 def _extract_radius_km(text: str) -> float:
     match = _RADIUS_RE.search(text)
-    if not match:
-        return 50.0
-    return float(match.group(1).replace(",", "."))
+    return float(match.group(1).replace(",", ".")) if match else 50.0
 
 
 def _extract_landmark(text: str) -> str | None:
@@ -153,22 +132,17 @@ def _extract_landmark(text: str) -> str | None:
     return None
 
 
+def _preset_query_text(text: str) -> str:
+    cleaned = re.sub(r"\b(?:дай|назови|скажи|какой|какие|предустановленный|предустановленные|канал|каналы|радио|рсбн|арк|radio|preset|rsbn|adf|ndb|channel|channels|для|у)\b", " ", text, flags=re.IGNORECASE)
+    return " ".join(cleaned.split()).strip(" ,.?-") or text.strip()
+
+
 def _query_text(text: str) -> str:
-    cleaned = re.sub(
-        r"\b(?:дай|назови|скажи|какая|какой|где|сейчас|покажи|частота|частоту|юнита|группы|unit|group|frequency|where|show|what is|the|it|him|он|его|у него)\b",
-        " ",
-        text,
-        flags=re.IGNORECASE,
-    )
+    cleaned = re.sub(r"\b(?:дай|назови|скажи|какая|какой|где|сейчас|покажи|частота|частоту|юнита|группы|unit|group|frequency|where|show|what is|the|it|him|он|его|у него)\b", " ", text, flags=re.IGNORECASE)
     return " ".join(cleaned.split()).strip(" ,.?-") or text.strip()
 
 
 def _optional_query_text(text: str) -> str | None:
-    cleaned = re.sub(
-        r"\b(?:дай|назови|скажи|какой|какие|позывной|позывные|юнита|юнитов|callsign|callsigns|unit|units|available)\b",
-        " ",
-        text,
-        flags=re.IGNORECASE,
-    )
+    cleaned = re.sub(r"\b(?:дай|назови|скажи|какой|какие|позывной|позывные|юнита|юнитов|callsign|callsigns|unit|units|available)\b", " ", text, flags=re.IGNORECASE)
     value = " ".join(cleaned.split()).strip(" ,.?-")
     return value or None
