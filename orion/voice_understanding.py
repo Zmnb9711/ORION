@@ -18,6 +18,7 @@ _RULES: tuple[tuple[tuple[str, ...], str, VoiceAgent, CommandPriority], ...] = (
     (("terrain", "земля", "pull up", "тяни"), "terrain_warning", VoiceAgent.THREAT_ANALYZER, CommandPriority.CRITICAL),
     (("fire", "пожар"), "fire_warning", VoiceAgent.THREAT_ANALYZER, CommandPriority.CRITICAL),
     (("stall", "срыв"), "stall_warning", VoiceAgent.FLIGHT_ADVISOR, CommandPriority.CRITICAL),
+    (("согласно руководству", "в руководстве", "по руководству", "мануал", "manual", "как выполнить", "как настроить", "что делать при", "почему не работает", "how do i", "according to the manual"), "aircraft_knowledge_query", VoiceAgent.FLIGHT_ADVISOR, CommandPriority.NORMAL),
     (("канал рсбн", "каналы рсбн", "рсбн канал", "rsbn channel", "rsbn preset"), "find_rsbn_channel", VoiceAgent.NAVIGATION, CommandPriority.NORMAL),
     (("канал арк", "каналы арк", "арк канал", "adf channel", "adf preset", "ndb preset"), "find_adf_channel", VoiceAgent.NAVIGATION, CommandPriority.NORMAL),
     (("предустановленный канал", "предустановленные каналы", "канал радио", "радиоканал", "radio preset", "preset channel"), "find_radio_preset_channel", VoiceAgent.NAVIGATION, CommandPriority.NORMAL),
@@ -80,12 +81,12 @@ def _parse_single(text: str, context: VoiceConversationContext | None) -> VoiceC
 
 
 def _command(text: str, intent: str, agent: VoiceAgent, priority: CommandPriority, context: VoiceConversationContext | None) -> VoiceCommandCreate:
-    payload: dict[str, str | int | float | bool | None] = {"parser": "rules-v7"}
+    payload: dict[str, str | int | float | bool | None] = {"parser": "rules-v8"}
     if context is not None:
         payload["session_id"] = context.session_id
         payload["active_subject"] = context.active_subject
         payload["previous_intent"] = context.last_intent
-        for key in ("unit_id", "callsign", "unit_type", "landmark_id", "landmark_name"):
+        for key in ("unit_id", "callsign", "unit_type", "landmark_id", "landmark_name", "aircraft_id"):
             if value := context.entities.get(key):
                 payload[f"context_{key}"] = value
     return VoiceCommandCreate(transcript=text, intent=intent, agent=agent, priority=priority, context=payload)
