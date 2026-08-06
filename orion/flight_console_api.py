@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 
 from orion.flight_console import (
     FlightConsoleCreate,
@@ -8,6 +8,7 @@ from orion.flight_console import (
     FlightConsoleUpdate,
     flight_consoles,
 )
+from orion.flight_console_events import FlightConsoleEvent, flight_console_events
 
 router = APIRouter(prefix="/v1/flight-console", tags=["Flight Console"])
 
@@ -23,6 +24,19 @@ def create_flight_console(payload: FlightConsoleCreate) -> FlightConsoleState:
 @router.get("", response_model=list[FlightConsoleState])
 def list_flight_consoles() -> list[FlightConsoleState]:
     return flight_consoles.list()
+
+
+@router.get("/events", response_model=list[FlightConsoleEvent])
+def read_flight_console_events(
+    after: int = Query(default=0, ge=0),
+    launch_id: UUID | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+) -> list[FlightConsoleEvent]:
+    return flight_console_events.read_after(
+        sequence=after,
+        launch_id=launch_id,
+        limit=limit,
+    )
 
 
 @router.get("/{launch_id}", response_model=FlightConsoleState)
