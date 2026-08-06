@@ -56,14 +56,27 @@ def _spoken_text(outcome: ExecutionOutcome) -> str | None:
     return value if isinstance(value, str) and value.strip() else None
 
 
+def _unit_payload(outcome: ExecutionOutcome) -> dict[str, object] | None:
+    unit = outcome.payload.get("unit")
+    if isinstance(unit, dict):
+        return unit
+    units = outcome.payload.get("units")
+    if isinstance(units, list) and units:
+        first = units[0]
+        if isinstance(first, dict):
+            nested = first.get("unit")
+            return nested if isinstance(nested, dict) else first
+    return None
+
+
 def _update_context(
     session_id: str,
     command: VoiceCommand,
     outcome: ExecutionOutcome,
 ) -> VoiceConversationContext:
     entities: dict[str, str] = {}
-    unit = outcome.payload.get("unit")
-    if isinstance(unit, dict):
+    unit = _unit_payload(outcome)
+    if unit is not None:
         callsign = unit.get("callsign")
         unit_id = unit.get("unit_id")
         unit_type = unit.get("unit_type")
