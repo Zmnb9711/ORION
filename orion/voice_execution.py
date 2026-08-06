@@ -85,6 +85,12 @@ class VoiceExecutionDispatcher:
             VoiceAgent.THREAT_ANALYZER: "threat-analyzer",
             VoiceAgent.FLIGHT_ADVISOR: "flight-advisor",
             VoiceAgent.CHECKLIST: "checklist-service",
+            VoiceAgent.WINGMAN: "dcs-command-translator",
+            VoiceAgent.FLIGHT: "dcs-command-translator",
+            VoiceAgent.COALITION_AIRCRAFT: "dcs-capability-translator",
+            VoiceAgent.COALITION_HELICOPTERS: "dcs-capability-translator",
+            VoiceAgent.COALITION_GROUND: "dcs-capability-translator",
+            VoiceAgent.COALITION_NAVAL: "dcs-capability-translator",
         }
         self._executors: dict[VoiceAgent, VoiceCommandExecutor] = {
             agent: BridgeExecutor(adapter) for agent, adapter in bridge_agents.items()
