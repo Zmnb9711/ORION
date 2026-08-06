@@ -50,6 +50,7 @@ class DcsLaunchPlan(BaseModel):
     working_directory: str
     mode: DcsLaunchMode
     mission_path: str | None = None
+    runtime_note: str | None = None
 
 
 class LaunchProfileStore:
@@ -79,13 +80,13 @@ class LaunchProfileStore:
 def build_launch_plan(profile: DcsLaunchProfile) -> DcsLaunchPlan:
     executable = Path(profile.dcs_executable)
     arguments: list[str] = []
+    runtime_note: str | None = None
 
     if profile.mode is DcsLaunchMode.OPENXR:
         arguments.extend(["--force_enable_VR", "--force_OpenXR"])
     elif profile.mode is DcsLaunchMode.STEAMVR:
-        arguments.extend(["--force_enable_VR", "--force_steam_VR"])
-    else:
-        arguments.append("--force_disable_VR")
+        arguments.append("--force_enable_VR")
+        runtime_note = "SteamVR/OpenVR must be selected and ready before DCS starts"
 
     if profile.mission_path:
         arguments.append(profile.mission_path)
@@ -98,6 +99,7 @@ def build_launch_plan(profile: DcsLaunchProfile) -> DcsLaunchPlan:
         working_directory=str(executable.parent),
         mode=profile.mode,
         mission_path=profile.mission_path,
+        runtime_note=runtime_note,
     )
 
 
