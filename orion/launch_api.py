@@ -9,21 +9,23 @@ from orion.launch_profiles import (
     build_launch_plan,
     launch_profiles,
 )
+from orion.mission_catalog_api import router as mission_catalog_router
 
-router = APIRouter(prefix="/v1/launch-profiles", tags=["DCS launch profiles"])
+router = APIRouter()
+launch_router = APIRouter(prefix="/v1/launch-profiles", tags=["DCS launch profiles"])
 
 
-@router.post("", response_model=DcsLaunchProfile, status_code=201)
+@launch_router.post("", response_model=DcsLaunchProfile, status_code=201)
 def create_launch_profile(payload: DcsLaunchProfileCreate) -> DcsLaunchProfile:
     return launch_profiles.create(payload)
 
 
-@router.get("", response_model=list[DcsLaunchProfile])
+@launch_router.get("", response_model=list[DcsLaunchProfile])
 def list_launch_profiles() -> list[DcsLaunchProfile]:
     return launch_profiles.list()
 
 
-@router.get("/{profile_id}", response_model=DcsLaunchProfile)
+@launch_router.get("/{profile_id}", response_model=DcsLaunchProfile)
 def get_launch_profile(profile_id: UUID) -> DcsLaunchProfile:
     profile = launch_profiles.get(profile_id)
     if profile is None:
@@ -31,7 +33,7 @@ def get_launch_profile(profile_id: UUID) -> DcsLaunchProfile:
     return profile
 
 
-@router.get("/{profile_id}/plan", response_model=DcsLaunchPlan)
+@launch_router.get("/{profile_id}/plan", response_model=DcsLaunchPlan)
 def preview_launch_plan(profile_id: UUID) -> DcsLaunchPlan:
     profile = launch_profiles.get(profile_id)
     if profile is None:
@@ -39,8 +41,12 @@ def preview_launch_plan(profile_id: UUID) -> DcsLaunchPlan:
     return build_launch_plan(profile)
 
 
-@router.delete("/{profile_id}", status_code=status.HTTP_204_NO_CONTENT)
+@launch_router.delete("/{profile_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_launch_profile(profile_id: UUID) -> Response:
     if not launch_profiles.delete(profile_id):
         raise HTTPException(status_code=404, detail="Launch profile not found")
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+router.include_router(launch_router)
+router.include_router(mission_catalog_router)
