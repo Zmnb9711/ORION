@@ -6,6 +6,7 @@ import pytest
 from orion.mission_preparation import (
     MANIFEST_ARCHIVE_PATH,
     PACK_ARCHIVE_PATH,
+    MissionActivationStatus,
     MissionPreparationRequest,
     prepare_mission,
 )
@@ -36,12 +37,13 @@ def test_prepare_mission_creates_copy_backup_and_manifest(tmp_path) -> None:
     assert backup.read_bytes() == source.read_bytes()
     assert source.exists()
     assert result.activation_required is True
+    assert result.inspection.activation_status is MissionActivationStatus.EMBEDDED_ONLY
 
     with ZipFile(prepared, "r") as archive:
         assert archive.read(PACK_ARCHIVE_PATH) == b"ORION = {}"
         manifest = json.loads(archive.read(MANIFEST_ARCHIVE_PATH))
         assert manifest["source_name"] == "Training.miz"
-        assert manifest["activation"] == "pending-trigger-injection"
+        assert manifest["activation"] == "embedded-only"
 
 
 def test_prepare_mission_does_not_overwrite_existing_copy_by_default(tmp_path) -> None:
