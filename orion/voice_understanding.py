@@ -4,6 +4,7 @@ import re
 
 from pydantic import BaseModel, Field
 
+from orion.voice_context import VoiceConversationContext
 from orion.voice_core import CommandPriority, VoiceAgent, VoiceCommandCreate
 
 
@@ -17,44 +18,72 @@ _RULES: tuple[tuple[tuple[str, ...], str, VoiceAgent, CommandPriority], ...] = (
     (("terrain", "земля", "pull up", "тяни"), "terrain_warning", VoiceAgent.THREAT_ANALYZER, CommandPriority.CRITICAL),
     (("fire", "пожар"), "fire_warning", VoiceAgent.THREAT_ANALYZER, CommandPriority.CRITICAL),
     (("stall", "срыв"), "stall_warning", VoiceAgent.FLIGHT_ADVISOR, CommandPriority.CRITICAL),
-    (("tanker", "танкер", "дозаправ"), "find_tanker", VoiceAgent.TANKER, CommandPriority.HIGH),
     (("tacan", "такан"), "request_tacan", VoiceAgent.TANKER, CommandPriority.HIGH),
+    (("frequency", "частот"), "request_frequency", VoiceAgent.TANKER, CommandPriority.HIGH),
+    (("tanker", "танкер", "дозаправ"), "find_tanker", VoiceAgent.TANKER, CommandPriority.HIGH),
     (("picture", "обстановк"), "request_picture", VoiceAgent.AWACS, CommandPriority.HIGH),
     (("bogey dope", "ближайш"), "request_bogey_dope", VoiceAgent.AWACS, CommandPriority.HIGH),
     (("awacs", "дрло"), "contact_awacs", VoiceAgent.AWACS, CommandPriority.HIGH),
     (("jtac", "лазер", "дым", "целеуказ"), "request_target_designation", VoiceAgent.JTAC, CommandPriority.HIGH),
     (("airport", "airfield", "аэродром"), "find_airfield", VoiceAgent.NAVIGATION, CommandPriority.NORMAL),
     (("course", "heading", "курс"), "request_heading", VoiceAgent.NAVIGATION, CommandPriority.NORMAL),
+    (("map", "карте", "карту"), "show_on_map", VoiceAgent.NAVIGATION, CommandPriority.NORMAL),
     (("checklist", "чеклист", "контрольн"), "run_checklist", VoiceAgent.CHECKLIST, CommandPriority.NORMAL),
     (("atc", "tower", "диспетчер", "вышка"), "contact_atc", VoiceAgent.ATC, CommandPriority.HIGH),
     (("cancel", "stop", "отмена", "стоп", "замолчи"), "cancel_current", VoiceAgent.SYSTEM, CommandPriority.CRITICAL),
 )
 
-_SPLIT_RE = re.compile(r"\s*(?:;|\bthen\b|\band then\b|\bзатем\b|\bпотом\b)\s*", re.IGNORECASE)
+_SPLIT_RE = re.compile(r"\s*(?:;|\band then\b|\bthen\b|\bзатем\b|\bпотом\b)\s*", re.IGNORECASE)
 
 
-def parse_transcript(transcript: str) -> ParsedVoiceRequest:
+def parse_transcript(
+    transcript: str,
+    context: VoiceConversationContext | None = None,
+) -> ParsedVoiceRequest:
     cleaned = transcript.strip()
     parts = [part.strip(" ,.") for part in _SPLIT_RE.split(cleaned) if part.strip(" ,.")]
-    commands = [_parse_single(part) for part in parts]
+    commands = [_parse_single(part, context) for part in parts]
     return ParsedVoiceRequest(transcript=cleaned, commands=commands)
 
 
-def _parse_single(text: str) -> VoiceCommandCreate:
+def _parse_single(text: str, context: VoiceConversationContext | None) -> VoiceCommandCreate:
     normalized = text.casefold()
     for keywords, intent, agent, priority in _RULES:
         if any(keyword in normalized for keyword in keywords):
-            return VoiceCommandCreate(
-                transcript=text,
-                intent=intent,
-                agent=agent,
-                priority=priority,
-                context={"parser": "rules-v1"},
-            )
+            return _command(text, intent, agent, priority, context)
+
+    if context and context.active_agent is not None:
+        if any(token in normalized for token in ("его", "нему", "у него", "that one", "it", "its")):
+            return _command(text, "context_follow_up", context.active_agent, CommandPriority.NORMAL, context)
+        if normalized in {"а tacan", "а такан", "tacan", "а частота", "частота", "frequency"}:
+            intent = "request_tacan" if "tacan" in normalized or "такан" in normalized else "request_frequency"
+            return _command(text, intent, context.active_agent, CommandPriority.HIGH, context)
+
+    return _command(
+        text,
+        "general_conversation",
+        VoiceAgent.GENERAL_CONVERSATION,
+        CommandPriority.LOW,
+        context,
+    )
+
+
+def _command(
+    text: str,
+    intent: str,
+    agent: VoiceAgent,
+    priority: CommandPriority,
+    context: VoiceConversationContext | None,
+) -> VoiceCommandCreate:
+    payload: dict[str, str | int | float | bool | None] = {"parser": "rules-v2"}
+    if context is not None:
+        payload["session_id"] = context.session_id
+        payload["active_subject"] = context.active_subject
+        payload["previous_intent"] = context.last_intent
     return VoiceCommandCreate(
         transcript=text,
-        intent="general_conversation",
-        agent=VoiceAgent.GENERAL_CONVERSATION,
-        priority=CommandPriority.LOW,
-        context={"parser": "rules-v1"},
+        intent=intent,
+        agent=agent,
+        priority=priority,
+        context=payload,
     )
