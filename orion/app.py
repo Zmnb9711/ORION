@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 
 from orion.coalition_control_api import router as coalition_control_router
+from orion.mission_bridge_api import router as mission_bridge_router
 from orion.voice_core_api import router as voice_core_router
 
 app = FastAPI(
@@ -10,6 +11,7 @@ app = FastAPI(
 )
 
 app.include_router(coalition_control_router)
+app.include_router(mission_bridge_router)
 app.include_router(voice_core_router)
 
 
