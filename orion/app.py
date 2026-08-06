@@ -16,12 +16,10 @@ from orion.confirmations import (
 )
 from orion.dialogue import DialogueRequest, DialogueResult, classify_dialogue
 from orion.events import EventJournal
+from orion.launch_api import router as launch_router
 from orion.mission import Coalition, MissionPosition, MissionSnapshot, MissionUnit
 from orion.mission_bridge import MissionCommand, mission_bridge
-from orion.mission_command_status import (
-    MissionCommandResult,
-    mission_command_statuses,
-)
+from orion.mission_command_status import MissionCommandResult, mission_command_statuses
 from orion.mission_store import mission_store
 from orion.models import TelemetryEnvelope
 from orion.support import SupportRequest, SupportRequestCreate, support_requests
@@ -49,6 +47,7 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="ORION Core", version=__version__, lifespan=lifespan)
+app.include_router(launch_router)
 
 
 @app.get("/health")
@@ -129,7 +128,13 @@ def update_mission_command_result(command_id: UUID, result: MissionCommandResult
 @app.post("/v1/dialogue", response_model=DialogueResult)
 def process_dialogue(payload: DialogueRequest) -> DialogueResult:
     result = classify_dialogue(payload)
-    _journal.append("dialogue", {"request": payload.model_dump(mode="json"), "result": result.model_dump(mode="json")})
+    _journal.append(
+        "dialogue",
+        {
+            "request": payload.model_dump(mode="json"),
+            "result": result.model_dump(mode="json"),
+        },
+    )
     return result
 
 
@@ -141,7 +146,9 @@ def create_pending_action(payload: PendingActionCreate) -> PendingAction:
 
 
 @app.get("/v1/pending-actions", response_model=list[PendingAction])
-def list_pending_actions(status: ConfirmationStatus | None = Query(default=None)) -> list[PendingAction]:
+def list_pending_actions(
+    status: ConfirmationStatus | None = Query(default=None),
+) -> list[PendingAction]:
     return confirmation_store.list(status=status)
 
 
@@ -170,7 +177,10 @@ def get_mission() -> MissionSnapshot:
 
 
 @app.get("/v1/mission/units", response_model=list[MissionUnit])
-def list_mission_units(coalition: Coalition | None = Query(default=None), alive_only: bool = Query(default=True)) -> list[MissionUnit]:
+def list_mission_units(
+    coalition: Coalition | None = Query(default=None),
+    alive_only: bool = Query(default=True),
+) -> list[MissionUnit]:
     return mission_store.units(coalition=coalition, alive_only=alive_only)
 
 
@@ -187,15 +197,27 @@ def list_threats(
         raise HTTPException(status_code=404, detail="No mission snapshot received")
     if latitude is None or longitude is None:
         if _latest is None:
-            raise HTTPException(status_code=400, detail="Provide latitude and longitude or ingest own-aircraft telemetry first")
+            raise HTTPException(
+                status_code=400,
+                detail="Provide latitude and longitude or ingest own-aircraft telemetry first",
+            )
         own_position = MissionPosition(
             latitude=_latest.state.position.latitude,
             longitude=_latest.state.position.longitude,
             altitude_m=_latest.state.position.altitude_m,
         )
     else:
-        own_position = MissionPosition(latitude=latitude, longitude=longitude, altitude_m=altitude_m or 0)
-    return assess_threats(snapshot=snapshot, own_position=own_position, own_coalition=own_coalition, horizon_s=horizon_s)
+        own_position = MissionPosition(
+            latitude=latitude,
+            longitude=longitude,
+            altitude_m=altitude_m or 0,
+        )
+    return assess_threats(
+        snapshot=snapshot,
+        own_position=own_position,
+        own_coalition=own_coalition,
+        horizon_s=horizon_s,
+    )
 
 
 @app.post("/v1/support-requests", response_model=SupportRequest, status_code=201)
