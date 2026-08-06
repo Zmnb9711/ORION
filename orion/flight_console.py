@@ -7,6 +7,7 @@ from uuid import UUID
 from pydantic import BaseModel, Field
 
 from orion.dcs_process import ProcessState, dcs_processes
+from orion.flight_console_events import flight_console_events
 
 
 class FlightConsoleCreate(BaseModel):
@@ -59,6 +60,14 @@ class FlightConsoleStore:
         self._states: dict[UUID, FlightConsoleState] = {}
         self._lock = RLock()
 
+    @staticmethod
+    def _publish(event_type: str, state: FlightConsoleState) -> None:
+        flight_console_events.publish(
+            event_type,
+            state.launch_id,
+            state.model_dump(mode="json"),
+        )
+
     def create(self, payload: FlightConsoleCreate) -> FlightConsoleState:
         process = dcs_processes.get(payload.launch_id)
         if process is None:
@@ -71,6 +80,7 @@ class FlightConsoleStore:
         )
         with self._lock:
             self._states[payload.launch_id] = state
+        self._publish("created", state)
         return state
 
     def get(self, launch_id: UUID) -> FlightConsoleState | None:
@@ -80,15 +90,21 @@ class FlightConsoleStore:
                 return None
             process = dcs_processes.get(launch_id)
             updates: dict[str, object] = {"updated_at": datetime.now(UTC)}
+            event_type: str | None = None
             if process is not None:
+                running = process.state is ProcessState.STARTED
+                if running != current.dcs_running or process.exit_code != current.dcs_exit_code:
+                    event_type = "process_state_changed"
                 updates.update(
                     dcs_pid=process.pid,
-                    dcs_running=process.state is ProcessState.STARTED,
+                    dcs_running=running,
                     dcs_exit_code=process.exit_code,
                 )
             current = current.model_copy(update=updates)
             self._states[launch_id] = current
-            return current
+        if event_type is not None:
+            self._publish(event_type, current)
+        return current
 
     def update(self, launch_id: UUID, payload: FlightConsoleUpdate) -> FlightConsoleState | None:
         with self._lock:
@@ -99,7 +115,9 @@ class FlightConsoleStore:
             updates["updated_at"] = datetime.now(UTC)
             current = current.model_copy(update=updates)
             self._states[launch_id] = current
-        return self.get(launch_id)
+        current = self.get(launch_id) or current
+        self._publish("updated", current)
+        return current
 
     def list(self) -> list[FlightConsoleState]:
         with self._lock:
