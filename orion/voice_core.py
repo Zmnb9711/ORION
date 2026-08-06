@@ -18,6 +18,12 @@ class VoiceAgent(StrEnum):
     THREAT_ANALYZER = "threat_analyzer"
     FLIGHT_ADVISOR = "flight_advisor"
     CHECKLIST = "checklist"
+    WINGMAN = "wingman"
+    FLIGHT = "flight"
+    COALITION_AIRCRAFT = "coalition_aircraft"
+    COALITION_HELICOPTERS = "coalition_helicopters"
+    COALITION_GROUND = "coalition_ground"
+    COALITION_NAVAL = "coalition_naval"
     GENERAL_CONVERSATION = "general_conversation"
     SYSTEM = "system"
 
