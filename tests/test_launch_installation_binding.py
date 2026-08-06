@@ -2,7 +2,11 @@ from pathlib import Path
 
 import pytest
 
-from orion.dcs_installations import DcsInstallationCreate, dcs_installations
+from orion.dcs_installations import (
+    DcsInstallationCreate,
+    DcsInstallationUpdate,
+    dcs_installations,
+)
 from orion.launch_profiles import (
     DcsLaunchMode,
     DcsLaunchProfileCreate,
@@ -45,9 +49,13 @@ def test_profile_follows_changed_installation_path(tmp_path: Path) -> None:
     second = tmp_path / "second" / "DCS.exe"
     second.parent.mkdir()
     second.write_bytes(b"")
-    moved = installation.model_copy(update={"executable_path": str(second), "exists": True})
-    dcs_installations._items[installation.installation_id] = moved
+    updated = dcs_installations.update(
+        installation.installation_id,
+        DcsInstallationUpdate(executable_path=str(second)),
+    )
 
+    assert updated is not None
+    assert updated.exists is True
     assert build_launch_plan(profile).executable == str(second)
 
 
