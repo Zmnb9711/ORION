@@ -6,7 +6,13 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
-from orion.launch_profiles import DcsLaunchMode, DcsLaunchPlan, build_launch_plan, launch_profiles
+from orion.launch_profiles import (
+    DcsLaunchMode,
+    DcsLaunchPlan,
+    build_launch_plan,
+    launch_profiles,
+    resolve_profile_executable,
+)
 from orion.mission_preparation import MissionActivationStatus, inspect_mission
 
 
@@ -51,15 +57,23 @@ def evaluate_flight_readiness(payload: FlightReadinessRequest) -> FlightReadines
     mission_value = payload.mission_path or profile.mission_path
     checks: list[ReadinessCheck] = []
 
-    executable = Path(profile.dcs_executable)
-    executable_found = executable.is_file()
+    try:
+        executable_value = resolve_profile_executable(profile)
+        executable_found = Path(executable_value).is_file()
+        executable_message = (
+            "DCS executable found" if executable_found else "DCS executable not found"
+        )
+    except (KeyError, ValueError) as exc:
+        executable_found = False
+        executable_message = str(exc)
+
     checks.append(
         ReadinessCheck(
             key="dcs_executable",
             label="DCS",
             passed=executable_found,
             blocking=True,
-            message="DCS executable found" if executable_found else "DCS executable not found",
+            message=executable_message,
         )
     )
 
