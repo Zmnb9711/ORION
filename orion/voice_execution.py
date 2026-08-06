@@ -6,6 +6,7 @@ from typing import Protocol
 from pydantic import BaseModel, Field
 
 from orion.voice_core import VoiceAgent, VoiceCommand
+from orion.voice_knowledge_queries import execute_aircraft_knowledge_query
 from orion.voice_mission_queries import execute_mission_query
 
 
@@ -69,6 +70,21 @@ class MissionInformationExecutor:
         )
 
 
+class OfficialKnowledgeExecutor:
+    adapter = "official-knowledge"
+
+    def execute(self, command: VoiceCommand) -> ExecutionOutcome:
+        result = execute_aircraft_knowledge_query(command)
+        return ExecutionOutcome(
+            state=ExecutionState.COMPLETED if result.completed else ExecutionState.REJECTED,
+            agent=command.agent,
+            intent=command.intent,
+            adapter=self.adapter,
+            message=result.spoken_text,
+            payload={"command_id": str(command.command_id), "spoken_text": result.spoken_text, **result.data},
+        )
+
+
 class ConversationExecutor:
     adapter = "ai-dialogue"
 
@@ -104,12 +120,15 @@ class VoiceExecutionDispatcher:
         }
         self._executors: dict[VoiceAgent, VoiceCommandExecutor] = {agent: BridgeExecutor(adapter) for agent, adapter in bridge_agents.items()}
         self._mission_information = MissionInformationExecutor()
+        self._official_knowledge = OfficialKnowledgeExecutor()
         self._executors[VoiceAgent.GENERAL_CONVERSATION] = ConversationExecutor()
         self._executors[VoiceAgent.SYSTEM] = SystemExecutor()
 
     def execute(self, command: VoiceCommand) -> ExecutionOutcome:
         if command.intent in self._mission_information.supported_intents:
             return self._mission_information.execute(command)
+        if command.intent == "aircraft_knowledge_query":
+            return self._official_knowledge.execute(command)
         executor = self._executors.get(command.agent)
         if executor is None:
             return ExecutionOutcome(state=ExecutionState.REJECTED, agent=command.agent, intent=command.intent, adapter="none", message="No executor is registered for this agent")
@@ -118,6 +137,7 @@ class VoiceExecutionDispatcher:
     def adapters(self) -> dict[str, str]:
         adapters = {agent.value: getattr(executor, "adapter", executor.__class__.__name__) for agent, executor in self._executors.items()}
         adapters["mission_information"] = self._mission_information.adapter
+        adapters["official_knowledge"] = self._official_knowledge.adapter
         return adapters
 
 
