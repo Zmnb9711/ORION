@@ -30,12 +30,18 @@ class CoalitionRadioUnit(BaseModel):
     unit_id: str = Field(min_length=1, max_length=160)
     callsign: str = Field(min_length=1, max_length=120)
     recipient_type: DcsRecipientType
+    unit_type: str | None = Field(default=None, max_length=160)
     coalition: str = Field(min_length=1, max_length=40)
     frequency_mhz: float | None = Field(default=None, gt=0, lt=1000)
     modulation: RadioModulation | None = None
     preset: str | None = Field(default=None, max_length=40)
     point: MissionPoint | None = None
     available: bool = True
+
+    @property
+    def spoken_type(self) -> str:
+        """Use the concrete DCS type when available, otherwise the broad recipient class."""
+        return self.unit_type or self.recipient_type.value
 
 
 class RadioLookupQuery(BaseModel):
@@ -127,7 +133,12 @@ class CoalitionRadioDirectory:
             if (not available_only or unit.available)
             and (coalition is None or unit.coalition.casefold() == coalition.casefold())
             and (recipient_type is None or unit.recipient_type is recipient_type)
-            and (needle is None or needle in unit.callsign.casefold() or needle in unit.unit_id.casefold())
+            and (
+                needle is None
+                or needle in unit.callsign.casefold()
+                or needle in unit.unit_id.casefold()
+                or (unit.unit_type is not None and needle in unit.unit_type.casefold())
+            )
         ]
 
     def _find_landmark(self, text: str) -> MissionLandmark | None:
@@ -156,9 +167,17 @@ class CoalitionRadioDirectory:
                 return RadioLookupResult(found=False, message="No matching friendly unit was found in the current mission data")
             unit = sorted(candidates, key=lambda item: item.callsign)[0].model_copy(deep=True)
             if unit.frequency_mhz is None:
-                return RadioLookupResult(found=True, unit=unit, message="The unit exists, but no radio frequency is assigned in the mission data")
+                return RadioLookupResult(
+                    found=True,
+                    unit=unit,
+                    message=f"{unit.callsign}, {unit.spoken_type}: no radio frequency is assigned in the mission data",
+                )
             modulation = unit.modulation.value if unit.modulation else "unspecified modulation"
-            return RadioLookupResult(found=True, unit=unit, message=f"{unit.callsign}: {unit.frequency_mhz:.3f} MHz {modulation}")
+            return RadioLookupResult(
+                found=True,
+                unit=unit,
+                message=f"{unit.callsign}, {unit.spoken_type}: {unit.frequency_mhz:.3f} MHz {modulation}",
+            )
 
     def lookup_callsigns(self, query: CallsignLookupQuery) -> CallsignLookupResult:
         with self._lock:
@@ -174,7 +193,7 @@ class CoalitionRadioDirectory:
             copies = [unit.model_copy(deep=True) for unit in units]
             if not copies:
                 return CallsignLookupResult(found=False, message="No matching friendly callsigns were found in the current mission data")
-            names = ", ".join(unit.callsign for unit in copies)
+            names = ", ".join(f"{unit.callsign} ({unit.spoken_type})" for unit in copies)
             return CallsignLookupResult(found=True, units=copies, message=f"Available callsigns: {names}")
 
     def lookup_near_landmark(self, query: NearbyCallsignQuery) -> NearbyCallsignResult:
@@ -214,7 +233,8 @@ class CoalitionRadioDirectory:
                     message=f"No matching friendly units were found within {query.radius_km:g} km of {landmark.name}",
                 )
             summary = ", ".join(
-                f"{item.unit.callsign} ({item.distance_km:g} km)" for item in nearby
+                f"{item.unit.callsign}, {item.unit.spoken_type} ({item.distance_km:g} km)"
+                for item in nearby
             )
             return NearbyCallsignResult(
                 found=True,
