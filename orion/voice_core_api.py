@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 from orion.voice_context import VoiceConversationContext, voice_contexts
 from orion.voice_core import VoiceCommand, VoiceCommandCreate, voice_commands
 from orion.voice_execution import ExecutionOutcome, voice_execution
+from orion.voice_pipeline import VoicePipelineResult, process_transcript
 from orion.voice_understanding import ParsedVoiceRequest, parse_transcript
 
 router = APIRouter(prefix="/v1/voice-commands", tags=["Voice Core"])
@@ -55,6 +56,11 @@ def submit_voice_transcript(payload: VoiceTranscript) -> SubmittedTranscript:
             intent=command.intent,
         )
     return SubmittedTranscript(parsed=parsed, commands=commands, context=context)
+
+
+@router.post("/process-transcript", response_model=VoicePipelineResult)
+def process_voice_transcript(payload: VoiceTranscript) -> VoicePipelineResult:
+    return process_transcript(payload.transcript, payload.session_id)
 
 
 @router.get("/context/{session_id}", response_model=VoiceConversationContext)
