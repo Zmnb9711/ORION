@@ -1,0 +1,4 @@
+-- ORION_SAFE_TRIGGER_SLOT
+-- Development-only marker for an ORION-ready mission template.
+-- A released template must load ORION_MissionPack.lua through a verified
+-- DCS Mission Editor MISSION START / DO SCRIPT FILE action.
