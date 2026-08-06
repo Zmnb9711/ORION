@@ -64,15 +64,15 @@ def _parse_single(text: str, context: VoiceConversationContext | None) -> VoiceC
         if refers_to_subject or normalized in {"а частота", "частота", "frequency", "а где", "где сейчас"}:
             contextual_agent = context.active_agent or VoiceAgent.COALITION_AIRCRAFT
             if any(token in normalized for token in ("частот", "frequency")):
-                return _command(text, "find_unit_frequency", contextual_agent, CommandPriority.NORMAL, context)
+                intent = "request_frequency" if contextual_agent is VoiceAgent.TANKER else "find_unit_frequency"
+                priority = CommandPriority.HIGH if contextual_agent is VoiceAgent.TANKER else CommandPriority.NORMAL
+                return _command(text, intent, contextual_agent, priority, context)
             if any(token in normalized for token in ("карте", "карту", "map")):
                 return _command(text, "show_unit_on_map", contextual_agent, CommandPriority.NORMAL, context)
             if any(token in normalized for token in ("где", "положен", "координат", "where", "position", "location")):
                 return _command(text, "find_unit_position", contextual_agent, CommandPriority.NORMAL, context)
             return _command(text, "context_follow_up", contextual_agent, CommandPriority.NORMAL, context)
 
-    # A frequency request that explicitly names a callsign/unit is a mission-information
-    # lookup, not an implicit tanker request (for example: "Дай частоту Colt 1").
     if _NAMED_FREQUENCY_RE.search(text):
         return _command(text, "find_unit_frequency", VoiceAgent.COALITION_AIRCRAFT, CommandPriority.NORMAL, context)
 
