@@ -1,6 +1,8 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
 from orion.mission_bridge_ingest import (
+    MissionBridgeDelta,
+    MissionBridgeHeartbeat,
     MissionBridgeIngestResult,
     MissionBridgeSnapshot,
     MissionBridgeState,
@@ -15,9 +17,27 @@ def ingest_mission_bridge_snapshot(payload: MissionBridgeSnapshot) -> MissionBri
     return mission_bridge_telemetry.ingest(payload)
 
 
+@router.post("/delta", response_model=MissionBridgeIngestResult)
+def ingest_mission_bridge_delta(payload: MissionBridgeDelta) -> MissionBridgeIngestResult:
+    return mission_bridge_telemetry.apply_delta(payload)
+
+
+@router.post("/heartbeat", response_model=MissionBridgeIngestResult)
+def ingest_mission_bridge_heartbeat(payload: MissionBridgeHeartbeat) -> MissionBridgeIngestResult:
+    return mission_bridge_telemetry.heartbeat(payload)
+
+
 @router.get("/state", response_model=MissionBridgeState)
 def get_mission_bridge_state() -> MissionBridgeState:
     return mission_bridge_telemetry.state()
+
+
+@router.put("/stale-timeout", response_model=MissionBridgeState)
+def set_mission_bridge_stale_timeout(seconds: float) -> MissionBridgeState:
+    try:
+        return mission_bridge_telemetry.configure_stale_timeout(seconds)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.post("/disconnect", response_model=MissionBridgeState)
