@@ -4,6 +4,7 @@ from fastapi import APIRouter, HTTPException, Response, status
 
 from orion.dcs_installations_api import router as dcs_installations_router
 from orion.dcs_process_api import router as dcs_process_router
+from orion.flight_console_api import router as flight_console_router
 from orion.flight_readiness_api import router as flight_readiness_router
 from orion.launch_profiles import (
     DcsLaunchPlan,
@@ -62,6 +63,7 @@ def delete_launch_profile(profile_id: UUID) -> Response:
 router.include_router(launch_router)
 router.include_router(dcs_installations_router)
 router.include_router(dcs_process_router)
+router.include_router(flight_console_router)
 router.include_router(mission_catalog_router)
 router.include_router(mission_preparation_router)
 router.include_router(mission_activation_router)
