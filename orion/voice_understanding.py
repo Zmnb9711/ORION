@@ -42,6 +42,7 @@ _RULES: tuple[tuple[tuple[str, ...], str, VoiceAgent, CommandPriority], ...] = (
 )
 
 _SPLIT_RE = re.compile(r"\s*(?:;|\band then\b|\bthen\b|\bзатем\b|\bпотом\b)\s*", re.IGNORECASE)
+_PRONOUNS = ("его", "нему", "у него", "он", "его сейчас", "that one", "it", "its", "him")
 
 
 def parse_transcript(transcript: str, context: VoiceConversationContext | None = None) -> ParsedVoiceRequest:
@@ -53,24 +54,37 @@ def parse_transcript(transcript: str, context: VoiceConversationContext | None =
 
 def _parse_single(text: str, context: VoiceConversationContext | None) -> VoiceCommandCreate:
     normalized = text.casefold()
+
+    # Resolve short follow-ups before broad keyword rules such as "map" or "frequency".
+    if context and context.active_subject:
+        refers_to_subject = any(token in normalized for token in _PRONOUNS)
+        if refers_to_subject or normalized in {"а частота", "частота", "frequency", "а где", "где сейчас"}:
+            if any(token in normalized for token in ("частот", "frequency")):
+                return _command(text, "find_unit_frequency", VoiceAgent.COALITION_AIRCRAFT, CommandPriority.NORMAL, context)
+            if any(token in normalized for token in ("карте", "карту", "map")):
+                return _command(text, "show_unit_on_map", VoiceAgent.COALITION_AIRCRAFT, CommandPriority.NORMAL, context)
+            if any(token in normalized for token in ("где", "положен", "координат", "where", "position", "location")):
+                return _command(text, "find_unit_position", VoiceAgent.COALITION_AIRCRAFT, CommandPriority.NORMAL, context)
+            return _command(text, "context_follow_up", context.active_agent or VoiceAgent.COALITION_AIRCRAFT, CommandPriority.NORMAL, context)
+
     for keywords, intent, agent, priority in _RULES:
         if any(keyword in normalized for keyword in keywords):
             return _command(text, intent, agent, priority, context)
 
     if context and context.active_agent is not None:
-        if any(token in normalized for token in ("его", "нему", "у него", "that one", "it", "its")):
-            return _command(text, "context_follow_up", context.active_agent, CommandPriority.NORMAL, context)
-        if normalized in {"а tacan", "а такан", "tacan", "а частота", "частота", "frequency"}:
-            intent = "request_tacan" if "tacan" in normalized or "такан" in normalized else "request_frequency"
-            return _command(text, intent, context.active_agent, CommandPriority.HIGH, context)
+        if normalized in {"а tacan", "а такан", "tacan"}:
+            return _command(text, "request_tacan", context.active_agent, CommandPriority.HIGH, context)
 
     return _command(text, "general_conversation", VoiceAgent.GENERAL_CONVERSATION, CommandPriority.LOW, context)
 
 
 def _command(text: str, intent: str, agent: VoiceAgent, priority: CommandPriority, context: VoiceConversationContext | None) -> VoiceCommandCreate:
-    payload: dict[str, str | int | float | bool | None] = {"parser": "rules-v5"}
+    payload: dict[str, str | int | float | bool | None] = {"parser": "rules-v6"}
     if context is not None:
         payload["session_id"] = context.session_id
         payload["active_subject"] = context.active_subject
         payload["previous_intent"] = context.last_intent
+        for key in ("unit_id", "callsign", "unit_type", "landmark_id", "landmark_name"):
+            if value := context.entities.get(key):
+                payload[f"context_{key}"] = value
     return VoiceCommandCreate(transcript=text, intent=intent, agent=agent, priority=priority, context=payload)
