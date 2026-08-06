@@ -2,6 +2,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Response, status
 
+from orion.flight_readiness_api import router as flight_readiness_router
 from orion.launch_profiles import (
     DcsLaunchPlan,
     DcsLaunchProfile,
@@ -54,3 +55,4 @@ router.include_router(launch_router)
 router.include_router(mission_catalog_router)
 router.include_router(mission_preparation_router)
 router.include_router(mission_activation_router)
+router.include_router(flight_readiness_router)
