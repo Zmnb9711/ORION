@@ -23,6 +23,12 @@ from orion.mission_bridge_state import (
     mission_bridge_state,
 )
 from orion.mission_readiness import assess_mission_readiness, require_current_mission_data
+from orion.navigation_channels import (
+    NavigationChannelLookupResult,
+    NavigationChannelQuery,
+    NavigationPresetChannel,
+    navigation_channels,
+)
 
 router = APIRouter(prefix="/v1/coalition-control", tags=["Coalition Control"])
 
@@ -96,6 +102,28 @@ def upsert_landmark(payload: MissionLandmark) -> MissionLandmark:
 def lookup_callsigns_near_landmark(payload: NearbyCallsignQuery) -> NearbyCallsignResult:
     _require_live_mission_data()
     return coalition_radio.lookup_near_landmark(payload)
+
+
+@router.get("/preset-channels", response_model=list[NavigationPresetChannel])
+def list_preset_channels() -> list[NavigationPresetChannel]:
+    _require_live_mission_data()
+    return navigation_channels.list()
+
+
+@router.put("/preset-channels", response_model=list[NavigationPresetChannel])
+def replace_preset_channels(payload: list[NavigationPresetChannel]) -> list[NavigationPresetChannel]:
+    return navigation_channels.replace(payload)
+
+
+@router.post("/preset-channels/upsert", response_model=NavigationPresetChannel)
+def upsert_preset_channel(payload: NavigationPresetChannel) -> NavigationPresetChannel:
+    return navigation_channels.upsert(payload)
+
+
+@router.post("/preset-channels/lookup", response_model=NavigationChannelLookupResult)
+def lookup_preset_channels(payload: NavigationChannelQuery) -> NavigationChannelLookupResult:
+    _require_live_mission_data()
+    return navigation_channels.lookup(payload)
 
 
 @router.post("/mission-bridge/snapshot", response_model=MissionBridgeApplyResult)
