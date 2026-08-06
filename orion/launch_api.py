@@ -16,6 +16,7 @@ from orion.launch_profiles import (
 from orion.mission_activation_api import router as mission_activation_router
 from orion.mission_catalog_api import router as mission_catalog_router
 from orion.mission_preparation_api import router as mission_preparation_router
+from orion.orion_settings_api import router as orion_settings_router
 
 router = APIRouter()
 launch_router = APIRouter(prefix="/v1/launch-profiles", tags=["DCS launch profiles"])
@@ -68,3 +69,4 @@ router.include_router(mission_catalog_router)
 router.include_router(mission_preparation_router)
 router.include_router(mission_activation_router)
 router.include_router(flight_readiness_router)
+router.include_router(orion_settings_router)
