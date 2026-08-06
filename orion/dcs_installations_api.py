@@ -5,6 +5,7 @@ from fastapi import APIRouter, HTTPException, Response, status
 from orion.dcs_installations import (
     DcsInstallation,
     DcsInstallationCreate,
+    DcsInstallationUpdate,
     dcs_installations,
 )
 
@@ -19,6 +20,16 @@ def add_dcs_installation(payload: DcsInstallationCreate) -> DcsInstallation:
 @router.get("", response_model=list[DcsInstallation])
 def list_dcs_installations() -> list[DcsInstallation]:
     return dcs_installations.list()
+
+
+@router.patch("/{installation_id}", response_model=DcsInstallation)
+def update_dcs_installation(
+    installation_id: UUID, payload: DcsInstallationUpdate
+) -> DcsInstallation:
+    item = dcs_installations.update(installation_id, payload)
+    if item is None:
+        raise HTTPException(status_code=404, detail="DCS installation not found")
+    return item
 
 
 @router.post("/{installation_id}/refresh", response_model=DcsInstallation)
