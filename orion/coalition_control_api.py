@@ -4,6 +4,9 @@ from orion.coalition_radio import (
     CallsignLookupQuery,
     CallsignLookupResult,
     CoalitionRadioUnit,
+    MissionLandmark,
+    NearbyCallsignQuery,
+    NearbyCallsignResult,
     RadioLookupQuery,
     RadioLookupResult,
     coalition_radio,
@@ -45,3 +48,23 @@ def lookup_radio_unit(payload: RadioLookupQuery) -> RadioLookupResult:
 @router.post("/callsigns/lookup", response_model=CallsignLookupResult)
 def lookup_callsigns(payload: CallsignLookupQuery) -> CallsignLookupResult:
     return coalition_radio.lookup_callsigns(payload)
+
+
+@router.get("/landmarks", response_model=list[MissionLandmark])
+def list_landmarks() -> list[MissionLandmark]:
+    return coalition_radio.list_landmarks()
+
+
+@router.put("/landmarks", response_model=list[MissionLandmark])
+def replace_landmarks(payload: list[MissionLandmark]) -> list[MissionLandmark]:
+    return coalition_radio.replace_landmarks(payload)
+
+
+@router.post("/landmarks/upsert", response_model=MissionLandmark)
+def upsert_landmark(payload: MissionLandmark) -> MissionLandmark:
+    return coalition_radio.upsert_landmark(payload)
+
+
+@router.post("/callsigns/near-landmark", response_model=NearbyCallsignResult)
+def lookup_callsigns_near_landmark(payload: NearbyCallsignQuery) -> NearbyCallsignResult:
+    return coalition_radio.lookup_near_landmark(payload)
