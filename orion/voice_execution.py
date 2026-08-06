@@ -58,6 +58,8 @@ class MissionInformationExecutor:
         "find_unit_frequency",
         "find_unit_callsign",
         "find_unit_callsigns_near_landmark",
+        "find_unit_position",
+        "show_unit_on_map",
     }
 
     def execute(self, command: VoiceCommand) -> ExecutionOutcome:
