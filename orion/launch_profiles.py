@@ -6,7 +6,9 @@ from pathlib import Path
 from threading import RLock
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+from orion.dcs_installations import dcs_installations
 
 
 class DcsLaunchMode(StrEnum):
@@ -18,7 +20,8 @@ class DcsLaunchMode(StrEnum):
 class DcsLaunchProfileCreate(BaseModel):
     name: str = Field(min_length=1, max_length=80)
     mode: DcsLaunchMode = DcsLaunchMode.OPENXR
-    dcs_executable: str
+    installation_id: UUID | None = None
+    dcs_executable: str | None = None
     mission_path: str | None = None
     extra_arguments: list[str] = Field(default_factory=list)
     orion_role: str | None = None
@@ -26,13 +29,20 @@ class DcsLaunchProfileCreate(BaseModel):
 
     @field_validator("dcs_executable")
     @classmethod
-    def validate_executable(cls, value: str) -> str:
+    def validate_executable(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         # ORION runs on Windows, but tests also execute on Linux CI runners.
-        # ntpath keeps Windows path semantics independent of the host OS.
         name = ntpath.basename(value.replace("/", "\\")).lower()
         if name not in {"dcs.exe", "dcs_updater.exe"}:
             raise ValueError("dcs_executable must point to DCS.exe or DCS_updater.exe")
         return value
+
+    @model_validator(mode="after")
+    def validate_executable_source(self) -> DcsLaunchProfileCreate:
+        if self.installation_id is None and self.dcs_executable is None:
+            raise ValueError("Provide installation_id or dcs_executable")
+        return self
 
     @field_validator("extra_arguments")
     @classmethod
@@ -62,6 +72,8 @@ class LaunchProfileStore:
         self._lock = RLock()
 
     def create(self, payload: DcsLaunchProfileCreate) -> DcsLaunchProfile:
+        if payload.installation_id is not None and dcs_installations.get(payload.installation_id) is None:
+            raise KeyError("DCS installation not found")
         profile = DcsLaunchProfile(**payload.model_dump())
         with self._lock:
             self._profiles[profile.profile_id] = profile
@@ -80,8 +92,20 @@ class LaunchProfileStore:
             return self._profiles.pop(profile_id, None) is not None
 
 
+def resolve_profile_executable(profile: DcsLaunchProfile) -> str:
+    if profile.installation_id is not None:
+        installation = dcs_installations.get(profile.installation_id)
+        if installation is None:
+            raise KeyError("DCS installation not found")
+        return installation.executable_path
+    if profile.dcs_executable is None:
+        raise ValueError("Launch profile has no DCS executable")
+    return profile.dcs_executable
+
+
 def build_launch_plan(profile: DcsLaunchProfile) -> DcsLaunchPlan:
-    executable = Path(profile.dcs_executable)
+    executable_value = resolve_profile_executable(profile)
+    executable = Path(executable_value)
     arguments: list[str] = []
     runtime_note: str | None = None
 
@@ -96,9 +120,9 @@ def build_launch_plan(profile: DcsLaunchProfile) -> DcsLaunchPlan:
 
     arguments.extend(profile.extra_arguments)
 
-    working_directory = ntpath.dirname(profile.dcs_executable) or str(executable.parent)
+    working_directory = ntpath.dirname(executable_value) or str(executable.parent)
     return DcsLaunchPlan(
-        executable=profile.dcs_executable,
+        executable=executable_value,
         arguments=arguments,
         working_directory=working_directory,
         mode=profile.mode,
