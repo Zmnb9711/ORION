@@ -5,6 +5,7 @@ from orion.orion_settings import (
     OrionSettingsUpdate,
     orion_settings,
 )
+from orion.settings_help import SETTINGS_HELP, SettingsHelpCatalog
 
 router = APIRouter(prefix="/v1/settings", tags=["ORION settings"])
 
@@ -22,3 +23,8 @@ def update_settings(payload: OrionSettingsUpdate) -> OrionSettings:
 @router.post("/reset", response_model=OrionSettings)
 def reset_settings() -> OrionSettings:
     return orion_settings.reset()
+
+
+@router.get("/help", response_model=SettingsHelpCatalog)
+def get_settings_help() -> SettingsHelpCatalog:
+    return SETTINGS_HELP
