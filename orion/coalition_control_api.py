@@ -1,6 +1,8 @@
 from fastapi import APIRouter
 
 from orion.coalition_radio import (
+    CallsignLookupQuery,
+    CallsignLookupResult,
     CoalitionRadioUnit,
     RadioLookupQuery,
     RadioLookupResult,
@@ -38,3 +40,8 @@ def upsert_radio_unit(payload: CoalitionRadioUnit) -> CoalitionRadioUnit:
 @router.post("/radio-units/lookup", response_model=RadioLookupResult)
 def lookup_radio_unit(payload: RadioLookupQuery) -> RadioLookupResult:
     return coalition_radio.lookup(payload)
+
+
+@router.post("/callsigns/lookup", response_model=CallsignLookupResult)
+def lookup_callsigns(payload: CallsignLookupQuery) -> CallsignLookupResult:
+    return coalition_radio.lookup_callsigns(payload)
