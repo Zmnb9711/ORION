@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ntpath
 from enum import StrEnum
 from pathlib import Path
 from threading import RLock
@@ -26,10 +27,12 @@ class DcsLaunchProfileCreate(BaseModel):
     @field_validator("dcs_executable")
     @classmethod
     def validate_executable(cls, value: str) -> str:
-        path = Path(value)
-        if path.name.lower() not in {"dcs.exe", "dcs_updater.exe"}:
+        # ORION runs on Windows, but tests also execute on Linux CI runners.
+        # ntpath keeps Windows path semantics independent of the host OS.
+        name = ntpath.basename(value.replace("/", "\\")).lower()
+        if name not in {"dcs.exe", "dcs_updater.exe"}:
             raise ValueError("dcs_executable must point to DCS.exe or DCS_updater.exe")
-        return str(path)
+        return value
 
     @field_validator("extra_arguments")
     @classmethod
@@ -93,10 +96,11 @@ def build_launch_plan(profile: DcsLaunchProfile) -> DcsLaunchPlan:
 
     arguments.extend(profile.extra_arguments)
 
+    working_directory = ntpath.dirname(profile.dcs_executable) or str(executable.parent)
     return DcsLaunchPlan(
-        executable=str(executable),
+        executable=profile.dcs_executable,
         arguments=arguments,
-        working_directory=str(executable.parent),
+        working_directory=working_directory,
         mode=profile.mode,
         mission_path=profile.mission_path,
         runtime_note=runtime_note,
