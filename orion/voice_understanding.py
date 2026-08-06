@@ -18,6 +18,9 @@ _RULES: tuple[tuple[tuple[str, ...], str, VoiceAgent, CommandPriority], ...] = (
     (("terrain", "земля", "pull up", "тяни"), "terrain_warning", VoiceAgent.THREAT_ANALYZER, CommandPriority.CRITICAL),
     (("fire", "пожар"), "fire_warning", VoiceAgent.THREAT_ANALYZER, CommandPriority.CRITICAL),
     (("stall", "срыв"), "stall_warning", VoiceAgent.FLIGHT_ADVISOR, CommandPriority.CRITICAL),
+    (("канал рсбн", "каналы рсбн", "рсбн канал", "rsbn channel", "rsbn preset"), "find_rsbn_channel", VoiceAgent.NAVIGATION, CommandPriority.NORMAL),
+    (("канал арк", "каналы арк", "арк канал", "adf channel", "adf preset", "ndb preset"), "find_adf_channel", VoiceAgent.NAVIGATION, CommandPriority.NORMAL),
+    (("предустановленный канал", "предустановленные каналы", "канал радио", "радиоканал", "radio preset", "preset channel"), "find_radio_preset_channel", VoiceAgent.NAVIGATION, CommandPriority.NORMAL),
     (("позывные юнитов около", "позывные около", "кто у нас рядом с", "кто рядом с", "units near", "callsigns near", "who is near", "units around"), "find_unit_callsigns_near_landmark", VoiceAgent.COALITION_AIRCRAFT, CommandPriority.NORMAL),
     (("какой позывной", "какие позывные", "назови позывной", "назови позывные", "callsign", "callsigns"), "find_unit_callsign", VoiceAgent.COALITION_AIRCRAFT, CommandPriority.NORMAL),
     (("второй", "wingman two", "two,", "second wingman"), "command_wingman", VoiceAgent.WINGMAN, CommandPriority.HIGH),
@@ -54,8 +57,6 @@ def parse_transcript(transcript: str, context: VoiceConversationContext | None =
 
 def _parse_single(text: str, context: VoiceConversationContext | None) -> VoiceCommandCreate:
     normalized = text.casefold()
-
-    # Resolve short follow-ups before broad keyword rules such as "map" or "frequency".
     if context and context.active_subject:
         refers_to_subject = any(token in normalized for token in _PRONOUNS)
         if refers_to_subject or normalized in {"а частота", "частота", "frequency", "а где", "где сейчас"}:
@@ -79,7 +80,7 @@ def _parse_single(text: str, context: VoiceConversationContext | None) -> VoiceC
 
 
 def _command(text: str, intent: str, agent: VoiceAgent, priority: CommandPriority, context: VoiceConversationContext | None) -> VoiceCommandCreate:
-    payload: dict[str, str | int | float | bool | None] = {"parser": "rules-v6"}
+    payload: dict[str, str | int | float | bool | None] = {"parser": "rules-v7"}
     if context is not None:
         payload["session_id"] = context.session_id
         payload["active_subject"] = context.active_subject
