@@ -18,6 +18,12 @@ _RULES: tuple[tuple[tuple[str, ...], str, VoiceAgent, CommandPriority], ...] = (
     (("terrain", "земля", "pull up", "тяни"), "terrain_warning", VoiceAgent.THREAT_ANALYZER, CommandPriority.CRITICAL),
     (("fire", "пожар"), "fire_warning", VoiceAgent.THREAT_ANALYZER, CommandPriority.CRITICAL),
     (("stall", "срыв"), "stall_warning", VoiceAgent.FLIGHT_ADVISOR, CommandPriority.CRITICAL),
+    (("второй", "wingman two", "two,", "second wingman"), "command_wingman", VoiceAgent.WINGMAN, CommandPriority.HIGH),
+    (("звено", "flight,"), "command_flight", VoiceAgent.FLIGHT, CommandPriority.HIGH),
+    (("вертолетн", "вертолётн", "helicopter group"), "command_coalition_unit", VoiceAgent.COALITION_HELICOPTERS, CommandPriority.HIGH),
+    (("наземн", "ground group", "ground unit"), "command_coalition_unit", VoiceAgent.COALITION_GROUND, CommandPriority.HIGH),
+    (("кораб", "ship group", "naval group"), "command_coalition_unit", VoiceAgent.COALITION_NAVAL, CommandPriority.HIGH),
+    (("частота юнита", "частота группы", "unit frequency", "group frequency"), "find_unit_frequency", VoiceAgent.COALITION_AIRCRAFT, CommandPriority.NORMAL),
     (("tacan", "такан"), "request_tacan", VoiceAgent.TANKER, CommandPriority.HIGH),
     (("frequency", "частот"), "request_frequency", VoiceAgent.TANKER, CommandPriority.HIGH),
     (("tanker", "танкер", "дозаправ"), "find_tanker", VoiceAgent.TANKER, CommandPriority.HIGH),
@@ -75,7 +81,7 @@ def _command(
     priority: CommandPriority,
     context: VoiceConversationContext | None,
 ) -> VoiceCommandCreate:
-    payload: dict[str, str | int | float | bool | None] = {"parser": "rules-v2"}
+    payload: dict[str, str | int | float | bool | None] = {"parser": "rules-v3"}
     if context is not None:
         payload["session_id"] = context.session_id
         payload["active_subject"] = context.active_subject
