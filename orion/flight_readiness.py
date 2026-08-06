@@ -7,7 +7,7 @@ from uuid import UUID
 from pydantic import BaseModel, Field
 
 from orion.launch_profiles import DcsLaunchMode, DcsLaunchPlan, build_launch_plan, launch_profiles
-from orion.mission_inspection import MissionPackState, inspect_mission
+from orion.mission_preparation import MissionActivationStatus, inspect_mission
 
 
 class ReadinessLevel(StrEnum):
@@ -27,6 +27,7 @@ class ReadinessCheck(BaseModel):
 class FlightReadinessRequest(BaseModel):
     profile_id: UUID
     mission_path: str | None = None
+    map_name: str | None = None
     ai_ready: bool = True
     flight_bridge_installed: bool = False
     voice_ready: bool = False
@@ -51,13 +52,14 @@ def evaluate_flight_readiness(payload: FlightReadinessRequest) -> FlightReadines
     checks: list[ReadinessCheck] = []
 
     executable = Path(profile.dcs_executable)
+    executable_found = executable.is_file()
     checks.append(
         ReadinessCheck(
             key="dcs_executable",
             label="DCS",
-            passed=executable.is_file(),
+            passed=executable_found,
             blocking=True,
-            message="DCS executable found" if executable.is_file() else "DCS executable not found",
+            message="DCS executable found" if executable_found else "DCS executable not found",
         )
     )
 
@@ -76,12 +78,12 @@ def evaluate_flight_readiness(payload: FlightReadinessRequest) -> FlightReadines
     mission_pack_message = "Mission Pack not checked"
     if mission_exists and mission_value:
         inspection = inspect_mission(mission_value)
-        mission_pack_ok = inspection.state is MissionPackState.TRIGGER_DETECTED
+        mission_pack_ok = inspection.activation_status is MissionActivationStatus.TRIGGER_DETECTED
         mission_pack_message = {
-            MissionPackState.NOT_PREPARED: "Mission Pack not embedded",
-            MissionPackState.EMBEDDED_ONLY: "Mission Pack embedded but not activated",
-            MissionPackState.TRIGGER_DETECTED: "Mission Pack active",
-        }[inspection.state]
+            MissionActivationStatus.NOT_PREPARED: "Mission Pack not embedded",
+            MissionActivationStatus.EMBEDDED_ONLY: "Mission Pack embedded but not activated",
+            MissionActivationStatus.TRIGGER_DETECTED: "Mission Pack active",
+        }[inspection.activation_status]
 
     checks.append(
         ReadinessCheck(
@@ -92,7 +94,6 @@ def evaluate_flight_readiness(payload: FlightReadinessRequest) -> FlightReadines
             message=mission_pack_message,
         )
     )
-
     checks.append(
         ReadinessCheck(
             key="flight_bridge",
@@ -140,6 +141,7 @@ def evaluate_flight_readiness(payload: FlightReadinessRequest) -> FlightReadines
         level=level,
         ready_to_launch=not blocking_failed,
         profile_label=f"{profile.name} ({mode_label})",
+        map_name=payload.map_name,
         ai_status="AI готов" if payload.ai_ready else "AI не готов",
         checks=checks,
         launch_plan=build_launch_plan(profile) if not blocking_failed else None,
