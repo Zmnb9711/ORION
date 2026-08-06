@@ -3,7 +3,7 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 from orion.voice_context import VoiceConversationContext, voice_contexts
-from orion.voice_core import CommandState, VoiceCommand, voice_commands
+from orion.voice_core import VoiceCommand, voice_commands
 from orion.voice_execution import ExecutionOutcome, ExecutionState, voice_execution
 from orion.voice_understanding import ParsedVoiceRequest, parse_transcript
 
@@ -68,10 +68,13 @@ def _update_context(
         unit_id = unit.get("unit_id")
         unit_type = unit.get("unit_type")
         if isinstance(callsign, str):
+            entities["callsign"] = callsign
             entities["last_unit_callsign"] = callsign
         if isinstance(unit_id, str):
+            entities["unit_id"] = unit_id
             entities["last_unit_id"] = unit_id
         if isinstance(unit_type, str):
+            entities["unit_type"] = unit_type
             entities["last_unit_type"] = unit_type
 
     landmark = outcome.payload.get("landmark")
@@ -79,11 +82,13 @@ def _update_context(
         name = landmark.get("name")
         landmark_id = landmark.get("landmark_id")
         if isinstance(name, str):
+            entities["landmark_name"] = name
             entities["last_landmark"] = name
         if isinstance(landmark_id, str):
+            entities["landmark_id"] = landmark_id
             entities["last_landmark_id"] = landmark_id
 
-    subject = entities.get("last_unit_callsign") or entities.get("last_landmark")
+    subject = entities.get("callsign") or entities.get("landmark_name")
     if subject is None and command.agent.value not in {"system", "general_conversation"}:
         subject = command.agent.value
 
