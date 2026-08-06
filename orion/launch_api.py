@@ -9,7 +9,9 @@ from orion.launch_profiles import (
     build_launch_plan,
     launch_profiles,
 )
+from orion.mission_activation_api import router as mission_activation_router
 from orion.mission_catalog_api import router as mission_catalog_router
+from orion.mission_preparation_api import router as mission_preparation_router
 
 router = APIRouter()
 launch_router = APIRouter(prefix="/v1/launch-profiles", tags=["DCS launch profiles"])
@@ -50,3 +52,5 @@ def delete_launch_profile(profile_id: UUID) -> Response:
 
 router.include_router(launch_router)
 router.include_router(mission_catalog_router)
+router.include_router(mission_preparation_router)
+router.include_router(mission_activation_router)
