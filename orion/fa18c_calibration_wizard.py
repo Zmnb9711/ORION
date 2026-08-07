@@ -12,7 +12,7 @@ from orion.fa18c_mapping_sync import hornet_mapping_synchronizer
 from orion.fa18c_value_profiles import (
     ControlValueProfile,
     HornetValueProfileSet,
-    calibrated_detents,
+    calibrated_sequence,
     hornet_value_profile_registry,
 )
 
@@ -56,32 +56,23 @@ class CalibrationSession(BaseModel):
 
 
 DEFAULT_HORNET_STEPS = [
-    CalibrationStep(
-        key="tacan_power",
-        instruction_en="Start at TACAN OFF, move to the normal operating position, then return to OFF; repeat three times.",
-        instruction_ru="Начните с TACAN OFF, переведите в рабочее положение и верните в OFF; повторите три раза.",
-    ),
-    CalibrationStep(
-        key="tacan_channel_tens",
-        instruction_en="Set TACAN tens to 0, then move sequentially 1→2→3→4→5→6→7→8→9.",
-        instruction_ru="Установите десятки TACAN на 0, затем последовательно 1→2→3→4→5→6→7→8→9.",
-    ),
-    CalibrationStep(
-        key="tacan_channel_ones",
-        instruction_en="Set TACAN ones to 0, then move sequentially 1→2→3→4→5→6→7→8→9.",
-        instruction_ru="Установите единицы TACAN на 0, затем последовательно 1→2→3→4→5→6→7→8→9.",
-    ),
-    CalibrationStep(
-        key="tacan_xy",
-        instruction_en="Start at TACAN X, switch to Y and back to X three times.",
-        instruction_ru="Начните с TACAN X, переключите в Y и обратно в X три раза.",
-    ),
-    CalibrationStep(key="comm1_selector", instruction_en="Move the COMM1 selector between two positions three times.", instruction_ru="Переключите селектор COMM1 между двумя положениями три раза."),
-    CalibrationStep(key="comm2_selector", instruction_en="Move the COMM2 selector between two positions three times.", instruction_ru="Переключите селектор COMM2 между двумя положениями три раза."),
+    CalibrationStep(key="tacan_power", instruction_en="Start at TACAN OFF, move to the normal operating position, then return to OFF; repeat three times.", instruction_ru="Начните с TACAN OFF, переведите в рабочее положение и верните в OFF; повторите три раза."),
+    CalibrationStep(key="tacan_channel_tens", instruction_en="Set TACAN tens to 0, then move sequentially 1→2→3→4→5→6→7→8→9.", instruction_ru="Установите десятки TACAN на 0, затем последовательно 1→2→3→4→5→6→7→8→9."),
+    CalibrationStep(key="tacan_channel_ones", instruction_en="Set TACAN ones to 0, then move sequentially 1→2→3→4→5→6→7→8→9.", instruction_ru="Установите единицы TACAN на 0, затем последовательно 1→2→3→4→5→6→7→8→9."),
+    CalibrationStep(key="tacan_xy", instruction_en="Start at TACAN X, switch to Y and back to X three times.", instruction_ru="Начните с TACAN X, переключите в Y и обратно в X три раза."),
+    CalibrationStep(key="comm1_selector", instruction_en="Set COMM1 to preset 1, then move sequentially through presets 2→3→…→20.", instruction_ru="Установите COMM1 на preset 1, затем последовательно переключите 2→3→…→20."),
+    CalibrationStep(key="comm2_selector", instruction_en="Set COMM2 to preset 1, then move sequentially through presets 2→3→…→20.", instruction_ru="Установите COMM2 на preset 1, затем последовательно переключите 2→3→…→20."),
 ]
 
 
-TACAN_PROFILE_KEYS = ("tacan_power", "tacan_channel_tens", "tacan_channel_ones", "tacan_xy")
+SEMANTICS: dict[str, list[int | str | bool]] = {
+    "tacan_power": [False, True],
+    "tacan_channel_tens": list(range(10)),
+    "tacan_channel_ones": list(range(10)),
+    "tacan_xy": ["X", "Y"],
+    "comm1_selector": list(range(1, 21)),
+    "comm2_selector": list(range(1, 21)),
+}
 
 
 @dataclass
@@ -153,19 +144,23 @@ class HornetCalibrationWizard:
 
         controls: dict[str, ControlValueProfile] = {}
         for item in session.results:
-            if item.key not in TACAN_PROFILE_KEYS or item.accepted_argument_id is None:
+            semantic_values = SEMANTICS.get(item.key)
+            if semantic_values is None or item.accepted_argument_id is None:
                 continue
             accepted_candidate = next((candidate for candidate in item.candidates if candidate.argument_id == item.accepted_argument_id), None)
             if accepted_candidate is None:
                 continue
-            detents = calibrated_detents(accepted_candidate.transitions)
-            if item.key in {"tacan_channel_tens", "tacan_channel_ones"} and len(detents) != 10:
+            sequence = calibrated_sequence(accepted_candidate.transitions)
+            if len(sequence) != len(semantic_values):
                 continue
-            if item.key in {"tacan_power", "tacan_xy"} and len(detents) < 2:
-                continue
-            controls[item.key] = ControlValueProfile(control=item.key, argument_id=item.accepted_argument_id, detents=detents)
+            controls[item.key] = ControlValueProfile(
+                control=item.key,
+                argument_id=item.accepted_argument_id,
+                detents=sequence,
+                semantic_values=semantic_values,
+            )
 
-        if all(key in controls for key in TACAN_PROFILE_KEYS):
+        if controls:
             profiles = hornet_value_profile_registry.save(HornetValueProfileSet(mapping_version=mapping.version, controls=controls))
             session.value_profile_version = profiles.version
 
