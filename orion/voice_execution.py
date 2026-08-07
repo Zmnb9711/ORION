@@ -53,7 +53,7 @@ class MissionInformationExecutor:
 
 class MissionContextExecutor:
     adapter = "live-mission-context"
-    supported_intents = {"mission_context_summary", "list_awacs", "list_tankers", "list_jtac", "nearest_hostile", "nearest_friendly", "nearest_tanker", "nearest_awacs"}
+    supported_intents = {"mission_context_summary", "list_awacs", "list_tankers", "list_jtac", "nearest_hostile", "nearest_friendly", "nearest_tanker", "nearest_awacs", "find_tanker", "request_tacan", "request_frequency"}
 
     def execute(self, command: VoiceCommand) -> ExecutionOutcome:
         result = execute_mission_context_query(command.intent, command.transcript)
