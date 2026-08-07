@@ -89,7 +89,7 @@ def _parse_single(text: str, context: VoiceConversationContext | None) -> VoiceC
 
 
 def _command(text: str, intent: str, agent: VoiceAgent, priority: CommandPriority, context: VoiceConversationContext | None) -> VoiceCommandCreate:
-    payload: dict[str, str | int | float | bool | None] = {"parser": "rules-v9"}
+    payload: dict[str, str | int | float | bool | None] = {"parser": "rules-v8"}
     if context is not None:
         payload["session_id"] = context.session_id
         payload["active_subject"] = context.active_subject
