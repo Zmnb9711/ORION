@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from orion.fa18c_diagnostics_recorder import MappingReport, hornet_diagnostics_recorder
 
 
-router = APIRouter(prefix="/v1/fa18c/diagnostics", tags=["F/A-18C Diagnostics"])
+router = APIRouter(prefix="/fa18c/diagnostics", tags=["F/A-18C Diagnostics"])
 
 
 class SessionStart(BaseModel):
