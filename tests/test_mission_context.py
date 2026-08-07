@@ -33,7 +33,7 @@ def _telemetry() -> TelemetryEnvelope:
             aircraft_type="FA-18C_hornet",
             position=Position(latitude=41.0, longitude=41.0, altitude_m=5000),
             heading_deg=90,
-            airspeed_mps=200,
+            true_airspeed_mps=200,
         ),
     )
 
