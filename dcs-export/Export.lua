@@ -13,6 +13,16 @@ local ORION_HOST = "127.0.0.1"
 local ORION_TELEMETRY_PORT = 45100
 local previousLuaExportAfterNextFrame = LuaExportAfterNextFrame
 
+local diagnostics = {
+    enabled = false,
+    min_argument = 0,
+    max_argument = 999,
+    epsilon = 0.001,
+    sample_every_frames = 10,
+    frame = 0,
+    previous = {},
+}
+
 local function jsonString(value)
     if value == nil then return "null" end
     return string.format("%q", tostring(value))
@@ -27,6 +37,11 @@ local function extractJsonString(payload, key)
     return payload:match('"' .. key .. '"%s*:%s*"([^"]*)"')
 end
 
+local function extractJsonNumber(payload, key)
+    local raw = payload:match('"' .. key .. '"%s*:%s*(-?[%d%.]+)')
+    return raw and tonumber(raw) or nil
+end
+
 local function safeArgument(device, argument)
     if not device or type(device.get_argument_value) ~= "function" then return nil end
     local ok, value = pcall(device.get_argument_value, device, argument)
@@ -37,9 +52,6 @@ end
 local function hornetCockpitState(selfData)
     if not selfData or selfData.Name ~= "FA-18C_hornet" then return nil end
 
-    -- DCS clickable argument IDs are intentionally isolated here. They are
-    -- raw simulator observations, not inferred state. Unknown/unavailable
-    -- values remain null so ORION never invents cockpit data.
     local ok, main = pcall(GetDevice, 0)
     if not ok then main = nil end
 
@@ -68,6 +80,40 @@ local function hornetCockpitState(selfData)
     )
 end
 
+local function diagnosticsJson(selfData)
+    if not diagnostics.enabled or not selfData or selfData.Name ~= "FA-18C_hornet" then
+        return "null"
+    end
+
+    diagnostics.frame = diagnostics.frame + 1
+    if diagnostics.frame % diagnostics.sample_every_frames ~= 0 then
+        return "null"
+    end
+
+    local ok, main = pcall(GetDevice, 0)
+    if not ok or not main then return "null" end
+
+    local changes = {}
+    for argument = diagnostics.min_argument, diagnostics.max_argument do
+        local value = safeArgument(main, argument)
+        if value ~= nil then
+            local previous = diagnostics.previous[argument]
+            if previous == nil or math.abs(value - previous) >= diagnostics.epsilon then
+                changes[#changes + 1] = string.format('{"id":%d,"value":%.6f,"previous":%s}', argument, value, jsonNumber(previous))
+                diagnostics.previous[argument] = value
+            end
+        end
+    end
+
+    if #changes == 0 then return "null" end
+    return string.format(
+        '{"mode":"cockpit_argument_changes","aircraft_id":"fa-18c","range":{"min":%d,"max":%d},"changes":[%s]}',
+        diagnostics.min_argument,
+        diagnostics.max_argument,
+        table.concat(changes, ",")
+    )
+end
+
 local function handleCommand(payload)
     local command = extractJsonString(payload, "command")
     if command == "ping" then
@@ -77,6 +123,18 @@ local function handleCommand(payload)
     elseif command == "show_message" then
         local message = extractJsonString(payload, "message") or ""
         log.write("ORION", log.INFO, "Message: " .. message:sub(1, 240))
+    elseif command == "start_cockpit_diagnostics" then
+        diagnostics.enabled = true
+        diagnostics.previous = {}
+        diagnostics.frame = 0
+        diagnostics.min_argument = math.max(0, math.floor(extractJsonNumber(payload, "min_argument") or diagnostics.min_argument))
+        diagnostics.max_argument = math.min(2000, math.floor(extractJsonNumber(payload, "max_argument") or diagnostics.max_argument))
+        diagnostics.epsilon = math.max(0.000001, extractJsonNumber(payload, "epsilon") or diagnostics.epsilon)
+        log.write("ORION", log.INFO, string.format("Hornet cockpit diagnostics enabled for arguments %d-%d", diagnostics.min_argument, diagnostics.max_argument))
+    elseif command == "stop_cockpit_diagnostics" then
+        diagnostics.enabled = false
+        diagnostics.previous = {}
+        log.write("ORION", log.INFO, "Hornet cockpit diagnostics disabled")
     else
         log.write("ORION", log.WARNING, "Rejected unsupported command")
     end
@@ -97,11 +155,12 @@ function LuaExportAfterNextFrame()
     local speed = math.sqrt(velocity.x ^ 2 + velocity.y ^ 2 + velocity.z ^ 2)
     local heading = math.deg(selfData.Heading or 0) % 360
     local cockpitState = hornetCockpitState(selfData) or "null"
+    local diagnosticState = diagnosticsJson(selfData)
 
     local payload = string.format(
         '{"protocol_version":"0.2","source":"dcs-export","state":{' ..
         '"aircraft_type":%s,"position":{"latitude":%.8f,"longitude":%.8f,"altitude_m":%.2f},' ..
-        '"heading_deg":%.2f,"true_airspeed_mps":%.2f,"vertical_speed_mps":%.2f,"cockpit_state":%s}}',
+        '"heading_deg":%.2f,"true_airspeed_mps":%.2f,"vertical_speed_mps":%.2f,"cockpit_state":%s,"diagnostics":%s}}',
         jsonString(selfData.Name),
         selfData.LatLongAlt.Lat,
         selfData.LatLongAlt.Long,
@@ -109,7 +168,8 @@ function LuaExportAfterNextFrame()
         heading,
         speed,
         velocity.y,
-        cockpitState
+        cockpitState,
+        diagnosticState
     )
 
     telemetryUdp:sendto(payload, ORION_HOST, ORION_TELEMETRY_PORT)
