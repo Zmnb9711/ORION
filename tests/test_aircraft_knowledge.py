@@ -1,7 +1,9 @@
 import pytest
+from fastapi.testclient import TestClient
 
 from orion.aircraft_knowledge import (
     EvidenceLevel,
+    FA18_OFFICIAL_SOURCE_ID,
     KnowledgeCategory,
     KnowledgeEntry,
     KnowledgeSearchQuery,
@@ -10,6 +12,7 @@ from orion.aircraft_knowledge import (
     ProfileStatus,
     aircraft_knowledge,
 )
+from orion.app import app
 
 
 def test_user_defined_aircraft_priority_is_preserved() -> None:
@@ -25,7 +28,67 @@ def test_user_defined_aircraft_priority_is_preserved() -> None:
         "p-47d",
         "spitfire-lf-mk-ix",
     ]
-    assert profiles[0].status is ProfileStatus.SKELETON
+    assert profiles[0].status is ProfileStatus.IN_PROGRESS
+
+
+def test_fa18_aliases_resolve_to_canonical_profile() -> None:
+    assert aircraft_knowledge.resolve_aircraft_id("Hornet") == "fa-18c"
+    assert aircraft_knowledge.resolve_aircraft_id("F/A-18C") == "fa-18c"
+    assert aircraft_knowledge.resolve_aircraft_id("F/A-18C Hornet") == "fa-18c"
+    assert aircraft_knowledge.get_profile("hornet") is not None
+
+
+def test_fa18_baseline_uses_official_ed_source() -> None:
+    profile = aircraft_knowledge.get_profile("fa-18c")
+    sources = aircraft_knowledge.list_sources("hornet")
+    entries = aircraft_knowledge.list_entries("fa18c")
+
+    assert profile is not None
+    assert profile.entry_count >= 7
+    assert profile.source_count >= 1
+    assert any(source.source_id == FA18_OFFICIAL_SOURCE_ID for source in sources)
+    assert all(FA18_OFFICIAL_SOURCE_ID in entry.source_ids for entry in entries)
+    assert all(entry.evidence is EvidenceLevel.VERIFIED for entry in entries)
+
+
+def test_fa18_baseline_covers_core_operating_domains() -> None:
+    categories = {entry.category for entry in aircraft_knowledge.list_entries("hornet")}
+
+    assert KnowledgeCategory.GENERAL in categories
+    assert KnowledgeCategory.COMMUNICATIONS in categories
+    assert KnowledgeCategory.NAVIGATION in categories
+    assert KnowledgeCategory.RADAR in categories
+    assert KnowledgeCategory.SENSORS in categories
+    assert KnowledgeCategory.WEAPONS in categories
+    assert KnowledgeCategory.NORMAL_PROCEDURES in categories
+
+
+def test_hornet_alias_can_be_used_in_search_filter() -> None:
+    result = aircraft_knowledge.search(
+        KnowledgeSearchQuery(text="TACAN", aircraft_id="Hornet", verified_only=True)
+    )
+
+    assert result.total >= 1
+    assert all(entry.aircraft_id == "fa-18c" for entry in result.entries)
+
+
+def test_aircraft_knowledge_api_exposes_hornet_baseline() -> None:
+    client = TestClient(app)
+
+    profile_response = client.get("/v1/aircraft-knowledge/profiles/hornet")
+    source_response = client.get("/v1/aircraft-knowledge/profiles/hornet/sources")
+    entries_response = client.get(
+        "/v1/aircraft-knowledge/profiles/hornet/entries",
+        params={"category": "communications"},
+    )
+
+    assert profile_response.status_code == 200
+    assert profile_response.json()["aircraft_id"] == "fa-18c"
+    assert source_response.status_code == 200
+    assert any(item["source_id"] == FA18_OFFICIAL_SOURCE_ID for item in source_response.json())
+    assert entries_response.status_code == 200
+    assert entries_response.json()
+    assert all(item["category"] == "communications" for item in entries_response.json())
 
 
 def test_entry_requires_registered_sources() -> None:

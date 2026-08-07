@@ -1,7 +1,8 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 
 from orion.aircraft_knowledge import (
     AircraftProfile,
+    KnowledgeCategory,
     KnowledgeEntry,
     KnowledgeSearchQuery,
     KnowledgeSearchResult,
@@ -23,6 +24,23 @@ def get_aircraft_profile(aircraft_id: str) -> AircraftProfile:
     if profile is None:
         raise HTTPException(status_code=404, detail="Aircraft profile not found")
     return profile
+
+
+@router.get("/profiles/{aircraft_id}/sources", response_model=list[KnowledgeSource])
+def list_aircraft_sources(aircraft_id: str) -> list[KnowledgeSource]:
+    if aircraft_knowledge.get_profile(aircraft_id) is None:
+        raise HTTPException(status_code=404, detail="Aircraft profile not found")
+    return aircraft_knowledge.list_sources(aircraft_id)
+
+
+@router.get("/profiles/{aircraft_id}/entries", response_model=list[KnowledgeEntry])
+def list_aircraft_entries(
+    aircraft_id: str,
+    category: KnowledgeCategory | None = Query(default=None),
+) -> list[KnowledgeEntry]:
+    if aircraft_knowledge.get_profile(aircraft_id) is None:
+        raise HTTPException(status_code=404, detail="Aircraft profile not found")
+    return aircraft_knowledge.list_entries(aircraft_id, category=category)
 
 
 @router.post("/sources", response_model=KnowledgeSource, status_code=201)
