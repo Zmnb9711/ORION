@@ -7,6 +7,7 @@ from uuid import uuid4
 from pydantic import BaseModel, Field
 
 from orion.fa18c_diagnostics_recorder import MappingCandidate, hornet_diagnostics_recorder
+from orion.fa18c_mapping_registry import hornet_mapping_registry
 
 
 class CalibrationStatus(str, Enum):
@@ -36,6 +37,7 @@ class CalibrationSession(BaseModel):
     current_step: int = 0
     steps: list[CalibrationStep]
     results: list[CalibrationResult] = Field(default_factory=list)
+    mapping_version: str | None = None
 
     @property
     def active_step(self) -> CalibrationStep | None:
@@ -94,6 +96,7 @@ class HornetCalibrationWizard:
         if session.current_step >= len(session.steps):
             session.status = CalibrationStatus.COMPLETE
             hornet_diagnostics_recorder.stop()
+            self._persist_mapping(session)
             return session
         hornet_diagnostics_recorder.mark(session.steps[session.current_step].key)
         return session
@@ -112,6 +115,17 @@ class HornetCalibrationWizard:
             hornet_diagnostics_recorder.stop()
         self.session = None
         self._diagnostic_session_id = None
+
+    @staticmethod
+    def _persist_mapping(session: CalibrationSession) -> None:
+        arguments = {
+            item.key: item.accepted_argument_id
+            for item in session.results
+            if item.accepted_argument_id is not None
+        }
+        confidence = {item.key: item.confidence for item in session.results if item.accepted_argument_id is not None}
+        mapping = hornet_mapping_registry.save(arguments, confidence)
+        session.mapping_version = mapping.version
 
     @staticmethod
     def _confidence(candidates: list[MappingCandidate], repetitions: int) -> float:
