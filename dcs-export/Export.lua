@@ -44,7 +44,6 @@ local function hornetCockpitState(selfData)
     if not ok then main = nil end
 
     local state = {
-        master_mode = nil,
         comm1_selector = safeArgument(main, 133),
         comm2_selector = safeArgument(main, 134),
         tacan_power = safeArgument(main, 410),
@@ -57,7 +56,7 @@ local function hornetCockpitState(selfData)
     }
 
     return string.format(
-        '{"aircraft_id":"fa-18c","raw_arguments":{' ..
+        '{"aircraft_id":"fa-18c","mapping_version":"fa18c-clickable-v0","mapping_validated":false,"raw_arguments":{' ..
         '"comm1_selector":%s,"comm2_selector":%s,' ..
         '"tacan_power":%s,"tacan_channel_tens":%s,"tacan_channel_ones":%s,"tacan_xy":%s,' ..
         '"left_ddi_brightness":%s,"right_ddi_brightness":%s,"mpcd_brightness":%s}}',
