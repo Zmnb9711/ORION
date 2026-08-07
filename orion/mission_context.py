@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 from orion.coalition_radio import CoalitionRadioUnit, coalition_radio
 from orion.dcs_capabilities import DcsRecipientType
 from orion.live_telemetry_store import live_telemetry
-from orion.mission import Coalition, MissionSnapshot, MissionUnit
+from orion.mission import Coalition, MissionUnit
 from orion.mission_store import mission_store
 
 
@@ -17,6 +17,8 @@ class OwnshipContext(BaseModel):
     latitude: float
     longitude: float
     altitude_m: float
+    heading_deg: float | None = None
+    true_airspeed_mps: float | None = None
 
 
 class MissionContact(BaseModel):
@@ -38,10 +40,15 @@ class SupportAsset(BaseModel):
     unit_type: str | None = None
     frequency_mhz: float | None = None
     modulation: str | None = None
+    tacan_channel: int | None = None
+    tacan_band: str | None = None
+    aar_available: bool | None = None
     available: bool = True
     latitude: float | None = None
     longitude: float | None = None
     altitude_m: float | None = None
+    heading_deg: float | None = None
+    speed_mps: float | None = None
     distance_km: float | None = None
     bearing_deg: float | None = None
     position_source: str | None = None
@@ -80,6 +87,8 @@ def build_live_mission_context() -> LiveMissionContext:
             latitude=position.latitude,
             longitude=position.longitude,
             altitude_m=position.altitude_m,
+            heading_deg=telemetry.state.heading_deg,
+            true_airspeed_mps=telemetry.state.true_airspeed_mps,
         )
 
     friendlies: list[MissionContact] = []
@@ -119,9 +128,7 @@ def _contact(unit: MissionUnit, ownship: OwnshipContext | None) -> MissionContac
     distance_km = None
     bearing_deg = None
     if ownship is not None:
-        distance_km, bearing_deg = _range_bearing(
-            ownship.latitude, ownship.longitude, unit.position.latitude, unit.position.longitude
-        )
+        distance_km, bearing_deg = _range_bearing(ownship.latitude, ownship.longitude, unit.position.latitude, unit.position.longitude)
     return MissionContact(
         unit_id=unit.unit_id,
         name=unit.name,
@@ -146,17 +153,17 @@ def _support_assets(
         if unit.recipient_type is not role:
             continue
         mission_unit = mission_units.get(unit.unit_id)
-        latitude = longitude = altitude_m = distance_km = bearing_deg = None
+        latitude = longitude = altitude_m = heading_deg = speed_mps = distance_km = bearing_deg = None
         position_source = None
         if mission_unit is not None and mission_unit.alive and mission_unit.detected:
             latitude = mission_unit.position.latitude
             longitude = mission_unit.position.longitude
             altitude_m = mission_unit.position.altitude_m
+            heading_deg = mission_unit.heading_deg
+            speed_mps = mission_unit.speed_mps
             position_source = "mission_snapshot"
             if ownship is not None:
-                distance_km, bearing_deg = _range_bearing(
-                    ownship.latitude, ownship.longitude, latitude, longitude
-                )
+                distance_km, bearing_deg = _range_bearing(ownship.latitude, ownship.longitude, latitude, longitude)
         assets.append(
             SupportAsset(
                 unit_id=unit.unit_id,
@@ -165,10 +172,15 @@ def _support_assets(
                 unit_type=unit.unit_type,
                 frequency_mhz=unit.frequency_mhz,
                 modulation=unit.modulation.value if unit.modulation else None,
+                tacan_channel=unit.tacan_channel,
+                tacan_band=unit.tacan_band,
+                aar_available=unit.aar_available,
                 available=unit.available,
                 latitude=latitude,
                 longitude=longitude,
                 altitude_m=altitude_m,
+                heading_deg=heading_deg,
+                speed_mps=speed_mps,
                 distance_km=distance_km,
                 bearing_deg=bearing_deg,
                 position_source=position_source,
