@@ -10,6 +10,7 @@ from orion.voice_calibration_assistant import execute_calibration_voice
 from orion.voice_cockpit_queries import execute_cockpit_query
 from orion.voice_core import VoiceAgent, VoiceCommand
 from orion.voice_knowledge_queries import execute_aircraft_knowledge_query
+from orion.voice_mission_context_queries import execute_mission_context_query
 from orion.voice_mission_queries import execute_mission_query
 
 
@@ -47,6 +48,15 @@ class MissionInformationExecutor:
 
     def execute(self, command: VoiceCommand) -> ExecutionOutcome:
         result = execute_mission_query(command)
+        return ExecutionOutcome(state=ExecutionState.COMPLETED if result.completed else ExecutionState.REJECTED, agent=command.agent, intent=command.intent, adapter=self.adapter, message=result.spoken_text, payload={"command_id": str(command.command_id), "spoken_text": result.spoken_text, **result.data})
+
+
+class MissionContextExecutor:
+    adapter = "live-mission-context"
+    supported_intents = {"mission_context_summary", "list_awacs", "list_tankers", "list_jtac", "nearest_hostile", "nearest_friendly", "nearest_tanker", "nearest_awacs"}
+
+    def execute(self, command: VoiceCommand) -> ExecutionOutcome:
+        result = execute_mission_context_query(command.intent, command.transcript)
         return ExecutionOutcome(state=ExecutionState.COMPLETED if result.completed else ExecutionState.REJECTED, agent=command.agent, intent=command.intent, adapter=self.adapter, message=result.spoken_text, payload={"command_id": str(command.command_id), "spoken_text": result.spoken_text, **result.data})
 
 
@@ -95,6 +105,7 @@ class VoiceExecutionDispatcher:
         bridge_agents = {VoiceAgent.ATC: "virtual-atc", VoiceAgent.AWACS: "awacs-service", VoiceAgent.TANKER: "tanker-service", VoiceAgent.JTAC: "jtac-service", VoiceAgent.MISSION_CONTROL: "mission-control", VoiceAgent.NAVIGATION: "navigation-service", VoiceAgent.THREAT_ANALYZER: "threat-analyzer", VoiceAgent.FLIGHT_ADVISOR: "flight-advisor", VoiceAgent.CHECKLIST: "checklist-service", VoiceAgent.WINGMAN: "dcs-command-translator", VoiceAgent.FLIGHT: "dcs-command-translator", VoiceAgent.COALITION_AIRCRAFT: "dcs-capability-translator", VoiceAgent.COALITION_HELICOPTERS: "dcs-capability-translator", VoiceAgent.COALITION_GROUND: "dcs-capability-translator", VoiceAgent.COALITION_NAVAL: "dcs-capability-translator"}
         self._executors: dict[VoiceAgent, VoiceCommandExecutor] = {agent: BridgeExecutor(adapter) for agent, adapter in bridge_agents.items()}
         self._mission_information = MissionInformationExecutor()
+        self._mission_context = MissionContextExecutor()
         self._official_knowledge = OfficialKnowledgeExecutor()
         self._live_cockpit = LiveCockpitExecutor()
         self._calibration_voice = CalibrationVoiceExecutor()
@@ -104,6 +115,8 @@ class VoiceExecutionDispatcher:
     def execute(self, command: VoiceCommand) -> ExecutionOutcome:
         if command.intent in self._mission_information.supported_intents:
             return self._mission_information.execute(command)
+        if command.intent in self._mission_context.supported_intents:
+            return self._mission_context.execute(command)
         if command.intent in self._live_cockpit.supported_intents:
             return self._live_cockpit.execute(command)
         if command.intent in self._calibration_voice.supported_intents:
@@ -118,6 +131,7 @@ class VoiceExecutionDispatcher:
     def adapters(self) -> dict[str, str]:
         adapters = {agent.value: getattr(executor, "adapter", executor.__class__.__name__) for agent, executor in self._executors.items()}
         adapters["mission_information"] = self._mission_information.adapter
+        adapters["mission_context"] = self._mission_context.adapter
         adapters["official_knowledge"] = self._official_knowledge.adapter
         adapters["live_cockpit"] = self._live_cockpit.adapter
         adapters["calibration_voice"] = self._calibration_voice.adapter
