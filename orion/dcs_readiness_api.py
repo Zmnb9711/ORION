@@ -3,7 +3,8 @@ from pydantic import BaseModel
 
 from orion.dcs_connection_diagnostics import DcsConnectionReport, diagnose_dcs_connection
 from orion.dcs_readiness import DcsReadinessReport, inspect_dcs_readiness, install_export_integration
-from orion.preflight_orchestrator import PreflightReport, PreflightRequest, evaluate_preflight
+from orion.fa18c_calibration_wizard import CalibrationSession, CalibrationStatus, hornet_calibration_wizard
+from orion.preflight_orchestrator import PreflightReport, PreflightRequest, PreflightState, evaluate_preflight
 
 
 router = APIRouter(prefix="/v1/dcs-readiness", tags=["DCS readiness"])
@@ -11,6 +12,11 @@ router = APIRouter(prefix="/v1/dcs-readiness", tags=["DCS readiness"])
 
 class ExportInstallRequest(BaseModel):
     saved_games_path: str
+
+
+class PreflightBootstrapResult(BaseModel):
+    preflight: PreflightReport
+    calibration: CalibrationSession | None = None
 
 
 @router.get("", response_model=DcsReadinessReport)
@@ -26,6 +32,22 @@ def get_dcs_connection() -> DcsConnectionReport:
 @router.post("/preflight", response_model=PreflightReport)
 def get_preflight(payload: PreflightRequest) -> PreflightReport:
     return evaluate_preflight(payload)
+
+
+@router.post("/preflight/bootstrap", response_model=PreflightBootstrapResult)
+def bootstrap_preflight(payload: PreflightRequest) -> PreflightBootstrapResult:
+    report = evaluate_preflight(payload)
+    calibration: CalibrationSession | None = None
+    if report.state is PreflightState.CALIBRATION_REQUIRED:
+        try:
+            current = hornet_calibration_wizard.current()
+        except RuntimeError:
+            current = None
+        if current is not None and current.status in {CalibrationStatus.RUNNING, CalibrationStatus.NEEDS_RETRY}:
+            calibration = current
+        else:
+            calibration = hornet_calibration_wizard.start()
+    return PreflightBootstrapResult(preflight=report, calibration=calibration)
 
 
 @router.post("/export", response_model=DcsReadinessReport)

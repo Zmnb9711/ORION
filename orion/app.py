@@ -18,6 +18,7 @@ if LEGACY_CORE_AVAILABLE:
     from orion.confirmations import ConfirmationDecision, ConfirmationStatus, PendingAction, PendingActionCreate, confirmation_store
     from orion.dialogue import DialogueRequest, DialogueResult, classify_dialogue
     from orion.events import EventJournal
+    from orion.fa18c_live_validation import hornet_live_validator
     from orion.mission import Coalition, MissionPosition, MissionSnapshot, MissionUnit
     from orion.mission_bridge import MissionCommand, mission_bridge
     from orion.mission_command_status import MissionCommandResult, mission_command_statuses
@@ -36,6 +37,7 @@ if LEGACY_CORE_AVAILABLE:
         global _latest
         _latest = payload
         telemetry_handshake.observe(payload)
+        hornet_live_validator.observe(payload)
         _journal.append("telemetry", payload.model_dump(mode="json"))
 
     @asynccontextmanager
