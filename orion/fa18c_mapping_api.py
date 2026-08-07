@@ -4,6 +4,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from orion.fa18c_mapping_registry import HornetArgumentMapping, hornet_mapping_registry
+from orion.fa18c_mapping_sync import MappingSyncStatus, hornet_mapping_synchronizer
 
 
 router = APIRouter(prefix="/fa18c/mapping", tags=["F/A-18C Cockpit Mapping"])
@@ -28,6 +29,19 @@ def get_dcs_mapping_command() -> dict[str, object]:
     if mapping is None:
         raise HTTPException(status_code=404, detail="No validated F/A-18C cockpit mapping is stored")
     return mapping.dcs_command()
+
+
+@router.get("/sync", response_model=MappingSyncStatus)
+def get_mapping_sync_status() -> MappingSyncStatus:
+    return hornet_mapping_synchronizer.status()
+
+
+@router.post("/sync", response_model=MappingSyncStatus)
+def sync_mapping_to_dcs() -> MappingSyncStatus:
+    status = hornet_mapping_synchronizer.sync()
+    if not status.available:
+        raise HTTPException(status_code=404, detail=status.error or "No mapping available")
+    return status
 
 
 @router.put("", response_model=HornetArgumentMapping)
