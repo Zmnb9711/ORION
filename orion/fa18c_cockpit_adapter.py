@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
+from .fa18c_mapping_registry import HornetArgumentMapping
+from .fa18c_tacan_decoder import decode_tacan
+
 
 class HornetCockpitState(BaseModel):
     aircraft_id: str = "fa-18c"
@@ -40,7 +43,10 @@ class HornetCockpitState(BaseModel):
     mpcd_brightness_raw: float | None = None
 
 
-def normalize_hornet_cockpit_state(payload: object) -> HornetCockpitState | None:
+def normalize_hornet_cockpit_state(
+    payload: object,
+    mapping: HornetArgumentMapping | None = None,
+) -> HornetCockpitState | None:
     if not isinstance(payload, dict):
         return None
     if payload.get("aircraft_id") not in (None, "fa-18c"):
@@ -55,13 +61,22 @@ def normalize_hornet_cockpit_state(payload: object) -> HornetCockpitState | None
             elif isinstance(value, (int, float)) and not isinstance(value, bool):
                 raw_arguments[str(key)] = float(value)
 
+    mapping_version = _string_or_none(payload.get("mapping_version"))
+    mapping_validated = payload.get("mapping_validated") is True
+    decoded_tacan = decode_tacan(
+        raw_arguments,
+        mapping_version=mapping_version,
+        mapping_validated=mapping_validated,
+        mapping=mapping,
+    )
+
     state = HornetCockpitState(
-        mapping_version=_string_or_none(payload.get("mapping_version")),
-        mapping_validated=payload.get("mapping_validated") is True,
+        mapping_version=mapping_version,
+        mapping_validated=mapping_validated,
         raw_arguments=raw_arguments,
-        tacan_enabled=_bool_or_none(payload.get("tacan_enabled")),
-        tacan_channel=_int_or_none(payload.get("tacan_channel")),
-        tacan_band=_string_or_none(payload.get("tacan_band")),
+        tacan_enabled=_bool_or_none(payload.get("tacan_enabled")) if payload.get("tacan_enabled") is not None else decoded_tacan.enabled,
+        tacan_channel=_int_or_none(payload.get("tacan_channel")) if payload.get("tacan_channel") is not None else decoded_tacan.channel,
+        tacan_band=_string_or_none(payload.get("tacan_band")) if payload.get("tacan_band") is not None else decoded_tacan.band,
         comm1_preset=_int_or_none(payload.get("comm1_preset")),
         comm1_frequency=_float_or_none(payload.get("comm1_frequency")),
         comm2_preset=_int_or_none(payload.get("comm2_preset")),
@@ -87,16 +102,11 @@ def normalize_hornet_cockpit_state(payload: object) -> HornetCockpitState | None
         right_ddi_brightness_raw=_raw(raw_arguments, "right_ddi_brightness"),
         mpcd_brightness_raw=_raw(raw_arguments, "mpcd_brightness"),
     )
-
-    # Semantic decoding of clickable arguments is intentionally disabled until
-    # the corresponding DCS argument map has been verified on a live Hornet.
-    # Once mapping_validated is true, dedicated decoders can be added here
-    # without changing the rest of Voice Core.
     return state
 
 
-def cockpit_state_for_voice(payload: object) -> dict[str, object] | None:
-    state = normalize_hornet_cockpit_state(payload)
+def cockpit_state_for_voice(payload: object, mapping: HornetArgumentMapping | None = None) -> dict[str, object] | None:
+    state = normalize_hornet_cockpit_state(payload, mapping=mapping)
     if state is None:
         return None
     result = state.model_dump(exclude_none=True)
