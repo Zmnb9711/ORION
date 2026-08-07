@@ -75,51 +75,64 @@ def execute_aircraft_knowledge_query(command: VoiceCommand) -> VoiceKnowledgeRes
 
 
 def _execute_hornet_structured_query(query_text: str) -> VoiceKnowledgeResult | None:
-    cockpit_matches = fa18c_cockpit.find(query_text)
-    if cockpit_matches:
-        item = cockpit_matches[0]
-        spoken = f"{item.title}: находится {item.location} {item.purpose} {item.interaction}"
-        return VoiceKnowledgeResult(
-            completed=True,
-            spoken_text=spoken,
-            data={
-                "aircraft_id": "fa-18c",
-                "knowledge_layer": "structured_hornet_cockpit",
-                "control": item.model_dump(mode="json"),
-                "network_required": False,
-            },
-        )
+    candidates = _structured_candidates(query_text)
 
-    found = fa18c_knowledge_pack.find(query_text)
-    systems = found["systems"]
-    procedures = found["procedures"]
-    if procedures:
-        item = procedures[0]
-        phases = "; затем ".join(item.ordered_phases)
-        spoken = f"{item.title}. Порядок: {phases}."
-        return VoiceKnowledgeResult(
-            completed=True,
-            spoken_text=spoken,
-            data={
-                "aircraft_id": "fa-18c",
-                "knowledge_layer": "structured_hornet_procedure",
-                "procedure": item.model_dump(mode="json"),
-                "network_required": False,
-            },
-        )
-    if systems:
-        item = systems[0]
-        return VoiceKnowledgeResult(
-            completed=True,
-            spoken_text=f"{item.title}: {item.summary}",
-            data={
-                "aircraft_id": "fa-18c",
-                "knowledge_layer": "structured_hornet_system",
-                "system": item.model_dump(mode="json"),
-                "network_required": False,
-            },
-        )
+    for candidate in candidates:
+        cockpit_matches = fa18c_cockpit.find(candidate)
+        if cockpit_matches:
+            item = cockpit_matches[0]
+            spoken = f"{item.title}: находится {item.location} {item.purpose} {item.interaction}"
+            return VoiceKnowledgeResult(
+                completed=True,
+                spoken_text=spoken,
+                data={
+                    "aircraft_id": "fa-18c",
+                    "knowledge_layer": "structured_hornet_cockpit",
+                    "control": item.model_dump(mode="json"),
+                    "network_required": False,
+                },
+            )
+
+    for candidate in candidates:
+        found = fa18c_knowledge_pack.find(candidate)
+        procedures = found["procedures"]
+        systems = found["systems"]
+        if procedures:
+            item = procedures[0]
+            phases = "; затем ".join(item.ordered_phases)
+            spoken = f"{item.title}. Порядок: {phases}."
+            return VoiceKnowledgeResult(
+                completed=True,
+                spoken_text=spoken,
+                data={
+                    "aircraft_id": "fa-18c",
+                    "knowledge_layer": "structured_hornet_procedure",
+                    "procedure": item.model_dump(mode="json"),
+                    "network_required": False,
+                },
+            )
+        if systems:
+            item = systems[0]
+            return VoiceKnowledgeResult(
+                completed=True,
+                spoken_text=f"{item.title}: {item.summary}",
+                data={
+                    "aircraft_id": "fa-18c",
+                    "knowledge_layer": "structured_hornet_system",
+                    "system": item.model_dump(mode="json"),
+                    "network_required": False,
+                },
+            )
     return None
+
+
+def _structured_candidates(query_text: str) -> list[str]:
+    candidates = [query_text]
+    stop = {"настроить", "настройка", "включить", "выбрать", "использовать", "показать", "setup", "set", "select", "use"}
+    for token in re.findall(r"[\w/-]+", query_text.casefold()):
+        if len(token) >= 3 and token not in stop and token not in candidates:
+            candidates.append(token)
+    return candidates
 
 
 def _resolve_aircraft_id(command: VoiceCommand) -> str | None:
