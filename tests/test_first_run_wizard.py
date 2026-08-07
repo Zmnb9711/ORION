@@ -3,7 +3,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from orion.app import app
-from orion.dcs_installations import DcsInstallationCreate, dcs_installations
+from orion.dcs_installations import DcsInstallationCreate, DcsInstallationStore, dcs_installations
 from orion.dcs_readiness import install_export_integration
 from orion.first_run_wizard import FirstRunRequest, FirstRunState, evaluate_first_run
 
@@ -53,7 +53,10 @@ def test_first_run_reaches_ready_to_fly_after_telemetry(tmp_path: Path) -> None:
 
 
 def test_first_run_reports_first_blocking_action_without_dcs() -> None:
-    report = evaluate_first_run(FirstRunRequest(installed_components=RECOMMENDED))
+    report = evaluate_first_run(
+        FirstRunRequest(installed_components=RECOMMENDED),
+        installation_store=DcsInstallationStore(),
+    )
     assert report.state == FirstRunState.ACTION_REQUIRED
     assert report.next_action == "Detect or select DCS.exe"
 
