@@ -4,6 +4,7 @@ import logging
 
 from pydantic import ValidationError
 
+from orion.fa18c_diagnostics_recorder import hornet_diagnostics_recorder
 from orion.models import TelemetryEnvelope
 
 logger = logging.getLogger(__name__)
@@ -19,6 +20,7 @@ class TelemetryProtocol(asyncio.DatagramProtocol):
         except (UnicodeDecodeError, json.JSONDecodeError, ValidationError):
             logger.warning("Rejected invalid telemetry datagram from %s", addr, exc_info=True)
             return
+        hornet_diagnostics_recorder.ingest(payload.state.diagnostics)
         self.on_telemetry(payload)
 
 
