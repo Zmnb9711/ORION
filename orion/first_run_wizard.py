@@ -28,7 +28,7 @@ class FirstRunCheck(BaseModel):
 class FirstRunRequest(BaseModel):
     saved_games_path: str | None = None
     installed_components: list[str] = Field(default_factory=list)
-    telemetry_received: bool = False
+    telemetry_received: bool | None = None
     aircraft_type: str | None = None
 
 
@@ -100,13 +100,13 @@ def evaluate_first_run(
             )
         )
 
-    telemetry_ok = payload.telemetry_received
+    telemetry_ok = payload.telemetry_received is True
     if telemetry_ok and payload.aircraft_type:
         telemetry_message = f"Live telemetry received from {payload.aircraft_type}"
     elif telemetry_ok:
         telemetry_message = "Live DCS telemetry received"
     else:
-        telemetry_message = "Waiting for the first telemetry packet from DCS"
+        telemetry_message = "Waiting for live telemetry from DCS"
     checks.append(
         FirstRunCheck(
             key="telemetry",
