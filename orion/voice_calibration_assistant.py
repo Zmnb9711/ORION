@@ -64,7 +64,7 @@ def _status_text(session: CalibrationSession, language: str) -> str:
     if session.status == CalibrationStatus.COMPLETE:
         return "Настройка распознавания кабины завершена." if language == "ru" else "Cockpit mapping setup complete."
     step_number = min(session.current_step + 1, len(session.steps))
-    prefix = f"Настройка распознавания кабины: шаг {step_number} из {len(session.steps)}. " if language == "ru" else f"Cockpit mapping setup: step {step_number} of {len(session.steps)}. "
+    prefix = f"Настройка распознавания кабины. Шаг {step_number} из {len(session.steps)}. " if language == "ru" else f"Cockpit mapping setup. Step {step_number} of {len(session.steps)}. "
     if session.status == CalibrationStatus.NEEDS_RETRY:
         prefix += "Требуется повтор. " if language == "ru" else "A retry is required. "
     return prefix + _instruction(session, language)
