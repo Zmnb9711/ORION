@@ -15,7 +15,7 @@ class CalibrationVoiceResult:
 def _instruction(session: CalibrationSession, language: str) -> str:
     step = session.active_step
     if step is None:
-        return "Калибровка завершена." if language == "ru" else "Calibration complete."
+        return "Настройка распознавания кабины завершена." if language == "ru" else "Cockpit mapping setup complete."
     return step.instruction_ru if language == "ru" else step.instruction_en
 
 
@@ -28,7 +28,7 @@ def execute_calibration_voice(intent: str, transcript: str) -> CalibrationVoiceR
     try:
         if intent == "calibration_start":
             session = hornet_calibration_wizard.start()
-            prefix = "Начинаю калибровку F/A-18C. " if language == "ru" else "Starting F/A-18C calibration. "
+            prefix = "Начинаю настройку распознавания кабины F/A-18C. " if language == "ru" else "Starting F/A-18C cockpit mapping setup. "
             return _result(session, prefix + _instruction(session, language))
 
         session = hornet_calibration_wizard.current()
@@ -41,7 +41,7 @@ def execute_calibration_voice(intent: str, transcript: str) -> CalibrationVoiceR
 
         if intent == "calibration_retry":
             session = hornet_calibration_wizard.retry()
-            prefix = "Повторяем этот шаг. " if language == "ru" else "Retrying this step. "
+            prefix = "Повторяем этот шаг настройки. " if language == "ru" else "Retrying this mapping step. "
             return _result(session, prefix + _instruction(session, language))
 
         if intent == "calibration_confirm_step":
@@ -50,21 +50,21 @@ def execute_calibration_voice(intent: str, transcript: str) -> CalibrationVoiceR
                 text = "Шаг не подтверждён уверенно. Повторите действие. " if language == "ru" else "I could not confirm this step confidently. Repeat the action. "
                 return _result(session, text + _instruction(session, language), completed=False)
             if session.status == CalibrationStatus.COMPLETE:
-                text = "Калибровка завершена. Профиль сохранён и синхронизирован." if language == "ru" else "Calibration complete. The profile was saved and synchronized."
+                text = "Настройка распознавания кабины завершена. Профиль сохранён и синхронизирован." if language == "ru" else "Cockpit mapping setup complete. The profile was saved and synchronized."
                 return _result(session, text)
             text = "Шаг подтверждён. Следующий шаг. " if language == "ru" else "Step confirmed. Next step. "
             return _result(session, text + _instruction(session, language))
 
-        return CalibrationVoiceResult(False, "Неизвестная команда калибровки." if language == "ru" else "Unknown calibration command.", {})
+        return CalibrationVoiceResult(False, "Неизвестная команда настройки кабины." if language == "ru" else "Unknown cockpit mapping command.", {})
     except RuntimeError as exc:
         return CalibrationVoiceResult(False, str(exc), {"error": str(exc)})
 
 
 def _status_text(session: CalibrationSession, language: str) -> str:
     if session.status == CalibrationStatus.COMPLETE:
-        return "Калибровка завершена." if language == "ru" else "Calibration complete."
+        return "Настройка распознавания кабины завершена." if language == "ru" else "Cockpit mapping setup complete."
     step_number = min(session.current_step + 1, len(session.steps))
-    prefix = f"Шаг {step_number} из {len(session.steps)}. " if language == "ru" else f"Step {step_number} of {len(session.steps)}. "
+    prefix = f"Настройка распознавания кабины: шаг {step_number} из {len(session.steps)}. " if language == "ru" else f"Cockpit mapping setup: step {step_number} of {len(session.steps)}. "
     if session.status == CalibrationStatus.NEEDS_RETRY:
         prefix += "Требуется повтор. " if language == "ru" else "A retry is required. "
     return prefix + _instruction(session, language)
