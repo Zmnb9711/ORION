@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
+from .fa18c_comm_decoder import decode_comm_presets
 from .fa18c_mapping_registry import HornetArgumentMapping
 from .fa18c_tacan_decoder import decode_tacan
 from .fa18c_value_profiles import HornetValueProfileSet
@@ -55,13 +56,16 @@ def normalize_hornet_cockpit_state(payload: object, mapping: HornetArgumentMappi
     mapping_version = _string_or_none(payload.get("mapping_version"))
     mapping_validated = payload.get("mapping_validated") is True
     decoded_tacan = decode_tacan(raw_arguments, mapping_version=mapping_version, mapping_validated=mapping_validated, mapping=mapping, profiles=profiles)
+    decoded_comm = decode_comm_presets(raw_arguments, mapping_version=mapping_version, mapping_validated=mapping_validated, mapping=mapping, profiles=profiles)
     return HornetCockpitState(
         mapping_version=mapping_version, mapping_validated=mapping_validated, raw_arguments=raw_arguments,
         tacan_enabled=_bool_or_none(payload.get("tacan_enabled")) if payload.get("tacan_enabled") is not None else decoded_tacan.enabled,
         tacan_channel=_int_or_none(payload.get("tacan_channel")) if payload.get("tacan_channel") is not None else decoded_tacan.channel,
         tacan_band=_string_or_none(payload.get("tacan_band")) if payload.get("tacan_band") is not None else decoded_tacan.band,
-        comm1_preset=_int_or_none(payload.get("comm1_preset")), comm1_frequency=_float_or_none(payload.get("comm1_frequency")),
-        comm2_preset=_int_or_none(payload.get("comm2_preset")), comm2_frequency=_float_or_none(payload.get("comm2_frequency")),
+        comm1_preset=_int_or_none(payload.get("comm1_preset")) if payload.get("comm1_preset") is not None else decoded_comm.comm1_preset,
+        comm1_frequency=_float_or_none(payload.get("comm1_frequency")),
+        comm2_preset=_int_or_none(payload.get("comm2_preset")) if payload.get("comm2_preset") is not None else decoded_comm.comm2_preset,
+        comm2_frequency=_float_or_none(payload.get("comm2_frequency")),
         mission_tacan_channel=_int_or_none(payload.get("mission_tacan_channel")), mission_tacan_band=_string_or_none(payload.get("mission_tacan_band")),
         requested_tacan_channel=_int_or_none(payload.get("requested_tacan_channel")), requested_tacan_band=_string_or_none(payload.get("requested_tacan_band")),
         mission_comm1_preset=_int_or_none(payload.get("mission_comm1_preset")), mission_comm1_frequency=_float_or_none(payload.get("mission_comm1_frequency")),
