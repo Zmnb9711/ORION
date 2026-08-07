@@ -5,6 +5,7 @@ import logging
 from pydantic import ValidationError
 
 from orion.fa18c_diagnostics_recorder import hornet_diagnostics_recorder
+from orion.fa18c_mapping_auto_progress import hornet_mapping_auto_progress
 from orion.fa18c_mapping_sync import hornet_mapping_synchronizer
 from orion.models import TelemetryEnvelope
 
@@ -21,7 +22,9 @@ class TelemetryProtocol(asyncio.DatagramProtocol):
         except (UnicodeDecodeError, json.JSONDecodeError, ValidationError):
             logger.warning("Rejected invalid telemetry datagram from %s", addr, exc_info=True)
             return
-        hornet_diagnostics_recorder.ingest(payload.state.diagnostics)
+        ingested_changes = hornet_diagnostics_recorder.ingest(payload.state.diagnostics)
+        if ingested_changes:
+            hornet_mapping_auto_progress.on_diagnostics_packet()
         if payload.state.aircraft_type == "FA-18C_hornet":
             hornet_mapping_synchronizer.ensure_for_cockpit(payload.state.cockpit_state)
         self.on_telemetry(payload)
