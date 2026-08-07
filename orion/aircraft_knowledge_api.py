@@ -9,6 +9,7 @@ from orion.aircraft_knowledge import (
     KnowledgeSource,
     aircraft_knowledge,
 )
+from orion.fa18c_systems_api import router as fa18c_systems_router
 
 router = APIRouter(prefix="/v1/aircraft-knowledge", tags=["Aircraft Knowledge Layer"])
 
@@ -61,3 +62,6 @@ def upsert_knowledge_entry(payload: KnowledgeEntry) -> KnowledgeEntry:
 @router.post("/search", response_model=KnowledgeSearchResult)
 def search_aircraft_knowledge(payload: KnowledgeSearchQuery) -> KnowledgeSearchResult:
     return aircraft_knowledge.search(payload)
+
+
+router.include_router(fa18c_systems_router)
