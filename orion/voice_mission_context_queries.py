@@ -17,7 +17,7 @@ def execute_mission_context_query(intent: str, transcript: str) -> MissionContex
 
     if not context.available:
         text = "Данные Mission Bridge недоступны." if language == "ru" else "Mission Bridge data is unavailable."
-        return MissionContextVoiceResult(False, text, {"issues": context.issues})
+        return MissionContextVoiceResult(completed=False, spoken_text=text, data={"issues": context.issues})
 
     if intent == "mission_context_summary":
         return _summary(context, language)
@@ -36,7 +36,7 @@ def execute_mission_context_query(intent: str, transcript: str) -> MissionContex
     if intent == "nearest_awacs":
         return _nearest_support(context.awacs, "AWACS", language)
 
-    return MissionContextVoiceResult(False, "Этот запрос контекста миссии пока не поддерживается." if language == "ru" else "This mission-context query is not supported yet.")
+    return MissionContextVoiceResult(completed=False, spoken_text="Этот запрос контекста миссии пока не поддерживается." if language == "ru" else "This mission-context query is not supported yet.")
 
 
 def _summary(context: LiveMissionContext, language: str) -> MissionContextVoiceResult:
@@ -46,17 +46,17 @@ def _summary(context: LiveMissionContext, language: str) -> MissionContextVoiceR
         text = f"Контекст миссии доступен. Дружественных контактов: {friendlies}, обнаруженных противников: {hostiles}, AWACS: {len(context.awacs)}, танкеров: {len(context.tankers)}, JTAC: {len(context.jtac)}."
     else:
         text = f"Mission context is available. Friendly contacts: {friendlies}, detected hostiles: {hostiles}, AWACS: {len(context.awacs)}, tankers: {len(context.tankers)}, JTAC: {len(context.jtac)}."
-    return MissionContextVoiceResult(True, text, {"mission_id": context.mission_id, "friendlies": friendlies, "hostiles": hostiles, "awacs": len(context.awacs), "tankers": len(context.tankers), "jtac": len(context.jtac)})
+    return MissionContextVoiceResult(completed=True, spoken_text=text, data={"mission_id": context.mission_id, "friendlies": friendlies, "hostiles": hostiles, "awacs": len(context.awacs), "tankers": len(context.tankers), "jtac": len(context.jtac)})
 
 
 def _support_list(assets: list[SupportAsset], label: str, language: str) -> MissionContextVoiceResult:
     available = [asset for asset in assets if asset.available]
     if not available:
         text = f"Доступные {label} в данных миссии не найдены." if language == "ru" else f"No available {label} were found in the mission data."
-        return MissionContextVoiceResult(False, text, {"assets": []})
+        return MissionContextVoiceResult(completed=False, spoken_text=text, data={"assets": []})
     parts = [_support_phrase(asset, language) for asset in available]
     prefix = f"Доступные {label}: " if language == "ru" else f"Available {label}: "
-    return MissionContextVoiceResult(True, prefix + "; ".join(parts) + ".", {"assets": [asset.model_dump(mode="json") for asset in available]})
+    return MissionContextVoiceResult(completed=True, spoken_text=prefix + "; ".join(parts) + ".", data={"assets": [asset.model_dump(mode="json") for asset in available]})
 
 
 def _nearest_contact(contacts: list[MissionContact], *, hostile: bool, language: str) -> MissionContextVoiceResult:
@@ -64,7 +64,7 @@ def _nearest_contact(contacts: list[MissionContact], *, hostile: bool, language:
     if not ranged:
         target = "противник" if hostile else "дружественный контакт"
         text = f"Не могу определить ближайший {target}: нет контактов с рассчитанной дальностью." if language == "ru" else f"I cannot determine the nearest {'hostile' if hostile else 'friendly'} contact because no ranged contacts are available."
-        return MissionContextVoiceResult(False, text, {"contacts": []})
+        return MissionContextVoiceResult(completed=False, spoken_text=text, data={"contacts": []})
     contact = min(ranged, key=lambda item: item.distance_km if item.distance_km is not None else float("inf"))
     if language == "ru":
         label = "Ближайший противник" if hostile else "Ближайший дружественный"
@@ -72,15 +72,14 @@ def _nearest_contact(contacts: list[MissionContact], *, hostile: bool, language:
     else:
         label = "Nearest hostile" if hostile else "Nearest friendly"
         text = f"{label}: {contact.name}, bearing {contact.bearing_deg:.0f}, range {contact.distance_km:.1f} kilometers, altitude {contact.altitude_m:.0f} meters."
-    return MissionContextVoiceResult(True, text, {"contact": contact.model_dump(mode="json")})
+    return MissionContextVoiceResult(completed=True, spoken_text=text, data={"contact": contact.model_dump(mode="json")})
 
 
 def _nearest_support(assets: list[SupportAsset], label: str, language: str) -> MissionContextVoiceResult:
     available = [asset for asset in assets if asset.available]
     if not available:
         text = f"Доступный {label} не найден." if language == "ru" else f"No available {label} was found."
-        return MissionContextVoiceResult(False, text, {"assets": []})
-    # Mission radio assets do not yet carry geodetic coordinates. Report the first available asset without inventing range.
+        return MissionContextVoiceResult(completed=False, spoken_text=text, data={"assets": []})
     asset = available[0]
     if language == "ru":
         text = f"Доступен {label} {asset.callsign}."
@@ -92,7 +91,7 @@ def _nearest_support(assets: list[SupportAsset], label: str, language: str) -> M
         if asset.frequency_mhz is not None:
             text += f" Frequency {asset.frequency_mhz:.3f} megahertz{(' ' + asset.modulation) if asset.modulation else ''}."
         text += " Position is not yet provided by Mission Bridge."
-    return MissionContextVoiceResult(True, text, {"asset": asset.model_dump(mode="json"), "position_available": False})
+    return MissionContextVoiceResult(completed=True, spoken_text=text, data={"asset": asset.model_dump(mode="json"), "position_available": False})
 
 
 def _support_phrase(asset: SupportAsset, language: str) -> str:
