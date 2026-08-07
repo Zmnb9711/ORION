@@ -70,7 +70,8 @@ def _include_router_when_available(module_name: str) -> None:
 
 
 for _router_module in (
-    # New voice / coalition / live mission layer.
+    # Knowledge / voice / coalition / live mission layer.
+    "orion.aircraft_knowledge_api",
     "orion.coalition_control_api",
     "orion.mission_bridge_api",
     "orion.voice_core_api",
