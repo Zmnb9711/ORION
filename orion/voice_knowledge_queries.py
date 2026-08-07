@@ -28,8 +28,11 @@ def execute_aircraft_knowledge_query(command: VoiceCommand) -> VoiceKnowledgeRes
 
     query_text = _clean_query(command.transcript)
 
-    if aircraft_id == "fa-18c":
-        structured = _execute_hornet_structured_query(query_text)
+    if aircraft_id == "fa-18c" and not _explicit_official_request(command.transcript):
+        structured = _execute_hornet_structured_query(
+            query_text,
+            procedures_only=_procedure_execution_request(command.transcript),
+        )
         if structured is not None:
             return structured
 
@@ -74,24 +77,29 @@ def execute_aircraft_knowledge_query(command: VoiceCommand) -> VoiceKnowledgeRes
     )
 
 
-def _execute_hornet_structured_query(query_text: str) -> VoiceKnowledgeResult | None:
+def _execute_hornet_structured_query(
+    query_text: str,
+    *,
+    procedures_only: bool = False,
+) -> VoiceKnowledgeResult | None:
     candidates = _structured_candidates(query_text)
 
-    for candidate in candidates:
-        cockpit_matches = fa18c_cockpit.find(candidate)
-        if cockpit_matches:
-            item = cockpit_matches[0]
-            spoken = f"{item.title}: находится {item.location} {item.purpose} {item.interaction}"
-            return VoiceKnowledgeResult(
-                completed=True,
-                spoken_text=spoken,
-                data={
-                    "aircraft_id": "fa-18c",
-                    "knowledge_layer": "structured_hornet_cockpit",
-                    "control": item.model_dump(mode="json"),
-                    "network_required": False,
-                },
-            )
+    if not procedures_only:
+        for candidate in candidates:
+            cockpit_matches = fa18c_cockpit.find(candidate)
+            if cockpit_matches:
+                item = cockpit_matches[0]
+                spoken = f"{item.title}: находится {item.location} {item.purpose} {item.interaction}"
+                return VoiceKnowledgeResult(
+                    completed=True,
+                    spoken_text=spoken,
+                    data={
+                        "aircraft_id": "fa-18c",
+                        "knowledge_layer": "structured_hornet_cockpit",
+                        "control": item.model_dump(mode="json"),
+                        "network_required": False,
+                    },
+                )
 
     for candidate in candidates:
         found = fa18c_knowledge_pack.find(candidate)
@@ -111,7 +119,7 @@ def _execute_hornet_structured_query(query_text: str) -> VoiceKnowledgeResult | 
                     "network_required": False,
                 },
             )
-        if systems:
+        if systems and not procedures_only:
             item = systems[0]
             return VoiceKnowledgeResult(
                 completed=True,
@@ -128,11 +136,50 @@ def _execute_hornet_structured_query(query_text: str) -> VoiceKnowledgeResult | 
 
 def _structured_candidates(query_text: str) -> list[str]:
     candidates = [query_text]
-    stop = {"настроить", "настройка", "включить", "выбрать", "использовать", "показать", "setup", "set", "select", "use"}
+    stop = {
+        "настроить",
+        "настройка",
+        "включить",
+        "выбрать",
+        "использовать",
+        "показать",
+        "setup",
+        "set",
+        "select",
+        "use",
+    }
     for token in re.findall(r"[\w/-]+", query_text.casefold()):
         if len(token) >= 3 and token not in stop and token not in candidates:
             candidates.append(token)
     return candidates
+
+
+def _explicit_official_request(text: str) -> bool:
+    normalized = text.casefold()
+    return any(
+        phrase in normalized
+        for phrase in (
+            "согласно руководству",
+            "в руководстве",
+            "по руководству",
+            "руководство",
+            "мануал",
+            "manual",
+            "according to the manual",
+        )
+    )
+
+
+def _procedure_execution_request(text: str) -> bool:
+    normalized = text.casefold()
+    return any(
+        phrase in normalized
+        for phrase in (
+            "как выполнить",
+            "how do i perform",
+            "how to perform",
+        )
+    )
 
 
 def _resolve_aircraft_id(command: VoiceCommand) -> str | None:
