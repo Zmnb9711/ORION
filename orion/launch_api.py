@@ -2,10 +2,6 @@ from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Response, status
 
-from orion.dcs_installations_api import router as dcs_installations_router
-from orion.dcs_process_api import router as dcs_process_router
-from orion.flight_console_api import router as flight_console_router
-from orion.flight_readiness_api import router as flight_readiness_router
 from orion.launch_profiles import (
     DcsLaunchPlan,
     DcsLaunchProfile,
@@ -13,18 +9,11 @@ from orion.launch_profiles import (
     build_launch_plan,
     launch_profiles,
 )
-from orion.mission_activation_api import router as mission_activation_router
-from orion.mission_catalog_api import router as mission_catalog_router
-from orion.mission_preparation_api import router as mission_preparation_router
-from orion.orion_settings_api import router as orion_settings_router
-from orion.product_capabilities_api import router as product_capabilities_router
-from orion.voice_core_api import router as voice_core_router
 
-router = APIRouter()
-launch_router = APIRouter(prefix="/v1/launch-profiles", tags=["DCS launch profiles"])
+router = APIRouter(prefix="/v1/launch-profiles", tags=["DCS launch profiles"])
 
 
-@launch_router.post("", response_model=DcsLaunchProfile, status_code=201)
+@router.post("", response_model=DcsLaunchProfile, status_code=201)
 def create_launch_profile(payload: DcsLaunchProfileCreate) -> DcsLaunchProfile:
     try:
         return launch_profiles.create(payload)
@@ -32,12 +21,12 @@ def create_launch_profile(payload: DcsLaunchProfileCreate) -> DcsLaunchProfile:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
-@launch_router.get("", response_model=list[DcsLaunchProfile])
+@router.get("", response_model=list[DcsLaunchProfile])
 def list_launch_profiles() -> list[DcsLaunchProfile]:
     return launch_profiles.list()
 
 
-@launch_router.get("/{profile_id}", response_model=DcsLaunchProfile)
+@router.get("/{profile_id}", response_model=DcsLaunchProfile)
 def get_launch_profile(profile_id: UUID) -> DcsLaunchProfile:
     profile = launch_profiles.get(profile_id)
     if profile is None:
@@ -45,7 +34,7 @@ def get_launch_profile(profile_id: UUID) -> DcsLaunchProfile:
     return profile
 
 
-@launch_router.get("/{profile_id}/plan", response_model=DcsLaunchPlan)
+@router.get("/{profile_id}/plan", response_model=DcsLaunchPlan)
 def preview_launch_plan(profile_id: UUID) -> DcsLaunchPlan:
     profile = launch_profiles.get(profile_id)
     if profile is None:
@@ -56,21 +45,8 @@ def preview_launch_plan(profile_id: UUID) -> DcsLaunchPlan:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
-@launch_router.delete("/{profile_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{profile_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_launch_profile(profile_id: UUID) -> Response:
     if not launch_profiles.delete(profile_id):
         raise HTTPException(status_code=404, detail="Launch profile not found")
     return Response(status_code=status.HTTP_204_NO_CONTENT)
-
-
-router.include_router(launch_router)
-router.include_router(dcs_installations_router)
-router.include_router(dcs_process_router)
-router.include_router(flight_console_router)
-router.include_router(mission_catalog_router)
-router.include_router(mission_preparation_router)
-router.include_router(mission_activation_router)
-router.include_router(flight_readiness_router)
-router.include_router(orion_settings_router)
-router.include_router(product_capabilities_router)
-router.include_router(voice_core_router)
