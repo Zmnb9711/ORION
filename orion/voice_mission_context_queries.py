@@ -80,24 +80,40 @@ def _nearest_support(assets: list[SupportAsset], label: str, language: str) -> M
     if not available:
         text = f"Доступный {label} не найден." if language == "ru" else f"No available {label} was found."
         return MissionContextVoiceResult(completed=False, spoken_text=text, data={"assets": []})
-    asset = available[0]
+    ranged = [asset for asset in available if asset.distance_km is not None and asset.bearing_deg is not None]
+    asset = min(ranged, key=lambda item: item.distance_km if item.distance_km is not None else float("inf")) if ranged else available[0]
     if language == "ru":
         text = f"Доступен {label} {asset.callsign}."
+        if asset.bearing_deg is not None and asset.distance_km is not None:
+            text += f" Азимут {asset.bearing_deg:.0f}, дальность {asset.distance_km:.1f} километра."
+            if asset.altitude_m is not None:
+                text += f" Высота {asset.altitude_m:.0f} метров."
+        else:
+            text += " Положение пока не передано Mission Bridge."
         if asset.frequency_mhz is not None:
             text += f" Частота {asset.frequency_mhz:.3f} мегагерц{(' ' + asset.modulation) if asset.modulation else ''}."
-        text += " Положение пока не передано Mission Bridge."
     else:
         text = f"Available {label}: {asset.callsign}."
+        if asset.bearing_deg is not None and asset.distance_km is not None:
+            text += f" Bearing {asset.bearing_deg:.0f}, range {asset.distance_km:.1f} kilometers."
+            if asset.altitude_m is not None:
+                text += f" Altitude {asset.altitude_m:.0f} meters."
+        else:
+            text += " Position is not yet provided by Mission Bridge."
         if asset.frequency_mhz is not None:
             text += f" Frequency {asset.frequency_mhz:.3f} megahertz{(' ' + asset.modulation) if asset.modulation else ''}."
-        text += " Position is not yet provided by Mission Bridge."
-    return MissionContextVoiceResult(completed=True, spoken_text=text, data={"asset": asset.model_dump(mode="json"), "position_available": False})
+    return MissionContextVoiceResult(completed=True, spoken_text=text, data={"asset": asset.model_dump(mode="json"), "position_available": asset.distance_km is not None and asset.bearing_deg is not None})
 
 
 def _support_phrase(asset: SupportAsset, language: str) -> str:
     text = asset.callsign
     if asset.unit_type:
         text += f", {asset.unit_type}"
+    if asset.bearing_deg is not None and asset.distance_km is not None:
+        if language == "ru":
+            text += f", азимут {asset.bearing_deg:.0f}, {asset.distance_km:.1f} километра"
+        else:
+            text += f", bearing {asset.bearing_deg:.0f}, {asset.distance_km:.1f} kilometers"
     if asset.frequency_mhz is not None:
         if language == "ru":
             text += f", {asset.frequency_mhz:.3f} мегагерц"
