@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
+from orion.fa18c_cockpit_adapter import cockpit_state_for_voice
+
 
 class HornetLiveAdvice(BaseModel):
     spoken_text: str
@@ -11,8 +13,8 @@ class HornetLiveAdvice(BaseModel):
 
 
 def advise_hornet_live_state(text: str, context: dict[str, object]) -> HornetLiveAdvice | None:
-    state = context.get("cockpit_state")
-    if not isinstance(state, dict):
+    state = cockpit_state_for_voice(context.get("cockpit_state"))
+    if state is None:
         return None
 
     normalized = text.casefold()
@@ -45,17 +47,21 @@ def _advise_tacan(state: dict[str, object]) -> HornetLiveAdvice:
     if enabled is not True or channel is None:
         actions.append("проверь индикацию и навигационный источник после ввода")
 
+    mapping_validated = state.get("mapping_validated") is True
+    raw = state.get("raw_arguments") if isinstance(state.get("raw_arguments"), dict) else {}
     current = "TACAN"
     if enabled is False:
         current += " сейчас выключен"
     elif enabled is True:
         current += " включён"
+    elif raw and not mapping_validated:
+        current += ": сырые данные DCS получены, но карта аргументов ещё не подтверждена"
     if channel is not None:
         current += f", текущий канал {channel}{(' ' + str(band)) if band else ''}"
     spoken = current + "."
-    if actions:
+    if actions and (enabled is not None or channel is not None or target is not None):
         spoken += " Следующее действие: " + "; затем ".join(actions) + "."
-    return HornetLiveAdvice(spoken_text=spoken, topic="tacan", observed={"enabled": enabled, "channel": channel, "band": band, "target_channel": target, "target_band": target_band}, next_actions=actions)
+    return HornetLiveAdvice(spoken_text=spoken, topic="tacan", observed={"enabled": enabled, "channel": channel, "band": band, "target_channel": target, "target_band": target_band, "mapping_validated": mapping_validated, "raw_arguments": raw}, next_actions=actions)
 
 
 def _advise_radio(state: dict[str, object], radio: int) -> HornetLiveAdvice:
@@ -71,10 +77,15 @@ def _advise_radio(state: dict[str, object], radio: int) -> HornetLiveAdvice:
         actions.append(f"настрой COMM{radio} на {target_frequency}")
     if preset is None and frequency is None:
         actions.append(f"проверь текущий preset/frequency COMM{radio} через данные DCS")
-    spoken = f"COMM{radio}: preset {preset if preset is not None else 'не определён'}, частота {frequency if frequency is not None else 'не определена'}."
-    if actions:
+    mapping_validated = state.get("mapping_validated") is True
+    raw = state.get("raw_arguments") if isinstance(state.get("raw_arguments"), dict) else {}
+    if preset is None and frequency is None and raw and not mapping_validated:
+        spoken = f"COMM{radio}: сырые данные DCS получены, но карта аргументов ещё не подтверждена."
+    else:
+        spoken = f"COMM{radio}: preset {preset if preset is not None else 'не определён'}, частота {frequency if frequency is not None else 'не определена'}."
+    if actions and (preset is not None or frequency is not None or target_preset is not None or target_frequency is not None):
         spoken += " Следующее действие: " + "; затем ".join(actions) + "."
-    return HornetLiveAdvice(spoken_text=spoken, topic=prefix, observed={"preset": preset, "frequency": frequency, "target_preset": target_preset, "target_frequency": target_frequency}, next_actions=actions)
+    return HornetLiveAdvice(spoken_text=spoken, topic=prefix, observed={"preset": preset, "frequency": frequency, "target_preset": target_preset, "target_frequency": target_frequency, "mapping_validated": mapping_validated, "raw_arguments": raw}, next_actions=actions)
 
 
 def _advise_displays(state: dict[str, object]) -> HornetLiveAdvice:
@@ -84,8 +95,12 @@ def _advise_displays(state: dict[str, object]) -> HornetLiveAdvice:
         "mpcd_page": state.get("mpcd_page"),
         "sensor_of_interest": state.get("sensor_of_interest"),
         "master_mode": state.get("master_mode"),
+        "left_ddi_brightness_raw": state.get("left_ddi_brightness_raw"),
+        "right_ddi_brightness_raw": state.get("right_ddi_brightness_raw"),
+        "mpcd_brightness_raw": state.get("mpcd_brightness_raw"),
+        "mapping_validated": state.get("mapping_validated"),
     }
-    parts = [f"{key}={value}" for key, value in observed.items() if value is not None]
+    parts = [f"{key}={value}" for key, value in observed.items() if value is not None and key != "mapping_validated"]
     spoken = "Текущее состояние дисплеев Hornet: " + (", ".join(parts) if parts else "данные страниц пока не получены") + "."
     return HornetLiveAdvice(spoken_text=spoken, topic="displays", observed=observed)
 
