@@ -11,6 +11,7 @@ from orion.aircraft_knowledge import (
 )
 from orion.fa18c_calibration_api import router as fa18c_calibration_router
 from orion.fa18c_diagnostics_api import router as fa18c_diagnostics_router
+from orion.fa18c_mapping_api import router as fa18c_mapping_router
 from orion.fa18c_systems_api import router as fa18c_systems_router
 
 router = APIRouter(prefix="/v1/aircraft-knowledge", tags=["Aircraft Knowledge Layer"])
@@ -69,3 +70,4 @@ def search_aircraft_knowledge(payload: KnowledgeSearchQuery) -> KnowledgeSearchR
 router.include_router(fa18c_systems_router)
 router.include_router(fa18c_diagnostics_router)
 router.include_router(fa18c_calibration_router)
+router.include_router(fa18c_mapping_router)
