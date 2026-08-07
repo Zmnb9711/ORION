@@ -17,6 +17,7 @@ class AircraftState(BaseModel):
     true_airspeed_mps: float = Field(ge=0)
     vertical_speed_mps: float = 0
     fuel_fraction: float | None = Field(default=None, ge=0, le=1)
+    cockpit_state: dict[str, object] | None = None
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
