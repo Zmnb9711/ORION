@@ -24,6 +24,7 @@ if LEGACY_CORE_AVAILABLE:
     from orion.mission_store import mission_store
     from orion.models import TelemetryEnvelope
     from orion.support import SupportRequest, SupportRequestCreate, support_requests
+    from orion.telemetry_handshake import telemetry_handshake
     from orion.threats import ThreatAssessment, assess_threats
     from orion.udp_bridge import start_udp_bridge
 
@@ -34,6 +35,7 @@ if LEGACY_CORE_AVAILABLE:
     def store_telemetry(payload: TelemetryEnvelope) -> None:
         global _latest
         _latest = payload
+        telemetry_handshake.observe(payload)
         _journal.append("telemetry", payload.model_dump(mode="json"))
 
     @asynccontextmanager
