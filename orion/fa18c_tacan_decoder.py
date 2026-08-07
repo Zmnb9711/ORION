@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .fa18c_mapping_registry import HornetArgumentMapping
+from .fa18c_value_profiles import HornetValueProfileSet, hornet_value_profile_registry
 
 
 @dataclass(frozen=True)
@@ -18,45 +19,36 @@ def decode_tacan(
     mapping_version: str | None,
     mapping_validated: bool,
     mapping: HornetArgumentMapping | None,
+    profiles: HornetValueProfileSet | None = None,
 ) -> HornetTacanSemanticState:
-    """Decode Hornet TACAN controls only when DCS and ORION agree on a validated map.
-
-    Calibration establishes *which* clickable arguments belong to the TACAN controls.
-    The value decoder remains deliberately conservative: selector positions must be close
-    to discrete detents, otherwise the corresponding semantic field is left unknown.
-    """
+    """Decode TACAN only from a validated ID map and calibrated raw-value detents."""
+    selected_profiles = profiles or hornet_value_profile_registry.current()
     if (
         not mapping_validated
         or mapping is None
         or not mapping.validated
         or not mapping.complete()
         or mapping_version != mapping.version
+        or selected_profiles is None
+        or selected_profiles.mapping_version != mapping.version
     ):
         return HornetTacanSemanticState(None, None, None)
 
-    power = _detent(raw_arguments.get("tacan_power"), maximum=4)
-    tens = _digit(raw_arguments.get("tacan_channel_tens"))
-    ones = _digit(raw_arguments.get("tacan_channel_ones"))
-    xy = _detent(raw_arguments.get("tacan_xy"), maximum=1)
+    power = _profile_index(selected_profiles, "tacan_power", raw_arguments.get("tacan_power"))
+    tens = _profile_index(selected_profiles, "tacan_channel_tens", raw_arguments.get("tacan_channel_tens"))
+    ones = _profile_index(selected_profiles, "tacan_channel_ones", raw_arguments.get("tacan_channel_ones"))
+    xy = _profile_index(selected_profiles, "tacan_xy", raw_arguments.get("tacan_xy"))
 
+    # The calibration sequence defines detents in semantic order:
+    # power: OFF then operating position; tens/ones: 0..9; X/Y: X then Y.
     enabled = None if power is None else power > 0
-    channel = None if tens is None or ones is None else tens * 10 + ones
-    band = None if xy is None else ("X" if xy == 0 else "Y")
+    channel = None if tens is None or ones is None or tens > 9 or ones > 9 else tens * 10 + ones
+    band = None if xy is None or xy > 1 else ("X" if xy == 0 else "Y")
     return HornetTacanSemanticState(enabled, channel, band)
 
 
-def _digit(value: float | None) -> int | None:
-    return _detent(value, maximum=9)
-
-
-def _detent(value: float | None, *, maximum: int) -> int | None:
-    if not isinstance(value, (int, float)) or isinstance(value, bool):
+def _profile_index(profiles: HornetValueProfileSet, control: str, value: float | None) -> int | None:
+    profile = profiles.control(control)
+    if profile is None:
         return None
-    numeric = float(value)
-    if numeric < -0.05 or numeric > 1.05:
-        return None
-    scaled = numeric * maximum
-    nearest = round(scaled)
-    if abs(scaled - nearest) > 0.2:
-        return None
-    return max(0, min(maximum, int(nearest)))
+    return profile.nearest_index(value)
