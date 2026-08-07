@@ -53,7 +53,7 @@ class MissionInformationExecutor:
 
 class MissionContextExecutor:
     adapter = "live-mission-context"
-    supported_intents = {"mission_context_summary", "list_awacs", "list_tankers", "list_jtac", "nearest_hostile", "nearest_friendly", "nearest_tanker", "nearest_awacs", "find_tanker", "request_tacan", "request_frequency"}
+    supported_intents = {"mission_context_summary", "list_awacs", "list_tankers", "list_jtac", "nearest_hostile", "nearest_friendly", "nearest_tanker", "nearest_awacs"}
 
     def execute(self, command: VoiceCommand) -> ExecutionOutcome:
         result = execute_mission_context_query(command.intent, command.transcript)
@@ -101,6 +101,8 @@ class SystemExecutor:
 
 
 class VoiceExecutionDispatcher:
+    _live_first_tanker_intents = {"find_tanker", "request_tacan", "request_frequency"}
+
     def __init__(self) -> None:
         bridge_agents = {VoiceAgent.ATC: "virtual-atc", VoiceAgent.AWACS: "awacs-service", VoiceAgent.TANKER: "tanker-service", VoiceAgent.JTAC: "jtac-service", VoiceAgent.MISSION_CONTROL: "mission-control", VoiceAgent.NAVIGATION: "navigation-service", VoiceAgent.THREAT_ANALYZER: "threat-analyzer", VoiceAgent.FLIGHT_ADVISOR: "flight-advisor", VoiceAgent.CHECKLIST: "checklist-service", VoiceAgent.WINGMAN: "dcs-command-translator", VoiceAgent.FLIGHT: "dcs-command-translator", VoiceAgent.COALITION_AIRCRAFT: "dcs-capability-translator", VoiceAgent.COALITION_HELICOPTERS: "dcs-capability-translator", VoiceAgent.COALITION_GROUND: "dcs-capability-translator", VoiceAgent.COALITION_NAVAL: "dcs-capability-translator"}
         self._executors: dict[VoiceAgent, VoiceCommandExecutor] = {agent: BridgeExecutor(adapter) for agent, adapter in bridge_agents.items()}
@@ -115,6 +117,14 @@ class VoiceExecutionDispatcher:
     def execute(self, command: VoiceCommand) -> ExecutionOutcome:
         if command.intent in self._mission_information.supported_intents:
             return self._mission_information.execute(command)
+        if command.intent in self._live_first_tanker_intents and command.agent is VoiceAgent.TANKER:
+            live_outcome = self._mission_context.execute(command)
+            if live_outcome.state is ExecutionState.COMPLETED:
+                return live_outcome
+            bridge = self._executors.get(VoiceAgent.TANKER)
+            if bridge is not None:
+                return bridge.execute(command)
+            return live_outcome
         if command.intent in self._mission_context.supported_intents:
             return self._mission_context.execute(command)
         if command.intent in self._live_cockpit.supported_intents:
