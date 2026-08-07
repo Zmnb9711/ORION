@@ -21,7 +21,7 @@ def decode_tacan(
     mapping: HornetArgumentMapping | None,
     profiles: HornetValueProfileSet | None = None,
 ) -> HornetTacanSemanticState:
-    """Decode TACAN only from a validated ID map and calibrated raw-value detents."""
+    """Decode TACAN only from a validated ID map and calibrated semantic value profiles."""
     selected_profiles = profiles or hornet_value_profile_registry.current()
     if (
         not mapping_validated
@@ -34,21 +34,34 @@ def decode_tacan(
     ):
         return HornetTacanSemanticState(None, None, None)
 
-    power = _profile_index(selected_profiles, "tacan_power", raw_arguments.get("tacan_power"))
-    tens = _profile_index(selected_profiles, "tacan_channel_tens", raw_arguments.get("tacan_channel_tens"))
-    ones = _profile_index(selected_profiles, "tacan_channel_ones", raw_arguments.get("tacan_channel_ones"))
-    xy = _profile_index(selected_profiles, "tacan_xy", raw_arguments.get("tacan_xy"))
+    power = _semantic(selected_profiles, "tacan_power", raw_arguments.get("tacan_power"))
+    tens = _semantic(selected_profiles, "tacan_channel_tens", raw_arguments.get("tacan_channel_tens"))
+    ones = _semantic(selected_profiles, "tacan_channel_ones", raw_arguments.get("tacan_channel_ones"))
+    xy = _semantic(selected_profiles, "tacan_xy", raw_arguments.get("tacan_xy"))
 
-    # The calibration sequence defines detents in semantic order:
-    # power: OFF then operating position; tens/ones: 0..9; X/Y: X then Y.
-    enabled = None if power is None else power > 0
-    channel = None if tens is None or ones is None or tens > 9 or ones > 9 else tens * 10 + ones
-    band = None if xy is None or xy > 1 else ("X" if xy == 0 else "Y")
+    enabled = power if isinstance(power, bool) else None
+    tens_digit = tens if isinstance(tens, int) and not isinstance(tens, bool) and 0 <= tens <= 9 else None
+    ones_digit = ones if isinstance(ones, int) and not isinstance(ones, bool) and 0 <= ones <= 9 else None
+    channel = None if tens_digit is None or ones_digit is None else tens_digit * 10 + ones_digit
+    band = xy if isinstance(xy, str) and xy in {"X", "Y"} else None
     return HornetTacanSemanticState(enabled, channel, band)
 
 
-def _profile_index(profiles: HornetValueProfileSet, control: str, value: float | None) -> int | None:
+def _semantic(profiles: HornetValueProfileSet, control: str, value: float | None) -> int | str | bool | None:
     profile = profiles.control(control)
     if profile is None:
         return None
-    return profile.nearest_index(value)
+    if profile.semantic_values:
+        return profile.semantic(value)
+
+    # Backward compatibility for v1 profiles created before semantic labels existed.
+    index = profile.nearest_index(value)
+    if index is None:
+        return None
+    if control == "tacan_power":
+        return index > 0
+    if control in {"tacan_channel_tens", "tacan_channel_ones"}:
+        return index if index <= 9 else None
+    if control == "tacan_xy":
+        return "X" if index == 0 else "Y" if index == 1 else None
+    return None

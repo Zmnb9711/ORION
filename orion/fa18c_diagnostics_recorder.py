@@ -112,7 +112,7 @@ class HornetDiagnosticsRecorder:
                     argument_id=argument_id,
                     score=score,
                     observations=len(changes),
-                    transitions=[(item.previous, item.value) for item in changes[-12:]],
+                    transitions=[(item.previous, item.value) for item in changes[-64:]],
                     markers=supported_markers,
                 )
             )
