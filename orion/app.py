@@ -1,7 +1,8 @@
 from contextlib import asynccontextmanager
+from importlib import import_module
 from uuid import UUID
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import APIRouter, FastAPI, HTTPException, Query
 
 from orion import __version__
 from orion.capabilities import MissionPackRegistration, capability_registry
@@ -48,6 +49,35 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(title="ORION Core", version=__version__, lifespan=lifespan)
 app.include_router(launch_router)
+
+
+def _include_router_when_available(module_name: str) -> None:
+    """Attach a modular API router when its subsystem is present in this build.
+
+    The stabilization merge brings Voice Core, Coalition Control and the new
+    Mission Bridge API from the newer development line into this ORION Core
+    application. Keeping their registration here makes this large Core app the
+    single application entry point while allowing the pre-merge branch to stay
+    importable until those modules are copied across.
+    """
+    try:
+        module = import_module(module_name)
+    except ModuleNotFoundError as exc:
+        if exc.name == module_name:
+            return
+        raise
+    router = getattr(module, "router", None)
+    if not isinstance(router, APIRouter):
+        raise RuntimeError(f"{module_name} does not expose a FastAPI APIRouter named 'router'")
+    app.include_router(router)
+
+
+for _router_module in (
+    "orion.coalition_control_api",
+    "orion.mission_bridge_api",
+    "orion.voice_core_api",
+):
+    _include_router_when_available(_router_module)
 
 
 @app.get("/health")
