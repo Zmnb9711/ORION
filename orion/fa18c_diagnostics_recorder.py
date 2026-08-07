@@ -26,6 +26,7 @@ class MappingCandidate(BaseModel):
     score: int
     observations: int
     transitions: list[tuple[float | None, float]] = Field(default_factory=list)
+    markers: list[str] = Field(default_factory=list)
 
 
 class MappingReport(BaseModel):
@@ -102,7 +103,8 @@ class HornetDiagnosticsRecorder:
 
         candidates: list[MappingCandidate] = []
         for argument_id, changes in by_id.items():
-            marker_support = sum(1 for marker in marker_ids if argument_id in marker_ids[marker])
+            supported_markers = sorted(marker for marker, ids in marker_ids.items() if argument_id in ids)
+            marker_support = len(supported_markers)
             strongest_marker_hits = max((marker_counts[(marker, argument_id)] for marker in marker_ids), default=0)
             score = len(changes) + (marker_support * 3) + (strongest_marker_hits * 2)
             candidates.append(
@@ -111,6 +113,7 @@ class HornetDiagnosticsRecorder:
                     score=score,
                     observations=len(changes),
                     transitions=[(item.previous, item.value) for item in changes[-12:]],
+                    markers=supported_markers,
                 )
             )
 
