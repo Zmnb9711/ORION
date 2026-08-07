@@ -22,6 +22,12 @@ def _context() -> LiveMissionContext:
     )
 
 
+def _located_context() -> LiveMissionContext:
+    context = _context()
+    context.tankers = [SupportAsset(unit_id="tanker-1", callsign="Texaco", role=DcsRecipientType.TANKER, frequency_mhz=251.5, modulation="AM", latitude=41.0, longitude=41.3, altitude_m=7500, distance_km=25.2, bearing_deg=90.0, position_source="mission_snapshot")]
+    return context
+
+
 def test_parser_routes_specific_context_queries_before_generic_bridge_rules() -> None:
     assert parse_transcript("Какие танкеры доступны?").commands[0].intent == "list_tankers"
     assert parse_transcript("Где ближайший противник?").commands[0].intent == "nearest_hostile"
@@ -52,6 +58,17 @@ def test_nearest_tanker_does_not_invent_position(monkeypatch) -> None:
     assert result.completed is True
     assert result.data["position_available"] is False
     assert "Положение пока не передано" in result.spoken_text
+
+
+def test_nearest_tanker_reports_real_range_and_bearing(monkeypatch) -> None:
+    monkeypatch.setattr(mission_voice, "build_live_mission_context", _located_context)
+    result = mission_voice.execute_mission_context_query("nearest_tanker", "Где ближайший танкер?")
+    assert result.completed is True
+    assert result.data["position_available"] is True
+    assert "Азимут 90" in result.spoken_text
+    assert "25.2" in result.spoken_text
+    assert "7500" in result.spoken_text
+    assert "251.500" in result.spoken_text
 
 
 def test_execution_dispatches_context_query_without_bridge_requirement(monkeypatch) -> None:
