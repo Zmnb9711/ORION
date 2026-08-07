@@ -1,0 +1,35 @@
+from pathlib import Path
+
+from fastapi.testclient import TestClient
+
+from orion.app import app
+from orion.dcs_readiness import ORION_EXPORT_LINE, ReadinessState, install_export_integration
+
+
+def test_export_install_preserves_existing_export_and_is_idempotent(tmp_path: Path) -> None:
+    scripts = tmp_path / "Scripts"
+    scripts.mkdir()
+    export = scripts / "Export.lua"
+    export.write_text("-- existing integration\n", encoding="utf-8")
+
+    first = install_export_integration(str(tmp_path))
+    second = install_export_integration(str(tmp_path))
+    content = export.read_text(encoding="utf-8")
+
+    assert first.state == ReadinessState.READY
+    assert second.export_configured is True
+    assert "-- existing integration" in content
+    assert content.count(ORION_EXPORT_LINE) == 1
+    assert (scripts / "ORION" / "Export.lua").is_file()
+
+
+def test_readiness_api_can_install_export(tmp_path: Path) -> None:
+    client = TestClient(app)
+    before = client.get("/v1/dcs-readiness", params={"saved_games_path": str(tmp_path)})
+    assert before.status_code == 200
+    assert before.json()["state"] == "action_required"
+
+    installed = client.post("/v1/dcs-readiness/export", json={"saved_games_path": str(tmp_path)})
+    assert installed.status_code == 200
+    assert installed.json()["state"] == "ready"
+    assert installed.json()["export_configured"] is True
