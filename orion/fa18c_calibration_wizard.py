@@ -65,13 +65,11 @@ DEFAULT_HORNET_STEPS = [
         key="tacan_channel_tens",
         instruction_en="Set TACAN tens to 0, then move sequentially 1→2→3→4→5→6→7→8→9.",
         instruction_ru="Установите десятки TACAN на 0, затем последовательно 1→2→3→4→5→6→7→8→9.",
-        repetitions=8,
     ),
     CalibrationStep(
         key="tacan_channel_ones",
         instruction_en="Set TACAN ones to 0, then move sequentially 1→2→3→4→5→6→7→8→9.",
         instruction_ru="Установите единицы TACAN на 0, затем последовательно 1→2→3→4→5→6→7→8→9.",
-        repetitions=8,
     ),
     CalibrationStep(
         key="tacan_xy",
@@ -148,11 +146,7 @@ class HornetCalibrationWizard:
 
     @staticmethod
     def _persist_and_sync_mapping(session: CalibrationSession) -> None:
-        arguments = {
-            item.key: item.accepted_argument_id
-            for item in session.results
-            if item.accepted_argument_id is not None
-        }
+        arguments = {item.key: item.accepted_argument_id for item in session.results if item.accepted_argument_id is not None}
         confidence = {item.key: item.confidence for item in session.results if item.accepted_argument_id is not None}
         mapping = hornet_mapping_registry.save(arguments, confidence)
         session.mapping_version = mapping.version
@@ -161,10 +155,7 @@ class HornetCalibrationWizard:
         for item in session.results:
             if item.key not in TACAN_PROFILE_KEYS or item.accepted_argument_id is None:
                 continue
-            accepted_candidate = next(
-                (candidate for candidate in item.candidates if candidate.argument_id == item.accepted_argument_id),
-                None,
-            )
+            accepted_candidate = next((candidate for candidate in item.candidates if candidate.argument_id == item.accepted_argument_id), None)
             if accepted_candidate is None:
                 continue
             detents = calibrated_detents(accepted_candidate.transitions)
@@ -172,16 +163,10 @@ class HornetCalibrationWizard:
                 continue
             if item.key in {"tacan_power", "tacan_xy"} and len(detents) < 2:
                 continue
-            controls[item.key] = ControlValueProfile(
-                control=item.key,
-                argument_id=item.accepted_argument_id,
-                detents=detents,
-            )
+            controls[item.key] = ControlValueProfile(control=item.key, argument_id=item.accepted_argument_id, detents=detents)
 
         if all(key in controls for key in TACAN_PROFILE_KEYS):
-            profiles = hornet_value_profile_registry.save(
-                HornetValueProfileSet(mapping_version=mapping.version, controls=controls)
-            )
+            profiles = hornet_value_profile_registry.save(HornetValueProfileSet(mapping_version=mapping.version, controls=controls))
             session.value_profile_version = profiles.version
 
         session.mapping_sync_sent = hornet_mapping_synchronizer.sync(mapping).sent
