@@ -6,6 +6,7 @@ from typing import Protocol
 from pydantic import BaseModel, Field
 
 from orion.live_telemetry_store import live_telemetry
+from orion.voice_calibration_assistant import execute_calibration_voice
 from orion.voice_cockpit_queries import execute_cockpit_query
 from orion.voice_core import VoiceAgent, VoiceCommand
 from orion.voice_knowledge_queries import execute_aircraft_knowledge_query
@@ -66,6 +67,15 @@ class LiveCockpitExecutor:
         return ExecutionOutcome(state=ExecutionState.COMPLETED if result.completed else ExecutionState.REJECTED, agent=command.agent, intent=command.intent, adapter=self.adapter, message=result.spoken_text, payload={"command_id": str(command.command_id), "spoken_text": result.spoken_text, **result.data})
 
 
+class CalibrationVoiceExecutor:
+    adapter = "fa18c-calibration-assistant"
+    supported_intents = {"calibration_start", "calibration_status", "calibration_repeat_instruction", "calibration_confirm_step", "calibration_retry"}
+
+    def execute(self, command: VoiceCommand) -> ExecutionOutcome:
+        result = execute_calibration_voice(command.intent, command.transcript)
+        return ExecutionOutcome(state=ExecutionState.COMPLETED if result.completed else ExecutionState.REJECTED, agent=command.agent, intent=command.intent, adapter=self.adapter, message=result.spoken_text, payload={"command_id": str(command.command_id), "spoken_text": result.spoken_text, **result.data})
+
+
 class ConversationExecutor:
     adapter = "ai-dialogue"
 
@@ -87,6 +97,7 @@ class VoiceExecutionDispatcher:
         self._mission_information = MissionInformationExecutor()
         self._official_knowledge = OfficialKnowledgeExecutor()
         self._live_cockpit = LiveCockpitExecutor()
+        self._calibration_voice = CalibrationVoiceExecutor()
         self._executors[VoiceAgent.GENERAL_CONVERSATION] = ConversationExecutor()
         self._executors[VoiceAgent.SYSTEM] = SystemExecutor()
 
@@ -95,6 +106,8 @@ class VoiceExecutionDispatcher:
             return self._mission_information.execute(command)
         if command.intent in self._live_cockpit.supported_intents:
             return self._live_cockpit.execute(command)
+        if command.intent in self._calibration_voice.supported_intents:
+            return self._calibration_voice.execute(command)
         if command.intent == "aircraft_knowledge_query":
             return self._official_knowledge.execute(command)
         executor = self._executors.get(command.agent)
@@ -107,6 +120,7 @@ class VoiceExecutionDispatcher:
         adapters["mission_information"] = self._mission_information.adapter
         adapters["official_knowledge"] = self._official_knowledge.adapter
         adapters["live_cockpit"] = self._live_cockpit.adapter
+        adapters["calibration_voice"] = self._calibration_voice.adapter
         return adapters
 
 
