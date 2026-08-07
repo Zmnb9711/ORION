@@ -47,6 +47,9 @@ def test_context_combines_ownship_contacts_and_support_assets() -> None:
         units=[
             MissionUnit(unit_id="blue-1", name="Ford 2-1", coalition=Coalition.BLUE, position=MissionPosition(latitude=41.1, longitude=41.0, altitude_m=6000)),
             MissionUnit(unit_id="red-1", name="Bandit 1", coalition=Coalition.RED, position=MissionPosition(latitude=41.0, longitude=41.2, altitude_m=7000)),
+            MissionUnit(unit_id="awacs-1", name="Magic", coalition=Coalition.BLUE, type_name="E-3A", position=MissionPosition(latitude=41.2, longitude=41.0, altitude_m=9000)),
+            MissionUnit(unit_id="tanker-1", name="Texaco", coalition=Coalition.BLUE, type_name="KC-135", position=MissionPosition(latitude=41.0, longitude=41.3, altitude_m=7500)),
+            MissionUnit(unit_id="jtac-1", name="Axeman", coalition=Coalition.BLUE, type_name="HMMWV", position=MissionPosition(latitude=41.05, longitude=41.05, altitude_m=100)),
         ],
     ))
     coalition_radio.replace([
@@ -60,12 +63,28 @@ def test_context_combines_ownship_contacts_and_support_assets() -> None:
     assert context.available is True
     assert context.ownship is not None
     assert context.ownship.aircraft_type == "FA-18C_hornet"
-    assert context.friendlies[0].name == "Ford 2-1"
     assert context.friendlies[0].distance_km is not None
     assert context.hostiles[0].name == "Bandit 1"
     assert context.awacs[0].callsign == "Magic"
+    assert context.awacs[0].position_source == "mission_snapshot"
+    assert context.awacs[0].distance_km is not None
     assert context.tankers[0].callsign == "Texaco"
+    assert context.tankers[0].bearing_deg is not None
     assert context.jtac[0].callsign == "Axeman"
+    assert context.jtac[0].latitude == 41.05
+
+
+def test_support_asset_keeps_position_unknown_when_snapshot_has_no_matching_unit() -> None:
+    live_telemetry.set(_telemetry())
+    mission_store.replace(MissionSnapshot(mission_id="mission-2"))
+    coalition_radio.replace([
+        CoalitionRadioUnit(unit_id="tanker-missing", callsign="Shell", recipient_type=DcsRecipientType.TANKER, coalition="blue", frequency_mhz=250.0),
+    ])
+    tanker = build_live_mission_context().tankers[0]
+    assert tanker.callsign == "Shell"
+    assert tanker.latitude is None
+    assert tanker.distance_km is None
+    assert tanker.position_source is None
 
 
 def test_context_reports_missing_sources_without_inventing_data() -> None:
