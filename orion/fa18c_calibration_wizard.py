@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 
 from orion.fa18c_diagnostics_recorder import MappingCandidate, hornet_diagnostics_recorder
 from orion.fa18c_mapping_registry import hornet_mapping_registry
+from orion.fa18c_mapping_sync import hornet_mapping_synchronizer
 
 
 class CalibrationStatus(str, Enum):
@@ -38,6 +39,7 @@ class CalibrationSession(BaseModel):
     steps: list[CalibrationStep]
     results: list[CalibrationResult] = Field(default_factory=list)
     mapping_version: str | None = None
+    mapping_sync_sent: bool = False
 
     @property
     def active_step(self) -> CalibrationStep | None:
@@ -96,7 +98,7 @@ class HornetCalibrationWizard:
         if session.current_step >= len(session.steps):
             session.status = CalibrationStatus.COMPLETE
             hornet_diagnostics_recorder.stop()
-            self._persist_mapping(session)
+            self._persist_and_sync_mapping(session)
             return session
         hornet_diagnostics_recorder.mark(session.steps[session.current_step].key)
         return session
@@ -117,7 +119,7 @@ class HornetCalibrationWizard:
         self._diagnostic_session_id = None
 
     @staticmethod
-    def _persist_mapping(session: CalibrationSession) -> None:
+    def _persist_and_sync_mapping(session: CalibrationSession) -> None:
         arguments = {
             item.key: item.accepted_argument_id
             for item in session.results
@@ -126,6 +128,7 @@ class HornetCalibrationWizard:
         confidence = {item.key: item.confidence for item in session.results if item.accepted_argument_id is not None}
         mapping = hornet_mapping_registry.save(arguments, confidence)
         session.mapping_version = mapping.version
+        session.mapping_sync_sent = hornet_mapping_synchronizer.sync(mapping).sent
 
     @staticmethod
     def _confidence(candidates: list[MappingCandidate], repetitions: int) -> float:
