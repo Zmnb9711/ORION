@@ -31,10 +31,14 @@ def execute_mission_context_query(intent: str, transcript: str) -> MissionContex
         return _nearest_contact(context.hostiles, hostile=True, language=language)
     if intent == "nearest_friendly":
         return _nearest_contact(context.friendlies, hostile=False, language=language)
-    if intent == "nearest_tanker":
+    if intent in {"nearest_tanker", "find_tanker"}:
         return _nearest_support(context.tankers, "танкер" if language == "ru" else "tanker", language)
     if intent == "nearest_awacs":
         return _nearest_support(context.awacs, "AWACS", language)
+    if intent == "request_tacan":
+        return _tanker_tacan(context, language)
+    if intent == "request_frequency":
+        return _tanker_frequency(context, language)
 
     return MissionContextVoiceResult(completed=False, spoken_text="Этот запрос контекста миссии пока не поддерживается." if language == "ru" else "This mission-context query is not supported yet.")
 
@@ -47,6 +51,42 @@ def _summary(context: LiveMissionContext, language: str) -> MissionContextVoiceR
     else:
         text = f"Mission context is available. Friendly contacts: {friendlies}, detected hostiles: {hostiles}, AWACS: {len(context.awacs)}, tankers: {len(context.tankers)}, JTAC: {len(context.jtac)}."
     return MissionContextVoiceResult(completed=True, spoken_text=text, data={"mission_id": context.mission_id, "friendlies": friendlies, "hostiles": hostiles, "awacs": len(context.awacs), "tankers": len(context.tankers), "jtac": len(context.jtac)})
+
+
+def _available_tankers(context: LiveMissionContext) -> list[SupportAsset]:
+    return [asset for asset in context.tankers if asset.available and asset.aar_available is not False]
+
+
+def _select_nearest(assets: list[SupportAsset]) -> SupportAsset | None:
+    if not assets:
+        return None
+    ranged = [asset for asset in assets if asset.distance_km is not None]
+    return min(ranged, key=lambda item: item.distance_km or 0) if ranged else assets[0]
+
+
+def _tanker_tacan(context: LiveMissionContext, language: str) -> MissionContextVoiceResult:
+    asset = _select_nearest(_available_tankers(context))
+    if asset is None:
+        text = "Доступный танкер не найден." if language == "ru" else "No available tanker was found."
+        return MissionContextVoiceResult(completed=False, spoken_text=text)
+    if asset.tacan_channel is None or asset.tacan_band is None:
+        text = f"Для танкера {asset.callsign} TACAN не передан Mission Bridge." if language == "ru" else f"Mission Bridge has no TACAN data for tanker {asset.callsign}."
+        return MissionContextVoiceResult(completed=False, spoken_text=text, data={"asset": asset.model_dump(mode="json")})
+    text = f"Танкер {asset.callsign}, TACAN {asset.tacan_channel} {asset.tacan_band}." if language == "ru" else f"Tanker {asset.callsign}, TACAN {asset.tacan_channel} {asset.tacan_band}."
+    return MissionContextVoiceResult(completed=True, spoken_text=text, data={"asset": asset.model_dump(mode="json")})
+
+
+def _tanker_frequency(context: LiveMissionContext, language: str) -> MissionContextVoiceResult:
+    asset = _select_nearest(_available_tankers(context))
+    if asset is None:
+        text = "Доступный танкер не найден." if language == "ru" else "No available tanker was found."
+        return MissionContextVoiceResult(completed=False, spoken_text=text)
+    if asset.frequency_mhz is None:
+        text = f"Для танкера {asset.callsign} частота не передана Mission Bridge." if language == "ru" else f"Mission Bridge has no frequency for tanker {asset.callsign}."
+        return MissionContextVoiceResult(completed=False, spoken_text=text, data={"asset": asset.model_dump(mode="json")})
+    modulation = f" {asset.modulation}" if asset.modulation else ""
+    text = f"Танкер {asset.callsign}, частота {asset.frequency_mhz:.3f} мегагерц{modulation}." if language == "ru" else f"Tanker {asset.callsign}, frequency {asset.frequency_mhz:.3f} megahertz{modulation}."
+    return MissionContextVoiceResult(completed=True, spoken_text=text, data={"asset": asset.model_dump(mode="json")})
 
 
 def _support_list(assets: list[SupportAsset], label: str, language: str) -> MissionContextVoiceResult:
@@ -76,12 +116,11 @@ def _nearest_contact(contacts: list[MissionContact], *, hostile: bool, language:
 
 
 def _nearest_support(assets: list[SupportAsset], label: str, language: str) -> MissionContextVoiceResult:
-    available = [asset for asset in assets if asset.available]
+    available = [asset for asset in assets if asset.available and (asset.role.value != "tanker" or asset.aar_available is not False)]
     if not available:
         text = f"Доступный {label} не найден." if language == "ru" else f"No available {label} was found."
         return MissionContextVoiceResult(completed=False, spoken_text=text, data={"assets": []})
-    ranged = [asset for asset in available if asset.distance_km is not None and asset.bearing_deg is not None]
-    asset = min(ranged, key=lambda item: item.distance_km if item.distance_km is not None else float("inf")) if ranged else available[0]
+    asset = _select_nearest(available) or available[0]
     if language == "ru":
         text = f"Доступен {label} {asset.callsign}."
         if asset.bearing_deg is not None and asset.distance_km is not None:
@@ -90,8 +129,16 @@ def _nearest_support(assets: list[SupportAsset], label: str, language: str) -> M
                 text += f" Высота {asset.altitude_m:.0f} метров."
         else:
             text += " Положение пока не передано Mission Bridge."
+        if asset.heading_deg is not None:
+            text += f" Курс {asset.heading_deg:.0f}."
+        if asset.speed_mps is not None:
+            text += f" Скорость {asset.speed_mps:.0f} метров в секунду."
         if asset.frequency_mhz is not None:
             text += f" Частота {asset.frequency_mhz:.3f} мегагерц{(' ' + asset.modulation) if asset.modulation else ''}."
+        if asset.tacan_channel is not None and asset.tacan_band is not None:
+            text += f" TACAN {asset.tacan_channel} {asset.tacan_band}."
+        if asset.role.value == "tanker" and asset.aar_available is True:
+            text += " Дозаправка доступна."
     else:
         text = f"Available {label}: {asset.callsign}."
         if asset.bearing_deg is not None and asset.distance_km is not None:
@@ -100,8 +147,16 @@ def _nearest_support(assets: list[SupportAsset], label: str, language: str) -> M
                 text += f" Altitude {asset.altitude_m:.0f} meters."
         else:
             text += " Position is not yet provided by Mission Bridge."
+        if asset.heading_deg is not None:
+            text += f" Heading {asset.heading_deg:.0f}."
+        if asset.speed_mps is not None:
+            text += f" Speed {asset.speed_mps:.0f} meters per second."
         if asset.frequency_mhz is not None:
             text += f" Frequency {asset.frequency_mhz:.3f} megahertz{(' ' + asset.modulation) if asset.modulation else ''}."
+        if asset.tacan_channel is not None and asset.tacan_band is not None:
+            text += f" TACAN {asset.tacan_channel} {asset.tacan_band}."
+        if asset.role.value == "tanker" and asset.aar_available is True:
+            text += " Aerial refueling is available."
     return MissionContextVoiceResult(completed=True, spoken_text=text, data={"asset": asset.model_dump(mode="json"), "position_available": asset.distance_km is not None and asset.bearing_deg is not None})
 
 
@@ -110,17 +165,13 @@ def _support_phrase(asset: SupportAsset, language: str) -> str:
     if asset.unit_type:
         text += f", {asset.unit_type}"
     if asset.bearing_deg is not None and asset.distance_km is not None:
-        if language == "ru":
-            text += f", азимут {asset.bearing_deg:.0f}, {asset.distance_km:.1f} километра"
-        else:
-            text += f", bearing {asset.bearing_deg:.0f}, {asset.distance_km:.1f} kilometers"
+        text += f", {'азимут' if language == 'ru' else 'bearing'} {asset.bearing_deg:.0f}, {asset.distance_km:.1f} {'километра' if language == 'ru' else 'kilometers'}"
     if asset.frequency_mhz is not None:
-        if language == "ru":
-            text += f", {asset.frequency_mhz:.3f} мегагерц"
-        else:
-            text += f", {asset.frequency_mhz:.3f} megahertz"
+        text += f", {asset.frequency_mhz:.3f} {'мегагерц' if language == 'ru' else 'megahertz'}"
         if asset.modulation:
             text += f" {asset.modulation}"
+    if asset.tacan_channel is not None and asset.tacan_band is not None:
+        text += f", TACAN {asset.tacan_channel} {asset.tacan_band}"
     return text
 
 
