@@ -25,16 +25,28 @@ def test_wizard_starts_with_tacan_power_instruction() -> None:
 
 
 def test_wizard_accepts_repeated_marker_candidate_and_advances() -> None:
-    session = hornet_calibration_wizard.start()
+    hornet_calibration_wizard.start()
     for previous, value in [(0.0, 1.0), (1.0, 0.0), (0.0, 1.0)]:
         hornet_diagnostics_recorder.ingest(packet(410, value, previous))
     updated = hornet_calibration_wizard.evaluate_step()
     result = next(item for item in updated.results if item.key == "tacan_power")
     assert result.accepted_argument_id == 410
-    assert result.confidence >= 0.65
+    assert result.confidence >= 0.72
     assert updated.current_step == 1
     assert updated.active_step is not None
     assert updated.active_step.key == "tacan_channel_tens"
+
+
+def test_wizard_rejects_ambiguous_candidates_and_allows_retry() -> None:
+    hornet_calibration_wizard.start()
+    for argument_id in (410, 999):
+        for previous, value in [(0.0, 1.0), (1.0, 0.0), (0.0, 1.0)]:
+            hornet_diagnostics_recorder.ingest(packet(argument_id, value, previous))
+    session = hornet_calibration_wizard.evaluate_step()
+    assert session.status == CalibrationStatus.NEEDS_RETRY
+    assert session.results[-1].accepted_argument_id is None
+    retried = hornet_calibration_wizard.retry()
+    assert retried.status == CalibrationStatus.RUNNING
 
 
 def test_wizard_requests_retry_when_evidence_is_missing() -> None:
@@ -42,5 +54,3 @@ def test_wizard_requests_retry_when_evidence_is_missing() -> None:
     session = hornet_calibration_wizard.evaluate_step()
     assert session.status == CalibrationStatus.NEEDS_RETRY
     assert session.results[-1].accepted_argument_id is None
-    retried = hornet_calibration_wizard.retry()
-    assert retried.status == CalibrationStatus.RUNNING
