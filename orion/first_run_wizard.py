@@ -43,7 +43,7 @@ def evaluate_first_run(payload: FirstRunRequest) -> FirstRunReport:
     checks: list[FirstRunCheck] = []
 
     installations = dcs_installations.list()
-    existing = next((item for item in installations if item.exists), None)
+    existing = next((item for item in installations if Path(item.executable_path).is_file()), None)
     checks.append(
         FirstRunCheck(
             key="dcs_installation",
