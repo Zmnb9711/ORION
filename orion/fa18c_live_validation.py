@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from threading import RLock
 
 from pydantic import BaseModel
@@ -25,8 +25,8 @@ class HornetLiveValidationSnapshot(BaseModel):
 @dataclass
 class HornetLiveValidator:
     required_samples: int = 3
-    mapping_registry: HornetMappingRegistry = hornet_mapping_registry
-    profile_registry: HornetValueProfileRegistry = hornet_value_profile_registry
+    mapping_registry: HornetMappingRegistry = field(default_factory=lambda: hornet_mapping_registry)
+    profile_registry: HornetValueProfileRegistry = field(default_factory=lambda: hornet_value_profile_registry)
 
     def __post_init__(self) -> None:
         self._consecutive = 0
