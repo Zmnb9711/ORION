@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from threading import RLock
@@ -15,16 +16,20 @@ class TelemetryHandshakeSnapshot:
     protocol_version: str | None
     last_received_at: datetime | None
     packet_count: int
+    packet_rate_hz: float
+    age_seconds: float | None
 
 
 class TelemetryHandshake:
-    def __init__(self, stale_after_seconds: float = 5.0) -> None:
+    def __init__(self, stale_after_seconds: float = 5.0, rate_window_seconds: float = 5.0) -> None:
         self._stale_after = timedelta(seconds=stale_after_seconds)
+        self._rate_window = timedelta(seconds=rate_window_seconds)
         self._last_received_at: datetime | None = None
         self._aircraft_type: str | None = None
         self._source: str | None = None
         self._protocol_version: str | None = None
         self._packet_count = 0
+        self._received_times: deque[datetime] = deque()
         self._lock = RLock()
 
     def observe(self, payload: TelemetryEnvelope, *, received_at: datetime | None = None) -> None:
@@ -37,13 +42,17 @@ class TelemetryHandshake:
             self._source = payload.source
             self._protocol_version = payload.protocol_version
             self._packet_count += 1
+            self._received_times.append(timestamp)
+            self._prune(timestamp)
 
     def snapshot(self, *, now: datetime | None = None) -> TelemetryHandshakeSnapshot:
         current = now or datetime.now(timezone.utc)
         if current.tzinfo is None:
             current = current.replace(tzinfo=timezone.utc)
         with self._lock:
+            self._prune(current)
             last = self._last_received_at
+            age = None if last is None else max(0.0, (current - last).total_seconds())
             connected = last is not None and current - last <= self._stale_after
             return TelemetryHandshakeSnapshot(
                 connected=connected,
@@ -52,6 +61,8 @@ class TelemetryHandshake:
                 protocol_version=self._protocol_version if connected else None,
                 last_received_at=last,
                 packet_count=self._packet_count,
+                packet_rate_hz=self._rate_hz(),
+                age_seconds=age,
             )
 
     def reset(self) -> None:
@@ -61,6 +72,20 @@ class TelemetryHandshake:
             self._source = None
             self._protocol_version = None
             self._packet_count = 0
+            self._received_times.clear()
+
+    def _prune(self, now: datetime) -> None:
+        threshold = now - self._rate_window
+        while self._received_times and self._received_times[0] < threshold:
+            self._received_times.popleft()
+
+    def _rate_hz(self) -> float:
+        if len(self._received_times) < 2:
+            return 0.0
+        span = (self._received_times[-1] - self._received_times[0]).total_seconds()
+        if span <= 0:
+            return 0.0
+        return round((len(self._received_times) - 1) / span, 2)
 
 
 telemetry_handshake = TelemetryHandshake()
