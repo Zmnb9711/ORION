@@ -15,13 +15,7 @@ if LEGACY_CORE_AVAILABLE:
     from orion.capabilities import MissionPackRegistration, capability_registry
     from orion.commands import CommandDispatcher, DcsCommand
     from orion.config import settings
-    from orion.confirmations import (
-        ConfirmationDecision,
-        ConfirmationStatus,
-        PendingAction,
-        PendingActionCreate,
-        confirmation_store,
-    )
+    from orion.confirmations import ConfirmationDecision, ConfirmationStatus, PendingAction, PendingActionCreate, confirmation_store
     from orion.dialogue import DialogueRequest, DialogueResult, classify_dialogue
     from orion.events import EventJournal
     from orion.mission import Coalition, MissionPosition, MissionSnapshot, MissionUnit
@@ -52,11 +46,7 @@ if LEGACY_CORE_AVAILABLE:
 
     app = FastAPI(title="ORION Core", version=__version__, lifespan=lifespan)
 else:
-    app = FastAPI(
-        title="ORION",
-        version="0.1.0",
-        description="ORION AI Flight Assistant API",
-    )
+    app = FastAPI(title="ORION", version="0.1.0", description="ORION AI Flight Assistant API")
 
 
 def _include_router_when_available(module_name: str) -> None:
@@ -70,12 +60,10 @@ def _include_router_when_available(module_name: str) -> None:
 
 
 for _router_module in (
-    # Knowledge / voice / coalition / live mission layer.
     "orion.aircraft_knowledge_api",
     "orion.coalition_control_api",
     "orion.mission_bridge_api",
     "orion.voice_core_api",
-    # Original ORION Core product APIs.
     "orion.launch_api",
     "orion.dcs_installations_api",
     "orion.dcs_process_api",
@@ -86,6 +74,7 @@ for _router_module in (
     "orion.mission_preparation_api",
     "orion.orion_settings_api",
     "orion.product_capabilities_api",
+    "orion.components_api",
 ):
     _include_router_when_available(_router_module)
 
@@ -98,7 +87,6 @@ def health() -> dict[str, str]:
 
 
 if LEGACY_CORE_AVAILABLE:
-
     @app.post("/v1/flight-bridge/telemetry", status_code=202)
     @app.post("/v1/telemetry", status_code=202, include_in_schema=False)
     def ingest_telemetry(payload: TelemetryEnvelope) -> dict[str, str]:
@@ -163,10 +151,7 @@ if LEGACY_CORE_AVAILABLE:
     @app.post("/v1/dialogue", response_model=DialogueResult)
     def process_dialogue(payload: DialogueRequest) -> DialogueResult:
         result = classify_dialogue(payload)
-        _journal.append(
-            "dialogue",
-            {"request": payload.model_dump(mode="json"), "result": result.model_dump(mode="json")},
-        )
+        _journal.append("dialogue", {"request": payload.model_dump(mode="json"), "result": result.model_dump(mode="json")})
         return result
 
     @app.post("/v1/pending-actions", response_model=PendingAction, status_code=201)
@@ -201,46 +186,21 @@ if LEGACY_CORE_AVAILABLE:
         return snapshot
 
     @app.get("/v1/mission/units", response_model=list[MissionUnit])
-    def list_mission_units(
-        coalition: Coalition | None = Query(default=None),
-        alive_only: bool = Query(default=True),
-    ) -> list[MissionUnit]:
+    def list_mission_units(coalition: Coalition | None = Query(default=None), alive_only: bool = Query(default=True)) -> list[MissionUnit]:
         return mission_store.units(coalition=coalition, alive_only=alive_only)
 
     @app.get("/v1/mission/threats", response_model=list[ThreatAssessment])
-    def list_threats(
-        latitude: float | None = Query(default=None, ge=-90, le=90),
-        longitude: float | None = Query(default=None, ge=-180, le=180),
-        altitude_m: float | None = Query(default=None),
-        own_coalition: Coalition = Query(default=Coalition.BLUE),
-        horizon_s: float = Query(default=60, ge=0, le=600),
-    ) -> list[ThreatAssessment]:
+    def list_threats(latitude: float | None = Query(default=None, ge=-90, le=90), longitude: float | None = Query(default=None, ge=-180, le=180), altitude_m: float | None = Query(default=None), own_coalition: Coalition = Query(default=Coalition.BLUE), horizon_s: float = Query(default=60, ge=0, le=600)) -> list[ThreatAssessment]:
         snapshot = mission_store.get()
         if snapshot is None:
             raise HTTPException(status_code=404, detail="No mission snapshot received")
         if latitude is None or longitude is None:
             if _latest is None:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Provide latitude and longitude or ingest own-aircraft telemetry first",
-                )
-            own_position = MissionPosition(
-                latitude=_latest.state.position.latitude,
-                longitude=_latest.state.position.longitude,
-                altitude_m=_latest.state.position.altitude_m,
-            )
+                raise HTTPException(status_code=400, detail="Provide latitude and longitude or ingest own-aircraft telemetry first")
+            own_position = MissionPosition(latitude=_latest.state.position.latitude, longitude=_latest.state.position.longitude, altitude_m=_latest.state.position.altitude_m)
         else:
-            own_position = MissionPosition(
-                latitude=latitude,
-                longitude=longitude,
-                altitude_m=altitude_m or 0,
-            )
-        return assess_threats(
-            snapshot=snapshot,
-            own_position=own_position,
-            own_coalition=own_coalition,
-            horizon_s=horizon_s,
-        )
+            own_position = MissionPosition(latitude=latitude, longitude=longitude, altitude_m=altitude_m or 0)
+        return assess_threats(snapshot=snapshot, own_position=own_position, own_coalition=own_coalition, horizon_s=horizon_s)
 
     @app.post("/v1/support-requests", response_model=SupportRequest, status_code=201)
     def create_support_request(payload: SupportRequestCreate) -> SupportRequest:
