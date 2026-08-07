@@ -26,7 +26,7 @@ class CalibrationStep(BaseModel):
 class CalibrationResult(BaseModel):
     key: str
     accepted_argument_id: int | None = None
-    confidence: float = 0.0
+    confidence: float = Field(default=0.0, ge=0, le=1)
     candidates: list[MappingCandidate] = Field(default_factory=list)
 
 
@@ -74,16 +74,17 @@ class HornetCalibrationWizard:
             raise RuntimeError("No calibration session exists")
         return self.session
 
-    def evaluate_step(self, minimum_confidence: float = 0.65) -> CalibrationSession:
+    def evaluate_step(self, minimum_confidence: float = 0.72) -> CalibrationSession:
         session = self.current()
         step = session.active_step
         if step is None or session.status != CalibrationStatus.RUNNING:
             raise RuntimeError("No active calibration step")
         report = hornet_diagnostics_recorder.report()
-        candidates = [candidate for candidate in report.candidates if step.key in candidate.markers]
-        candidates.sort(key=lambda candidate: candidate.score, reverse=True)
-        confidence = self._confidence(candidates)
-        accepted = candidates[0].argument_id if candidates and confidence >= minimum_confidence else None
+        marker_ids = set(report.markers.get(step.key, []))
+        candidates = [candidate for candidate in report.candidates if candidate.argument_id in marker_ids]
+        candidates.sort(key=lambda candidate: (-candidate.score, -candidate.observations, candidate.argument_id))
+        confidence = self._confidence(candidates, step.repetitions)
+        accepted = candidates[0].argument_id if candidates and candidates[0].observations >= step.repetitions and confidence >= minimum_confidence else None
         result = CalibrationResult(key=step.key, accepted_argument_id=accepted, confidence=confidence, candidates=candidates[:5])
         session.results = [item for item in session.results if item.key != step.key] + [result]
         if accepted is None:
@@ -113,7 +114,7 @@ class HornetCalibrationWizard:
         self._diagnostic_session_id = None
 
     @staticmethod
-    def _confidence(candidates: list[MappingCandidate]) -> float:
+    def _confidence(candidates: list[MappingCandidate], repetitions: int) -> float:
         if not candidates:
             return 0.0
         top = candidates[0].score
@@ -121,7 +122,7 @@ class HornetCalibrationWizard:
         if top <= 0:
             return 0.0
         separation = max(0.0, min(1.0, (top - runner_up) / top))
-        evidence = max(0.0, min(1.0, candidates[0].observations / 3.0))
+        evidence = max(0.0, min(1.0, candidates[0].observations / float(max(repetitions, 1))))
         return round(0.6 * evidence + 0.4 * separation, 3)
 
 
