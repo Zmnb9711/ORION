@@ -8,10 +8,14 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 
+SemanticValue = int | str | bool
+
+
 class ControlValueProfile(BaseModel):
     control: str
     argument_id: int
     detents: list[float] = Field(default_factory=list)
+    semantic_values: list[SemanticValue] = Field(default_factory=list)
     tolerance: float = Field(default=0.03, gt=0, le=0.25)
 
     def nearest_index(self, value: float | None) -> int | None:
@@ -22,9 +26,15 @@ class ControlValueProfile(BaseModel):
         index = min(range(len(distances)), key=distances.__getitem__)
         return index if distances[index] <= self.tolerance else None
 
+    def semantic(self, value: float | None) -> SemanticValue | None:
+        index = self.nearest_index(value)
+        if index is None or index >= len(self.semantic_values):
+            return None
+        return self.semantic_values[index]
+
 
 class HornetValueProfileSet(BaseModel):
-    version: str = "fa18c-value-profile-v1"
+    version: str = "fa18c-value-profile-v2"
     mapping_version: str
     controls: dict[str, ControlValueProfile] = Field(default_factory=dict)
 
@@ -72,6 +82,15 @@ class HornetValueProfileRegistry:
 
 
 def calibrated_detents(transitions: list[tuple[float | None, float]], *, epsilon: float = 0.005) -> list[float]:
+    return sorted(calibrated_sequence(transitions, epsilon=epsilon))
+
+
+def calibrated_sequence(transitions: list[tuple[float | None, float]], *, epsilon: float = 0.005) -> list[float]:
+    """Return unique observed values in first-seen order.
+
+    Sequential calibration instructions can therefore attach explicit semantic
+    labels without assuming that DCS raw values increase with the selector.
+    """
     values: list[float] = []
     for previous, current in transitions:
         for value in (previous, current):
@@ -80,7 +99,7 @@ def calibrated_detents(transitions: list[tuple[float | None, float]], *, epsilon
             numeric = float(value)
             if all(abs(numeric - known) > epsilon for known in values):
                 values.append(numeric)
-    return sorted(values)
+    return values
 
 
 hornet_value_profile_registry = HornetValueProfileRegistry.default()
