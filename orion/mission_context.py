@@ -39,6 +39,12 @@ class SupportAsset(BaseModel):
     frequency_mhz: float | None = None
     modulation: str | None = None
     available: bool = True
+    latitude: float | None = None
+    longitude: float | None = None
+    altitude_m: float | None = None
+    distance_km: float | None = None
+    bearing_deg: float | None = None
+    position_source: str | None = None
 
 
 class LiveMissionContext(BaseModel):
@@ -78,7 +84,9 @@ def build_live_mission_context() -> LiveMissionContext:
 
     friendlies: list[MissionContact] = []
     hostiles: list[MissionContact] = []
+    mission_units: dict[str, MissionUnit] = {}
     if snapshot is not None:
+        mission_units = {unit.unit_id: unit for unit in snapshot.units}
         for unit in snapshot.units:
             if not unit.alive or not unit.detected:
                 continue
@@ -100,9 +108,9 @@ def build_live_mission_context() -> LiveMissionContext:
         ownship=ownship,
         friendlies=friendlies,
         hostiles=hostiles,
-        awacs=_support_assets(radio_units, DcsRecipientType.AWACS),
-        tankers=_support_assets(radio_units, DcsRecipientType.TANKER),
-        jtac=_support_assets(radio_units, DcsRecipientType.JTAC),
+        awacs=_support_assets(radio_units, DcsRecipientType.AWACS, mission_units, ownship),
+        tankers=_support_assets(radio_units, DcsRecipientType.TANKER, mission_units, ownship),
+        jtac=_support_assets(radio_units, DcsRecipientType.JTAC, mission_units, ownship),
         issues=issues,
     )
 
@@ -127,21 +135,46 @@ def _contact(unit: MissionUnit, ownship: OwnshipContext | None) -> MissionContac
     )
 
 
-def _support_assets(units: list[CoalitionRadioUnit], role: DcsRecipientType) -> list[SupportAsset]:
-    assets = [
-        SupportAsset(
-            unit_id=unit.unit_id,
-            callsign=unit.callsign,
-            role=role,
-            unit_type=unit.unit_type,
-            frequency_mhz=unit.frequency_mhz,
-            modulation=unit.modulation.value if unit.modulation else None,
-            available=unit.available,
+def _support_assets(
+    units: list[CoalitionRadioUnit],
+    role: DcsRecipientType,
+    mission_units: dict[str, MissionUnit],
+    ownship: OwnshipContext | None,
+) -> list[SupportAsset]:
+    assets: list[SupportAsset] = []
+    for unit in units:
+        if unit.recipient_type is not role:
+            continue
+        mission_unit = mission_units.get(unit.unit_id)
+        latitude = longitude = altitude_m = distance_km = bearing_deg = None
+        position_source = None
+        if mission_unit is not None and mission_unit.alive and mission_unit.detected:
+            latitude = mission_unit.position.latitude
+            longitude = mission_unit.position.longitude
+            altitude_m = mission_unit.position.altitude_m
+            position_source = "mission_snapshot"
+            if ownship is not None:
+                distance_km, bearing_deg = _range_bearing(
+                    ownship.latitude, ownship.longitude, latitude, longitude
+                )
+        assets.append(
+            SupportAsset(
+                unit_id=unit.unit_id,
+                callsign=unit.callsign,
+                role=role,
+                unit_type=unit.unit_type,
+                frequency_mhz=unit.frequency_mhz,
+                modulation=unit.modulation.value if unit.modulation else None,
+                available=unit.available,
+                latitude=latitude,
+                longitude=longitude,
+                altitude_m=altitude_m,
+                distance_km=distance_km,
+                bearing_deg=bearing_deg,
+                position_source=position_source,
+            )
         )
-        for unit in units
-        if unit.recipient_type is role
-    ]
-    return sorted(assets, key=lambda item: item.callsign)
+    return sorted(assets, key=lambda item: (item.distance_km if item.distance_km is not None else float("inf"), item.callsign))
 
 
 def _contact_sort_key(contact: MissionContact) -> tuple[float, str]:
