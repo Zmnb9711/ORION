@@ -36,6 +36,9 @@ class CoalitionRadioUnit(BaseModel):
     modulation: RadioModulation | None = None
     preset: str | None = Field(default=None, max_length=40)
     point: MissionPoint | None = None
+    tacan_channel: int | None = Field(default=None, ge=1, le=126)
+    tacan_band: str | None = Field(default=None, pattern="^[XY]$")
+    aar_available: bool | None = None
     available: bool = True
 
     @property
@@ -157,39 +160,18 @@ class CoalitionRadioDirectory:
 
     def lookup(self, query: RadioLookupQuery) -> RadioLookupResult:
         with self._lock:
-            candidates = self._filter(
-                text=query.text,
-                coalition=query.coalition,
-                recipient_type=query.recipient_type,
-                available_only=True,
-            )
+            candidates = self._filter(text=query.text, coalition=query.coalition, recipient_type=query.recipient_type, available_only=True)
             if not candidates:
                 return RadioLookupResult(found=False, message="No matching friendly unit was found in the current mission data")
             unit = sorted(candidates, key=lambda item: item.callsign)[0].model_copy(deep=True)
             if unit.frequency_mhz is None:
-                return RadioLookupResult(
-                    found=True,
-                    unit=unit,
-                    message=f"{unit.callsign}, {unit.spoken_type}: no radio frequency is assigned in the mission data",
-                )
+                return RadioLookupResult(found=True, unit=unit, message=f"{unit.callsign}, {unit.spoken_type}: no radio frequency is assigned in the mission data")
             modulation = unit.modulation.value if unit.modulation else "unspecified modulation"
-            return RadioLookupResult(
-                found=True,
-                unit=unit,
-                message=f"{unit.callsign}, {unit.spoken_type}: {unit.frequency_mhz:.3f} MHz {modulation}",
-            )
+            return RadioLookupResult(found=True, unit=unit, message=f"{unit.callsign}, {unit.spoken_type}: {unit.frequency_mhz:.3f} MHz {modulation}")
 
     def lookup_callsigns(self, query: CallsignLookupQuery) -> CallsignLookupResult:
         with self._lock:
-            units = sorted(
-                self._filter(
-                    text=query.text,
-                    coalition=query.coalition,
-                    recipient_type=query.recipient_type,
-                    available_only=query.available_only,
-                ),
-                key=lambda item: item.callsign,
-            )
+            units = sorted(self._filter(text=query.text, coalition=query.coalition, recipient_type=query.recipient_type, available_only=query.available_only), key=lambda item: item.callsign)
             copies = [unit.model_copy(deep=True) for unit in units]
             if not copies:
                 return CallsignLookupResult(found=False, message="No matching friendly callsigns were found in the current mission data")
@@ -200,48 +182,20 @@ class CoalitionRadioDirectory:
         with self._lock:
             landmark = self._find_landmark(query.landmark)
             if landmark is None:
-                return NearbyCallsignResult(
-                    found=False,
-                    message="The requested landmark was not found in the current mission data",
-                )
-            candidates = self._filter(
-                text=None,
-                coalition=query.coalition,
-                recipient_type=query.recipient_type,
-                available_only=query.available_only,
-            )
+                return NearbyCallsignResult(found=False, message="The requested landmark was not found in the current mission data")
+            candidates = self._filter(text=None, coalition=query.coalition, recipient_type=query.recipient_type, available_only=query.available_only)
             nearby: list[NearbyCallsignItem] = []
             for unit in candidates:
                 if unit.point is None:
                     continue
-                distance_km = hypot(
-                    unit.point.x_m - landmark.point.x_m,
-                    unit.point.z_m - landmark.point.z_m,
-                ) / 1000.0
+                distance_km = hypot(unit.point.x_m - landmark.point.x_m, unit.point.z_m - landmark.point.z_m) / 1000.0
                 if distance_km <= query.radius_km:
-                    nearby.append(
-                        NearbyCallsignItem(
-                            unit=unit.model_copy(deep=True),
-                            distance_km=round(distance_km, 1),
-                        )
-                    )
+                    nearby.append(NearbyCallsignItem(unit=unit.model_copy(deep=True), distance_km=round(distance_km, 1)))
             nearby.sort(key=lambda item: (item.distance_km, item.unit.callsign))
             if not nearby:
-                return NearbyCallsignResult(
-                    found=False,
-                    landmark=landmark.model_copy(deep=True),
-                    message=f"No matching friendly units were found within {query.radius_km:g} km of {landmark.name}",
-                )
-            summary = ", ".join(
-                f"{item.unit.callsign}, {item.unit.spoken_type} ({item.distance_km:g} km)"
-                for item in nearby
-            )
-            return NearbyCallsignResult(
-                found=True,
-                landmark=landmark.model_copy(deep=True),
-                units=nearby,
-                message=f"Friendly units near {landmark.name}: {summary}",
-            )
+                return NearbyCallsignResult(found=False, landmark=landmark.model_copy(deep=True), message=f"No matching friendly units were found within {query.radius_km:g} km of {landmark.name}")
+            summary = ", ".join(f"{item.unit.callsign}, {item.unit.spoken_type} ({item.distance_km:g} km)" for item in nearby)
+            return NearbyCallsignResult(found=True, landmark=landmark.model_copy(deep=True), units=nearby, message=f"Friendly units near {landmark.name}: {summary}")
 
 
 coalition_radio = CoalitionRadioDirectory()
