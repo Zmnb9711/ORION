@@ -6,7 +6,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from orion.components import component_registry
-from orion.dcs_installations import dcs_installations
+from orion.dcs_installations import DcsInstallationStore, dcs_installations
 from orion.dcs_readiness import inspect_dcs_readiness
 
 
@@ -39,10 +39,13 @@ class FirstRunReport(BaseModel):
     next_action: str | None = None
 
 
-def evaluate_first_run(payload: FirstRunRequest) -> FirstRunReport:
+def evaluate_first_run(
+    payload: FirstRunRequest,
+    installation_store: DcsInstallationStore = dcs_installations,
+) -> FirstRunReport:
     checks: list[FirstRunCheck] = []
 
-    installations = dcs_installations.list()
+    installations = installation_store.list()
     existing = next((item for item in installations if Path(item.executable_path).is_file()), None)
     checks.append(
         FirstRunCheck(
