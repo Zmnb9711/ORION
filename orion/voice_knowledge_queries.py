@@ -5,6 +5,8 @@ import re
 from pydantic import BaseModel, Field
 
 from orion.aircraft_knowledge import aircraft_knowledge
+from orion.fa18c_cockpit import fa18c_cockpit
+from orion.fa18c_systems import fa18c_knowledge_pack
 from orion.knowledge_manager import OfficialKnowledgeQuery, knowledge_manager
 from orion.voice_core import VoiceCommand
 
@@ -25,6 +27,12 @@ def execute_aircraft_knowledge_query(command: VoiceCommand) -> VoiceKnowledgeRes
         )
 
     query_text = _clean_query(command.transcript)
+
+    if aircraft_id == "fa-18c":
+        structured = _execute_hornet_structured_query(query_text)
+        if structured is not None:
+            return structured
+
     result = knowledge_manager.search(
         OfficialKnowledgeQuery(text=query_text, aircraft_id=aircraft_id, limit=3)
     )
@@ -66,11 +74,61 @@ def execute_aircraft_knowledge_query(command: VoiceCommand) -> VoiceKnowledgeRes
     )
 
 
+def _execute_hornet_structured_query(query_text: str) -> VoiceKnowledgeResult | None:
+    cockpit_matches = fa18c_cockpit.find(query_text)
+    if cockpit_matches:
+        item = cockpit_matches[0]
+        spoken = f"{item.title}: находится {item.location} {item.purpose} {item.interaction}"
+        return VoiceKnowledgeResult(
+            completed=True,
+            spoken_text=spoken,
+            data={
+                "aircraft_id": "fa-18c",
+                "knowledge_layer": "structured_hornet_cockpit",
+                "control": item.model_dump(mode="json"),
+                "network_required": False,
+            },
+        )
+
+    found = fa18c_knowledge_pack.find(query_text)
+    systems = found["systems"]
+    procedures = found["procedures"]
+    if procedures:
+        item = procedures[0]
+        phases = "; затем ".join(item.ordered_phases)
+        spoken = f"{item.title}. Порядок: {phases}."
+        return VoiceKnowledgeResult(
+            completed=True,
+            spoken_text=spoken,
+            data={
+                "aircraft_id": "fa-18c",
+                "knowledge_layer": "structured_hornet_procedure",
+                "procedure": item.model_dump(mode="json"),
+                "network_required": False,
+            },
+        )
+    if systems:
+        item = systems[0]
+        return VoiceKnowledgeResult(
+            completed=True,
+            spoken_text=f"{item.title}: {item.summary}",
+            data={
+                "aircraft_id": "fa-18c",
+                "knowledge_layer": "structured_hornet_system",
+                "system": item.model_dump(mode="json"),
+                "network_required": False,
+            },
+        )
+    return None
+
+
 def _resolve_aircraft_id(command: VoiceCommand) -> str | None:
     for key in ("aircraft_id", "current_aircraft_id", "player_aircraft_id", "context_aircraft_id"):
         value = command.context.get(key)
-        if isinstance(value, str) and aircraft_knowledge.get_profile(value):
-            return value
+        if isinstance(value, str):
+            resolved = aircraft_knowledge.resolve_aircraft_id(value)
+            if resolved:
+                return resolved
 
     normalized = command.transcript.casefold()
     for profile in aircraft_knowledge.list_profiles():
@@ -82,7 +140,7 @@ def _resolve_aircraft_id(command: VoiceCommand) -> str | None:
 
 def _clean_query(text: str) -> str:
     cleaned = re.sub(
-        r"\b(?:согласно|руководству|руководство|мануал|manual|для|самолёта|самолета|модуля|dcs|как|how|do|i)\b",
+        r"\b(?:согласно|руководству|руководство|мануал|manual|для|самолёта|самолета|модуля|dcs|как|how|do|i|где|находится|where|is|the)\b",
         " ",
         text,
         flags=re.IGNORECASE,
