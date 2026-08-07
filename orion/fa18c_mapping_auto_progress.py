@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from orion.fa18c_calibration_wizard import CalibrationStatus, hornet_calibration_wizard
 from orion.fa18c_diagnostics_recorder import hornet_diagnostics_recorder
+from orion.fa18c_mapping_notifications import hornet_mapping_notifier
 
 
 @dataclass(frozen=True)
@@ -13,6 +14,7 @@ class AutoProgressEvent:
     previous_step: str | None = None
     next_step: str | None = None
     confidence: float = 0.0
+    notification_correlation_id: str | None = None
 
 
 class HornetMappingAutoProgress:
@@ -44,12 +46,14 @@ class HornetMappingAutoProgress:
         previous = step.key
         updated = hornet_calibration_wizard.evaluate_step(self.minimum_confidence)
         next_step = updated.active_step.key if updated.active_step else None
+        notification = hornet_mapping_notifier.step_advanced(updated, previous)
         event = AutoProgressEvent(
             advanced=True,
             completed=updated.status == CalibrationStatus.COMPLETE,
             previous_step=previous,
             next_step=next_step,
             confidence=confidence,
+            notification_correlation_id=notification.correlation_id,
         )
         self._last_event = event
         return event
