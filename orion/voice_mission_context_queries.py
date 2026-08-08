@@ -4,7 +4,7 @@ from math import atan2, cos, degrees, radians, sin, sqrt
 
 from pydantic import BaseModel, Field
 
-from orion.coalition_units import spoken_speed
+from orion.coalition_units import spoken_distance, spoken_speed
 from orion.mission_context import LiveMissionContext, MissionContact, SupportAsset, build_live_mission_context
 
 
@@ -83,7 +83,8 @@ def _nearest_contact(contacts: list[MissionContact], *, hostile: bool, language:
         return MissionContextVoiceResult(completed=False, spoken_text=f"Не могу определить ближайший {target}: нет контактов с рассчитанной дальностью." if language == "ru" else f"I cannot determine the nearest {'hostile' if hostile else 'friendly'} contact because no ranged contacts are available.", data={"contacts": []})
     c = min(ranged, key=lambda x: x.distance_km if x.distance_km is not None else float("inf"))
     label = ("Ближайший противник" if hostile else "Ближайший дружественный") if language == "ru" else ("Nearest hostile" if hostile else "Nearest friendly")
-    text = f"{label}: {c.name}, азимут {c.bearing_deg:.0f}, дальность {c.distance_km:.1f} километра, высота {c.altitude_m:.0f} метров." if language == "ru" else f"{label}: {c.name}, bearing {c.bearing_deg:.0f}, range {c.distance_km:.1f} kilometers, altitude {c.altitude_m:.0f} meters."
+    range_text = spoken_distance(c.distance_km, c.coalition, language)
+    text = f"{label}: {c.name}, азимут {c.bearing_deg:.0f}, дальность {range_text}, высота {c.altitude_m:.0f} метров." if language == "ru" else f"{label}: {c.name}, bearing {c.bearing_deg:.0f}, range {range_text}, altitude {c.altitude_m:.0f} meters."
     if c.speed_mps is not None:
         text += f" {'Скорость' if language == 'ru' else 'Speed'} {spoken_speed(c.speed_mps, c.coalition, language)}."
     return MissionContextVoiceResult(completed=True, spoken_text=text, data={"contact": c.model_dump(mode="json")})
@@ -125,7 +126,7 @@ def _nearest_support(assets: list[SupportAsset], label: str, language: str, cont
     a = _select_nearest(available) or available[0]
     text = f"Доступен {label} {a.callsign}." if language == "ru" else f"Available {label}: {a.callsign}."
     if a.bearing_deg is not None and a.distance_km is not None:
-        text += (f" Азимут {a.bearing_deg:.0f}, дальность {a.distance_km:.1f} километра." if language == "ru" else f" Bearing {a.bearing_deg:.0f}, range {a.distance_km:.1f} kilometers.")
+        text += (f" Азимут {a.bearing_deg:.0f}, дальность {spoken_distance(a.distance_km, a.coalition, language)}." if language == "ru" else f" Bearing {a.bearing_deg:.0f}, range {spoken_distance(a.distance_km, a.coalition, language)}.")
         if a.altitude_m is not None: text += f" {'Высота' if language == 'ru' else 'Altitude'} {a.altitude_m:.0f} {'метров' if language == 'ru' else 'meters'}."
     else: text += " Положение пока не передано Mission Bridge." if language == "ru" else " Position is not yet provided by Mission Bridge."
     if a.heading_deg is not None: text += f" {'Курс' if language == 'ru' else 'Heading'} {a.heading_deg:.0f}."
@@ -135,7 +136,8 @@ def _nearest_support(assets: list[SupportAsset], label: str, language: str, cont
     guidance = _intercept_guidance(context, a) if a.role.value == "tanker" else None
     if guidance:
         minutes = guidance["eta_s"] / 60.0
-        text += (f" Рекомендуемый курс перехвата {guidance['intercept_heading_deg']:.0f}, расчетное время встречи {minutes:.1f} минуты." if language == "ru" else f" Recommended intercept heading {guidance['intercept_heading_deg']:.0f}, estimated rendezvous time {minutes:.1f} minutes.")
+        distance_text = spoken_distance(guidance["intercept_distance_km"], a.coalition, language)
+        text += (f" Рекомендуемый курс перехвата {guidance['intercept_heading_deg']:.0f}, расчетное время встречи {minutes:.1f} минуты, путь до точки встречи {distance_text}." if language == "ru" else f" Recommended intercept heading {guidance['intercept_heading_deg']:.0f}, estimated rendezvous time {minutes:.1f} minutes, distance to rendezvous {distance_text}.")
     if a.role.value == "tanker" and a.aar_available is True: text += " Дозаправка доступна." if language == "ru" else " Aerial refueling is available."
     return MissionContextVoiceResult(completed=True, spoken_text=text, data={"asset": a.model_dump(mode="json"), "position_available": a.distance_km is not None and a.bearing_deg is not None, "intercept_guidance": guidance})
 
@@ -143,7 +145,7 @@ def _nearest_support(assets: list[SupportAsset], label: str, language: str, cont
 def _support_phrase(asset: SupportAsset, language: str) -> str:
     text = asset.callsign
     if asset.unit_type: text += f", {asset.unit_type}"
-    if asset.bearing_deg is not None and asset.distance_km is not None: text += f", {'азимут' if language == 'ru' else 'bearing'} {asset.bearing_deg:.0f}, {asset.distance_km:.1f} {'километра' if language == 'ru' else 'kilometers'}"
+    if asset.bearing_deg is not None and asset.distance_km is not None: text += f", {'азимут' if language == 'ru' else 'bearing'} {asset.bearing_deg:.0f}, {spoken_distance(asset.distance_km, asset.coalition, language)}"
     if asset.speed_mps is not None: text += f", {spoken_speed(asset.speed_mps, asset.coalition, language)}"
     if asset.frequency_mhz is not None:
         text += f", {asset.frequency_mhz:.3f} {'мегагерц' if language == 'ru' else 'megahertz'}"
