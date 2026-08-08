@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from threading import RLock
 
+from orion.awacs_prioritization import prioritize_air_contacts
 from orion.tactical_situation import TacticalSituationSummary, TacticalThreat, TacticalThreatKind, get_tactical_situation
 from orion.threats import ThreatLevel
 from orion.voice_core import CommandPriority, VoiceAgent, VoiceCommand, VoiceCommandCreate, voice_commands
@@ -30,10 +31,15 @@ class TacticalProactiveMonitor:
         if not summary.available:
             return []
 
+        # AWACS air contacts are explicitly re-ranked using tactical kinematics.
+        air_decision = prioritize_air_contacts(summary.priority_threats, limit=3)
+        non_air = [item for item in summary.priority_threats if item.kind is not TacticalThreatKind.AIR]
+        ordered_threats = [*air_decision.ordered_contacts, *non_air]
+
         commands: list[VoiceCommand] = []
-        current_ids = {item.unit_id for item in summary.priority_threats}
+        current_ids = {item.unit_id for item in ordered_threats}
         with self._lock:
-            for threat in summary.priority_threats:
+            for threat in ordered_threats:
                 previous = self._seen.get(threat.unit_id)
                 if not _meaningful_change(threat, previous):
                     self._seen[threat.unit_id] = _ThreatMemory(threat.level, threat.range_nm)
@@ -55,6 +61,7 @@ class TacticalProactiveMonitor:
                             "range_trend": threat.kinematics.range_trend.value,
                             "closure_kts": threat.kinematics.closure_kts,
                             "tactical_priority": threat.tactical_priority,
+                            "awacs_primary": air_decision.primary is not None and threat.unit_id == air_decision.primary.unit_id,
                         },
                     )
                 )
