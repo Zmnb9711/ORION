@@ -4,6 +4,7 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
+from orion.flight_runtime_summary import FlightRuntimeSummary, get_flight_runtime_summary
 from orion.mission_command_status import MissionCommandStatus, mission_command_statuses
 from orion.startup_health import StartupHealthReport, StartupHealthState, inspect_startup_health
 from orion.telemetry_handshake import telemetry_handshake
@@ -37,6 +38,7 @@ class OrionApplicationState(BaseModel):
     mission_bridge: MissionBridgeSummary = Field(default_factory=MissionBridgeSummary)
     voice: VoiceSummary = Field(default_factory=VoiceSummary)
     audio: AudioPlaybackStatus
+    flight: FlightRuntimeSummary = Field(default_factory=FlightRuntimeSummary)
 
 
 def get_application_state() -> OrionApplicationState:
@@ -57,6 +59,8 @@ def get_application_state() -> OrionApplicationState:
         failed=sum(item.state is CommandState.FAILED for item in voice_items),
     )
 
+    flight = get_flight_runtime_summary()
+
     if health.state is StartupHealthState.ACTION_REQUIRED:
         readiness = ApplicationReadiness.ACTION_REQUIRED
     elif health.state is StartupHealthState.DEGRADED or mission.failed or voice.failed:
@@ -72,4 +76,5 @@ def get_application_state() -> OrionApplicationState:
         mission_bridge=mission,
         voice=voice,
         audio=windows_audio_worker.status(),
+        flight=flight,
     )
