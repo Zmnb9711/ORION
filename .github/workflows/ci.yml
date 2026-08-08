@@ -49,5 +49,8 @@ jobs:
       - name: Compile ORION modules
         run: python -m compileall -q orion
 
+      - name: Ruff correctness checks
+        run: python -m ruff check orion tests
+
       - name: Run test suite
         run: python -m pytest -q
