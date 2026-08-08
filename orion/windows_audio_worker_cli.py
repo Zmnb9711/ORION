@@ -8,25 +8,35 @@ from pathlib import Path
 from typing import Callable
 from uuid import UUID
 
+from orion.tts_audio import AudioRenderRequest, VoiceProfile
+from orion.voice_core import VoiceAgent
 from orion.windows_audio_worker import AudioDevice, AudioPlaybackRequest, WindowsAudioWorker
+from orion.windows_sapi_backend import WindowsSapiBackend
 
 
 class AudioBackend:
-    """Small platform boundary used by the worker loop.
+    """Small platform boundary used by the worker loop."""
 
-    A concrete Windows backend can replace these callables with SAPI/Media Foundation
-    or another local implementation without changing ORION Core.
-    """
-
-    def __init__(self, play_wav: Callable[[Path, str, float], None], stop: Callable[[], None]) -> None:
+    def __init__(
+        self,
+        play_wav: Callable[[Path, str, float], None],
+        stop: Callable[[], None],
+        synthesize: Callable[[AudioRenderRequest], str] | None = None,
+    ) -> None:
         self._play_wav = play_wav
         self._stop = stop
+        self._synthesize = synthesize
 
     def play(self, path: Path, device_id: str, volume: float) -> None:
         self._play_wav(path, device_id, volume)
 
     def stop(self) -> None:
         self._stop()
+
+    def synthesize(self, request: AudioRenderRequest) -> Path:
+        if self._synthesize is None:
+            raise RuntimeError("Audio backend does not provide synthesis")
+        return Path(self._synthesize(request))
 
 
 class WindowsAudioWorkerProcess:
@@ -44,25 +54,37 @@ class WindowsAudioWorkerProcess:
             )
             return self._worker.select_device(device).model_dump(mode="json")
 
-        if action == "play":
-            request = AudioPlaybackRequest(
-                command_id=UUID(str(payload["command_id"])),
-                audio_path=str(payload["audio_path"]),
-                output_device_id=str(payload.get("output_device_id", "default")),
-                volume=float(payload.get("volume", 1.0)),
-                duck_game_audio=bool(payload.get("duck_game_audio", True)),
+        if action == "synthesize_play":
+            profile_data = payload.get("profile") if isinstance(payload.get("profile"), dict) else {}
+            profile = VoiceProfile(**profile_data)
+            request = AudioRenderRequest(
+                command_id=str(payload["command_id"]),
+                text=str(payload["text"]),
+                agent=VoiceAgent(str(payload.get("agent", "system"))),
+                profile=profile,
+                output_device=str(payload.get("output_device_id", "default")),
             )
-            status = self._worker.play(request)
-            path = Path(request.audio_path)
-            if not path.exists():
-                self._worker.stop(request.command_id)
-                raise FileNotFoundError(f"Audio file not found: {path}")
-            try:
-                self._backend.play(path, status.output_device_id, request.volume)
-                return self._worker.complete(request.command_id).model_dump(mode="json")
-            except Exception:
-                self._worker.stop(request.command_id)
-                raise
+            path = self._backend.synthesize(request)
+            return self._play(
+                AudioPlaybackRequest(
+                    command_id=UUID(request.command_id),
+                    audio_path=str(path),
+                    output_device_id=request.output_device or "default",
+                    volume=profile.volume,
+                    duck_game_audio=bool(payload.get("duck_game_audio", True)),
+                )
+            )
+
+        if action == "play":
+            return self._play(
+                AudioPlaybackRequest(
+                    command_id=UUID(str(payload["command_id"])),
+                    audio_path=str(payload["audio_path"]),
+                    output_device_id=str(payload.get("output_device_id", "default")),
+                    volume=float(payload.get("volume", 1.0)),
+                    duck_game_audio=bool(payload.get("duck_game_audio", True)),
+                )
+            )
 
         if action == "stop":
             command_id = payload.get("command_id")
@@ -74,6 +96,19 @@ class WindowsAudioWorkerProcess:
             return self._worker.status().model_dump(mode="json")
 
         raise ValueError(f"Unsupported worker action: {action or '<empty>'}")
+
+    def _play(self, request: AudioPlaybackRequest) -> dict[str, object]:
+        status = self._worker.play(request)
+        path = Path(request.audio_path)
+        if not path.exists():
+            self._worker.stop(request.command_id)
+            raise FileNotFoundError(f"Audio file not found: {path}")
+        try:
+            self._backend.play(path, status.output_device_id, request.volume)
+            return self._worker.complete(request.command_id).model_dump(mode="json")
+        except Exception:
+            self._worker.stop(request.command_id)
+            raise
 
 
 def _dry_run_play(path: Path, device_id: str, volume: float) -> None:
@@ -104,6 +139,18 @@ def run_stdio(process: WindowsAudioWorkerProcess, poll_interval_s: float = 0.05)
     return 0
 
 
+def _native_backend() -> AudioBackend:
+    native = WindowsSapiBackend()
+
+    def synthesize(request: AudioRenderRequest) -> str:
+        result = native.render(request)
+        if not result.accepted or not result.output_path:
+            raise RuntimeError(result.message)
+        return result.output_path
+
+    return AudioBackend(native.play_wav, native.stop, synthesize)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="ORION Windows audio worker")
     parser.add_argument("--stdio", action="store_true", help="Read newline-delimited JSON commands from stdin")
@@ -113,7 +160,7 @@ def main(argv: list[str] | None = None) -> int:
     if not args.stdio:
         parser.error("--stdio is currently required")
 
-    backend = AudioBackend(_dry_run_play, _dry_run_stop)
+    backend = AudioBackend(_dry_run_play, _dry_run_stop) if args.dry_run else _native_backend()
     process = WindowsAudioWorkerProcess(WindowsAudioWorker(), backend)
     return run_stdio(process)
 
