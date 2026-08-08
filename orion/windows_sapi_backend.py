@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import audioop
 import os
 import subprocess
 import wave
 from pathlib import Path
 
+from orion.pcm_dsp import pcm_peak, pcm_resample_mono, pcm_scale, pcm_to_mono
 from orion.tts_audio import AudioRenderRequest, AudioRenderResult, TtsBackend
 
 
@@ -37,18 +37,11 @@ class WindowsSapiBackend:
                 output_path=str(target),
                 message="Windows SAPI backend is only available on Windows",
             )
-
         target.parent.mkdir(parents=True, exist_ok=True)
         rate = max(-10, min(10, round((request.profile.rate - 1.0) * 10)))
         volume = max(0, min(100, round(request.profile.volume * 100)))
         voice_name = request.profile.voice_name or ""
-        script = _powershell_sapi_script(
-            text=request.text,
-            target=str(target.resolve()),
-            rate=rate,
-            volume=volume,
-            voice_name=voice_name,
-        )
+        script = _powershell_sapi_script(text=request.text, target=str(target.resolve()), rate=rate, volume=volume, voice_name=voice_name)
         completed = subprocess.run(
             ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
             capture_output=True,
@@ -58,20 +51,8 @@ class WindowsSapiBackend:
         )
         if completed.returncode != 0 or not target.exists():
             detail = completed.stderr.strip() or completed.stdout.strip() or "SAPI synthesis failed"
-            return AudioRenderResult(
-                accepted=False,
-                backend=TtsBackend.WINDOWS_SAPI,
-                command_id=request.command_id,
-                output_path=str(target),
-                message=detail,
-            )
-        return AudioRenderResult(
-            accepted=True,
-            backend=TtsBackend.WINDOWS_SAPI,
-            command_id=request.command_id,
-            output_path=str(target),
-            message="Windows SAPI synthesis completed",
-        )
+            return AudioRenderResult(accepted=False, backend=TtsBackend.WINDOWS_SAPI, command_id=request.command_id, output_path=str(target), message=detail)
+        return AudioRenderResult(accepted=True, backend=TtsBackend.WINDOWS_SAPI, command_id=request.command_id, output_path=str(target), message="Windows SAPI synthesis completed")
 
     def prepare_radio(self, path: Path) -> Path:
         """Create an ORION-only narrow-band radio rendition of a PCM WAV file."""
@@ -87,24 +68,21 @@ class WindowsSapiBackend:
         if width not in {1, 2, 3, 4}:
             raise ValueError("Unsupported PCM sample width for radio DSP")
         if channels == 2:
-            frames = audioop.tomono(frames, width, 0.5, 0.5)
+            frames = pcm_to_mono(frames, width)
             channels = 1
         elif channels != 1:
             raise ValueError("Radio DSP supports mono or stereo PCM WAV only")
 
-        # Telephone/radio-like speech band. Rate conversion provides a lightweight
-        # low-pass; converting down and back intentionally removes excess brilliance.
         radio_rate = min(rate, 8000)
         if radio_rate != rate:
-            frames, _ = audioop.ratecv(frames, width, 1, rate, radio_rate, None)
-            frames, _ = audioop.ratecv(frames, width, 1, radio_rate, rate, None)
+            frames = pcm_resample_mono(frames, width, rate, radio_rate)
+            frames = pcm_resample_mono(frames, width, radio_rate, rate)
 
-        # Mild saturation/compression to make speech more radio-like without harsh clipping.
-        frames = audioop.mul(frames, width, 1.35)
-        peak = audioop.max(frames, width)
+        frames = pcm_scale(frames, width, 1.35)
+        peak = pcm_peak(frames, width)
         max_peak = (1 << (width * 8 - 1)) - 1
         if peak > max_peak * 0.92:
-            frames = audioop.mul(frames, width, (max_peak * 0.92) / peak)
+            frames = pcm_scale(frames, width, (max_peak * 0.92) / peak)
 
         with wave.open(str(target), "wb") as output:
             output.setnchannels(channels)
@@ -121,14 +99,12 @@ class WindowsSapiBackend:
         if not path.exists():
             raise FileNotFoundError(path)
         import winsound
-
         winsound.PlaySound(str(path), winsound.SND_FILENAME | winsound.SND_ASYNC)
 
     def stop(self) -> None:
         if not self.available:
             return
         import winsound
-
         winsound.PlaySound(None, winsound.SND_PURGE)
 
 
