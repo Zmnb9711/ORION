@@ -1,10 +1,16 @@
 from unittest.mock import patch
 
+from orion.cas_9line import Cas9LineState, Cas9LineStore
 from orion.confirmations import ConfirmationStatus, ConfirmationStore
 from orion.jtac_runtime import JtacDesignationMethod
 from orion.mission import Coalition, MissionPosition, MissionSnapshot, MissionUnit, UnitCategory
 from orion.mission_control_autonomy import MissionControlAction, MissionControlAutonomyDecision
-from orion.mission_control_autonomy_actions import create_autonomy_pending_action, resolve_autonomy_pending_action
+from orion.mission_control_autonomy_actions import (
+    Cas9LineAutonomyCompletion,
+    complete_autonomy_9line,
+    create_autonomy_pending_action,
+    resolve_autonomy_pending_action,
+)
 from orion.mission_control_jtac import MissionControlJtacResult
 
 
@@ -45,6 +51,19 @@ def _snapshot(*, mission_id: str = "mission-1", alive: bool = True, detected: bo
                 detected=detected,
             )
         ],
+    )
+
+
+def _completion() -> Cas9LineAutonomyCompletion:
+    return Cas9LineAutonomyCompletion(
+        ip_or_bp="FORD",
+        heading_deg=270,
+        distance_nm=6,
+        friendlies="south 2 km",
+        egress="east",
+        restrictions="remain north",
+        remarks="final attack heading 240-300",
+        language="en",
     )
 
 
@@ -113,8 +132,52 @@ def test_confirmed_9line_proposal_builds_grounded_seed() -> None:
     assert result.cas_9line_seed.target_location == "41.123457, 41.765432"
     assert result.cas_9line_seed.target_elevation_ft == 984
     assert result.cas_9line_seed.designator_id == "jtac-1"
+    assert "distance_nm" in result.cas_9line_seed.missing_fields
     assert "friendlies" in result.cas_9line_seed.missing_fields
-    assert "egress" in result.cas_9line_seed.missing_fields
+    assert "restrictions" in result.cas_9line_seed.missing_fields
+
+
+def test_confirmed_9line_completion_creates_real_cas_draft() -> None:
+    store = ConfirmationStore()
+    cas_store = Cas9LineStore()
+    snapshot = _snapshot()
+    decision = _decision(MissionControlAction.SUGGEST_9LINE)
+    with patch("orion.mission_control_autonomy_actions.confirmation_store", store), patch(
+        "orion.mission_control_autonomy_actions.cas_9line_store", cas_store
+    ), patch("orion.mission_control_autonomy_actions.mission_store.get", return_value=snapshot), patch(
+        "orion.mission_control_autonomy_actions.evaluate_mission_control_autonomy", return_value=decision
+    ):
+        pending = create_autonomy_pending_action(decision)
+        resolve_autonomy_pending_action(pending.action_id, confirm=True)
+        brief = complete_autonomy_9line(pending.action_id, _completion())
+    assert brief.state is Cas9LineState.DRAFT
+    assert brief.source_action_id == pending.action_id
+    assert brief.target_id == "target-1"
+    assert brief.target_location == "41.123457, 41.765432"
+    assert brief.target_elevation_ft == 984
+    assert brief.requested_asset_id == "jtac-1"
+    assert brief.laser_code == 1688
+    assert brief.mark == "laser 1688"
+    assert brief.ip_or_bp == "FORD"
+    assert brief.restrictions == "remain north"
+
+
+def test_9line_completion_is_idempotent_per_autonomy_action() -> None:
+    store = ConfirmationStore()
+    cas_store = Cas9LineStore()
+    snapshot = _snapshot()
+    decision = _decision(MissionControlAction.SUGGEST_9LINE)
+    with patch("orion.mission_control_autonomy_actions.confirmation_store", store), patch(
+        "orion.mission_control_autonomy_actions.cas_9line_store", cas_store
+    ), patch("orion.mission_control_autonomy_actions.mission_store.get", return_value=snapshot), patch(
+        "orion.mission_control_autonomy_actions.evaluate_mission_control_autonomy", return_value=decision
+    ):
+        pending = create_autonomy_pending_action(decision)
+        resolve_autonomy_pending_action(pending.action_id, confirm=True)
+        first = complete_autonomy_9line(pending.action_id, _completion())
+        second = complete_autonomy_9line(pending.action_id, _completion())
+    assert first.brief_id == second.brief_id
+    assert len(cas_store.list()) == 1
 
 
 def test_stale_proposal_does_not_execute_when_target_disappears() -> None:
