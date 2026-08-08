@@ -22,6 +22,7 @@ class JtacSessionState(StrEnum):
     ASSIGNED = "assigned"
     MARKING = "marking"
     COMPLETE = "complete"
+    CANCELLED = "cancelled"
     FAILED = "failed"
 
 
@@ -126,32 +127,17 @@ class JtacSessionStore:
             return self.get(session_id)  # type: ignore[return-value]
         if result.status is MissionCommandStatus.ACCEPTED:
             if state is JtacSessionState.ASSIGNED:
-                return self.transition(
-                    session_id,
-                    JtacSessionState.MARKING,
-                    marker_active=True,
-                    message=result.message or "JTAC marking confirmed by mission-side",
-                )
+                return self.transition(session_id, JtacSessionState.MARKING, marker_active=True, message=result.message or "JTAC marking confirmed by mission-side")
             return self.get(session_id)  # type: ignore[return-value]
         if result.status is MissionCommandStatus.COMPLETED:
             if state is JtacSessionState.ASSIGNED:
                 self.transition(session_id, JtacSessionState.MARKING, marker_active=True, message="JTAC marking confirmed by mission-side")
             current = self.get(session_id)
             if current is not None and current.state is JtacSessionState.MARKING:
-                return self.transition(
-                    session_id,
-                    JtacSessionState.COMPLETE,
-                    marker_active=False,
-                    message=result.message or "JTAC marking complete",
-                )
+                return self.transition(session_id, JtacSessionState.COMPLETE, marker_active=False, message=result.message or "JTAC marking complete")
             return self.get(session_id)  # type: ignore[return-value]
-        if result.status is MissionCommandStatus.FAILED and state not in {JtacSessionState.COMPLETE, JtacSessionState.FAILED}:
-            return self.transition(
-                session_id,
-                JtacSessionState.FAILED,
-                marker_active=False,
-                message=result.message or "JTAC marking failed",
-            )
+        if result.status is MissionCommandStatus.FAILED and state not in {JtacSessionState.COMPLETE, JtacSessionState.CANCELLED, JtacSessionState.FAILED}:
+            return self.transition(session_id, JtacSessionState.FAILED, marker_active=False, message=result.message or "JTAC marking failed")
         return self.get(session_id)  # type: ignore[return-value]
 
     def find_by_command_id(self, command_id: UUID) -> JtacSession | None:
@@ -173,16 +159,7 @@ class JtacSessionStore:
         with self._lock:
             return [item.model_copy(deep=True) for item in self._sessions.values()]
 
-    def transition(
-        self,
-        session_id: UUID,
-        state: JtacSessionState,
-        *,
-        assigned_asset_id: str | None = None,
-        marker_active: bool | None = None,
-        command_id: UUID | None = None,
-        message: str | None = None,
-    ) -> JtacSession:
+    def transition(self, session_id: UUID, state: JtacSessionState, *, assigned_asset_id: str | None = None, marker_active: bool | None = None, command_id: UUID | None = None, message: str | None = None) -> JtacSession:
         self._sync_mission()
         with self._lock:
             session = self._sessions.get(session_id)
@@ -232,10 +209,11 @@ def _supports(asset: JtacAsset, method: JtacDesignationMethod) -> bool:
 
 def _validate_transition(current: JtacSessionState, target: JtacSessionState) -> None:
     allowed = {
-        JtacSessionState.REQUESTED: {JtacSessionState.ASSIGNED, JtacSessionState.FAILED},
-        JtacSessionState.ASSIGNED: {JtacSessionState.MARKING, JtacSessionState.FAILED},
-        JtacSessionState.MARKING: {JtacSessionState.COMPLETE, JtacSessionState.FAILED},
+        JtacSessionState.REQUESTED: {JtacSessionState.ASSIGNED, JtacSessionState.CANCELLED, JtacSessionState.FAILED},
+        JtacSessionState.ASSIGNED: {JtacSessionState.MARKING, JtacSessionState.CANCELLED, JtacSessionState.FAILED},
+        JtacSessionState.MARKING: {JtacSessionState.COMPLETE, JtacSessionState.CANCELLED, JtacSessionState.FAILED},
         JtacSessionState.COMPLETE: set(),
+        JtacSessionState.CANCELLED: set(),
         JtacSessionState.FAILED: set(),
     }
     if target not in allowed[current]:
