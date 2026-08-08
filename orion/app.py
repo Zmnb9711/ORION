@@ -85,6 +85,7 @@ for _router_module in (
     "orion.active_dcs_installation_api",
     "orion.dcs_readiness_api",
     "orion.first_run_wizard_api",
+    "orion.first_run_actions_api",
     "orion.dcs_process_api",
     "orion.flight_console_api",
     "orion.flight_readiness_api",
