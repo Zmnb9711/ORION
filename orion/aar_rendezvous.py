@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from enum import StrEnum
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from orion.coalition_units import spoken_altitude, spoken_distance, spoken_speed
 from orion.mission_context import LiveMissionContext, SupportAsset, build_live_mission_context
@@ -28,7 +28,7 @@ class AarResult(BaseModel):
     completed: bool
     spoken_text: str
     session: AarSession
-    data: dict[str, object] = {}
+    data: dict[str, object] = Field(default_factory=dict)
 
 
 class AarRendezvousService:
@@ -59,7 +59,8 @@ class AarRendezvousService:
             if tanker is None:
                 return self._result(False, "Доступный танкер не найден." if language == "ru" else "No available tanker was found.")
             self._session = AarSession(phase=AarPhase.RENDEZVOUS, tanker_unit_id=tanker.unit_id, tanker_callsign=tanker.callsign)
-            return self._brief(context, tanker, language, prefix="Начинаю сближение с" if language == "ru" else "Starting rendezvous with")
+            self._update_phase_from_range(tanker)
+            return self._brief(tanker, language, prefix="Начинаю сближение с" if language == "ru" else "Starting rendezvous with")
 
         tanker = _session_tanker(context, self._session.tanker_unit_id)
         if tanker is None:
@@ -67,13 +68,13 @@ class AarRendezvousService:
 
         if intent == "aar_pre_contact":
             self._session.phase = AarPhase.PRE_CONTACT
-            return self._brief(context, tanker, language, prefix="Переходим к pre-contact с" if language == "ru" else "Proceeding to pre-contact with")
+            return self._brief(tanker, language, prefix="Переходим к pre-contact с" if language == "ru" else "Proceeding to pre-contact with")
         if intent == "aar_contact":
             self._session.phase = AarPhase.CONTACT
-            return self._brief(context, tanker, language, prefix="Contact с" if language == "ru" else "Contact with")
+            return self._brief(tanker, language, prefix="Contact с" if language == "ru" else "Contact with")
 
         self._update_phase_from_range(tanker)
-        return self._brief(context, tanker, language, prefix="Текущий танкер" if language == "ru" else "Current tanker")
+        return self._brief(tanker, language, prefix="Текущий танкер" if language == "ru" else "Current tanker")
 
     def _update_phase_from_range(self, tanker: SupportAsset) -> None:
         if tanker.distance_km is None or self._session.phase in {AarPhase.PRE_CONTACT, AarPhase.CONTACT, AarPhase.COMPLETE, AarPhase.ABORTED}:
@@ -81,20 +82,21 @@ class AarRendezvousService:
         distance_nm = tanker.distance_km / 1.852
         self._session.phase = AarPhase.JOIN_UP if distance_nm <= 3.0 else AarPhase.RENDEZVOUS
 
-    def _brief(self, context: LiveMissionContext, tanker: SupportAsset, language: str, prefix: str) -> AarResult:
+    def _brief(self, tanker: SupportAsset, language: str, prefix: str) -> AarResult:
         parts = [f"{prefix} {tanker.callsign}."]
         if tanker.bearing_deg is not None and tanker.distance_km is not None:
-            parts.append((f"Азимут {tanker.bearing_deg:.0f}, дальность {spoken_distance(tanker.distance_km, tanker.coalition, language)}." if language == "ru" else f"Bearing {tanker.bearing_deg:.0f}, range {spoken_distance(tanker.distance_km, tanker.coalition, language)}."))
+            parts.append(f"Азимут {tanker.bearing_deg:.0f}, дальность {spoken_distance(tanker.distance_km, tanker.coalition, language)}." if language == "ru" else f"Bearing {tanker.bearing_deg:.0f}, range {spoken_distance(tanker.distance_km, tanker.coalition, language)}.")
         if tanker.altitude_m is not None:
-            parts.append((f"Высота {spoken_altitude(tanker.altitude_m, tanker.coalition, language)}." if language == "ru" else f"Altitude {spoken_altitude(tanker.altitude_m, tanker.coalition, language)}."))
+            parts.append(f"Высота {spoken_altitude(tanker.altitude_m, tanker.coalition, language)}." if language == "ru" else f"Altitude {spoken_altitude(tanker.altitude_m, tanker.coalition, language)}.")
+        if tanker.heading_deg is not None:
+            parts.append(f"Курс {tanker.heading_deg:.0f}." if language == "ru" else f"Heading {tanker.heading_deg:.0f}.")
         if tanker.speed_mps is not None:
-            parts.append((f"Скорость {spoken_speed(tanker.speed_mps, tanker.coalition, language)}." if language == "ru" else f"Speed {spoken_speed(tanker.speed_mps, tanker.coalition, language)}."))
+            parts.append(f"Скорость {spoken_speed(tanker.speed_mps, tanker.coalition, language)}." if language == "ru" else f"Speed {spoken_speed(tanker.speed_mps, tanker.coalition, language)}.")
         if tanker.frequency_mhz is not None:
-            parts.append((f"Частота {tanker.frequency_mhz:.3f} мегагерц{(' ' + tanker.modulation) if tanker.modulation else ''}." if language == "ru" else f"Frequency {tanker.frequency_mhz:.3f} megahertz{(' ' + tanker.modulation) if tanker.modulation else ''}."))
+            parts.append(f"Частота {tanker.frequency_mhz:.3f} мегагерц{(' ' + tanker.modulation) if tanker.modulation else ''}." if language == "ru" else f"Frequency {tanker.frequency_mhz:.3f} megahertz{(' ' + tanker.modulation) if tanker.modulation else ''}.")
         if tanker.tacan_channel is not None and tanker.tacan_band is not None:
             parts.append(f"TACAN {tanker.tacan_channel} {tanker.tacan_band}.")
-        phase = self._session.phase.value
-        return self._result(True, " ".join(parts), {"phase": phase, "tanker": tanker.model_dump(mode="json")})
+        return self._result(True, " ".join(parts), {"phase": self._session.phase.value, "tanker": tanker.model_dump(mode="json")})
 
     def _result(self, completed: bool, text: str, data: dict[str, object] | None = None) -> AarResult:
         return AarResult(completed=completed, spoken_text=text, session=self.snapshot(), data=data or {})
