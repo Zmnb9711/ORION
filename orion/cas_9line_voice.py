@@ -4,9 +4,27 @@ from orion.cas_9line import Cas9LineBrief, Cas9LineState
 from orion.voice_core import CommandPriority, VoiceAgent, VoiceCommand, VoiceCommandCreate, voice_commands
 
 
+def _readback_correction_text(brief: Cas9LineBrief, ru: bool) -> str:
+    fields = set(brief.readback_mismatches)
+    parts: list[str] = []
+    if "target elevation" in fields:
+        parts.append(f"высота цели {brief.target_elevation_ft} футов" if ru else f"target elevation {brief.target_elevation_ft} feet")
+    if "target location" in fields:
+        parts.append(f"координаты {brief.target_location}" if ru else f"target location {brief.target_location}")
+    if "restrictions" in fields:
+        value = brief.restrictions or ("нет" if ru else "none")
+        parts.append(f"ограничения {value}" if ru else f"restrictions {value}")
+    if not parts:
+        return "Повторьте обязательные элементы." if ru else "Repeat required readback items."
+    joined = "; ".join(parts)
+    return f"Неверный повтор. Исправление: {joined}. Повторите исправленные элементы." if ru else f"Readback incorrect. Correction: {joined}. Read back corrected items."
+
+
 def cas_9line_text(brief: Cas9LineBrief) -> str:
     ru = brief.language.casefold().startswith("ru")
     if brief.state is Cas9LineState.READBACK_PENDING:
+        if brief.readback_mismatches:
+            return _readback_correction_text(brief, ru)
         if ru:
             return (
                 f"9-line. ИП или БП {brief.ip_or_bp}. Курс {brief.heading_deg}. Дистанция {brief.distance_nm:g} морских миль. "
@@ -42,6 +60,7 @@ def submit_cas_9line_voice(brief: Cas9LineBrief) -> VoiceCommand:
                 "target_id": brief.target_id,
                 "laser_code": brief.laser_code,
                 "readback_verified": brief.readback_verified,
+                "readback_mismatches": brief.readback_mismatches,
             },
         )
     )
