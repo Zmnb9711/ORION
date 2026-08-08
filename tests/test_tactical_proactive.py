@@ -1,4 +1,5 @@
-from orion.tactical_proactive import TacticalProactiveMonitor, _ThreatMemory, _meaningful_change
+from orion.tactical_kinematics import RangeTrend, ThreatAspect, ThreatKinematics
+from orion.tactical_proactive import TacticalProactiveMonitor, _ThreatMemory, _callout, _meaningful_change
 from orion.tactical_situation import TacticalThreat, TacticalThreatKind
 from orion.threats import ThreatLevel
 
@@ -15,6 +16,12 @@ def _threat(level=ThreatLevel.HIGH, range_nm=25.0, kind=TacticalThreatKind.AIR):
         range_nm=range_nm,
         altitude_ft=18000,
         braa="BRAA 042 for 25.0, 18 thousand",
+        kinematics=ThreatKinematics(
+            aspect=ThreatAspect.HOT,
+            range_trend=RangeTrend.CLOSING,
+            closure_kts=480.0,
+        ),
+        tactical_priority=90.0,
     )
 
 
@@ -46,3 +53,17 @@ def test_monitor_can_reset_memory():
     monitor._seen["x"] = _ThreatMemory(ThreatLevel.HIGH, 20.0)
     monitor.reset()
     assert monitor._seen == {}
+
+
+def test_english_awacs_callout_includes_aspect_and_closure():
+    text = _callout(_threat(), "en")
+    assert "hot" in text
+    assert "closing" in text
+    assert "closure 480 knots" in text
+
+
+def test_russian_awacs_callout_includes_kinematics():
+    text = _callout(_threat(), "ru")
+    assert "идёт навстречу" in text
+    assert "сближается" in text
+    assert "480 узлов" in text
