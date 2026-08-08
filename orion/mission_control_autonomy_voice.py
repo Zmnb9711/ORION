@@ -3,6 +3,7 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 from orion.confirmations import PendingAction
+from orion.mission_control_autonomy import MissionControlAction, MissionControlAutonomyDecision, evaluate_mission_control_autonomy
 from orion.mission_control_autonomy_actions import MissionControlAutonomyResolution, resolve_autonomy_pending_action
 from orion.voice_core import CommandPriority, VoiceAgent, VoiceCommand, VoiceCommandCreate, voice_commands
 
@@ -16,6 +17,9 @@ class AutonomyVoiceDecisionResult(BaseModel):
     understood: bool
     confirm: bool | None = None
     resolution: MissionControlAutonomyResolution | None = None
+    stale: bool = False
+    current_decision: MissionControlAutonomyDecision | None = None
+    spoken_text: str | None = None
 
 
 def autonomy_proposal_text(action: PendingAction, *, language: str = "en") -> str:
@@ -64,6 +68,28 @@ def parse_autonomy_voice_confirmation(transcript: str, *, language: str = "en") 
     return None
 
 
+def _stale_voice_text(decision: MissionControlAutonomyDecision, *, language: str) -> str:
+    ru = language.casefold().startswith("ru")
+    target = decision.target_name or decision.target_id or "цель" if ru else decision.target_name or decision.target_id or "target"
+    if decision.action is MissionControlAction.OBSERVE:
+        return (
+            "Обстановка изменилась. Предыдущее предложение отменено; сейчас вмешательство Mission Control не требуется."
+            if ru else
+            "Situation changed. The previous proposal is no longer valid; Mission Control intervention is not currently required."
+        )
+    if decision.action is MissionControlAction.SUGGEST_9LINE:
+        return (
+            f"Обстановка изменилась. Предыдущее предложение устарело. Актуально: подготовить 9-line CAS по {target}."
+            if ru else
+            f"Situation changed. The previous proposal is stale. Current recommendation: prepare a 9-line CAS brief for {target}."
+        )
+    return (
+        f"Обстановка изменилась. Предыдущее предложение устарело. Актуально: запросить JTAC по {target}."
+        if ru else
+        f"Situation changed. The previous proposal is stale. Current recommendation: request JTAC support for {target}."
+    )
+
+
 def resolve_autonomy_voice_decision(
     action_id: str,
     payload: AutonomyVoiceDecision,
@@ -71,5 +97,17 @@ def resolve_autonomy_voice_decision(
     confirm = parse_autonomy_voice_confirmation(payload.transcript, language=payload.language)
     if confirm is None:
         return AutonomyVoiceDecisionResult(understood=False)
-    resolution = resolve_autonomy_pending_action(action_id, confirm=confirm)
+    try:
+        resolution = resolve_autonomy_pending_action(action_id, confirm=confirm)
+    except ValueError as exc:
+        if confirm and "stale" in str(exc).casefold() or confirm and "changed" in str(exc).casefold():
+            current = evaluate_mission_control_autonomy()
+            return AutonomyVoiceDecisionResult(
+                understood=True,
+                confirm=True,
+                stale=True,
+                current_decision=current,
+                spoken_text=_stale_voice_text(current, language=payload.language),
+            )
+        raise
     return AutonomyVoiceDecisionResult(understood=True, confirm=confirm, resolution=resolution)
