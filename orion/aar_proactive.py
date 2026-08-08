@@ -69,6 +69,8 @@ class AarProactiveMonitor:
             previous_band = self._last_closure_band
             self._last_closure_band = closure.band if closure is not None else None
             if closure_reason is not None and closure is not None and closure.band != previous_band:
+                self._last_phase = session.phase
+                self._last_guidance = guidance
                 text = _closure_callout(closure, tanker, language)
                 return AarProactiveUpdate(should_announce=True, spoken_text=text, reason=closure_reason, phase=session.phase, guidance=guidance, closure=closure)
 
