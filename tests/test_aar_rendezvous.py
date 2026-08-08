@@ -12,11 +12,12 @@ from orion.mission_store import mission_store
 
 @pytest.fixture(autouse=True)
 def reset_aar() -> None:
+    previous = mission_store.get()
     aar_rendezvous.reset()
-    mission_store.reset()
     yield
     aar_rendezvous.reset()
-    mission_store.reset()
+    if previous is not None:
+        mission_store.replace(previous)
 
 
 def _context(distance_km: float = 18.52, *, ownship_speed_mps: float | None = 250.0, tanker_longitude: float = 41.2) -> LiveMissionContext:
@@ -98,7 +99,6 @@ def test_range_drives_only_rendezvous_and_join_up(monkeypatch) -> None:
     monkeypatch.setattr(aar_module, "build_live_mission_context", lambda: _context(9.26))
     aar_rendezvous.execute("aar_start", "Start refueling")
     assert aar_rendezvous.snapshot().phase == AarPhase.RENDEZVOUS
-
     monkeypatch.setattr(aar_module, "build_live_mission_context", lambda: _context(3.704))
     result = aar_rendezvous.execute("aar_status", "Статус дозаправки")
     assert result.session.phase == AarPhase.JOIN_UP
@@ -112,7 +112,6 @@ def test_pre_contact_is_gated_by_stabilized_join_up(monkeypatch) -> None:
     assert rejected.completed is False
     assert rejected.session.phase == AarPhase.JOIN_UP
     assert rejected.data["precontact_readiness"]["ready_for_precontact"] is False
-
     stable = _stable_precontact_context()
     monkeypatch.setattr(aar_module, "build_live_mission_context", lambda: stable)
     pre = aar_rendezvous.execute("aar_pre_contact", "Pre-contact")
@@ -120,7 +119,6 @@ def test_pre_contact_is_gated_by_stabilized_join_up(monkeypatch) -> None:
     assert pre.session.phase == AarPhase.PRE_CONTACT
     assert pre.data["intercept_guidance"] is None
     assert pre.data["precontact_readiness"]["ready_for_precontact"] is True
-
     status = aar_rendezvous.execute("aar_status", "Status")
     assert status.session.phase == AarPhase.PRE_CONTACT
     contact = aar_rendezvous.execute("aar_contact", "Contact with tanker")
@@ -132,7 +130,6 @@ def test_abort_and_complete_are_explicit(monkeypatch) -> None:
     aar_rendezvous.execute("aar_start", "Start refueling")
     aborted = aar_rendezvous.execute("aar_abort", "Abort refueling")
     assert aborted.session.phase == AarPhase.ABORTED
-
     aar_rendezvous.reset()
     aar_rendezvous.execute("aar_start", "Start refueling")
     completed = aar_rendezvous.execute("aar_complete", "Refueling complete")
@@ -153,7 +150,6 @@ def test_session_is_reset_when_active_mission_changes(monkeypatch) -> None:
     started = aar_rendezvous.execute("aar_start", "Start refueling")
     assert started.session.mission_id == "mission-a"
     assert started.session.phase == AarPhase.RENDEZVOUS
-
     mission_store.replace(MissionSnapshot(mission_id="mission-b"))
     snapshot = aar_rendezvous.snapshot()
     assert snapshot.mission_id == "mission-b"
