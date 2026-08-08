@@ -7,8 +7,6 @@ from uuid import UUID
 
 from fastapi import APIRouter, FastAPI, HTTPException, Query
 
-from orion.startup_onboarding import apply_completed_onboarding_at_startup
-
 
 LEGACY_CORE_AVAILABLE = find_spec("orion.models") is not None
 
@@ -28,6 +26,7 @@ if LEGACY_CORE_AVAILABLE:
     from orion.mission_command_status import MissionCommandResult, mission_command_statuses
     from orion.mission_store import mission_store
     from orion.models import TelemetryEnvelope
+    from orion.startup_onboarding import apply_completed_onboarding
     from orion.support import SupportRequest, SupportRequestCreate, support_requests
     from orion.telemetry_handshake import telemetry_handshake
     from orion.threats import ThreatAssessment, assess_threats
@@ -48,7 +47,7 @@ if LEGACY_CORE_AVAILABLE:
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
-        apply_completed_onboarding_at_startup()
+        apply_completed_onboarding()
         transport, _ = await start_udp_bridge(store_telemetry)
         try:
             yield
@@ -57,9 +56,11 @@ if LEGACY_CORE_AVAILABLE:
 
     app = FastAPI(title="ORION Core", version=__version__, lifespan=lifespan)
 else:
+    from orion.startup_onboarding import apply_completed_onboarding
+
     @asynccontextmanager
     async def lifespan(_: FastAPI):
-        apply_completed_onboarding_at_startup()
+        apply_completed_onboarding()
         yield
 
     app = FastAPI(title="ORION", version="0.1.0", description="ORION AI Flight Assistant API", lifespan=lifespan)
@@ -98,6 +99,7 @@ for _router_module in (
     "orion.first_run_presentation_api",
     "orion.onboarding_config_api",
     "orion.onboarding_runtime_api",
+    "orion.startup_health_api",
     "orion.dcs_process_api",
     "orion.flight_console_api",
     "orion.flight_readiness_api",
