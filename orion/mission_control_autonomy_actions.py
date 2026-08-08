@@ -71,7 +71,8 @@ def resolve_autonomy_pending_action(action_id: str, *, confirm: bool) -> Mission
         )
 
     if resolved.action_type == "mission_control:suggest_9line":
-        unit = mission_store.unit(target_id)
+        snapshot = mission_store.get()
+        unit = next((item for item in snapshot.units if item.unit_id == target_id), None) if snapshot is not None else None
         if unit is None or not unit.alive or not unit.detected:
             raise ValueError("Target is no longer available in the current mission picture")
         seed = Cas9LineSeed(
