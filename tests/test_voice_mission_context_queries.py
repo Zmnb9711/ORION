@@ -61,7 +61,10 @@ def test_nearest_tanker_reports_real_range_and_bearing(monkeypatch) -> None:
     monkeypatch.setattr(mission_voice, "build_live_mission_context", _located_context)
     result = mission_voice.execute_mission_context_query("nearest_tanker", "Где ближайший танкер?")
     assert result.completed is True and result.data["position_available"] is True
-    assert "Азимут 90" in result.spoken_text and "25.2" in result.spoken_text and "7500" in result.spoken_text and "251.500" in result.spoken_text
+    assert "Азимут 90" in result.spoken_text
+    assert "13.6 морских миль" in result.spoken_text
+    assert "24606 футов" in result.spoken_text
+    assert "251.500" in result.spoken_text
     assert result.data["intercept_guidance"] is None
 
 
