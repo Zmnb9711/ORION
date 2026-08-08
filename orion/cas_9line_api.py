@@ -4,7 +4,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, HTTPException
 
-from orion.cas_9line import Cas9LineBrief, Cas9LineBriefCreate, Cas9LineReadback, cas_9line_store
+from orion.cas_9line import Cas9LineBrief, Cas9LineBriefCreate, Cas9LineReadback, Cas9LineReadbackResult, cas_9line_store
 from orion.cas_9line_voice import submit_cas_9line_voice
 
 
@@ -42,12 +42,12 @@ def issue_brief(brief_id: UUID) -> Cas9LineBrief:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
-@router.post("/{brief_id}/readback", response_model=Cas9LineBrief)
-def verify_readback(brief_id: UUID, payload: Cas9LineReadback) -> Cas9LineBrief:
+@router.post("/{brief_id}/readback", response_model=Cas9LineReadbackResult)
+def verify_readback(brief_id: UUID, payload: Cas9LineReadback) -> Cas9LineReadbackResult:
     try:
-        brief = cas_9line_store.verify_readback(brief_id, payload)
-        submit_cas_9line_voice(brief)
-        return brief
+        result = cas_9line_store.verify_readback_result(brief_id, payload)
+        submit_cas_9line_voice(result.brief)
+        return result
     except (KeyError, ValueError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
