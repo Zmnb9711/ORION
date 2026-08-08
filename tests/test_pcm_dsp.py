@@ -15,9 +15,9 @@ def test_pcm_round_trip_supported_widths(width: int) -> None:
 
 @pytest.mark.parametrize("width", [1, 2, 3, 4])
 def test_stereo_to_mono_averages_channels(width: int) -> None:
-    stereo = _encode([100, -100, 300, 100], width)
+    stereo = _encode([100, -100, 100, 20], width)
     mono = pcm_to_mono(stereo, width)
-    assert _decode(mono, width) == [0, 200]
+    assert _decode(mono, width) == [0, 60]
 
 
 def test_scale_clips_to_pcm_limits() -> None:
