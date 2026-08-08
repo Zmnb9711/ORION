@@ -45,6 +45,31 @@ class AarRendezvousService:
     def snapshot(self) -> AarSession:
         return self._session.model_copy(deep=True)
 
+    def apply_confirmed_phase(self, phase: AarPhase, tanker_unit_id: str | None = None) -> AarSession:
+        """Apply a phase confirmed by a trusted DCS/Mission Pack event.
+
+        This deliberately accepts only a narrow transition graph. Geometry and voice
+        commands must not use this method to invent physical AAR state.
+        """
+        if self._session.tanker_unit_id is None:
+            raise ValueError("No active AAR session")
+        if tanker_unit_id is not None and tanker_unit_id != self._session.tanker_unit_id:
+            raise ValueError("AAR event tanker does not match active session")
+
+        allowed: dict[AarPhase, set[AarPhase]] = {
+            AarPhase.RENDEZVOUS: {AarPhase.JOIN_UP, AarPhase.PRE_CONTACT},
+            AarPhase.JOIN_UP: {AarPhase.PRE_CONTACT},
+            AarPhase.PRE_CONTACT: {AarPhase.CONTACT, AarPhase.JOIN_UP},
+            AarPhase.CONTACT: {AarPhase.PRE_CONTACT, AarPhase.COMPLETE},
+        }
+        current = self._session.phase
+        if phase == current:
+            return self.snapshot()
+        if phase not in allowed.get(current, set()):
+            raise ValueError(f"Invalid confirmed AAR transition: {current.value} -> {phase.value}")
+        self._session.phase = phase
+        return self.snapshot()
+
     def execute(self, intent: str, transcript: str) -> AarResult:
         language = _language(transcript)
         if intent == "aar_abort":
@@ -75,11 +100,7 @@ class AarRendezvousService:
             vertical = compute_vertical(context, tanker)
             stability = evaluate_joinup_stability(tanker, closure, vertical)
             if self._session.phase != AarPhase.JOIN_UP or not stability.ready_for_precontact:
-                text = (
-                    "Pre-contact пока не разрешён: сначала стабилизируйте дистанцию, сближение и высоту."
-                    if language == "ru"
-                    else "Pre-contact is not ready yet: stabilize range, closure and altitude first."
-                )
+                text = "Pre-contact пока не разрешён: сначала стабилизируйте дистанцию, сближение и высоту." if language == "ru" else "Pre-contact is not ready yet: stabilize range, closure and altitude first."
                 return self._result(False, text, {"precontact_readiness": stability.model_dump()})
             self._session.phase = AarPhase.PRE_CONTACT
             result = self._brief(context, tanker, language, prefix="Переходим к pre-contact с" if language == "ru" else "Proceeding to pre-contact with")
@@ -124,11 +145,7 @@ class AarRendezvousService:
                 else:
                     parts.append(f"Recommended intercept heading {guidance.intercept_heading_deg:.0f}, ETA {minutes:.1f} minutes, distance to rendezvous {distance}.")
 
-        data: dict[str, object] = {
-            "phase": self._session.phase.value,
-            "tanker": tanker.model_dump(mode="json"),
-            "intercept_guidance": guidance.model_dump() if guidance is not None else None,
-        }
+        data: dict[str, object] = {"phase": self._session.phase.value, "tanker": tanker.model_dump(mode="json"), "intercept_guidance": guidance.model_dump() if guidance is not None else None}
         return self._result(True, " ".join(parts), data)
 
     def _result(self, completed: bool, text: str, data: dict[str, object] | None = None) -> AarResult:
