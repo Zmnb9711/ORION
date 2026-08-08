@@ -3,7 +3,7 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 from orion.confirmations import ConfirmationStatus, PendingAction, PendingActionCreate, confirmation_store
-from orion.mission_control_autonomy import MissionControlAction, MissionControlAutonomyDecision
+from orion.mission_control_autonomy import MissionControlAction, MissionControlAutonomyDecision, evaluate_mission_control_autonomy
 from orion.mission_control_jtac import MissionControlJtacRequest, MissionControlJtacResult, orchestrate_jtac
 from orion.mission_store import mission_store
 
@@ -66,7 +66,19 @@ def _current_target(resolved: PendingAction):
     unit = next((item for item in snapshot.units if item.unit_id == target_id), None)
     if unit is None or not unit.alive or not unit.detected:
         raise ValueError("Target is no longer available in the current mission picture; proposal is stale")
-    return snapshot, unit
+    return unit
+
+
+def _revalidate_decision(resolved: PendingAction) -> None:
+    current = evaluate_mission_control_autonomy()
+    expected_type = f"mission_control:{current.action.value}"
+    target_id = str(resolved.payload.get("target_id") or "")
+    if (
+        not current.requires_pilot_confirmation
+        or current.target_id != target_id
+        or expected_type != resolved.action_type
+    ):
+        raise ValueError("Tactical recommendation changed since proposal creation; proposal is stale")
 
 
 def resolve_autonomy_pending_action(action_id: str, *, confirm: bool) -> MissionControlAutonomyResolution:
@@ -79,9 +91,10 @@ def resolve_autonomy_pending_action(action_id: str, *, confirm: bool) -> Mission
             raise KeyError("Pending Mission Control action not found or already resolved")
         return MissionControlAutonomyResolution(pending_action=resolved)
 
-    # Revalidate before consuming the confirmation. A stale proposal remains pending
-    # so the pilot can receive a fresh recommendation instead of silently executing old data.
-    _, unit = _current_target(pending)
+    # Revalidate both mission identity/target existence and the current decision before
+    # consuming confirmation. A changed tactical recommendation must not execute old intent.
+    unit = _current_target(pending)
+    _revalidate_decision(pending)
     resolved = confirmation_store.resolve(action_id, True)
     if resolved is None:
         raise KeyError("Pending Mission Control action not found or already resolved")
