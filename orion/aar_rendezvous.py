@@ -70,7 +70,7 @@ class AarRendezvousService:
         self._session.phase = phase
         return self.snapshot()
 
-    def execute(self, intent: str, transcript: str) -> AarResult:
+    def execute(self, intent: str, transcript: str, context: LiveMissionContext | None = None) -> AarResult:
         language = _language(transcript)
         if intent == "aar_abort":
             self._session.phase = AarPhase.ABORTED
@@ -79,39 +79,39 @@ class AarRendezvousService:
             self._session.phase = AarPhase.COMPLETE
             return self._result(True, "Дозаправка завершена." if language == "ru" else "Aerial refueling complete.")
 
-        context = build_live_mission_context()
-        if not context.available:
-            return self._result(False, "Данные Mission Bridge недоступны." if language == "ru" else "Mission Bridge data is unavailable.", {"issues": context.issues})
+        live_context = context if context is not None else build_live_mission_context()
+        if not live_context.available:
+            return self._result(False, "Данные Mission Bridge недоступны." if language == "ru" else "Mission Bridge data is unavailable.", {"issues": live_context.issues})
 
         if intent == "aar_start":
-            tanker = _nearest_available_tanker(context)
+            tanker = _nearest_available_tanker(live_context)
             if tanker is None:
                 return self._result(False, "Доступный танкер не найден." if language == "ru" else "No available tanker was found.")
             self._session = AarSession(phase=AarPhase.RENDEZVOUS, tanker_unit_id=tanker.unit_id, tanker_callsign=tanker.callsign)
             self._update_phase_from_range(tanker)
-            return self._brief(context, tanker, language, prefix="Начинаю сближение с" if language == "ru" else "Starting rendezvous with")
+            return self._brief(live_context, tanker, language, prefix="Начинаю сближение с" if language == "ru" else "Starting rendezvous with")
 
-        tanker = _session_tanker(context, self._session.tanker_unit_id)
+        tanker = _session_tanker(live_context, self._session.tanker_unit_id)
         if tanker is None:
             return self._result(False, "Активный танкер потерян из контекста миссии." if language == "ru" else "The active tanker is no longer present in mission context.")
 
         if intent == "aar_pre_contact":
-            closure = compute_closure(context, tanker)
-            vertical = compute_vertical(context, tanker)
+            closure = compute_closure(live_context, tanker)
+            vertical = compute_vertical(live_context, tanker)
             stability = evaluate_joinup_stability(tanker, closure, vertical)
             if self._session.phase != AarPhase.JOIN_UP or not stability.ready_for_precontact:
                 text = "Pre-contact пока не разрешён: сначала стабилизируйте дистанцию, сближение и высоту." if language == "ru" else "Pre-contact is not ready yet: stabilize range, closure and altitude first."
                 return self._result(False, text, {"precontact_readiness": stability.model_dump()})
             self._session.phase = AarPhase.PRE_CONTACT
-            result = self._brief(context, tanker, language, prefix="Переходим к pre-contact с" if language == "ru" else "Proceeding to pre-contact with")
+            result = self._brief(live_context, tanker, language, prefix="Переходим к pre-contact с" if language == "ru" else "Proceeding to pre-contact with")
             result.data["precontact_readiness"] = stability.model_dump()
             return result
         if intent == "aar_contact":
             self._session.phase = AarPhase.CONTACT
-            return self._brief(context, tanker, language, prefix="Contact с" if language == "ru" else "Contact with")
+            return self._brief(live_context, tanker, language, prefix="Contact с" if language == "ru" else "Contact with")
 
         self._update_phase_from_range(tanker)
-        return self._brief(context, tanker, language, prefix="Текущий танкер" if language == "ru" else "Current tanker")
+        return self._brief(live_context, tanker, language, prefix="Текущий танкер" if language == "ru" else "Current tanker")
 
     def _update_phase_from_range(self, tanker: SupportAsset) -> None:
         if tanker.distance_km is None or self._session.phase in {AarPhase.PRE_CONTACT, AarPhase.CONTACT, AarPhase.COMPLETE, AarPhase.ABORTED}:
