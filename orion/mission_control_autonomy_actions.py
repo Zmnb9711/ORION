@@ -3,6 +3,7 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 from orion.confirmations import ConfirmationStatus, PendingAction, PendingActionCreate, confirmation_store
+from orion.jtac_runtime import JtacDesignationMethod
 from orion.mission_control_autonomy import MissionControlAction, MissionControlAutonomyDecision, evaluate_mission_control_autonomy
 from orion.mission_control_jtac import MissionControlJtacRequest, MissionControlJtacResult, orchestrate_jtac
 from orion.mission_store import mission_store
@@ -54,6 +55,7 @@ def create_autonomy_pending_action(decision: MissionControlAutonomyDecision) -> 
                 "designator_name": decision.selected_designator_name,
                 "designator_supports_laser": decision.selected_designator_supports_laser,
                 "designator_supports_smoke": decision.selected_designator_supports_smoke,
+                "designation_method": decision.selected_designation_method.value if decision.selected_designation_method else None,
             },
         )
     )
@@ -80,11 +82,14 @@ def _revalidate_decision(resolved: PendingAction) -> MissionControlAutonomyDecis
     expected_type = f"mission_control:{current.action.value}"
     target_id = str(resolved.payload.get("target_id") or "")
     designator_id = resolved.payload.get("designator_id")
+    designation_method = resolved.payload.get("designation_method")
+    current_method = current.selected_designation_method.value if current.selected_designation_method else None
     if (
         not current.requires_pilot_confirmation
         or current.target_id != target_id
         or expected_type != resolved.action_type
         or (designator_id is not None and current.selected_designator_id != designator_id)
+        or (designation_method is not None and current_method != designation_method)
     ):
         raise ValueError("Tactical recommendation changed since proposal creation; proposal is stale")
     return current
@@ -108,10 +113,13 @@ def resolve_autonomy_pending_action(action_id: str, *, confirm: bool) -> Mission
 
     target_id = unit.unit_id
     if resolved.action_type == "mission_control:suggest_jtac":
+        method = current.selected_designation_method or JtacDesignationMethod.LASER
         jtac_result = orchestrate_jtac(
             MissionControlJtacRequest(
                 target_id=target_id,
                 requested_asset_id=current.selected_designator_id,
+                method=method,
+                laser_code=1688 if method is JtacDesignationMethod.LASER else None,
             )
         )
         return MissionControlAutonomyResolution(
