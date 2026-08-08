@@ -101,6 +101,7 @@ for _router_module in (
     "orion.onboarding_runtime_api",
     "orion.startup_health_api",
     "orion.recovery_orchestrator_api",
+    "orion.recovery_launch_api",
     "orion.dcs_process_api",
     "orion.flight_console_api",
     "orion.flight_readiness_api",
