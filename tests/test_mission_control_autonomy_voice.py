@@ -1,6 +1,7 @@
 from unittest.mock import patch
 
 from orion.confirmations import ConfirmationStore, PendingActionCreate
+from orion.mission_control_autonomy import MissionControlAction, MissionControlAutonomyDecision
 from orion.mission_control_autonomy_actions import MissionControlAutonomyResolution
 from orion.mission_control_autonomy_voice import (
     AutonomyVoiceDecision,
@@ -19,6 +20,18 @@ def _pending(action_type: str = "mission_control:suggest_jtac"):
             summary="test",
             payload={"target_id": "target-1", "target_name": "SA-11"},
         )
+    )
+
+
+def _decision(action: MissionControlAction) -> MissionControlAutonomyDecision:
+    return MissionControlAutonomyDecision(
+        action=action,
+        target_id="target-2" if action is not MissionControlAction.OBSERVE else None,
+        target_name="SA-15" if action is not MissionControlAction.OBSERVE else None,
+        confidence=0.8,
+        reason="updated tactical picture",
+        requires_pilot_confirmation=action is not MissionControlAction.OBSERVE,
+        available_designators=1,
     )
 
 
@@ -72,3 +85,39 @@ def test_clear_voice_confirmation_resolves_named_action() -> None:
     assert result.confirm is True
     assert result.resolution == expected
     resolve.assert_called_once_with(pending.action_id, confirm=True)
+
+
+def test_stale_voice_confirmation_returns_updated_recommendation() -> None:
+    pending = _pending()
+    current = _decision(MissionControlAction.SUGGEST_9LINE)
+    with patch(
+        "orion.mission_control_autonomy_voice.resolve_autonomy_pending_action",
+        side_effect=ValueError("Tactical recommendation changed since proposal creation; proposal is stale"),
+    ), patch("orion.mission_control_autonomy_voice.evaluate_mission_control_autonomy", return_value=current):
+        result = resolve_autonomy_voice_decision(
+            pending.action_id,
+            AutonomyVoiceDecision(transcript="affirmative", language="en"),
+        )
+    assert result.understood is True
+    assert result.confirm is True
+    assert result.stale is True
+    assert result.current_decision == current
+    assert "previous proposal is stale" in result.spoken_text
+    assert "SA-15" in result.spoken_text
+
+
+def test_russian_stale_voice_confirmation_can_fall_back_to_observe() -> None:
+    pending = _pending()
+    current = _decision(MissionControlAction.OBSERVE)
+    with patch(
+        "orion.mission_control_autonomy_voice.resolve_autonomy_pending_action",
+        side_effect=ValueError("Mission changed since proposal creation; proposal is stale"),
+    ), patch("orion.mission_control_autonomy_voice.evaluate_mission_control_autonomy", return_value=current):
+        result = resolve_autonomy_voice_decision(
+            pending.action_id,
+            AutonomyVoiceDecision(transcript="да", language="ru"),
+        )
+    assert result.stale is True
+    assert result.current_decision.action is MissionControlAction.OBSERVE
+    assert "Обстановка изменилась" in result.spoken_text
+    assert "не требуется" in result.spoken_text
