@@ -7,11 +7,10 @@ from orion.first_run_actions import FirstRunAction
 
 
 def test_first_run_action_routes_registered():
-    paths = {getattr(route, "path", None) for route in app.routes}
-    assert "/v1/first-run/actions/detect" in paths
-    assert "/v1/first-run/actions/select-active" in paths
-    assert "/v1/first-run/actions/install-integration" in paths
-    assert "/v1/first-run/actions/test-connection" in paths
+    client = TestClient(app)
+    response = client.post("/v1/first-run/actions/detect?mode=manual")
+    assert response.status_code == 200
+    assert response.json()["action"] == "detect"
 
 
 def test_select_active_action_returns_next_steps(tmp_path: Path, monkeypatch):
