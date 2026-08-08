@@ -68,10 +68,9 @@ def test_small_guidance_changes_do_not_chatter(monkeypatch) -> None:
 def test_large_guidance_change_is_announced(monkeypatch) -> None:
     first = _context()
     monitor = _start(monkeypatch, first)
-    monkeypatch.setattr(proactive_module, "build_live_mission_context", lambda: first)
-    monitor.poll()
-    changed = _context(longitude=41.10, distance_km=9.0)
-    monkeypatch.setattr(proactive_module, "build_live_mission_context", lambda: changed)
+    contexts = [first, _context(longitude=41.10, distance_km=9.0)]
+    monkeypatch.setattr(proactive_module, "build_live_mission_context", lambda: contexts.pop(0))
+    assert monitor.poll().should_announce is False
     update = monitor.poll()
     assert update.should_announce is True
     assert update.reason in {"heading_change", "eta_change"}
