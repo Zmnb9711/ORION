@@ -35,6 +35,8 @@ class Cas9LineBriefCreate(BaseModel):
     method: JtacDesignationMethod = JtacDesignationMethod.LASER
     laser_code: int | None = Field(default=1688, ge=1111, le=1788)
     smoke_color: str = "red"
+    requested_asset_id: str | None = None
+    source_action_id: str | None = None
     language: str = "en"
 
 
@@ -69,6 +71,8 @@ class Cas9LineBrief(BaseModel):
     method: JtacDesignationMethod
     laser_code: int | None = None
     smoke_color: str = "red"
+    requested_asset_id: str | None = None
+    source_action_id: str | None = None
     language: str = "en"
     readback_verified: bool = False
     remarks_acknowledged: bool = False
@@ -86,10 +90,17 @@ class Cas9LineStore:
             raise ValueError("laser_code is required for laser CAS marking")
         if payload.method is JtacDesignationMethod.SMOKE and payload.laser_code is not None:
             payload = payload.model_copy(update={"laser_code": None})
-        brief = Cas9LineBrief(**payload.model_dump())
         with self._lock:
+            if payload.source_action_id:
+                existing = next(
+                    (brief for brief in self._briefs.values() if brief.source_action_id == payload.source_action_id),
+                    None,
+                )
+                if existing is not None:
+                    return existing.model_copy(deep=True)
+            brief = Cas9LineBrief(**payload.model_dump())
             self._briefs[brief.brief_id] = brief
-        return brief.model_copy(deep=True)
+            return brief.model_copy(deep=True)
 
     def issue(self, brief_id: UUID) -> Cas9LineBrief:
         with self._lock:
@@ -133,6 +144,7 @@ class Cas9LineStore:
                 method=brief.method,
                 laser_code=brief.laser_code,
                 smoke_color=brief.smoke_color,
+                requested_asset_id=brief.requested_asset_id,
                 language=brief.language,
             )
         result = orchestrate_jtac(request)
