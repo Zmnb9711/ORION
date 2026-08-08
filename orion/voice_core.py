@@ -82,7 +82,11 @@ class VoiceCommandQueue:
             "allow_overlap": policy.allow_overlap,
         }
         with self._lock:
-            self._apply_preemption(command, policy)
+            # Preserve historical behavior for emergency speech: CRITICAL interrupts
+            # immediately. HIGH remains queued so SpeechScheduler can surface the
+            # interruption decision before playback starts.
+            if command.priority is CommandPriority.CRITICAL:
+                self._apply_preemption(command, policy)
             self._commands[command.command_id] = command
             return command.model_copy(deep=True)
 
@@ -135,7 +139,6 @@ class VoiceCommandQueue:
         if not policy.allow_overlap:
             running = [item for item in self._commands.values() if item.state is CommandState.RUNNING]
             if running and not any(item.command_id == command.command_id for item in running):
-                # If policy did not authorize interruption, keep serialization strict.
                 if not self._can_interrupt_any(command, policy, running):
                     raise ValueError("Another voice command is already running")
 
@@ -162,7 +165,6 @@ class VoiceCommandQueue:
 
     @staticmethod
     def _resolve_policy(command: VoiceCommand):
-        # Lazy import avoids a module cycle because voice_policy depends on core types.
         from orion.voice_policy import resolve_voice_policy
 
         return resolve_voice_policy(command)
