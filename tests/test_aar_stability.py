@@ -4,7 +4,7 @@ import pytest
 
 import orion.aar_proactive as proactive_module
 import orion.aar_rendezvous as rendezvous_module
-from orion.aar_closure import AarClosureAssessment, ClosureBand
+from orion.aar_closure import AarClosureAssessment, ClosureBand, ClosureProfile
 from orion.aar_proactive import AarProactiveMonitor
 from orion.aar_rendezvous import aar_rendezvous
 from orion.aar_stability import evaluate_joinup_stability
@@ -29,13 +29,23 @@ def _context(*, own_alt: float = 7000, own_speed: float = 155, distance_km: floa
     return LiveMissionContext(available=True, ownship=OwnshipContext(aircraft_type="FA-18C_hornet", latitude=41.0, longitude=41.0, altitude_m=own_alt, heading_deg=90, true_airspeed_mps=own_speed), tankers=[_tanker(distance_km)])
 
 
+def _closure(closure_mps: float, band: ClosureBand) -> AarClosureAssessment:
+    return AarClosureAssessment(
+        closure_mps=closure_mps,
+        band=band,
+        profile=ClosureProfile.FINAL,
+        stable_limit_mps=2.5722,
+        high_limit_mps=5.1444,
+    )
+
+
 def test_stability_requires_range_closure_and_vertical() -> None:
     tanker = _tanker(0.7)
-    ready = evaluate_joinup_stability(tanker, AarClosureAssessment(closure_mps=2, band=ClosureBand.HOLD), AarVerticalAssessment(offset_m=10, band=VerticalBand.ALIGNED))
+    ready = evaluate_joinup_stability(tanker, _closure(2, ClosureBand.HOLD), AarVerticalAssessment(offset_m=10, band=VerticalBand.ALIGNED))
     assert ready.ready_for_precontact is True
     assert ready.reasons == []
 
-    not_ready = evaluate_joinup_stability(_tanker(1.2), AarClosureAssessment(closure_mps=20, band=ClosureBand.EXCESSIVE), AarVerticalAssessment(offset_m=200, band=VerticalBand.HIGH))
+    not_ready = evaluate_joinup_stability(_tanker(1.2), _closure(20, ClosureBand.EXCESSIVE), AarVerticalAssessment(offset_m=200, band=VerticalBand.HIGH))
     assert not_ready.ready_for_precontact is False
     assert set(not_ready.reasons) == {"distance_not_final", "closure_not_stable", "vertical_not_aligned"}
 
