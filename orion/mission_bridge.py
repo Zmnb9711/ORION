@@ -18,6 +18,8 @@ from orion.mission_command_status import (
 class MissionCommandType(StrEnum):
     LASER = "laser"
     SMOKE = "smoke"
+    STOP_LASER = "stop_laser"
+    STOP_SMOKE = "stop_smoke"
     REQUEST_AWACS = "request_awacs"
     REQUEST_TANKER = "request_tanker"
 
@@ -25,6 +27,8 @@ class MissionCommandType(StrEnum):
 COMMAND_CAPABILITY = {
     MissionCommandType.LASER: MissionCapability.LASER,
     MissionCommandType.SMOKE: MissionCapability.SMOKE,
+    MissionCommandType.STOP_LASER: MissionCapability.LASER,
+    MissionCommandType.STOP_SMOKE: MissionCapability.SMOKE,
     MissionCommandType.REQUEST_AWACS: MissionCapability.AWACS,
     MissionCommandType.REQUEST_TANKER: MissionCapability.TANKER,
 }
@@ -40,7 +44,12 @@ class MissionCommand(BaseModel):
 
     @model_validator(mode="after")
     def validate_targeted_actions(self) -> "MissionCommand":
-        if self.command in {MissionCommandType.LASER, MissionCommandType.SMOKE}:
+        if self.command in {
+            MissionCommandType.LASER,
+            MissionCommandType.SMOKE,
+            MissionCommandType.STOP_LASER,
+            MissionCommandType.STOP_SMOKE,
+        }:
             if not self.target_unit_id:
                 raise ValueError("target_unit_id is required")
         if self.command is MissionCommandType.LASER and self.laser_code is None:
