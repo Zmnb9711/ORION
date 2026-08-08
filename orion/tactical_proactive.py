@@ -98,7 +98,8 @@ def _air_kinematics(threat: TacticalThreat, ru: bool) -> str:
         aspect_text = {"hot": "идёт навстречу", "flanking": "фланговый", "cold": "уходит", "unknown": "аспект неизвестен"}[aspect]
         trend_text = {"closing": "сближается", "stable": "дальность стабильна", "diverging": "расходится", "unknown": "тренд неизвестен"}[trend]
         if closure is not None and trend == "closing":
-            return f"{aspect_text}, {trend_text}, скорость сближения {abs(closure):.0f} узлов"
+            closure_kmh = abs(closure) * 1.852
+            return f"{aspect_text}, {trend_text}, скорость сближения {closure_kmh:.0f} километров в час"
         return f"{aspect_text}, {trend_text}"
     aspect_text = {"hot": "hot", "flanking": "flanking", "cold": "cold", "unknown": "aspect unknown"}[aspect]
     trend_text = {"closing": "closing", "stable": "range stable", "diverging": "diverging", "unknown": "trend unknown"}[trend]
