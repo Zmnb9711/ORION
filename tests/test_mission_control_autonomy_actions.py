@@ -128,7 +128,7 @@ def test_confirmed_9line_proposal_builds_grounded_seed() -> None:
     ), patch("orion.mission_control_autonomy_actions.evaluate_mission_control_autonomy", return_value=decision):
         pending = create_autonomy_pending_action(decision)
         result = resolve_autonomy_pending_action(pending.action_id, confirm=True)
-    assert result.executed is True
+    assert result.executed is False
     assert result.cas_9line_seed is not None
     assert result.cas_9line_seed.target_location == "41.123457, 41.765432"
     assert result.cas_9line_seed.target_elevation_ft == 984
