@@ -103,6 +103,7 @@ for _router_module in (
     "orion.recovery_orchestrator_api",
     "orion.recovery_launch_api",
     "orion.recovery_presentation_api",
+    "orion.application_state_api",
     "orion.dcs_process_api",
     "orion.flight_console_api",
     "orion.flight_readiness_api",
