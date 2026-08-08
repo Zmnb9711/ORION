@@ -84,9 +84,9 @@ def submit_9line_completion_prompt(
             priority=CommandPriority.HIGH,
             context={
                 "action_id": action_id,
-                "missing_fields": seed.missing_fields,
+                "missing_fields": ",".join(seed.missing_fields),
                 "target_id": seed.target_id,
-                "designator_id": seed.designator_id,
+                "designator_id": seed.designator_id or "",
                 "language": language,
             },
         )
@@ -150,7 +150,7 @@ def _submit_stale_recovery_voice(
             priority=CommandPriority.HIGH,
             context={
                 "action_id": old_action_id,
-                "replacement_action_id": replacement_action.action_id if replacement_action else None,
+                "replacement_action_id": replacement_action.action_id if replacement_action else "",
                 "language": language,
                 "stale": True,
             },
