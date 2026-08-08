@@ -13,7 +13,17 @@ class MissionStore:
     def replace(self, snapshot: MissionSnapshot) -> MissionSnapshot:
         with self._lock:
             self._snapshot = snapshot
-            return snapshot
+        self._notify_jtac_target_changes(snapshot)
+        return snapshot
+
+    @staticmethod
+    def _notify_jtac_target_changes(snapshot: MissionSnapshot) -> None:
+        # Lazy import avoids coupling the core mission store to Mission Control at import time.
+        try:
+            from orion.mission_control_jtac_retask import observe_snapshot_for_jtac_retask
+        except ImportError:
+            return
+        observe_snapshot_for_jtac_retask(snapshot)
 
     def get(self) -> MissionSnapshot | None:
         with self._lock:
