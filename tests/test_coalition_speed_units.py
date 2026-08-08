@@ -21,10 +21,11 @@ def test_red_speed_is_presented_in_kilometers_per_hour() -> None:
     assert spoken_speed(100.0, Coalition.RED, "ru") == "360 километров в час"
 
 
-def test_unknown_coalition_keeps_si_without_guessing() -> None:
+def test_unknown_coalition_uses_knots() -> None:
     speed = display_speed(100.0, Coalition.UNKNOWN)
-    assert speed.unit == "m/s"
-    assert speed.value == 100.0
+    assert speed.unit == "kt"
+    assert round(speed.value) == 194
+    assert spoken_speed(100.0, Coalition.UNKNOWN, "ru") == "194 узлов"
 
 
 def test_blue_tanker_voice_brief_uses_knots(monkeypatch) -> None:
