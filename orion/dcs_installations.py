@@ -13,10 +13,21 @@ class DcsInstallationSource(StrEnum):
     MANUAL = "manual"
 
 
+class DcsInstallationType(StrEnum):
+    """How the selected DCS installation is distributed/resolved."""
+
+    AUTO = "auto"
+    STEAM = "steam"
+    STANDALONE = "standalone"
+    MANUAL = "manual"
+
+
 class DcsInstallationCreate(BaseModel):
     name: str = Field(min_length=1, max_length=80)
     executable_path: str
     source: DcsInstallationSource = DcsInstallationSource.MANUAL
+    installation_type: DcsInstallationType = DcsInstallationType.AUTO
+    saved_games_path: str | None = None
 
     @field_validator("executable_path")
     @classmethod
@@ -34,6 +45,8 @@ class DcsInstallationCreate(BaseModel):
 class DcsInstallationUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=80)
     executable_path: str | None = None
+    installation_type: DcsInstallationType | None = None
+    saved_games_path: str | None = None
 
     @field_validator("executable_path")
     @classmethod
