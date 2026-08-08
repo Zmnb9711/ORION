@@ -5,6 +5,7 @@ from typing import Protocol
 
 from pydantic import BaseModel, Field
 
+from orion.aar_rendezvous import aar_rendezvous
 from orion.live_telemetry_store import live_telemetry
 from orion.voice_calibration_assistant import execute_calibration_voice
 from orion.voice_cockpit_queries import execute_cockpit_query
@@ -60,6 +61,27 @@ class MissionContextExecutor:
         return ExecutionOutcome(state=ExecutionState.COMPLETED if result.completed else ExecutionState.REJECTED, agent=command.agent, intent=command.intent, adapter=self.adapter, message=result.spoken_text, payload={"command_id": str(command.command_id), "spoken_text": result.spoken_text, **result.data})
 
 
+class AarVoiceExecutor:
+    adapter = "aar-rendezvous"
+    supported_intents = {"aar_start", "aar_status", "aar_pre_contact", "aar_contact", "aar_complete", "aar_abort"}
+
+    def execute(self, command: VoiceCommand) -> ExecutionOutcome:
+        result = aar_rendezvous.execute(command.intent, command.transcript)
+        return ExecutionOutcome(
+            state=ExecutionState.COMPLETED if result.completed else ExecutionState.REJECTED,
+            agent=command.agent,
+            intent=command.intent,
+            adapter=self.adapter,
+            message=result.spoken_text,
+            payload={
+                "command_id": str(command.command_id),
+                "spoken_text": result.spoken_text,
+                "aar_session": result.session.model_dump(mode="json"),
+                **result.data,
+            },
+        )
+
+
 class OfficialKnowledgeExecutor:
     adapter = "official-knowledge"
 
@@ -108,6 +130,7 @@ class VoiceExecutionDispatcher:
         self._executors: dict[VoiceAgent, VoiceCommandExecutor] = {agent: BridgeExecutor(adapter) for agent, adapter in bridge_agents.items()}
         self._mission_information = MissionInformationExecutor()
         self._mission_context = MissionContextExecutor()
+        self._aar_voice = AarVoiceExecutor()
         self._official_knowledge = OfficialKnowledgeExecutor()
         self._live_cockpit = LiveCockpitExecutor()
         self._calibration_voice = CalibrationVoiceExecutor()
@@ -117,6 +140,8 @@ class VoiceExecutionDispatcher:
     def execute(self, command: VoiceCommand) -> ExecutionOutcome:
         if command.intent in self._mission_information.supported_intents:
             return self._mission_information.execute(command)
+        if command.intent in self._aar_voice.supported_intents:
+            return self._aar_voice.execute(command)
         if command.intent in self._live_first_tanker_intents and command.agent is VoiceAgent.TANKER:
             live_outcome = self._mission_context.execute(command)
             if live_outcome.state is ExecutionState.COMPLETED:
@@ -142,6 +167,7 @@ class VoiceExecutionDispatcher:
         adapters = {agent.value: getattr(executor, "adapter", executor.__class__.__name__) for agent, executor in self._executors.items()}
         adapters["mission_information"] = self._mission_information.adapter
         adapters["mission_context"] = self._mission_context.adapter
+        adapters["aar_voice"] = self._aar_voice.adapter
         adapters["official_knowledge"] = self._official_knowledge.adapter
         adapters["live_cockpit"] = self._live_cockpit.adapter
         adapters["calibration_voice"] = self._calibration_voice.adapter
