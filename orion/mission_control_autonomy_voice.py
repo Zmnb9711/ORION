@@ -17,9 +17,6 @@ class AutonomyVoiceDecisionResult(BaseModel):
     understood: bool
     confirm: bool | None = None
     resolution: MissionControlAutonomyResolution | None = None
-    stale: bool = False
-    current_decision: MissionControlAutonomyDecision | None = None
-    replacement_action: PendingAction | None = None
     spoken_text: str | None = None
     voice_command: VoiceCommand | None = None
 
@@ -174,9 +171,6 @@ def resolve_autonomy_voice_decision(
             understood=True,
             confirm=True,
             resolution=resolution,
-            stale=True,
-            current_decision=resolution.current_decision,
-            replacement_action=resolution.replacement_action,
             spoken_text=text,
             voice_command=command,
         )
