@@ -35,6 +35,12 @@ _RULES: tuple[tuple[tuple[str, ...], str, VoiceAgent, CommandPriority], ...] = (
     (("ближайший дружественный", "кто из своих ближе", "nearest friendly"), "nearest_friendly", VoiceAgent.MISSION_CONTROL, CommandPriority.NORMAL),
     (("где ближайший танкер", "nearest tanker", "where is the tanker"), "nearest_tanker", VoiceAgent.TANKER, CommandPriority.NORMAL),
     (("где ближайший awacs", "где ближайший дрло", "nearest awacs", "where is awacs"), "nearest_awacs", VoiceAgent.AWACS, CommandPriority.NORMAL),
+    (("начать дозаправку", "начни дозаправку", "начать сближение с танкером", "start aerial refueling", "start aar", "begin rendezvous"), "aar_start", VoiceAgent.TANKER, CommandPriority.HIGH),
+    (("статус сближения", "статус дозаправки", "где мы по дозаправке", "aar status", "rendezvous status", "refueling status"), "aar_status", VoiceAgent.TANKER, CommandPriority.NORMAL),
+    (("pre-contact", "pre contact", "предконтакт"), "aar_pre_contact", VoiceAgent.TANKER, CommandPriority.HIGH),
+    (("contact with tanker", "contact tanker", "контакт с танкером", "контакт дозаправки"), "aar_contact", VoiceAgent.TANKER, CommandPriority.HIGH),
+    (("дозаправка завершена", "закончил дозаправку", "refueling complete", "aar complete"), "aar_complete", VoiceAgent.TANKER, CommandPriority.NORMAL),
+    (("отмена дозаправки", "отмени дозаправку", "прервать дозаправку", "abort refueling", "abort aar"), "aar_abort", VoiceAgent.TANKER, CommandPriority.CRITICAL),
     (("согласно руководству", "в руководстве", "по руководству", "мануал", "manual", "как выполнить", "как настроить", "что делать при", "почему не работает", "how do i", "according to the manual"), "aircraft_knowledge_query", VoiceAgent.FLIGHT_ADVISOR, CommandPriority.NORMAL),
     (("ufc", "уфк", "left ddi", "right ddi", "левый ddi", "правый ddi", "mpcd", "sensor control switch", "comm1 preset", "comm2 preset", "канал comm1", "канал comm2"), "aircraft_knowledge_query", VoiceAgent.FLIGHT_ADVISOR, CommandPriority.NORMAL),
     (("канал рсбн", "каналы рсбн", "рсбн канал", "rsbn channel", "rsbn preset"), "find_rsbn_channel", VoiceAgent.NAVIGATION, CommandPriority.NORMAL),
@@ -90,6 +96,9 @@ def _parse_single(text: str, context: VoiceConversationContext | None) -> VoiceC
             if any(token in normalized for token in ("где", "положен", "координат", "where", "position", "location")):
                 return _command(text, "find_unit_position", contextual_agent, CommandPriority.NORMAL, context)
             return _command(text, "context_follow_up", contextual_agent, CommandPriority.NORMAL, context)
+
+    if normalized == "contact" and context is not None and context.active_agent is VoiceAgent.TANKER:
+        return _command(text, "aar_contact", VoiceAgent.TANKER, CommandPriority.HIGH, context)
 
     if _NAMED_FREQUENCY_RE.search(text):
         return _command(text, "find_unit_frequency", VoiceAgent.COALITION_AIRCRAFT, CommandPriority.NORMAL, context)

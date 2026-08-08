@@ -6,7 +6,7 @@ import orion.aar_rendezvous as aar_module
 from orion.aar_rendezvous import AarPhase, aar_rendezvous
 from orion.dcs_capabilities import DcsRecipientType
 from orion.mission import Coalition
-from orion.mission_context import LiveMissionContext, SupportAsset
+from orion.mission_context import LiveMissionContext, OwnshipContext, SupportAsset
 
 
 @pytest.fixture(autouse=True)
@@ -16,9 +16,17 @@ def reset_aar() -> None:
     aar_rendezvous.reset()
 
 
-def _context(distance_km: float = 18.52) -> LiveMissionContext:
+def _context(distance_km: float = 18.52, *, ownship_speed_mps: float | None = 250.0, tanker_longitude: float = 41.2) -> LiveMissionContext:
     return LiveMissionContext(
         available=True,
+        ownship=OwnshipContext(
+            aircraft_type="FA-18C_hornet",
+            latitude=41.0,
+            longitude=41.0,
+            altitude_m=5000,
+            heading_deg=90,
+            true_airspeed_mps=ownship_speed_mps,
+        ),
         tankers=[
             SupportAsset(
                 unit_id="tanker-1",
@@ -28,11 +36,11 @@ def _context(distance_km: float = 18.52) -> LiveMissionContext:
                 available=True,
                 aar_available=True,
                 latitude=41.0,
-                longitude=41.2,
+                longitude=tanker_longitude,
                 altitude_m=7000,
                 distance_km=distance_km,
                 bearing_deg=90,
-                heading_deg=270,
+                heading_deg=0,
                 speed_mps=150,
                 frequency_mhz=251.5,
                 modulation="AM",
@@ -54,6 +62,26 @@ def test_start_selects_nearest_available_tanker(monkeypatch) -> None:
     assert "292 узлов" in result.spoken_text
     assert "251.500" in result.spoken_text
     assert "TACAN 31 Y" in result.spoken_text
+    assert "Рекомендуемый курс перехвата" in result.spoken_text
+    assert result.data["intercept_guidance"] is not None
+
+
+def test_status_recomputes_intercept_guidance(monkeypatch) -> None:
+    contexts = [_context(18.52, tanker_longitude=41.2), _context(9.26, tanker_longitude=41.1)]
+    monkeypatch.setattr(aar_module, "build_live_mission_context", lambda: contexts.pop(0))
+    started = aar_rendezvous.execute("aar_start", "Начать дозаправку")
+    first_eta = started.data["intercept_guidance"]["eta_s"]
+    status = aar_rendezvous.execute("aar_status", "Статус сближения")
+    second_eta = status.data["intercept_guidance"]["eta_s"]
+    assert second_eta < first_eta
+
+
+def test_guidance_is_omitted_when_ownship_speed_is_missing(monkeypatch) -> None:
+    monkeypatch.setattr(aar_module, "build_live_mission_context", lambda: _context(18.52, ownship_speed_mps=None))
+    result = aar_rendezvous.execute("aar_start", "Начать дозаправку")
+    assert result.completed is True
+    assert result.data["intercept_guidance"] is None
+    assert "Рекомендуемый курс перехвата" not in result.spoken_text
 
 
 def test_range_drives_only_rendezvous_and_join_up(monkeypatch) -> None:
@@ -73,10 +101,11 @@ def test_pre_contact_and_contact_require_explicit_transition(monkeypatch) -> Non
 
     pre = aar_rendezvous.execute("aar_pre_contact", "Pre-contact")
     assert pre.session.phase == AarPhase.PRE_CONTACT
+    assert pre.data["intercept_guidance"] is None
     status = aar_rendezvous.execute("aar_status", "Status")
     assert status.session.phase == AarPhase.PRE_CONTACT
 
-    contact = aar_rendezvous.execute("aar_contact", "Contact")
+    contact = aar_rendezvous.execute("aar_contact", "Contact with tanker")
     assert contact.session.phase == AarPhase.CONTACT
 
 
