@@ -35,3 +35,19 @@ def test_russian_issue_requests_critical_readback() -> None:
     assert "Высота цели 1200 футов" in text
     assert "Координаты N41 E041" in text
     assert "Повторите высоту цели" in text
+
+
+def test_english_correction_repeats_only_wrong_elements() -> None:
+    brief = _brief("en").model_copy(update={"state": Cas9LineState.READBACK_PENDING, "readback_mismatches": ["target elevation"]})
+    text = cas_9line_text(brief)
+    assert "Correction: target elevation 1200 feet" in text
+    assert "target location N41 E041" not in text
+    assert "restrictions remain north" not in text
+
+
+def test_russian_correction_repeats_only_wrong_elements() -> None:
+    brief = _brief("ru").model_copy(update={"state": Cas9LineState.READBACK_PENDING, "readback_mismatches": ["target location", "restrictions"]})
+    text = cas_9line_text(brief)
+    assert "координаты N41 E041" in text
+    assert "ограничения remain north" in text
+    assert "высота цели 1200" not in text
