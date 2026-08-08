@@ -82,6 +82,7 @@ for _router_module in (
     "orion.coalition_control_api",
     "orion.mission_bridge_api",
     "orion.mission_context_api",
+    "orion.mission_control_queries_api",
     "orion.dialogue_runtime_api",
     "orion.voice_core_api",
     "orion.speech_scheduler_api",
