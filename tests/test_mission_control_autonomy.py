@@ -1,6 +1,7 @@
 from unittest.mock import patch
 
-from orion.jtac_assets import JtacAsset, JtacAssetAvailability, JtacAssetCategory
+from orion.jtac_assets import JtacAsset, JtacAssetAvailability
+from orion.mission import UnitCategory
 from orion.mission_control_autonomy import MissionControlAction, evaluate_mission_control_autonomy
 from orion.mission_control_runtime import MissionControlPicture, MissionControlReadiness
 from orion.tactical_situation import TacticalThreat, TacticalThreatKind
@@ -22,7 +23,7 @@ def _asset() -> JtacAsset:
     return JtacAsset(
         unit_id="jtac-1",
         name="Axeman 1-1",
-        category=JtacAssetCategory.GROUND,
+        category=UnitCategory.GROUND,
         supports_laser=True,
         supports_smoke=True,
         explicit_fac_role=True,
