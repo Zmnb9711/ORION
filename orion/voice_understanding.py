@@ -38,7 +38,7 @@ _RULES: tuple[tuple[tuple[str, ...], str, VoiceAgent, CommandPriority], ...] = (
     (("начать дозаправку", "начни дозаправку", "начать сближение с танкером", "start aerial refueling", "start aar", "begin rendezvous"), "aar_start", VoiceAgent.TANKER, CommandPriority.HIGH),
     (("статус сближения", "статус дозаправки", "где мы по дозаправке", "aar status", "rendezvous status", "refueling status"), "aar_status", VoiceAgent.TANKER, CommandPriority.NORMAL),
     (("pre-contact", "pre contact", "предконтакт"), "aar_pre_contact", VoiceAgent.TANKER, CommandPriority.HIGH),
-    (("contact", "контакт с танкером"), "aar_contact", VoiceAgent.TANKER, CommandPriority.HIGH),
+    (("contact with tanker", "contact tanker", "контакт с танкером", "контакт дозаправки"), "aar_contact", VoiceAgent.TANKER, CommandPriority.HIGH),
     (("дозаправка завершена", "закончил дозаправку", "refueling complete", "aar complete"), "aar_complete", VoiceAgent.TANKER, CommandPriority.NORMAL),
     (("отмена дозаправки", "отмени дозаправку", "прервать дозаправку", "abort refueling", "abort aar"), "aar_abort", VoiceAgent.TANKER, CommandPriority.CRITICAL),
     (("согласно руководству", "в руководстве", "по руководству", "мануал", "manual", "как выполнить", "как настроить", "что делать при", "почему не работает", "how do i", "according to the manual"), "aircraft_knowledge_query", VoiceAgent.FLIGHT_ADVISOR, CommandPriority.NORMAL),
@@ -96,6 +96,9 @@ def _parse_single(text: str, context: VoiceConversationContext | None) -> VoiceC
             if any(token in normalized for token in ("где", "положен", "координат", "where", "position", "location")):
                 return _command(text, "find_unit_position", contextual_agent, CommandPriority.NORMAL, context)
             return _command(text, "context_follow_up", contextual_agent, CommandPriority.NORMAL, context)
+
+    if normalized == "contact" and context is not None and context.active_agent is VoiceAgent.TANKER:
+        return _command(text, "aar_contact", VoiceAgent.TANKER, CommandPriority.HIGH, context)
 
     if _NAMED_FREQUENCY_RE.search(text):
         return _command(text, "find_unit_frequency", VoiceAgent.COALITION_AIRCRAFT, CommandPriority.NORMAL, context)
