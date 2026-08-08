@@ -87,13 +87,16 @@ def test_clear_voice_confirmation_resolves_named_action() -> None:
     resolve.assert_called_once_with(pending.action_id, confirm=True)
 
 
-def test_stale_voice_confirmation_returns_updated_recommendation() -> None:
+def test_stale_voice_confirmation_creates_replacement_proposal() -> None:
     pending = _pending()
+    replacement = _pending("mission_control:suggest_9line")
     current = _decision(MissionControlAction.SUGGEST_9LINE)
     with patch(
         "orion.mission_control_autonomy_voice.resolve_autonomy_pending_action",
         side_effect=ValueError("Tactical recommendation changed since proposal creation; proposal is stale"),
-    ), patch("orion.mission_control_autonomy_voice.evaluate_mission_control_autonomy", return_value=current):
+    ), patch("orion.mission_control_autonomy_voice.evaluate_mission_control_autonomy", return_value=current), patch(
+        "orion.mission_control_autonomy_voice.create_autonomy_pending_action", return_value=replacement
+    ) as create:
         result = resolve_autonomy_voice_decision(
             pending.action_id,
             AutonomyVoiceDecision(transcript="affirmative", language="en"),
@@ -102,12 +105,16 @@ def test_stale_voice_confirmation_returns_updated_recommendation() -> None:
     assert result.confirm is True
     assert result.stale is True
     assert result.current_decision == current
-    assert "previous proposal is stale" in result.spoken_text
+    assert result.replacement_action == replacement
+    assert result.replacement_action.action_id != pending.action_id
+    assert "New proposal" in result.spoken_text
     assert "SA-15" in result.spoken_text
     assert result.voice_command is not None
     assert result.voice_command.agent is VoiceAgent.MISSION_CONTROL
     assert result.voice_command.intent == "mission_control_autonomy_stale_recovery"
     assert result.voice_command.context["action_id"] == pending.action_id
+    assert result.voice_command.context["replacement_action_id"] == replacement.action_id
+    create.assert_called_once_with(current)
 
 
 def test_russian_stale_voice_confirmation_can_fall_back_to_observe() -> None:
@@ -116,14 +123,19 @@ def test_russian_stale_voice_confirmation_can_fall_back_to_observe() -> None:
     with patch(
         "orion.mission_control_autonomy_voice.resolve_autonomy_pending_action",
         side_effect=ValueError("Mission changed since proposal creation; proposal is stale"),
-    ), patch("orion.mission_control_autonomy_voice.evaluate_mission_control_autonomy", return_value=current):
+    ), patch("orion.mission_control_autonomy_voice.evaluate_mission_control_autonomy", return_value=current), patch(
+        "orion.mission_control_autonomy_voice.create_autonomy_pending_action"
+    ) as create:
         result = resolve_autonomy_voice_decision(
             pending.action_id,
             AutonomyVoiceDecision(transcript="да", language="ru"),
         )
     assert result.stale is True
     assert result.current_decision.action is MissionControlAction.OBSERVE
+    assert result.replacement_action is None
     assert "Обстановка изменилась" in result.spoken_text
     assert "не требуется" in result.spoken_text
     assert result.voice_command is not None
     assert result.voice_command.agent is VoiceAgent.MISSION_CONTROL
+    assert result.voice_command.context["replacement_action_id"] is None
+    create.assert_not_called()
