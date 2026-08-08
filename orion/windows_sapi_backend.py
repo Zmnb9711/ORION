@@ -123,8 +123,8 @@ def _powershell_sapi_script(
     rate: int,
     volume: int,
     voice_name: str,
-    locale: str,
-    voice_slot: int,
+    locale: str = "en-US",
+    voice_slot: int = 0,
 ) -> str:
     escaped_text = text.replace("'", "''")
     escaped_target = target.replace("'", "''")
