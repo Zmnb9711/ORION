@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
+from orion.cas_9line import Cas9LineBrief, Cas9LineBriefCreate, cas_9line_store
 from orion.confirmations import ConfirmationStatus, PendingAction, PendingActionCreate, confirmation_store
 from orion.jtac_runtime import JtacDesignationMethod
 from orion.mission_control_autonomy import MissionControlAction, MissionControlAutonomyDecision, evaluate_mission_control_autonomy
@@ -20,7 +21,28 @@ class Cas9LineSeed(BaseModel):
     laser_code: int = 1688
     designator_id: str | None = None
     designator_name: str | None = None
-    missing_fields: list[str] = Field(default_factory=lambda: ["ip_or_bp", "heading_deg", "friendlies", "egress"])
+    missing_fields: list[str] = Field(
+        default_factory=lambda: [
+            "ip_or_bp",
+            "heading_deg",
+            "distance_nm",
+            "friendlies",
+            "egress",
+            "restrictions",
+            "remarks",
+        ]
+    )
+
+
+class Cas9LineAutonomyCompletion(BaseModel):
+    ip_or_bp: str = Field(min_length=1)
+    heading_deg: int = Field(ge=0, le=359)
+    distance_nm: float = Field(gt=0)
+    friendlies: str = Field(min_length=1)
+    egress: str = Field(min_length=1)
+    restrictions: str | None = None
+    remarks: str | None = None
+    language: str = "en"
 
 
 class MissionControlAutonomyResolution(BaseModel):
@@ -95,6 +117,20 @@ def _revalidate_decision(resolved: PendingAction) -> MissionControlAutonomyDecis
     return current
 
 
+def _build_9line_seed(unit, current: MissionControlAutonomyDecision) -> Cas9LineSeed:
+    return Cas9LineSeed(
+        target_id=unit.unit_id,
+        target_name=unit.name,
+        target_description=unit.type_name or unit.name,
+        target_location=f"{unit.position.latitude:.6f}, {unit.position.longitude:.6f}",
+        target_elevation_ft=round(unit.position.altitude_m * 3.28084),
+        mark="laser",
+        laser_code=1688,
+        designator_id=current.selected_designator_id,
+        designator_name=current.selected_designator_name,
+    )
+
+
 def resolve_autonomy_pending_action(action_id: str, *, confirm: bool) -> MissionControlAutonomyResolution:
     pending = confirmation_store.get(action_id)
     if pending is None or pending.status is not ConfirmationStatus.PENDING:
@@ -129,19 +165,48 @@ def resolve_autonomy_pending_action(action_id: str, *, confirm: bool) -> Mission
         )
 
     if resolved.action_type == "mission_control:suggest_9line":
-        seed = Cas9LineSeed(
-            target_id=unit.unit_id,
-            target_name=unit.name,
-            target_description=unit.type_name or unit.name,
-            target_location=f"{unit.position.latitude:.6f}, {unit.position.longitude:.6f}",
-            target_elevation_ft=round(unit.position.altitude_m * 3.28084),
-            designator_id=current.selected_designator_id,
-            designator_name=current.selected_designator_name,
-        )
         return MissionControlAutonomyResolution(
             pending_action=resolved,
             executed=True,
-            cas_9line_seed=seed,
+            cas_9line_seed=_build_9line_seed(unit, current),
         )
 
     raise ValueError(f"Unsupported Mission Control action: {resolved.action_type}")
+
+
+def complete_autonomy_9line(action_id: str, payload: Cas9LineAutonomyCompletion) -> Cas9LineBrief:
+    action = confirmation_store.get(action_id)
+    if action is None:
+        raise KeyError("Mission Control action not found")
+    if action.status is not ConfirmationStatus.CONFIRMED or action.action_type != "mission_control:suggest_9line":
+        raise ValueError("Mission Control action is not a confirmed 9-line proposal")
+
+    unit = _current_target(action)
+    current = _revalidate_decision(action)
+    if current.action is not MissionControlAction.SUGGEST_9LINE:
+        raise ValueError("Tactical recommendation changed since proposal creation; proposal is stale")
+    if current.selected_designation_method not in {None, JtacDesignationMethod.LASER}:
+        raise ValueError("Confirmed 9-line proposal no longer has a laser-capable designator")
+
+    seed = _build_9line_seed(unit, current)
+    return cas_9line_store.create(
+        Cas9LineBriefCreate(
+            target_id=seed.target_id,
+            ip_or_bp=payload.ip_or_bp,
+            heading_deg=payload.heading_deg,
+            distance_nm=payload.distance_nm,
+            target_elevation_ft=seed.target_elevation_ft,
+            target_description=seed.target_description,
+            target_location=seed.target_location,
+            mark=f"laser {seed.laser_code}",
+            friendlies=payload.friendlies,
+            egress=payload.egress,
+            remarks=payload.remarks,
+            restrictions=payload.restrictions,
+            method=JtacDesignationMethod.LASER,
+            laser_code=seed.laser_code,
+            requested_asset_id=seed.designator_id,
+            source_action_id=action.action_id,
+            language=payload.language,
+        )
+    )
