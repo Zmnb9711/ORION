@@ -17,7 +17,7 @@ def test_submit_enriches_runtime_policy_context():
     assert command.context["radio_effect"] is True
 
 
-def test_high_priority_radio_preempts_running_normal_intercom():
+def test_high_priority_radio_preempts_running_normal_intercom_when_started():
     queue = VoiceCommandQueue()
     chat = queue.submit(
         VoiceCommandCreate(
@@ -37,6 +37,8 @@ def test_high_priority_radio_preempts_running_normal_intercom():
             priority=CommandPriority.HIGH,
         )
     )
+    assert queue.get(chat.command_id).state is CommandState.RUNNING
+    queue.start(urgent.command_id)
     interrupted = queue.get(chat.command_id)
     assert interrupted is not None
     assert interrupted.state is CommandState.CANCELLED
