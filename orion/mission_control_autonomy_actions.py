@@ -50,6 +50,9 @@ class MissionControlAutonomyResolution(BaseModel):
     executed: bool = False
     jtac_result: MissionControlJtacResult | None = None
     cas_9line_seed: Cas9LineSeed | None = None
+    stale: bool = False
+    current_decision: MissionControlAutonomyDecision | None = None
+    replacement_action: PendingAction | None = None
 
 
 def create_autonomy_pending_action(decision: MissionControlAutonomyDecision) -> PendingAction:
@@ -117,6 +120,22 @@ def _revalidate_decision(resolved: PendingAction) -> MissionControlAutonomyDecis
     return current
 
 
+def _replace_stale_action(pending: PendingAction) -> MissionControlAutonomyResolution:
+    rejected = confirmation_store.resolve(pending.action_id, False)
+    if rejected is None:
+        raise KeyError("Pending Mission Control action not found or already resolved")
+    current = evaluate_mission_control_autonomy()
+    replacement = None
+    if current.requires_pilot_confirmation and current.action is not MissionControlAction.OBSERVE:
+        replacement = create_autonomy_pending_action(current)
+    return MissionControlAutonomyResolution(
+        pending_action=rejected,
+        stale=True,
+        current_decision=current,
+        replacement_action=replacement,
+    )
+
+
 def _build_9line_seed(unit, current: MissionControlAutonomyDecision) -> Cas9LineSeed:
     return Cas9LineSeed(
         target_id=unit.unit_id,
@@ -141,8 +160,12 @@ def resolve_autonomy_pending_action(action_id: str, *, confirm: bool) -> Mission
             raise KeyError("Pending Mission Control action not found or already resolved")
         return MissionControlAutonomyResolution(pending_action=resolved)
 
-    unit = _current_target(pending)
-    current = _revalidate_decision(pending)
+    try:
+        unit = _current_target(pending)
+        current = _revalidate_decision(pending)
+    except ValueError:
+        return _replace_stale_action(pending)
+
     resolved = confirmation_store.resolve(action_id, True)
     if resolved is None:
         raise KeyError("Pending Mission Control action not found or already resolved")
