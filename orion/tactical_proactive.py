@@ -143,6 +143,18 @@ def _air_kinematics(threat: TacticalThreat, ru: bool) -> str:
     return f"{aspect_text}, {trend_text}"
 
 
+def _short_aspect(threat: TacticalThreat, ru: bool) -> str:
+    aspect = threat.kinematics.aspect.value
+    trend = threat.kinematics.range_trend.value
+    if ru:
+        aspect_text = {"hot": "навстречу", "flanking": "фланговый", "cold": "уходит", "unknown": "аспект неизвестен"}[aspect]
+        trend_text = {"closing": "сближается", "stable": "дальность стабильна", "diverging": "удаляется", "unknown": ""}[trend]
+    else:
+        aspect_text = {"hot": "hot", "flanking": "flanking", "cold": "cold", "unknown": "aspect unknown"}[aspect]
+        trend_text = {"closing": "closing", "stable": "range stable", "diverging": "diverging", "unknown": ""}[trend]
+    return ", ".join(part for part in (aspect_text, trend_text) if part)
+
+
 def _awacs_callout(threat: TacticalThreat, language: str, primary: bool) -> str:
     ru = language.casefold().startswith("ru")
     if primary:
@@ -152,10 +164,11 @@ def _awacs_callout(threat: TacticalThreat, language: str, primary: bool) -> str:
             if ru
             else f"Primary air threat, {threat.braa}. {kin}. Threat level {threat.level.value}."
         )
+    short = _short_aspect(threat, ru)
     return (
-        f"Дополнительный контакт, {threat.braa}. {threat.kinematics.aspect.value}."
+        f"Вторичный контакт, {threat.braa}. {short}."
         if ru
-        else f"Secondary contact, {threat.braa}. {threat.kinematics.aspect.value}."
+        else f"Secondary contact, {threat.braa}. {short}."
     )
 
 
