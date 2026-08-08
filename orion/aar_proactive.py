@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
+from orion.aar_closure import AarClosureAssessment, ClosureBand, compute_closure, spoken_closure
 from orion.aar_guidance import AarInterceptGuidance, compute_intercept_guidance
 from orion.aar_rendezvous import AarPhase, AarRendezvousService
 from orion.mission_context import LiveMissionContext, build_live_mission_context
@@ -13,6 +14,7 @@ class AarProactiveUpdate(BaseModel):
     reason: str | None = None
     phase: AarPhase
     guidance: AarInterceptGuidance | None = None
+    closure: AarClosureAssessment | None = None
 
 
 class AarProactiveMonitor:
@@ -25,16 +27,19 @@ class AarProactiveMonitor:
         self._rendezvous = rendezvous
         self._last_phase = AarPhase.IDLE
         self._last_guidance: AarInterceptGuidance | None = None
+        self._last_closure_band: ClosureBand | None = None
 
     def reset(self) -> None:
         self._last_phase = AarPhase.IDLE
         self._last_guidance = None
+        self._last_closure_band = None
 
     def poll(self, language: str = "en") -> AarProactiveUpdate:
         session = self._rendezvous.snapshot()
         if session.phase not in {AarPhase.RENDEZVOUS, AarPhase.JOIN_UP} or not session.tanker_unit_id:
             self._last_phase = session.phase
             self._last_guidance = None
+            self._last_closure_band = None
             return AarProactiveUpdate(phase=session.phase)
 
         context = build_live_mission_context()
@@ -46,33 +51,45 @@ class AarProactiveMonitor:
         self._rendezvous._update_phase_from_range(tanker)
         session = self._rendezvous.snapshot()
         guidance = compute_intercept_guidance(context, tanker)
+        closure = compute_closure(context, tanker)
 
         if session.phase != previous_phase and session.phase == AarPhase.JOIN_UP:
             self._last_phase = session.phase
             self._last_guidance = guidance
+            self._last_closure_band = closure.band if closure is not None else None
             text = (
                 f"{tanker.callsign}, переходим к join-up. Стабилизируйте сближение и готовьтесь к pre-contact."
                 if language == "ru"
                 else f"{tanker.callsign}, entering join-up. Stabilize closure and prepare for pre-contact."
             )
-            return AarProactiveUpdate(should_announce=True, spoken_text=text, reason="phase_transition", phase=session.phase, guidance=guidance)
+            return AarProactiveUpdate(should_announce=True, spoken_text=text, reason="phase_transition", phase=session.phase, guidance=guidance, closure=closure)
+
+        if session.phase == AarPhase.JOIN_UP:
+            closure_reason = self._closure_change(closure)
+            previous_band = self._last_closure_band
+            self._last_closure_band = closure.band if closure is not None else None
+            if closure_reason is not None and closure is not None and closure.band != previous_band:
+                text = _closure_callout(closure, tanker, language)
+                return AarProactiveUpdate(should_announce=True, spoken_text=text, reason=closure_reason, phase=session.phase, guidance=guidance, closure=closure)
 
         reason = self._guidance_change(guidance)
         self._last_phase = session.phase
         previous_guidance = self._last_guidance
         self._last_guidance = guidance
+        if closure is not None and self._last_closure_band is None:
+            self._last_closure_band = closure.band
         if reason is None:
-            return AarProactiveUpdate(phase=session.phase, guidance=guidance)
+            return AarProactiveUpdate(phase=session.phase, guidance=guidance, closure=closure)
 
         if guidance is None or previous_guidance is None:
-            return AarProactiveUpdate(phase=session.phase, guidance=guidance)
+            return AarProactiveUpdate(phase=session.phase, guidance=guidance, closure=closure)
         eta_min = guidance.eta_s / 60.0
         text = (
             f"Обновление сближения: курс перехвата {guidance.intercept_heading_deg:.0f}, ETA {eta_min:.1f} минуты."
             if language == "ru"
             else f"Rendezvous update: intercept heading {guidance.intercept_heading_deg:.0f}, ETA {eta_min:.1f} minutes."
         )
-        return AarProactiveUpdate(should_announce=True, spoken_text=text, reason=reason, phase=session.phase, guidance=guidance)
+        return AarProactiveUpdate(should_announce=True, spoken_text=text, reason=reason, phase=session.phase, guidance=guidance, closure=closure)
 
     def _guidance_change(self, current: AarInterceptGuidance | None) -> str | None:
         if current is None or self._last_guidance is None:
@@ -83,6 +100,26 @@ class AarProactiveMonitor:
         if abs(current.eta_s - self._last_guidance.eta_s) >= self.ETA_DELTA_S:
             return "eta_change"
         return None
+
+    def _closure_change(self, current: AarClosureAssessment | None) -> str | None:
+        if current is None or self._last_closure_band is None:
+            return None
+        if current.band == self._last_closure_band:
+            return None
+        return f"closure_{current.band.value}"
+
+
+def _closure_callout(closure: AarClosureAssessment, tanker, language: str) -> str:
+    measured = spoken_closure(closure, tanker, language)
+    if closure.band == ClosureBand.EXCESSIVE:
+        return f"Сближение слишком высокое, {measured}. Уменьшите скорость сближения." if language == "ru" else f"Closure excessive, {measured}. Reduce closure rate."
+    if closure.band == ClosureBand.HIGH:
+        return f"Сближение высокое, {measured}. Плавно уменьшайте." if language == "ru" else f"Closure high, {measured}. Ease the closure."
+    if closure.band == ClosureBand.STABLE:
+        return f"Сближение стабильное, {measured}. Держать." if language == "ru" else f"Closure stable, {measured}. Hold."
+    if closure.band == ClosureBand.HOLD:
+        return f"Скорости почти выровнены, {measured}. Держать." if language == "ru" else f"Speeds nearly matched, {measured}. Hold."
+    return f"Началось расхождение, {measured}. Восстановите сближение." if language == "ru" else f"Now opening, {measured}. Re-establish closure."
 
 
 def _active_tanker(context: LiveMissionContext, unit_id: str):
