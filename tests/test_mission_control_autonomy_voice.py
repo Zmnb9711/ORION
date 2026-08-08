@@ -103,7 +103,7 @@ def test_clear_voice_confirmation_resolves_named_action() -> None:
 
 def test_9line_confirmation_prompts_only_missing_fields() -> None:
     pending = _pending("mission_control:suggest_9line")
-    resolution = MissionControlAutonomyResolution(pending_action=pending, executed=True, cas_9line_seed=_seed())
+    resolution = MissionControlAutonomyResolution(pending_action=pending, cas_9line_seed=_seed())
     command = submit_9line_completion_prompt(pending.action_id, resolution, language="en")
     assert command is not None
     assert command.agent is VoiceAgent.MISSION_CONTROL
@@ -118,7 +118,7 @@ def test_9line_confirmation_prompts_only_missing_fields() -> None:
 
 def test_voice_9line_confirmation_queues_completion_prompt() -> None:
     pending = _pending("mission_control:suggest_9line")
-    resolution = MissionControlAutonomyResolution(pending_action=pending, executed=True, cas_9line_seed=_seed())
+    resolution = MissionControlAutonomyResolution(pending_action=pending, cas_9line_seed=_seed())
     with patch(
         "orion.mission_control_autonomy_voice.resolve_autonomy_pending_action",
         return_value=resolution,
@@ -150,10 +150,10 @@ def test_stale_voice_confirmation_reports_core_replacement_proposal() -> None:
         )
     assert result.understood is True
     assert result.confirm is True
-    assert result.stale is True
-    assert result.current_decision == current
-    assert result.replacement_action == replacement
-    assert result.replacement_action.action_id != pending.action_id
+    assert result.resolution == resolution
+    assert result.resolution.stale is True
+    assert result.resolution.current_decision == current
+    assert result.resolution.replacement_action == replacement
     assert "New proposal" in result.spoken_text
     assert "SA-15" in result.spoken_text
     assert result.voice_command is not None
@@ -177,9 +177,10 @@ def test_russian_stale_voice_confirmation_can_fall_back_to_observe() -> None:
             pending.action_id,
             AutonomyVoiceDecision(transcript="да", language="ru"),
         )
-    assert result.stale is True
-    assert result.current_decision.action is MissionControlAction.OBSERVE
-    assert result.replacement_action is None
+    assert result.resolution == resolution
+    assert result.resolution.stale is True
+    assert result.resolution.current_decision.action is MissionControlAction.OBSERVE
+    assert result.resolution.replacement_action is None
     assert "Обстановка изменилась" in result.spoken_text
     assert "не требуется" in result.spoken_text
     assert result.voice_command is not None
