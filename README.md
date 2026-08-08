@@ -10,6 +10,10 @@ ORION is an AI-assisted mission control and virtual ATC platform for DCS World.
 - Threat assessment with distance, bearing, priority and movement prediction
 - Structured AWACS, tanker, laser and smoke support requests
 - Russian and English free-form dialogue intent routing
+- Grounded dialogue runtime backed by live DCS and mission context
+- Dialogue-driven AAR orchestration with guarded rendezvous and pre-contact transitions
+- Sparse proactive AAR monitoring for closure, vertical state, tanker loss and pre-contact readiness
+- Proactive AAR callouts published into the shared Voice Core priority queue
 - Append-only mission event journal
 - Safe command allowlist for the DCS export environment
 - CI on Python 3.11 and 3.12
@@ -27,6 +31,8 @@ uvicorn orion.app:app --reload
 
 The service listens on `http://127.0.0.1:8000` by default. Interactive API documentation is available at `/docs`.
 
-The dialogue prototype is available through `POST /v1/dialogue`. It classifies Russian and English free-form requests but does not directly execute dangerous actions. Laser and smoke intents are marked as requiring confirmation.
+The dialogue prototype is available through `POST /v1/dialogue`. The grounded runtime is available through `POST /v1/dialogue-runtime`. AAR proactive monitoring is available through `GET /v1/aar/proactive`, while `POST /v1/aar/proactive/voice` publishes only significant callouts into Voice Core.
+
+Laser and smoke intents remain confirmation-required and are not executed directly by the dialogue runtime.
 
 Development work is proposed through pull requests before it reaches `main`.
