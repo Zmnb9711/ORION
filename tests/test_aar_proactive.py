@@ -18,11 +18,11 @@ def reset() -> None:
     aar_rendezvous.reset()
 
 
-def _context(longitude: float = 41.2, distance_km: float = 18.52) -> LiveMissionContext:
+def _context(longitude: float = 41.2, distance_km: float = 18.52, tanker_heading_deg: float = 0.0) -> LiveMissionContext:
     return LiveMissionContext(
         available=True,
         ownship=OwnshipContext(aircraft_type="FA-18C_hornet", latitude=41.0, longitude=41.0, altitude_m=5000, heading_deg=90, true_airspeed_mps=250),
-        tankers=[SupportAsset(unit_id="tanker-1", callsign="Texaco", role=DcsRecipientType.TANKER, coalition=Coalition.BLUE, available=True, aar_available=True, latitude=41.0, longitude=longitude, altitude_m=7000, distance_km=distance_km, bearing_deg=90, heading_deg=0, speed_mps=150, frequency_mhz=251.5, modulation="AM", tacan_channel=31, tacan_band="Y")],
+        tankers=[SupportAsset(unit_id="tanker-1", callsign="Texaco", role=DcsRecipientType.TANKER, coalition=Coalition.BLUE, available=True, aar_available=True, latitude=41.0, longitude=longitude, altitude_m=7000, distance_km=distance_km, bearing_deg=90, heading_deg=tanker_heading_deg, speed_mps=150, frequency_mhz=251.5, modulation="AM", tacan_channel=31, tacan_band="Y")],
     )
 
 
@@ -68,7 +68,7 @@ def test_small_guidance_changes_do_not_chatter(monkeypatch) -> None:
 def test_large_guidance_change_is_announced(monkeypatch) -> None:
     first = _context()
     monitor = _start(monkeypatch, first)
-    contexts = [first, _context(longitude=41.10, distance_km=9.0)]
+    contexts = [first, _context(longitude=41.2, distance_km=18.52, tanker_heading_deg=180.0)]
     monkeypatch.setattr(proactive_module, "build_live_mission_context", lambda: contexts.pop(0))
     assert monitor.poll().should_announce is False
     update = monitor.poll()
