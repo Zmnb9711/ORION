@@ -84,7 +84,9 @@ def test_normal_aar_callout_uses_normal_priority() -> None:
 
     assert result.enqueued is not None
     assert result.enqueued.priority is CommandPriority.NORMAL
-    assert queue.start_next().command_id == result.enqueued.command_id
+    started = queue.start_next()
+    assert started is not None
+    assert started.command_id == result.enqueued.command_id
 
 
 def test_proactive_voice_api_publishes_into_shared_voice_queue(monkeypatch) -> None:
