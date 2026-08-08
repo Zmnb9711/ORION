@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 from pydantic import BaseModel
 
+from orion.active_dcs_installation import active_dcs_installation
 from orion.dcs_connection_diagnostics import DcsConnectionReport, diagnose_dcs_connection
 from orion.dcs_readiness import DcsReadinessReport, inspect_dcs_readiness, install_export_integration
 from orion.fa18c_calibration_wizard import CalibrationSession, CalibrationStatus, hornet_calibration_wizard
@@ -11,7 +12,7 @@ router = APIRouter(prefix="/v1/dcs-readiness", tags=["DCS readiness"])
 
 
 class ExportInstallRequest(BaseModel):
-    saved_games_path: str
+    saved_games_path: str | None = None
 
 
 class PreflightBootstrapResult(BaseModel):
@@ -19,9 +20,16 @@ class PreflightBootstrapResult(BaseModel):
     calibration: CalibrationSession | None = None
 
 
+def _resolved_saved_games(explicit: str | None = None) -> str | None:
+    if explicit:
+        return explicit
+    active = active_dcs_installation.get()
+    return active.saved_games_path if active is not None else None
+
+
 @router.get("", response_model=DcsReadinessReport)
 def get_dcs_readiness(saved_games_path: str | None = None) -> DcsReadinessReport:
-    return inspect_dcs_readiness(saved_games_path)
+    return inspect_dcs_readiness(_resolved_saved_games(saved_games_path))
 
 
 @router.get("/connection", response_model=DcsConnectionReport)
@@ -52,4 +60,7 @@ def bootstrap_preflight(payload: PreflightRequest) -> PreflightBootstrapResult:
 
 @router.post("/export", response_model=DcsReadinessReport)
 def install_dcs_export(payload: ExportInstallRequest) -> DcsReadinessReport:
-    return install_export_integration(payload.saved_games_path)
+    saved_games = _resolved_saved_games(payload.saved_games_path)
+    if not saved_games:
+        return inspect_dcs_readiness()
+    return install_export_integration(saved_games)

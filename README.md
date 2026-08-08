@@ -1,32 +1,53 @@
 # ORION
 
-ORION is an AI-assisted mission control and virtual ATC platform for DCS World.
+ORION is an AI flight-assistant runtime for DCS World. The current repository contains the core service, DCS export/mission bridge components, aircraft knowledge, voice infrastructure, Mission Control building blocks, and an increasingly complete aerial-refueling runtime.
 
-## Build 001 capabilities
+## Current runtime path
 
-- Local DCS telemetry ingestion over UDP
-- FastAPI health, telemetry and command endpoints
-- Mission snapshots and coalition-aware unit queries
-- Threat assessment with distance, bearing, priority and movement prediction
-- Structured AWACS, tanker, laser and smoke support requests
-- Russian and English free-form dialogue intent routing
-- Append-only mission event journal
-- Safe command allowlist for the DCS export environment
-- CI on Python 3.11 and 3.12
+The current Build 001 architecture now supports an end-to-end path from pilot input and live DCS state into grounded actions and voice output preparation:
 
-## Local development
+`DCS telemetry / Mission Pack -> live mission context -> dialogue intent -> guarded action orchestration -> subsystem state machine -> proactive monitor -> Voice Core priority queue -> speech scheduler -> TTS/audio adapter`
 
-```powershell
-py -3.11 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-pip install -e ".[dev]"
-pytest -q
-uvicorn orion.app:app --reload
-```
+The actual TTS/audio backend remains adapter-facing. ORION now decides *what* should be spoken, *when* it is eligible to be spoken, and whether a higher-priority callout should interrupt lower-priority speech.
 
-The service listens on `http://127.0.0.1:8000` by default. Interactive API documentation is available at `/docs`.
+## Grounded dialogue runtime
 
-The dialogue prototype is available through `POST /v1/dialogue`. It classifies Russian and English free-form requests but does not directly execute dangerous actions. Laser and smoke intents are marked as requiring confirmation.
+`POST /v1/dialogue-runtime`
 
-Development work is proposed through pull requests before it reaches `main`.
+The dialogue runtime combines free-form RU/EN intent classification with current DCS and mission context. STATUS, THREATS, AWACS and tanker queries return factual data from live state rather than generic acknowledgements.
+
+Explicit aerial-refueling phrases such as `Start AAR`, `Request refueling`, or `Запросить дозаправку` enter the existing AAR rendezvous state machine. Informational tanker queries remain read-only. Active AAR sessions support status/update, guarded pre-contact requests and explicit abort commands.
+
+Laser and smoke target-designation intents remain confirmation-required and are not executed directly by the dialogue runtime.
+
+## Proactive AAR runtime
+
+`GET /v1/aar/proactive?language=en|ru`
+
+The proactive AAR monitor produces sparse callouts for meaningful changes only. It can report rendezvous/join-up guidance changes, closure and vertical deviations, pre-contact readiness, contact-envelope loss/restoration, and active tanker loss/restoration.
+
+`POST /v1/aar/proactive/voice?language=en|ru`
+
+This bridge publishes significant proactive AAR callouts into the shared Voice Core queue. Routine guidance uses NORMAL priority. More urgent AAR conditions such as tanker loss, excessive closure, or contact-envelope loss use HIGH priority. CRITICAL remains reserved for higher-severity warnings such as threat/terrain events.
+
+## Voice Core and speech scheduling
+
+Voice Core stores commands with agent identity, intent, context and priority. Higher-priority queued items are selected before routine speech.
+
+`POST /v1/speech/next`
+
+The speech scheduler selects the next eligible Voice Core command for an external TTS/audio adapter. It prevents two simultaneous RUNNING speech items, allows a higher-priority item to preempt lower-priority speech, and suppresses repeated identical non-critical callouts for a short cooldown window.
+
+CRITICAL messages bypass duplicate cooldown so genuinely urgent warnings are never muted by anti-chatter logic.
+
+`POST /v1/speech/{command_id}/spoken`
+
+The audio/TTS adapter acknowledges completed playback through this endpoint. ORION then records the callout for duplicate suppression and marks the Voice Core command completed.
+
+## Safety and state authority
+
+Voice and proactive guidance do not invent physical DCS state. Confirmed AAR transitions such as pre-contact clearance, physical contact, active fuel transfer, disconnect, and completion continue to come from trusted DCS/Mission Pack observations through the normalized AAR event layer.
+
+## Validation
+
+Repository CI compiles all ORION Python modules and runs the complete pytest suite for each pull request revision.

@@ -26,6 +26,7 @@ if LEGACY_CORE_AVAILABLE:
     from orion.mission_command_status import MissionCommandResult, mission_command_statuses
     from orion.mission_store import mission_store
     from orion.models import TelemetryEnvelope
+    from orion.startup_onboarding import apply_completed_onboarding_at_startup
     from orion.support import SupportRequest, SupportRequestCreate, support_requests
     from orion.telemetry_handshake import telemetry_handshake
     from orion.threats import ThreatAssessment, assess_threats
@@ -46,6 +47,7 @@ if LEGACY_CORE_AVAILABLE:
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
+        apply_completed_onboarding_at_startup()
         transport, _ = await start_udp_bridge(store_telemetry)
         try:
             yield
@@ -54,7 +56,14 @@ if LEGACY_CORE_AVAILABLE:
 
     app = FastAPI(title="ORION Core", version=__version__, lifespan=lifespan)
 else:
-    app = FastAPI(title="ORION", version="0.1.0", description="ORION AI Flight Assistant API")
+    from orion.startup_onboarding import apply_completed_onboarding_at_startup
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI):
+        apply_completed_onboarding_at_startup()
+        yield
+
+    app = FastAPI(title="ORION", version="0.1.0", description="ORION AI Flight Assistant API", lifespan=lifespan)
 
 
 def _include_router_when_available(module_name: str) -> None:
@@ -73,11 +82,29 @@ for _router_module in (
     "orion.coalition_control_api",
     "orion.mission_bridge_api",
     "orion.mission_context_api",
+    "orion.dialogue_runtime_api",
     "orion.voice_core_api",
+    "orion.speech_scheduler_api",
+    "orion.tts_audio_api",
+    "orion.windows_audio_worker_api",
     "orion.launch_api",
     "orion.dcs_installations_api",
+    "orion.dcs_steam_detection_api",
+    "orion.dcs_installation_discovery_api",
+    "orion.active_dcs_installation_api",
     "orion.dcs_readiness_api",
     "orion.first_run_wizard_api",
+    "orion.first_run_actions_api",
+    "orion.first_run_session_api",
+    "orion.first_run_presentation_api",
+    "orion.onboarding_config_api",
+    "orion.onboarding_runtime_api",
+    "orion.startup_health_api",
+    "orion.recovery_orchestrator_api",
+    "orion.recovery_launch_api",
+    "orion.recovery_presentation_api",
+    "orion.application_state_api",
+    "orion.tactical_proactive_api",
     "orion.dcs_process_api",
     "orion.flight_console_api",
     "orion.flight_readiness_api",

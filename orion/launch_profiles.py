@@ -8,6 +8,7 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from orion.active_dcs_installation import active_dcs_installation
 from orion.dcs_installations import dcs_installations
 
 
@@ -22,6 +23,7 @@ class DcsLaunchProfileCreate(BaseModel):
     mode: DcsLaunchMode = DcsLaunchMode.OPENXR
     installation_id: UUID | None = None
     dcs_executable: str | None = None
+    use_active_installation: bool = True
     mission_path: str | None = None
     extra_arguments: list[str] = Field(default_factory=list)
     orion_role: str | None = None
@@ -32,7 +34,6 @@ class DcsLaunchProfileCreate(BaseModel):
     def validate_executable(cls, value: str | None) -> str | None:
         if value is None:
             return None
-        # ORION runs on Windows, but tests also execute on Linux CI runners.
         name = ntpath.basename(value.replace("/", "\\")).lower()
         if name not in {"dcs.exe", "dcs_updater.exe"}:
             raise ValueError("dcs_executable must point to DCS.exe or DCS_updater.exe")
@@ -40,8 +41,8 @@ class DcsLaunchProfileCreate(BaseModel):
 
     @model_validator(mode="after")
     def validate_executable_source(self) -> DcsLaunchProfileCreate:
-        if self.installation_id is None and self.dcs_executable is None:
-            raise ValueError("Provide installation_id or dcs_executable")
+        if self.installation_id is None and self.dcs_executable is None and not self.use_active_installation:
+            raise ValueError("Provide installation_id, dcs_executable, or enable use_active_installation")
         return self
 
     @field_validator("extra_arguments")
@@ -74,6 +75,9 @@ class LaunchProfileStore:
     def create(self, payload: DcsLaunchProfileCreate) -> DcsLaunchProfile:
         if payload.installation_id is not None and dcs_installations.get(payload.installation_id) is None:
             raise KeyError("DCS installation not found")
+        if payload.installation_id is None and payload.dcs_executable is None and payload.use_active_installation:
+            if active_dcs_installation.get() is None:
+                raise KeyError("No active DCS installation selected")
         profile = DcsLaunchProfile(**payload.model_dump())
         with self._lock:
             self._profiles[profile.profile_id] = profile
@@ -98,9 +102,14 @@ def resolve_profile_executable(profile: DcsLaunchProfile) -> str:
         if installation is None:
             raise KeyError("DCS installation not found")
         return installation.executable_path
-    if profile.dcs_executable is None:
-        raise ValueError("Launch profile has no DCS executable")
-    return profile.dcs_executable
+    if profile.dcs_executable is not None:
+        return profile.dcs_executable
+    if profile.use_active_installation:
+        active = active_dcs_installation.get()
+        if active is None:
+            raise KeyError("No active DCS installation selected")
+        return active.executable_path
+    raise ValueError("Launch profile has no DCS executable")
 
 
 def build_launch_plan(profile: DcsLaunchProfile) -> DcsLaunchPlan:

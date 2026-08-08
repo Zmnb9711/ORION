@@ -5,8 +5,9 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+from orion.active_dcs_installation import ActiveDcsInstallationStore, active_dcs_installation
 from orion.components import component_registry
-from orion.dcs_installations import DcsInstallationStore, dcs_installations
+from orion.dcs_installations import DcsInstallationStore, DcsInstallationType, dcs_installations
 from orion.dcs_readiness import inspect_dcs_readiness
 
 
@@ -26,6 +27,8 @@ class FirstRunCheck(BaseModel):
 
 
 class FirstRunRequest(BaseModel):
+    installation_type: DcsInstallationType = DcsInstallationType.AUTO
+    require_active_selection: bool = False
     saved_games_path: str | None = None
     installed_components: list[str] = Field(default_factory=list)
     telemetry_received: bool | None = None
@@ -37,28 +40,59 @@ class FirstRunReport(BaseModel):
     headline: str
     checks: list[FirstRunCheck]
     next_action: str | None = None
+    installation_type: DcsInstallationType = DcsInstallationType.AUTO
+    active_dcs_display_name: str | None = None
+    active_dcs_executable: str | None = None
+    selected_saved_games: str | None = None
 
 
 def evaluate_first_run(
     payload: FirstRunRequest,
     installation_store: DcsInstallationStore = dcs_installations,
+    active_store: ActiveDcsInstallationStore = active_dcs_installation,
 ) -> FirstRunReport:
     checks: list[FirstRunCheck] = []
-
+    active = active_store.get()
+    active_valid = active is not None and Path(active.executable_path).is_file()
     installations = installation_store.list()
     existing = next((item for item in installations if Path(item.executable_path).is_file()), None)
+
+    if active_valid and active is not None:
+        installation_passed = True
+        installation_message = f"Active DCS: {active.display_name or active.installation_type.value}"
+        installation_action = None
+        resolved_type = active.installation_type
+    elif payload.require_active_selection:
+        installation_passed = False
+        if active is not None:
+            installation_message = "The selected active DCS executable is no longer available"
+            installation_action = "Choose another DCS installation"
+        elif existing is not None:
+            installation_message = f"DCS found: {existing.name}; select it as active"
+            installation_action = "Select this DCS installation as active"
+        else:
+            installation_message = "No active DCS installation is selected"
+            installation_action = "Choose Steam, Standalone, Auto-detect, or Manual path"
+        resolved_type = active.installation_type if active is not None else payload.installation_type
+    else:
+        installation_passed = existing is not None
+        installation_message = f"DCS found: {existing.name}" if existing else "No valid DCS executable is registered"
+        installation_action = None if existing else "Detect or select DCS.exe"
+        resolved_type = active.installation_type if active_valid and active is not None else payload.installation_type
+
     checks.append(
         FirstRunCheck(
             key="dcs_installation",
             label="DCS World",
-            passed=existing is not None,
+            passed=installation_passed,
             blocking=True,
-            message=(f"DCS found: {existing.name}" if existing else "No valid DCS executable is registered"),
-            action=None if existing else "Detect or select DCS.exe",
+            message=installation_message,
+            action=installation_action,
         )
     )
 
-    readiness = inspect_dcs_readiness(payload.saved_games_path)
+    readiness_path = payload.saved_games_path or (active.saved_games_path if active_valid and active is not None else None)
+    readiness = inspect_dcs_readiness(readiness_path)
     saved_games_ok = readiness.selected_saved_games is not None
     checks.append(
         FirstRunCheck(
@@ -126,10 +160,23 @@ def evaluate_first_run(
     elif not telemetry_ok:
         state = FirstRunState.WAITING_FOR_DCS
         headline = "Setup complete — waiting for DCS"
-        next_action = "Start DCS and enter the F/A-18C"
+        next_action = (
+            "Start DCS and enter an aircraft"
+            if payload.require_active_selection
+            else "Start DCS and enter the F/A-18C"
+        )
     else:
         state = FirstRunState.READY_TO_FLY
         headline = "READY TO FLY"
         next_action = None
 
-    return FirstRunReport(state=state, headline=headline, checks=checks, next_action=next_action)
+    return FirstRunReport(
+        state=state,
+        headline=headline,
+        checks=checks,
+        next_action=next_action,
+        installation_type=resolved_type,
+        active_dcs_display_name=active.display_name if active_valid and active is not None else None,
+        active_dcs_executable=active.executable_path if active_valid and active is not None else None,
+        selected_saved_games=readiness.selected_saved_games,
+    )
