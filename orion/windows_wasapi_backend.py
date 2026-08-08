@@ -34,9 +34,6 @@ class WasapiEndpointCatalog:
             return [item.model_copy(deep=True) for item in self._provider()]
         if os.name != "nt":
             return []
-        # Windows exposes stable PnP identifiers even when a full CoreAudio COM helper is not
-        # installed. This discovery is sufficient for selection/configuration; exact playback
-        # routing is performed by an injected WASAPI player implementation.
         script = (
             "Get-PnpDevice -Class AudioEndpoint -PresentOnly | "
             "Where-Object {$_.Status -eq 'OK'} | "
@@ -74,6 +71,9 @@ class WasapiEndpointCatalog:
         by_name = [item for item in endpoints if lowered in item.name.casefold()]
         return by_name[0] if by_name else None
 
+    def vr_candidates(self) -> list[WasapiEndpoint]:
+        return [item for item in self.endpoints() if item.active and looks_like_vr_audio(item)]
+
 
 class WasapiPlaybackBackend:
     """Explicit-device playback boundary.
@@ -109,3 +109,6 @@ def looks_like_vr_audio(endpoint: WasapiEndpoint) -> bool:
     name = endpoint.name.casefold()
     markers = ("pimax", "dream air", "vr", "headset", "oculus", "vive", "index")
     return any(marker in name for marker in markers)
+
+
+wasapi_endpoint_catalog = WasapiEndpointCatalog()
