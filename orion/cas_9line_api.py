@@ -5,6 +5,7 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException
 
 from orion.cas_9line import Cas9LineBrief, Cas9LineBriefCreate, Cas9LineReadback, Cas9LineReadbackResult, cas_9line_store
+from orion.cas_9line_repeat import Cas9LineRepeatRequest, Cas9LineRepeatResult, submit_repeat_voice
 from orion.cas_9line_voice import submit_cas_9line_voice
 
 
@@ -50,6 +51,15 @@ def verify_readback(brief_id: UUID, payload: Cas9LineReadback) -> Cas9LineReadba
         return result
     except (KeyError, ValueError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/{brief_id}/say-again", response_model=Cas9LineRepeatResult)
+def say_again(brief_id: UUID, payload: Cas9LineRepeatRequest) -> Cas9LineRepeatResult:
+    brief = cas_9line_store.get(brief_id)
+    if brief is None:
+        raise HTTPException(status_code=404, detail="CAS 9-line brief not found")
+    command = submit_repeat_voice(brief, payload.item)
+    return Cas9LineRepeatResult(item=payload.item, spoken_text=command.transcript)
 
 
 @router.post("/{brief_id}/task", response_model=Cas9LineBrief, status_code=202)
