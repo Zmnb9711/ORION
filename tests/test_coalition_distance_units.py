@@ -21,6 +21,12 @@ def test_red_distance_is_presented_in_kilometers() -> None:
     assert spoken_distance(18.52, Coalition.RED, "ru") == "18.5 километра"
 
 
+def test_unknown_distance_is_presented_in_nautical_miles() -> None:
+    distance = display_distance(18.52, Coalition.UNKNOWN)
+    assert distance.unit == "NM"
+    assert round(distance.value, 1) == 10.0
+
+
 def test_blue_tanker_brief_uses_nautical_miles(monkeypatch) -> None:
     context = LiveMissionContext(
         available=True,
