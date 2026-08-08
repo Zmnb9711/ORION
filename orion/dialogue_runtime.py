@@ -37,8 +37,15 @@ def run_dialogue(request: DialogueRequest, context: LiveMissionContext | None = 
     if classification.intent is DialogueIntent.AWACS:
         return _support(classification, live_context.awacs, "AWACS", "ДРЛО")
     if classification.intent is DialogueIntent.TANKER:
-        if _explicit_aar_start(request.text):
-            return _start_aar(classification, request.text, live_context)
+        control = _aar_control(request.text)
+        if control == "aar_abort":
+            return _control_aar(classification, request.text, live_context, "aar_abort")
+        if control == "aar_pre_contact":
+            return _control_aar(classification, request.text, live_context, "aar_pre_contact")
+        if control == "aar_update":
+            return _control_aar(classification, request.text, live_context, "aar_update")
+        if control == "aar_start":
+            return _control_aar(classification, request.text, live_context, "aar_start")
         return _support(classification, live_context.tankers, "tanker", "дозаправщик")
 
     return _from_classification(classification, issues=live_context.issues)
@@ -115,23 +122,29 @@ def _threats(classification: DialogueResult, context: LiveMissionContext) -> Dia
     return _result(classification, reply=reply, grounded=True, facts=facts, issues=context.issues)
 
 
-def _start_aar(classification: DialogueResult, transcript: str, context: LiveMissionContext) -> DialogueRuntimeResult:
-    result = aar_rendezvous.execute("aar_start", transcript, context=context)
+def _control_aar(
+    classification: DialogueResult,
+    transcript: str,
+    context: LiveMissionContext,
+    action: str,
+) -> DialogueRuntimeResult:
+    result = aar_rendezvous.execute(action, transcript, context=context)
     facts: dict[str, FactValue] = {
         "aar_phase": result.session.phase.value,
         "tanker_unit_id": result.session.tanker_unit_id,
         "tanker_callsign": result.session.tanker_callsign,
     }
+    action_executed = result.completed and action != "aar_update"
     return DialogueRuntimeResult(
         language=classification.language,
         intent=classification.intent,
         confidence=classification.confidence,
         grounded=result.completed,
-        action_executed=result.completed,
-        action="aar_start",
+        action_executed=action_executed,
+        action=action,
         reply=result.spoken_text,
         facts=facts,
-        issues=[] if result.completed else ["aar_start_failed"],
+        issues=[] if result.completed else [f"{action}_failed"],
     )
 
 
@@ -182,9 +195,35 @@ def _support(
     return _result(classification, reply=reply, grounded=True, facts=facts)
 
 
-def _explicit_aar_start(text: str) -> bool:
+def _aar_control(text: str) -> str | None:
     lowered = text.casefold()
-    markers = (
+    abort_markers = (
+        "отменить дозаправ",
+        "прекратить дозаправ",
+        "abort refuel",
+        "abort aerial refuel",
+        "abort aar",
+        "cancel refuel",
+    )
+    precontact_markers = (
+        "готов к pre-contact",
+        "готов к precontact",
+        "готов к предконтакт",
+        "ready pre-contact",
+        "ready for pre-contact",
+        "ready precontact",
+        "request pre-contact",
+    )
+    update_markers = (
+        "статус дозаправ",
+        "обновление по танкер",
+        "обнови по танкер",
+        "aar status",
+        "aar update",
+        "tanker update",
+        "refueling status",
+    )
+    start_markers = (
         "начать дозаправ",
         "начинай дозаправ",
         "запросить дозаправ",
@@ -197,7 +236,15 @@ def _explicit_aar_start(text: str) -> bool:
         "start aar",
         "begin aar",
     )
-    return any(marker in lowered for marker in markers)
+    if any(marker in lowered for marker in abort_markers):
+        return "aar_abort"
+    if any(marker in lowered for marker in precontact_markers):
+        return "aar_pre_contact"
+    if any(marker in lowered for marker in update_markers):
+        return "aar_update"
+    if any(marker in lowered for marker in start_markers):
+        return "aar_start"
+    return None
 
 
 def _from_classification(classification: DialogueResult, issues: list[str] | None = None) -> DialogueRuntimeResult:
