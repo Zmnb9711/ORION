@@ -17,6 +17,12 @@ class DisplayDistance:
     unit: str
 
 
+@dataclass(frozen=True)
+class DisplayAltitude:
+    value: float
+    unit: str
+
+
 def _normalized_coalition(coalition: Coalition | str | None) -> str:
     return coalition.value if isinstance(coalition, Coalition) else (coalition or "").casefold()
 
@@ -32,16 +38,19 @@ def display_speed(speed_mps: float, coalition: Coalition | str | None) -> Displa
 
 
 def display_distance(distance_km: float, coalition: Coalition | str | None) -> DisplayDistance:
-    """Keep geometry in kilometers/meters; convert only for pilot-facing presentation.
-
-    Blue coalition follows western aviation convention: nautical miles.
-    Red coalition uses kilometers. Unknown/neutral remains kilometers so ORION
-    does not invent a coalition convention.
-    """
+    """Keep geometry in kilometers/meters; convert only for pilot-facing presentation."""
     normalized = _normalized_coalition(coalition)
     if normalized == Coalition.BLUE.value:
         return DisplayDistance(value=distance_km / 1.852, unit="NM")
     return DisplayDistance(value=distance_km, unit="km")
+
+
+def display_altitude(altitude_m: float, coalition: Coalition | str | None) -> DisplayAltitude:
+    """Keep altitude internally in meters; BLUE is presented in feet, RED in meters."""
+    normalized = _normalized_coalition(coalition)
+    if normalized == Coalition.BLUE.value:
+        return DisplayAltitude(value=altitude_m * 3.2808398950131, unit="ft")
+    return DisplayAltitude(value=altitude_m, unit="m")
 
 
 def spoken_speed(speed_mps: float, coalition: Coalition | str | None, language: str) -> str:
@@ -59,3 +68,11 @@ def spoken_distance(distance_km: float, coalition: Coalition | str | None, langu
     if distance.unit == "NM":
         return f"{distance.value:.1f} морских миль" if language == "ru" else f"{distance.value:.1f} nautical miles"
     return f"{distance.value:.1f} километра" if language == "ru" else f"{distance.value:.1f} kilometers"
+
+
+def spoken_altitude(altitude_m: float, coalition: Coalition | str | None, language: str) -> str:
+    altitude = display_altitude(altitude_m, coalition)
+    value = round(altitude.value)
+    if altitude.unit == "ft":
+        return f"{value} футов" if language == "ru" else f"{value} feet"
+    return f"{value} метров" if language == "ru" else f"{value} meters"
