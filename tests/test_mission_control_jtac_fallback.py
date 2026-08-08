@@ -2,7 +2,6 @@ from unittest.mock import patch
 from uuid import uuid4
 
 from orion.jtac_runtime import JtacDesignationMethod, JtacSessionState, jtac_sessions
-from orion.jtac_status_observer import observe_mission_command_status
 from orion.mission import Coalition, MissionPosition, MissionSnapshot, MissionUnit, UnitCategory
 from orion.mission_command_status import MissionCommandResult, MissionCommandStatus, mission_command_statuses
 from orion.mission_control_jtac import MissionControlJtacRequest, orchestrate_jtac
@@ -33,7 +32,6 @@ def _apache() -> MissionUnit:
 
 def setup_function() -> None:
     jtac_sessions.reset()
-    mission_command_statuses.reset()
     mission_store.replace(MissionSnapshot(mission_id="mission-fallback", units=[_ground_jtac(), _apache()]))
 
 
@@ -51,9 +49,10 @@ def test_failed_designator_is_reassigned_to_next_compatible_asset() -> None:
         assert first.session is not None
         assert first.session.assigned_asset_id == "jtac-ground"
         mission_command_statuses.set(first.session.command_id, MissionCommandStatus.FAILED, "designator lost")
-        replacement = observe_mission_command_status(first.session.command_id)
 
-    assert replacement is not None
+    sessions = jtac_sessions.list()
+    assert len(sessions) == 2
+    replacement = next(item for item in sessions if item.session_id != first.session.session_id)
     assert replacement.state is JtacSessionState.ASSIGNED
     assert replacement.assigned_asset_id == "apache-1"
     assert replacement.target_id == "sam-1"
@@ -71,11 +70,10 @@ def test_fallback_respects_max_attempts() -> None:
         first = orchestrate_jtac(MissionControlJtacRequest(target_id="sam-1", max_attempts=1, language="en"))
         assert first.session is not None
         mission_command_statuses.set(first.session.command_id, MissionCommandStatus.FAILED, "lost")
-        final = observe_mission_command_status(first.session.command_id)
 
-    assert final is not None
-    assert final.state is JtacSessionState.FAILED
-    assert len(jtac_sessions.list()) == 1
+    sessions = jtac_sessions.list()
+    assert len(sessions) == 1
+    assert sessions[0].state is JtacSessionState.FAILED
     assert announce.called
     assert "No backup designators" in announce.call_args.args[0]
 
@@ -90,9 +88,8 @@ def test_smoke_does_not_fallback_to_laser_only_aircraft() -> None:
         assert first.session is not None
         assert first.session.assigned_asset_id == "jtac-ground"
         mission_command_statuses.set(first.session.command_id, MissionCommandStatus.FAILED, "smoke unavailable")
-        final = observe_mission_command_status(first.session.command_id)
 
-    assert final is not None
-    assert final.state is JtacSessionState.FAILED
-    assert len(jtac_sessions.list()) == 1
+    sessions = jtac_sessions.list()
+    assert len(sessions) == 1
+    assert sessions[0].state is JtacSessionState.FAILED
     assert announce.called
