@@ -15,6 +15,15 @@ class AudioWorkerState(StrEnum):
     FAILED = "failed"
 
 
+class AudioDuckingPolicy(StrEnum):
+    """ORION-internal mixing policy only; never applies to DCS/game audio."""
+
+    NONE = "none"
+    MUSIC = "music"
+    NON_RADIO = "non_radio"
+    ALL = "all"
+
+
 class AudioDevice(BaseModel):
     device_id: str = "default"
     name: str = "Windows default audio output"
@@ -26,7 +35,8 @@ class AudioPlaybackRequest(BaseModel):
     audio_path: str = Field(min_length=1)
     output_device_id: str = "default"
     volume: float = Field(default=1.0, ge=0.0, le=1.0)
-    duck_game_audio: bool = True
+    ducking_policy: AudioDuckingPolicy = AudioDuckingPolicy.NONE
+    radio_effect: bool = False
 
 
 class AudioPlaybackStatus(BaseModel):
@@ -34,16 +44,17 @@ class AudioPlaybackStatus(BaseModel):
     command_id: UUID | None = None
     audio_path: str | None = None
     output_device_id: str = "default"
+    ducking_policy: AudioDuckingPolicy = AudioDuckingPolicy.NONE
+    radio_effect: bool = False
     message: str = ""
 
 
 class WindowsAudioWorker:
-    """Stateful contract for a Windows-side audio process.
+    """Stateful contract for a Windows-side ORION audio process.
 
-    The FastAPI core never opens a Windows device itself. A local Windows worker can
-    consume these requests and use SAPI/Media Foundation/another backend to render
-    and play audio. Keeping device ownership outside the server avoids COM/threading
-    issues and makes VR-headset routing replaceable.
+    The worker owns only ORION playback. It must never alter DCS/game audio sessions
+    or global Windows mixer levels. Ducking policy is retained as ORION-internal
+    metadata for future mixing between ORION-owned sources only.
     """
 
     def __init__(self) -> None:
@@ -71,7 +82,9 @@ class WindowsAudioWorker:
                 command_id=request.command_id,
                 audio_path=request.audio_path,
                 output_device_id=request.output_device_id or self._device.device_id,
-                message="Playback accepted by Windows audio worker",
+                ducking_policy=request.ducking_policy,
+                radio_effect=request.radio_effect,
+                message="Playback accepted by Windows audio worker; game audio unchanged",
             )
             return self._status.model_copy(deep=True)
 

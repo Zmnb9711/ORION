@@ -5,7 +5,7 @@ from uuid import uuid4
 
 import pytest
 
-from orion.windows_audio_worker import AudioWorkerState, WindowsAudioWorker
+from orion.windows_audio_worker import AudioDuckingPolicy, AudioWorkerState, WindowsAudioWorker
 from orion.windows_audio_worker_cli import AudioBackend, WindowsAudioWorkerProcess
 
 
@@ -28,6 +28,51 @@ def test_worker_process_selects_device_and_plays_existing_wav(tmp_path: Path) ->
 
     assert result["state"] == AudioWorkerState.IDLE.value
     assert calls == [(wav, "vr-headset", 0.7)]
+
+
+def test_worker_process_applies_radio_effect_without_external_audio_ducking(tmp_path: Path) -> None:
+    played: list[Path] = []
+    wav = tmp_path / "awacs.wav"
+    radio_wav = tmp_path / "awacs-radio.wav"
+    wav.write_bytes(b"RIFF0000WAVE")
+    radio_wav.write_bytes(b"RIFF0000WAVE")
+    backend = AudioBackend(
+        lambda path, device, volume: played.append(path),
+        lambda: None,
+        prepare_radio=lambda path: radio_wav,
+    )
+    process = WindowsAudioWorkerProcess(WindowsAudioWorker(), backend)
+
+    result = process.handle({
+        "action": "play",
+        "command_id": str(uuid4()),
+        "audio_path": str(wav),
+        "ducking_policy": "non_radio",
+        "radio_effect": True,
+    })
+
+    assert result["state"] == AudioWorkerState.IDLE.value
+    assert result["ducking_policy"] == AudioDuckingPolicy.NON_RADIO.value
+    assert result["radio_effect"] is True
+    assert played == [radio_wav]
+
+
+def test_ducking_policy_is_metadata_only_for_windows_worker(tmp_path: Path) -> None:
+    played: list[Path] = []
+    wav = tmp_path / "callout.wav"
+    wav.write_bytes(b"RIFF0000WAVE")
+    backend = AudioBackend(lambda path, device, volume: played.append(path), lambda: None)
+    process = WindowsAudioWorkerProcess(WindowsAudioWorker(), backend)
+
+    result = process.handle({
+        "action": "play",
+        "command_id": str(uuid4()),
+        "audio_path": str(wav),
+        "ducking_policy": "all",
+    })
+
+    assert result["ducking_policy"] == AudioDuckingPolicy.ALL.value
+    assert played == [wav]
 
 
 def test_worker_process_rejects_missing_audio_file(tmp_path: Path) -> None:

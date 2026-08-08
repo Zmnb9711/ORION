@@ -10,7 +10,7 @@ from uuid import UUID
 
 from orion.tts_audio import AudioRenderRequest, VoiceProfile
 from orion.voice_core import VoiceAgent
-from orion.windows_audio_worker import AudioDevice, AudioPlaybackRequest, WindowsAudioWorker
+from orion.windows_audio_worker import AudioDevice, AudioDuckingPolicy, AudioPlaybackRequest, WindowsAudioWorker
 from orion.windows_sapi_backend import WindowsSapiBackend
 
 
@@ -22,10 +22,12 @@ class AudioBackend:
         play_wav: Callable[[Path, str, float], None],
         stop: Callable[[], None],
         synthesize: Callable[[AudioRenderRequest], str] | None = None,
+        prepare_radio: Callable[[Path], Path] | None = None,
     ) -> None:
         self._play_wav = play_wav
         self._stop = stop
         self._synthesize = synthesize
+        self._prepare_radio = prepare_radio or (lambda path: path)
 
     def play(self, path: Path, device_id: str, volume: float) -> None:
         self._play_wav(path, device_id, volume)
@@ -37,6 +39,9 @@ class AudioBackend:
         if self._synthesize is None:
             raise RuntimeError("Audio backend does not provide synthesis")
         return Path(self._synthesize(request))
+
+    def prepare_radio(self, path: Path) -> Path:
+        return self._prepare_radio(path)
 
 
 class WindowsAudioWorkerProcess:
@@ -71,7 +76,8 @@ class WindowsAudioWorkerProcess:
                     audio_path=str(path),
                     output_device_id=request.output_device or "default",
                     volume=profile.volume,
-                    duck_game_audio=bool(payload.get("duck_game_audio", True)),
+                    ducking_policy=AudioDuckingPolicy(str(payload.get("ducking_policy", "none"))),
+                    radio_effect=bool(payload.get("radio_effect", False)),
                 )
             )
 
@@ -82,7 +88,8 @@ class WindowsAudioWorkerProcess:
                     audio_path=str(payload["audio_path"]),
                     output_device_id=str(payload.get("output_device_id", "default")),
                     volume=float(payload.get("volume", 1.0)),
-                    duck_game_audio=bool(payload.get("duck_game_audio", True)),
+                    ducking_policy=AudioDuckingPolicy(str(payload.get("ducking_policy", "none"))),
+                    radio_effect=bool(payload.get("radio_effect", False)),
                 )
             )
 
@@ -104,7 +111,8 @@ class WindowsAudioWorkerProcess:
             self._worker.stop(request.command_id)
             raise FileNotFoundError(f"Audio file not found: {path}")
         try:
-            self._backend.play(path, status.output_device_id, request.volume)
+            playback_path = self._backend.prepare_radio(path) if request.radio_effect else path
+            self._backend.play(playback_path, status.output_device_id, request.volume)
             return self._worker.complete(request.command_id).model_dump(mode="json")
         except Exception:
             self._worker.stop(request.command_id)
@@ -148,7 +156,7 @@ def _native_backend() -> AudioBackend:
             raise RuntimeError(result.message)
         return result.output_path
 
-    return AudioBackend(native.play_wav, native.stop, synthesize)
+    return AudioBackend(native.play_wav, native.stop, synthesize, prepare_radio=native.prepare_radio)
 
 
 def main(argv: list[str] | None = None) -> int:

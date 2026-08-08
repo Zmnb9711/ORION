@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import audioop
 import os
 import subprocess
-import sys
+import wave
 from pathlib import Path
 
 from orion.tts_audio import AudioRenderRequest, AudioRenderResult, TtsBackend
@@ -14,6 +15,9 @@ class WindowsSapiBackend:
     SAPI synthesis writes a WAV file. Playback uses Python's winsound module, which
     targets the Windows default output endpoint. Exact endpoint selection is kept as
     a future WASAPI backend rather than pretending winsound can route by device id.
+
+    Radio DSP is applied only to ORION-owned WAV copies. It never changes the DCS or
+    Windows game-audio session volume.
     """
 
     def __init__(self, spool_dir: str = "runtime/tts") -> None:
@@ -68,6 +72,46 @@ class WindowsSapiBackend:
             output_path=str(target),
             message="Windows SAPI synthesis completed",
         )
+
+    def prepare_radio(self, path: Path) -> Path:
+        """Create an ORION-only narrow-band radio rendition of a PCM WAV file."""
+        if not path.exists():
+            raise FileNotFoundError(path)
+        target = path.with_name(f"{path.stem}.radio.wav")
+        with wave.open(str(path), "rb") as source:
+            channels = source.getnchannels()
+            width = source.getsampwidth()
+            rate = source.getframerate()
+            frames = source.readframes(source.getnframes())
+
+        if width not in {1, 2, 3, 4}:
+            raise ValueError("Unsupported PCM sample width for radio DSP")
+        if channels == 2:
+            frames = audioop.tomono(frames, width, 0.5, 0.5)
+            channels = 1
+        elif channels != 1:
+            raise ValueError("Radio DSP supports mono or stereo PCM WAV only")
+
+        # Telephone/radio-like speech band. Rate conversion provides a lightweight
+        # low-pass; converting down and back intentionally removes excess brilliance.
+        radio_rate = min(rate, 8000)
+        if radio_rate != rate:
+            frames, _ = audioop.ratecv(frames, width, 1, rate, radio_rate, None)
+            frames, _ = audioop.ratecv(frames, width, 1, radio_rate, rate, None)
+
+        # Mild saturation/compression to make speech more radio-like without harsh clipping.
+        frames = audioop.mul(frames, width, 1.35)
+        peak = audioop.max(frames, width)
+        max_peak = (1 << (width * 8 - 1)) - 1
+        if peak > max_peak * 0.92:
+            frames = audioop.mul(frames, width, (max_peak * 0.92) / peak)
+
+        with wave.open(str(target), "wb") as output:
+            output.setnchannels(channels)
+            output.setsampwidth(width)
+            output.setframerate(rate)
+            output.writeframes(frames)
+        return target
 
     def play_wav(self, path: Path, device_id: str = "default", volume: float = 1.0) -> None:
         if not self.available:
