@@ -5,6 +5,7 @@ from orion.mission import UnitCategory
 from orion.mission_control_autonomy import MissionControlAction, evaluate_mission_control_autonomy
 from orion.mission_control_runtime import MissionControlPicture, MissionControlReadiness
 from orion.tactical_situation import TacticalThreat, TacticalThreatKind
+from orion.threats import ThreatLevel
 
 
 def _threat(kind: TacticalThreatKind) -> TacticalThreat:
@@ -12,6 +13,7 @@ def _threat(kind: TacticalThreatKind) -> TacticalThreat:
         unit_id="threat-1",
         name="SA-11" if kind is TacticalThreatKind.SAM else "armor",
         kind=kind,
+        level=ThreatLevel.HIGH,
         bearing_deg=270,
         range_nm=12,
         braa="270/12",
