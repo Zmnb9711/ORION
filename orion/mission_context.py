@@ -29,6 +29,7 @@ class MissionContact(BaseModel):
     latitude: float
     longitude: float
     altitude_m: float
+    speed_mps: float | None = None
     distance_km: float | None = None
     bearing_deg: float | None = None
 
@@ -37,6 +38,7 @@ class SupportAsset(BaseModel):
     unit_id: str
     callsign: str
     role: DcsRecipientType
+    coalition: Coalition = Coalition.UNKNOWN
     unit_type: str | None = None
     frequency_mhz: float | None = None
     modulation: str | None = None
@@ -137,6 +139,7 @@ def _contact(unit: MissionUnit, ownship: OwnshipContext | None) -> MissionContac
         latitude=unit.position.latitude,
         longitude=unit.position.longitude,
         altitude_m=unit.position.altitude_m,
+        speed_mps=unit.speed_mps,
         distance_km=distance_km,
         bearing_deg=bearing_deg,
     )
@@ -155,12 +158,14 @@ def _support_assets(
         mission_unit = mission_units.get(unit.unit_id)
         latitude = longitude = altitude_m = heading_deg = speed_mps = distance_km = bearing_deg = None
         position_source = None
+        coalition = _coalition(unit.coalition)
         if mission_unit is not None and mission_unit.alive and mission_unit.detected:
             latitude = mission_unit.position.latitude
             longitude = mission_unit.position.longitude
             altitude_m = mission_unit.position.altitude_m
             heading_deg = mission_unit.heading_deg
             speed_mps = mission_unit.speed_mps
+            coalition = mission_unit.coalition
             position_source = "mission_snapshot"
             if ownship is not None:
                 distance_km, bearing_deg = _range_bearing(ownship.latitude, ownship.longitude, latitude, longitude)
@@ -169,6 +174,7 @@ def _support_assets(
                 unit_id=unit.unit_id,
                 callsign=unit.callsign,
                 role=role,
+                coalition=coalition,
                 unit_type=unit.unit_type,
                 frequency_mhz=unit.frequency_mhz,
                 modulation=unit.modulation.value if unit.modulation else None,
@@ -187,6 +193,13 @@ def _support_assets(
             )
         )
     return sorted(assets, key=lambda item: (item.distance_km if item.distance_km is not None else float("inf"), item.callsign))
+
+
+def _coalition(value: str) -> Coalition:
+    try:
+        return Coalition(value.casefold())
+    except ValueError:
+        return Coalition.UNKNOWN
 
 
 def _contact_sort_key(contact: MissionContact) -> tuple[float, str]:
