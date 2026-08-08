@@ -54,6 +54,45 @@ def submit_autonomy_proposal_voice(action: PendingAction, *, language: str = "en
     )
 
 
+def submit_9line_completion_prompt(
+    action_id: str,
+    resolution: MissionControlAutonomyResolution,
+    *,
+    language: str = "en",
+) -> VoiceCommand | None:
+    seed = resolution.cas_9line_seed
+    if seed is None:
+        return None
+    ru = language.casefold().startswith("ru")
+    if ru:
+        text = (
+            f"Данные цели {seed.target_name} и целеуказателя {seed.designator_name or seed.designator_id or 'JTAC'} получены. "
+            "Для завершения 9-line сообщите IP или BP, курс от IP к цели, дистанцию в морских милях, положение своих и направление выхода. "
+            "Также укажите ограничения и замечания, если они есть."
+        )
+    else:
+        text = (
+            f"Target data for {seed.target_name} and designator {seed.designator_name or seed.designator_id or 'JTAC'} are available. "
+            "To complete the 9-line, provide IP or BP, heading from IP to target, distance in nautical miles, friendlies, and egress. "
+            "Also provide restrictions and remarks if applicable."
+        )
+    return voice_commands.submit(
+        VoiceCommandCreate(
+            transcript=text,
+            intent="mission_control_autonomy_9line_completion",
+            agent=VoiceAgent.MISSION_CONTROL,
+            priority=CommandPriority.HIGH,
+            context={
+                "action_id": action_id,
+                "missing_fields": seed.missing_fields,
+                "target_id": seed.target_id,
+                "designator_id": seed.designator_id,
+                "language": language,
+            },
+        )
+    )
+
+
 def parse_autonomy_voice_confirmation(transcript: str, *, language: str = "en") -> bool | None:
     normalized = " ".join(transcript.casefold().strip().split())
     ru = language.casefold().startswith("ru")
@@ -152,4 +191,11 @@ def resolve_autonomy_voice_decision(
                 voice_command=command,
             )
         raise
-    return AutonomyVoiceDecisionResult(understood=True, confirm=confirm, resolution=resolution)
+    command = submit_9line_completion_prompt(action_id, resolution, language=payload.language) if confirm else None
+    return AutonomyVoiceDecisionResult(
+        understood=True,
+        confirm=confirm,
+        resolution=resolution,
+        spoken_text=command.transcript if command else None,
+        voice_command=command,
+    )
