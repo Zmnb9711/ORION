@@ -10,6 +10,7 @@ from orion.jtac_assets import available_jtac_assets
 from orion.jtac_runtime import JtacDesignationMethod, JtacSession, JtacSessionCreate, JtacSessionState, jtac_sessions
 from orion.jtac_voice import jtac_session_text, submit_jtac_voice
 from orion.mission_control_runtime import build_mission_control_picture
+from orion.voice_core import CommandPriority, VoiceAgent, VoiceCommandCreate, voice_commands
 
 
 class JtacTargetMode(StrEnum):
@@ -52,15 +53,11 @@ _fallback_by_session: dict[UUID, _FallbackContext] = {}
 def orchestrate_jtac(request: MissionControlJtacRequest) -> MissionControlJtacResult:
     target_id, target_name = _resolve_target(request)
     if target_id is None:
-        text = (
-            "Подходящая цель для JTAC не найдена."
-            if request.language.casefold().startswith("ru")
-            else "No suitable JTAC target was found."
-        )
+        text = "Подходящая цель для JTAC не найдена." if request.language.casefold().startswith("ru") else "No suitable JTAC target was found."
         return MissionControlJtacResult(accepted=False, spoken_text=text)
 
     requested_asset_id = request.requested_asset_id or _next_asset_id(request.method, excluded=set())
-    result = _start_attempt(
+    return _start_attempt(
         target_id=target_id,
         target_name=target_name,
         method=request.method,
@@ -73,7 +70,6 @@ def orchestrate_jtac(request: MissionControlJtacRequest) -> MissionControlJtacRe
         used_asset_ids=set(),
         reassigned=False,
     )
-    return result
 
 
 def retry_failed_jtac(session: JtacSession) -> MissionControlJtacResult | None:
@@ -88,7 +84,7 @@ def retry_failed_jtac(session: JtacSession) -> MissionControlJtacResult | None:
         used.add(session.assigned_asset_id)
     next_attempt = context.attempt + 1
     if next_attempt > context.max_attempts:
-        return MissionControlJtacResult(
+        result = MissionControlJtacResult(
             accepted=False,
             target_id=session.target_id,
             target_name=context.target_name,
@@ -96,10 +92,12 @@ def retry_failed_jtac(session: JtacSession) -> MissionControlJtacResult | None:
             spoken_text=_exhausted_text(session, context.target_name, session.language),
             attempt=context.attempt,
         )
+        _submit_orchestration_voice(result.spoken_text, session)
+        return result
 
     next_asset_id = _next_asset_id(session.method, excluded=used)
     if next_asset_id is None:
-        return MissionControlJtacResult(
+        result = MissionControlJtacResult(
             accepted=False,
             target_id=session.target_id,
             target_name=context.target_name,
@@ -107,6 +105,8 @@ def retry_failed_jtac(session: JtacSession) -> MissionControlJtacResult | None:
             spoken_text=_exhausted_text(session, context.target_name, session.language),
             attempt=context.attempt,
         )
+        _submit_orchestration_voice(result.spoken_text, session)
+        return result
 
     return _start_attempt(
         target_id=session.target_id,
@@ -170,8 +170,12 @@ def _start_attempt(
             attempt=attempt,
             max_attempts=max_attempts,
         )
-    submit_jtac_voice(session, language)
+
     text = _reassigned_text(pending, target_name, language, attempt) if reassigned else _queued_text(pending, target_name, language)
+    if reassigned:
+        _submit_orchestration_voice(text, pending)
+    else:
+        submit_jtac_voice(session, language)
     return MissionControlJtacResult(
         accepted=True,
         target_id=target_id,
@@ -206,37 +210,39 @@ def _resolve_target(request: MissionControlJtacRequest) -> tuple[str | None, str
     return target.unit_id, target.name
 
 
+def _submit_orchestration_voice(text: str, session: JtacSession) -> None:
+    voice_commands.submit(
+        VoiceCommandCreate(
+            transcript=text,
+            intent="mission_control_jtac_orchestration",
+            agent=VoiceAgent.JTAC,
+            priority=CommandPriority.HIGH,
+            context={
+                "session_id": str(session.session_id),
+                "target_id": session.target_id,
+                "assigned_asset_id": session.assigned_asset_id,
+                "method": session.method.value,
+                "laser_code": session.laser_code,
+            },
+        )
+    )
+
+
 def _queued_text(session: JtacSession, target_name: str | None, language: str) -> str:
     ru = language.casefold().startswith("ru")
     target = target_name or session.target_id
     if session.method is JtacDesignationMethod.LASER:
-        return (
-            f"JTAC назначен на цель {target}. Код лазера {session.laser_code}. Запрос на подсветку передан."
-            if ru
-            else f"JTAC assigned to {target}. Laser code {session.laser_code}. Marking request sent."
-        )
+        return f"JTAC назначен на цель {target}. Код лазера {session.laser_code}. Запрос на подсветку передан." if ru else f"JTAC assigned to {target}. Laser code {session.laser_code}. Marking request sent."
     color = session.smoke_color or "red"
-    return (
-        f"JTAC назначен на цель {target}. Запрос на маркировку дымом, цвет {color}, передан."
-        if ru
-        else f"JTAC assigned to {target}. {color.capitalize()} smoke marking request sent."
-    )
+    return f"JTAC назначен на цель {target}. Запрос на маркировку дымом, цвет {color}, передан." if ru else f"JTAC assigned to {target}. {color.capitalize()} smoke marking request sent."
 
 
 def _reassigned_text(session: JtacSession, target_name: str | None, language: str, attempt: int) -> str:
     ru = language.casefold().startswith("ru")
     target = target_name or session.target_id
     if session.method is JtacDesignationMethod.LASER:
-        return (
-            f"Предыдущий целеуказатель недоступен. JTAC переназначен на цель {target}, попытка {attempt}. Код лазера {session.laser_code}."
-            if ru
-            else f"Previous designator unavailable. JTAC reassigned to {target}, attempt {attempt}. Laser code {session.laser_code}."
-        )
-    return (
-        f"Предыдущий целеуказатель недоступен. JTAC переназначен на цель {target}, попытка {attempt}."
-        if ru
-        else f"Previous designator unavailable. JTAC reassigned to {target}, attempt {attempt}."
-    )
+        return f"Предыдущий целеуказатель недоступен. JTAC переназначен на цель {target}, попытка {attempt}. Код лазера {session.laser_code}." if ru else f"Previous designator unavailable. JTAC reassigned to {target}, attempt {attempt}. Laser code {session.laser_code}."
+    return f"Предыдущий целеуказатель недоступен. JTAC переназначен на цель {target}, попытка {attempt}." if ru else f"Previous designator unavailable. JTAC reassigned to {target}, attempt {attempt}."
 
 
 def _exhausted_text(session: JtacSession, target_name: str | None, language: str) -> str:
