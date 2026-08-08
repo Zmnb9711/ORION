@@ -4,6 +4,7 @@ from math import atan2, cos, degrees, radians, sin, sqrt
 
 from pydantic import BaseModel, Field
 
+from orion.coalition_units import spoken_speed
 from orion.mission_context import LiveMissionContext, MissionContact, SupportAsset, build_live_mission_context
 
 
@@ -83,6 +84,8 @@ def _nearest_contact(contacts: list[MissionContact], *, hostile: bool, language:
     c = min(ranged, key=lambda x: x.distance_km if x.distance_km is not None else float("inf"))
     label = ("Ближайший противник" if hostile else "Ближайший дружественный") if language == "ru" else ("Nearest hostile" if hostile else "Nearest friendly")
     text = f"{label}: {c.name}, азимут {c.bearing_deg:.0f}, дальность {c.distance_km:.1f} километра, высота {c.altitude_m:.0f} метров." if language == "ru" else f"{label}: {c.name}, bearing {c.bearing_deg:.0f}, range {c.distance_km:.1f} kilometers, altitude {c.altitude_m:.0f} meters."
+    if c.speed_mps is not None:
+        text += f" {'Скорость' if language == 'ru' else 'Speed'} {spoken_speed(c.speed_mps, c.coalition, language)}."
     return MissionContextVoiceResult(completed=True, spoken_text=text, data={"contact": c.model_dump(mode="json")})
 
 
@@ -90,7 +93,6 @@ def _intercept_guidance(context: LiveMissionContext, asset: SupportAsset) -> dic
     own = context.ownship
     if own is None or own.true_airspeed_mps is None or own.true_airspeed_mps <= 0 or asset.latitude is None or asset.longitude is None or asset.heading_deg is None or asset.speed_mps is None:
         return None
-    # Local tangent plane is sufficiently accurate for tactical AAR ranges.
     lat0 = radians(own.latitude)
     north = radians(asset.latitude - own.latitude) * 6371008.8
     east = radians(asset.longitude - own.longitude) * 6371008.8 * cos(lat0)
@@ -127,7 +129,7 @@ def _nearest_support(assets: list[SupportAsset], label: str, language: str, cont
         if a.altitude_m is not None: text += f" {'Высота' if language == 'ru' else 'Altitude'} {a.altitude_m:.0f} {'метров' if language == 'ru' else 'meters'}."
     else: text += " Положение пока не передано Mission Bridge." if language == "ru" else " Position is not yet provided by Mission Bridge."
     if a.heading_deg is not None: text += f" {'Курс' if language == 'ru' else 'Heading'} {a.heading_deg:.0f}."
-    if a.speed_mps is not None: text += f" {'Скорость' if language == 'ru' else 'Speed'} {a.speed_mps:.0f} {'метров в секунду' if language == 'ru' else 'meters per second'}."
+    if a.speed_mps is not None: text += f" {'Скорость' if language == 'ru' else 'Speed'} {spoken_speed(a.speed_mps, a.coalition, language)}."
     if a.frequency_mhz is not None: text += f" {'Частота' if language == 'ru' else 'Frequency'} {a.frequency_mhz:.3f} {'мегагерц' if language == 'ru' else 'megahertz'}{(' ' + a.modulation) if a.modulation else ''}."
     if a.tacan_channel is not None and a.tacan_band is not None: text += f" TACAN {a.tacan_channel} {a.tacan_band}."
     guidance = _intercept_guidance(context, a) if a.role.value == "tanker" else None
@@ -142,6 +144,7 @@ def _support_phrase(asset: SupportAsset, language: str) -> str:
     text = asset.callsign
     if asset.unit_type: text += f", {asset.unit_type}"
     if asset.bearing_deg is not None and asset.distance_km is not None: text += f", {'азимут' if language == 'ru' else 'bearing'} {asset.bearing_deg:.0f}, {asset.distance_km:.1f} {'километра' if language == 'ru' else 'kilometers'}"
+    if asset.speed_mps is not None: text += f", {spoken_speed(asset.speed_mps, asset.coalition, language)}"
     if asset.frequency_mhz is not None:
         text += f", {asset.frequency_mhz:.3f} {'мегагерц' if language == 'ru' else 'megahertz'}"
         if asset.modulation: text += f" {asset.modulation}"
