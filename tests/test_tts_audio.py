@@ -29,6 +29,31 @@ def test_agent_voice_profiles_are_distinct() -> None:
     assert threat_profile.rate > tanker_profile.rate
 
 
+def test_jtac_voice_persona_is_distinct_from_atc_and_other_mission_roles() -> None:
+    jtac = voice_commands.submit(VoiceCommandCreate(transcript="Laser on, code 1688", intent="jtac", agent=VoiceAgent.JTAC))
+    atc = voice_commands.submit(VoiceCommandCreate(transcript="Cleared to land", intent="atc", agent=VoiceAgent.ATC))
+    awacs = voice_commands.submit(VoiceCommandCreate(transcript="Picture clean", intent="awacs", agent=VoiceAgent.AWACS))
+    tanker = voice_commands.submit(VoiceCommandCreate(transcript="Ready pre-contact", intent="aar", agent=VoiceAgent.TANKER))
+    mission_control = voice_commands.submit(VoiceCommandCreate(transcript="Mission update", intent="mc", agent=VoiceAgent.MISSION_CONTROL))
+
+    jtac_profile = profile_for(jtac, "en")
+    others = [profile_for(item, "en") for item in (atc, awacs, tanker, mission_control)]
+
+    assert jtac_profile.profile_id == "jtac"
+    assert jtac_profile.persona == "ground_jtac"
+    assert jtac_profile.radio_effect is True
+    assert all(jtac_profile.voice_slot != profile.voice_slot for profile in others)
+    assert all(jtac_profile.persona != profile.persona for profile in others)
+
+
+def test_russian_jtac_uses_same_distinct_persona_with_russian_locale() -> None:
+    command = voice_commands.submit(VoiceCommandCreate(transcript="Лазер включён, код 1688", intent="jtac", agent=VoiceAgent.JTAC))
+    profile = profile_for(command, "ru")
+    assert profile.locale == "ru-RU"
+    assert profile.persona == "ground_jtac"
+    assert profile.voice_slot == 1
+
+
 def test_russian_profile_uses_russian_locale() -> None:
     command = voice_commands.submit(VoiceCommandCreate(transcript="Танкер доступен", intent="aar", agent=VoiceAgent.TANKER))
     profile = profile_for(command, "ru")

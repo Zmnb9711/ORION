@@ -41,7 +41,15 @@ class WindowsSapiBackend:
         rate = max(-10, min(10, round((request.profile.rate - 1.0) * 10)))
         volume = max(0, min(100, round(request.profile.volume * 100)))
         voice_name = request.profile.voice_name or ""
-        script = _powershell_sapi_script(text=request.text, target=str(target.resolve()), rate=rate, volume=volume, voice_name=voice_name)
+        script = _powershell_sapi_script(
+            text=request.text,
+            target=str(target.resolve()),
+            rate=rate,
+            volume=volume,
+            voice_name=voice_name,
+            locale=request.profile.locale,
+            voice_slot=request.profile.voice_slot,
+        )
         completed = subprocess.run(
             ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
             capture_output=True,
@@ -108,11 +116,33 @@ class WindowsSapiBackend:
         winsound.PlaySound(None, winsound.SND_PURGE)
 
 
-def _powershell_sapi_script(*, text: str, target: str, rate: int, volume: int, voice_name: str) -> str:
+def _powershell_sapi_script(
+    *,
+    text: str,
+    target: str,
+    rate: int,
+    volume: int,
+    voice_name: str,
+    locale: str = "en-US",
+    voice_slot: int = 0,
+) -> str:
     escaped_text = text.replace("'", "''")
     escaped_target = target.replace("'", "''")
     escaped_voice = voice_name.replace("'", "''")
-    select_voice = f"$s.SelectVoice('{escaped_voice}');" if escaped_voice else ""
+    escaped_locale = locale.replace("'", "''")
+    if escaped_voice:
+        select_voice = f"$s.SelectVoice('{escaped_voice}'); "
+    else:
+        # Prefer a deterministic role-specific installed voice for the requested
+        # locale. If only one suitable voice exists, modulo selection gracefully
+        # falls back to it rather than breaking TTS.
+        select_voice = (
+            "$voices = @($s.GetInstalledVoices() | Where-Object { $_.Enabled -and $_.VoiceInfo.Culture.Name -eq '"
+            + escaped_locale
+            + "' }); "
+            "if ($voices.Count -eq 0) { $voices = @($s.GetInstalledVoices() | Where-Object { $_.Enabled }); }; "
+            f"if ($voices.Count -gt 0) {{ $selected = $voices[{voice_slot} % $voices.Count].VoiceInfo.Name; $s.SelectVoice($selected); }}; "
+        )
     return (
         "Add-Type -AssemblyName System.Speech; "
         "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
