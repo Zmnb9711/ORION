@@ -42,10 +42,11 @@ class Cas9LineReadback(BaseModel):
     target_elevation_ft: int
     target_location: str = Field(min_length=1)
     restrictions: str | None = None
+    remarks_acknowledged: bool = False
 
 
 class Cas9LineReadbackResult(BaseModel):
-    brief: Cas9LineBrief
+    brief: "Cas9LineBrief"
     verified: bool
     mismatches: list[str] = Field(default_factory=list)
 
@@ -70,6 +71,7 @@ class Cas9LineBrief(BaseModel):
     smoke_color: str = "red"
     language: str = "en"
     readback_verified: bool = False
+    remarks_acknowledged: bool = False
     readback_mismatches: list[str] = Field(default_factory=list)
     jtac_result: MissionControlJtacResult | None = None
 
@@ -96,6 +98,7 @@ class Cas9LineStore:
                 raise ValueError("Only draft CAS briefs can be issued")
             brief.state = Cas9LineState.READBACK_PENDING
             brief.readback_mismatches = []
+            brief.remarks_acknowledged = False
             return brief.model_copy(deep=True)
 
     def verify_readback_result(self, brief_id: UUID, readback: Cas9LineReadback) -> Cas9LineReadbackResult:
@@ -104,6 +107,7 @@ class Cas9LineStore:
             if brief.state is not Cas9LineState.READBACK_PENDING:
                 raise ValueError("CAS brief is not awaiting readback")
             mismatches = self._readback_mismatches(brief, readback)
+            brief.remarks_acknowledged = readback.remarks_acknowledged or not bool(brief.remarks)
             brief.readback_mismatches = mismatches
             if mismatches:
                 brief.readback_verified = False
@@ -167,6 +171,8 @@ class Cas9LineStore:
             mismatches.append("target location")
         if brief.restrictions and _norm(readback.restrictions or "") != _norm(brief.restrictions):
             mismatches.append("restrictions")
+        if brief.remarks and not readback.remarks_acknowledged:
+            mismatches.append("remarks acknowledgement")
         return mismatches
 
     def _require(self, brief_id: UUID) -> Cas9LineBrief:
