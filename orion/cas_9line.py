@@ -35,6 +35,7 @@ class Cas9LineBriefCreate(BaseModel):
     method: JtacDesignationMethod = JtacDesignationMethod.LASER
     laser_code: int | None = Field(default=1688, ge=1111, le=1788)
     smoke_color: str = "red"
+    requested_asset_id: str | None = None
     language: str = "en"
 
 
@@ -69,6 +70,7 @@ class Cas9LineBrief(BaseModel):
     method: JtacDesignationMethod
     laser_code: int | None = None
     smoke_color: str = "red"
+    requested_asset_id: str | None = None
     language: str = "en"
     readback_verified: bool = False
     remarks_acknowledged: bool = False
@@ -133,6 +135,7 @@ class Cas9LineStore:
                 method=brief.method,
                 laser_code=brief.laser_code,
                 smoke_color=brief.smoke_color,
+                requested_asset_id=brief.requested_asset_id,
                 language=brief.language,
             )
         result = orchestrate_jtac(request)
