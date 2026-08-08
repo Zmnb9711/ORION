@@ -17,6 +17,8 @@ class Cas9LineSeed(BaseModel):
     distance_nm: float | None = None
     mark: str = "laser"
     laser_code: int = 1688
+    designator_id: str | None = None
+    designator_name: str | None = None
     missing_fields: list[str] = Field(default_factory=lambda: ["ip_or_bp", "heading_deg", "friendlies", "egress"])
 
 
@@ -48,6 +50,10 @@ def create_autonomy_pending_action(decision: MissionControlAutonomyDecision) -> 
                 "confidence": decision.confidence,
                 "reason": decision.reason,
                 "mission_id": snapshot.mission_id if snapshot is not None else None,
+                "designator_id": decision.selected_designator_id,
+                "designator_name": decision.selected_designator_name,
+                "designator_supports_laser": decision.selected_designator_supports_laser,
+                "designator_supports_smoke": decision.selected_designator_supports_smoke,
             },
         )
     )
@@ -69,16 +75,19 @@ def _current_target(resolved: PendingAction):
     return unit
 
 
-def _revalidate_decision(resolved: PendingAction) -> None:
+def _revalidate_decision(resolved: PendingAction) -> MissionControlAutonomyDecision:
     current = evaluate_mission_control_autonomy()
     expected_type = f"mission_control:{current.action.value}"
     target_id = str(resolved.payload.get("target_id") or "")
+    designator_id = resolved.payload.get("designator_id")
     if (
         not current.requires_pilot_confirmation
         or current.target_id != target_id
         or expected_type != resolved.action_type
+        or (designator_id is not None and current.selected_designator_id != designator_id)
     ):
         raise ValueError("Tactical recommendation changed since proposal creation; proposal is stale")
+    return current
 
 
 def resolve_autonomy_pending_action(action_id: str, *, confirm: bool) -> MissionControlAutonomyResolution:
@@ -91,17 +100,20 @@ def resolve_autonomy_pending_action(action_id: str, *, confirm: bool) -> Mission
             raise KeyError("Pending Mission Control action not found or already resolved")
         return MissionControlAutonomyResolution(pending_action=resolved)
 
-    # Revalidate both mission identity/target existence and the current decision before
-    # consuming confirmation. A changed tactical recommendation must not execute old intent.
     unit = _current_target(pending)
-    _revalidate_decision(pending)
+    current = _revalidate_decision(pending)
     resolved = confirmation_store.resolve(action_id, True)
     if resolved is None:
         raise KeyError("Pending Mission Control action not found or already resolved")
 
     target_id = unit.unit_id
     if resolved.action_type == "mission_control:suggest_jtac":
-        jtac_result = orchestrate_jtac(MissionControlJtacRequest(target_id=target_id))
+        jtac_result = orchestrate_jtac(
+            MissionControlJtacRequest(
+                target_id=target_id,
+                requested_asset_id=current.selected_designator_id,
+            )
+        )
         return MissionControlAutonomyResolution(
             pending_action=resolved,
             executed=jtac_result.accepted,
@@ -115,6 +127,8 @@ def resolve_autonomy_pending_action(action_id: str, *, confirm: bool) -> Mission
             target_description=unit.type_name or unit.name,
             target_location=f"{unit.position.latitude:.6f}, {unit.position.longitude:.6f}",
             target_elevation_ft=round(unit.position.altitude_m * 3.28084),
+            designator_id=current.selected_designator_id,
+            designator_name=current.selected_designator_name,
         )
         return MissionControlAutonomyResolution(
             pending_action=resolved,
