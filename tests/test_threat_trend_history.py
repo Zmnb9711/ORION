@@ -51,3 +51,15 @@ def test_retain_discards_contacts_no_longer_present():
     tracker.observe("drop", 20)
     tracker.retain({"keep"})
     assert tracker.observe("drop", 19).samples == 1
+
+
+def test_mission_change_discards_previous_contact_history():
+    tracker = ThreatTrendTracker()
+    tracker.observe("bandit", 30, mission_id="mission-a")
+    tracker.observe("bandit", 25, mission_id="mission-a")
+    result = tracker.observe("bandit", 20, mission_id="mission-a")
+    assert result.trend is SustainedThreatTrend.CLOSING
+
+    new_mission = tracker.observe("bandit", 40, mission_id="mission-b")
+    assert new_mission.samples == 1
+    assert new_mission.trend is SustainedThreatTrend.INSUFFICIENT_DATA

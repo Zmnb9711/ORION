@@ -16,6 +16,7 @@ def test_create_auto_assigns_available_friendly_jtac():
     session = store.create(JtacSessionCreate(target_id="target-1", method=JtacDesignationMethod.LASER, laser_code=1688))
     assert session.state is JtacSessionState.ASSIGNED
     assert session.assigned_asset_id == "jtac-1"
+    assert session.mission_id == "m"
 
 
 def test_create_fails_when_no_designator_is_available():
@@ -79,3 +80,15 @@ def test_reconcile_failure_fails_session_without_claiming_marker_active():
     failed = store.reconcile(session.session_id)
     assert failed.state is JtacSessionState.FAILED
     assert failed.marker_active is False
+
+
+def test_switching_mission_discards_old_jtac_sessions():
+    mission_store.replace(MissionSnapshot(mission_id="mission-a", units=[_jtac()]))
+    store = JtacSessionStore()
+    old = store.create(JtacSessionCreate(target_id="target-1", method=JtacDesignationMethod.LASER, laser_code=1688))
+    assert store.get(old.session_id) is not None
+
+    mission_store.replace(MissionSnapshot(mission_id="mission-b", units=[_jtac()]))
+    assert store.get(old.session_id) is None
+    new = store.create(JtacSessionCreate(target_id="target-2", method=JtacDesignationMethod.LASER, laser_code=1688))
+    assert new.mission_id == "mission-b"

@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 from orion.jtac_assets import JtacAsset, select_jtac_asset
 from orion.mission_bridge import MissionCommand, MissionCommandType, mission_bridge
 from orion.mission_command_status import MissionCommandStatus, mission_command_statuses
+from orion.mission_store import mission_store
 
 
 class JtacDesignationMethod(StrEnum):
@@ -34,6 +35,7 @@ class JtacSessionCreate(BaseModel):
 
 class JtacSession(BaseModel):
     session_id: UUID = Field(default_factory=uuid4)
+    mission_id: str | None = None
     target_id: str
     method: JtacDesignationMethod
     state: JtacSessionState = JtacSessionState.REQUESTED
@@ -50,34 +52,42 @@ class JtacSessionStore:
     def __init__(self) -> None:
         self._lock = RLock()
         self._sessions: dict[UUID, JtacSession] = {}
+        self._mission_id: str | None = None
 
     def create(self, payload: JtacSessionCreate, *, language: str = "en") -> JtacSession:
         if payload.method is JtacDesignationMethod.SMOKE and payload.laser_code is not None:
             raise ValueError("Laser code is only valid for laser designation")
         if payload.method is JtacDesignationMethod.LASER and payload.laser_code is None:
             raise ValueError("laser_code is required for laser designation")
-        session = JtacSession(
-            target_id=payload.target_id,
-            method=payload.method,
-            laser_code=payload.laser_code if payload.method is JtacDesignationMethod.LASER else None,
-            smoke_color=payload.smoke_color if payload.method is JtacDesignationMethod.SMOKE else None,
-            language=language,
-        )
+        mission_id = self._current_mission_id()
         with self._lock:
+            self._bind_mission(mission_id)
+            session = JtacSession(
+                mission_id=mission_id,
+                target_id=payload.target_id,
+                method=payload.method,
+                laser_code=payload.laser_code if payload.method is JtacDesignationMethod.LASER else None,
+                smoke_color=payload.smoke_color if payload.method is JtacDesignationMethod.SMOKE else None,
+                language=language,
+            )
             self._sessions[session.session_id] = session
         return self.assign(session.session_id, requested_asset_id=payload.requested_asset_id)
 
     def assign(self, session_id: UUID, *, requested_asset_id: str | None = None) -> JtacSession:
+        self._sync_mission()
         asset = select_jtac_asset(requested_asset_id=requested_asset_id)
         if asset is None:
             return self.transition(session_id, JtacSessionState.FAILED, message="No suitable friendly JTAC/designator asset available")
         with self._lock:
-            session = self._sessions[session_id]
+            session = self._sessions.get(session_id)
+            if session is None:
+                raise KeyError("JTAC session not found")
             if not _supports(asset, session.method):
                 return self.transition(session_id, JtacSessionState.FAILED, message="Requested JTAC asset cannot provide the selected designation method")
         return self.transition(session_id, JtacSessionState.ASSIGNED, assigned_asset_id=asset.unit_id, message=f"JTAC asset assigned: {asset.name}")
 
     def start_marking(self, session_id: UUID) -> JtacSession:
+        self._sync_mission()
         with self._lock:
             session = self._sessions.get(session_id)
             if session is None:
@@ -102,6 +112,7 @@ class JtacSessionStore:
             return session.model_copy(deep=True)
 
     def reconcile(self, session_id: UUID) -> JtacSession:
+        self._sync_mission()
         with self._lock:
             session = self._sessions.get(session_id)
             if session is None:
@@ -144,6 +155,7 @@ class JtacSessionStore:
         return self.get(session_id)  # type: ignore[return-value]
 
     def find_by_command_id(self, command_id: UUID) -> JtacSession | None:
+        self._sync_mission()
         with self._lock:
             for session in self._sessions.values():
                 if session.command_id == command_id:
@@ -151,11 +163,13 @@ class JtacSessionStore:
         return None
 
     def get(self, session_id: UUID) -> JtacSession | None:
+        self._sync_mission()
         with self._lock:
             session = self._sessions.get(session_id)
             return session.model_copy(deep=True) if session else None
 
     def list(self) -> list[JtacSession]:
+        self._sync_mission()
         with self._lock:
             return [item.model_copy(deep=True) for item in self._sessions.values()]
 
@@ -169,6 +183,7 @@ class JtacSessionStore:
         command_id: UUID | None = None,
         message: str | None = None,
     ) -> JtacSession:
+        self._sync_mission()
         with self._lock:
             session = self._sessions.get(session_id)
             if session is None:
@@ -188,6 +203,27 @@ class JtacSessionStore:
     def reset(self) -> None:
         with self._lock:
             self._sessions.clear()
+            self._mission_id = None
+
+    def _sync_mission(self) -> None:
+        mission_id = self._current_mission_id()
+        with self._lock:
+            self._bind_mission(mission_id)
+
+    def _bind_mission(self, mission_id: str | None) -> None:
+        if mission_id is None:
+            return
+        if self._mission_id is None:
+            self._mission_id = mission_id
+            return
+        if mission_id != self._mission_id:
+            self._sessions.clear()
+            self._mission_id = mission_id
+
+    @staticmethod
+    def _current_mission_id() -> str | None:
+        snapshot = mission_store.get()
+        return snapshot.mission_id if snapshot is not None else None
 
 
 def _supports(asset: JtacAsset, method: JtacDesignationMethod) -> bool:

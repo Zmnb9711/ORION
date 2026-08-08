@@ -28,35 +28,44 @@ class _RangeSample:
 
 
 class ThreatTrendTracker:
-    """Track short range histories without requiring wall-clock timing.
-
-    Mission snapshots are sampled by the caller. The tracker deliberately derives
-    direction from range deltas only; instantaneous closure remains authoritative
-    for speed/closure values.
-    """
+    """Track short range histories, isolated to one mission at a time."""
 
     def __init__(self, max_samples: int = 5, min_samples: int = 3, noise_nm: float = 0.5) -> None:
         self._max_samples = max(3, max_samples)
         self._min_samples = max(3, min(min_samples, self._max_samples))
         self._noise_nm = max(0.0, noise_nm)
         self._history: dict[str, deque[_RangeSample]] = {}
+        self._mission_id: str | None = None
         self._lock = RLock()
 
     def reset(self) -> None:
         with self._lock:
             self._history.clear()
+            self._mission_id = None
 
-    def observe(self, unit_id: str, range_nm: float) -> ThreatTrendHistory:
+    def observe(self, unit_id: str, range_nm: float, *, mission_id: str | None = None) -> ThreatTrendHistory:
         with self._lock:
+            self._bind_mission(mission_id)
             samples = self._history.setdefault(unit_id, deque(maxlen=self._max_samples))
             samples.append(_RangeSample(range_nm=range_nm))
             return self._summarize(samples)
 
-    def retain(self, unit_ids: set[str]) -> None:
+    def retain(self, unit_ids: set[str], *, mission_id: str | None = None) -> None:
         with self._lock:
+            self._bind_mission(mission_id)
             for stale in list(self._history):
                 if stale not in unit_ids:
                     del self._history[stale]
+
+    def _bind_mission(self, mission_id: str | None) -> None:
+        if mission_id is None:
+            return
+        if self._mission_id is None:
+            self._mission_id = mission_id
+            return
+        if mission_id != self._mission_id:
+            self._history.clear()
+            self._mission_id = mission_id
 
     def _summarize(self, samples: deque[_RangeSample]) -> ThreatTrendHistory:
         count = len(samples)

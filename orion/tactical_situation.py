@@ -77,7 +77,7 @@ def get_tactical_situation(limit: int = 5) -> TacticalSituationSummary:
         altitude_ft = round(unit.position.altitude_m * 3.28084) if unit else None
         range_nm = assessment.distance_m / 1852.0
         kinematics = assess_threat_kinematics(unit, own_position) if unit else ThreatKinematics()
-        trend_history = threat_trend_tracker.observe(assessment.unit_id, range_nm)
+        trend_history = threat_trend_tracker.observe(assessment.unit_id, range_nm, mission_id=snapshot.mission_id)
         active_ids.add(assessment.unit_id)
         tactical.append(
             TacticalThreat(
@@ -97,7 +97,7 @@ def get_tactical_situation(limit: int = 5) -> TacticalSituationSummary:
                 tactical_priority=_priority(assessment.score, kind, kinematics, trend_history),
             )
         )
-    threat_trend_tracker.retain(active_ids)
+    threat_trend_tracker.retain(active_ids, mission_id=snapshot.mission_id)
 
     tactical.sort(key=lambda item: (item.tactical_priority, item.score), reverse=True)
     highest = tactical[0] if tactical else None
