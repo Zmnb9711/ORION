@@ -51,6 +51,10 @@ class TacticalProactiveMonitor:
                             "range_nm": threat.range_nm,
                             "bearing_deg": threat.bearing_deg,
                             "braa": threat.braa,
+                            "aspect": threat.kinematics.aspect.value,
+                            "range_trend": threat.kinematics.range_trend.value,
+                            "closure_kts": threat.kinematics.closure_kts,
+                            "tactical_priority": threat.tactical_priority,
                         },
                     )
                 )
@@ -70,7 +74,6 @@ def _meaningful_change(threat: TacticalThreat, previous: _ThreatMemory | None) -
         return True
     if _severity(threat.level) > _severity(previous.level):
         return True
-    # Re-announce only after substantial closure; avoids per-frame chatter.
     return previous.range_nm - threat.range_nm >= 10.0
 
 
@@ -87,13 +90,31 @@ def _priority(level: ThreatLevel) -> CommandPriority:
     return CommandPriority.CRITICAL if level is ThreatLevel.CRITICAL else CommandPriority.HIGH
 
 
+def _air_kinematics(threat: TacticalThreat, ru: bool) -> str:
+    aspect = threat.kinematics.aspect.value
+    trend = threat.kinematics.range_trend.value
+    closure = threat.kinematics.closure_kts
+    if ru:
+        aspect_text = {"hot": "идёт навстречу", "flanking": "фланговый", "cold": "уходит", "unknown": "аспект неизвестен"}[aspect]
+        trend_text = {"closing": "сближается", "stable": "дальность стабильна", "diverging": "расходится", "unknown": "тренд неизвестен"}[trend]
+        if closure is not None and trend == "closing":
+            return f"{aspect_text}, {trend_text}, скорость сближения {abs(closure):.0f} узлов"
+        return f"{aspect_text}, {trend_text}"
+    aspect_text = {"hot": "hot", "flanking": "flanking", "cold": "cold", "unknown": "aspect unknown"}[aspect]
+    trend_text = {"closing": "closing", "stable": "range stable", "diverging": "diverging", "unknown": "trend unknown"}[trend]
+    if closure is not None and trend == "closing":
+        return f"{aspect_text}, {trend_text}, closure {abs(closure):.0f} knots"
+    return f"{aspect_text}, {trend_text}"
+
+
 def _callout(threat: TacticalThreat, language: str) -> str:
     ru = language.casefold().startswith("ru")
     if threat.kind is TacticalThreatKind.AIR:
+        kin = _air_kinematics(threat, ru)
         return (
-            f"Воздушная угроза, {threat.braa}. Уровень {threat.level.value}."
+            f"Воздушная угроза, {threat.braa}. {kin}. Уровень {threat.level.value}."
             if ru
-            else f"Air threat, {threat.braa}. Threat level {threat.level.value}."
+            else f"Air threat, {threat.braa}. {kin}. Threat level {threat.level.value}."
         )
     if threat.kind is TacticalThreatKind.SAM:
         return (
