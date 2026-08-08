@@ -113,7 +113,7 @@ def test_9line_confirmation_prompts_only_missing_fields() -> None:
     assert "target location" not in command.transcript.casefold()
     assert command.context["target_id"] == "target-1"
     assert command.context["designator_id"] == "jtac-1"
-    assert "distance_nm" in command.context["missing_fields"]
+    assert "distance_nm" in command.context["missing_fields"].split(",")
 
 
 def test_voice_9line_confirmation_queues_completion_prompt() -> None:
@@ -182,5 +182,5 @@ def test_russian_stale_voice_confirmation_can_fall_back_to_observe() -> None:
     assert "не требуется" in result.spoken_text
     assert result.voice_command is not None
     assert result.voice_command.agent is VoiceAgent.MISSION_CONTROL
-    assert result.voice_command.context["replacement_action_id"] is None
+    assert result.voice_command.context["replacement_action_id"] == ""
     create.assert_not_called()
