@@ -1,7 +1,7 @@
 from unittest.mock import patch
 
 from orion.confirmations import ConfirmationStatus, ConfirmationStore
-from orion.mission import Coalition, MissionPosition, MissionUnit, UnitCategory
+from orion.mission import Coalition, MissionPosition, MissionSnapshot, MissionUnit, UnitCategory
 from orion.mission_control_autonomy import MissionControlAction, MissionControlAutonomyDecision
 from orion.mission_control_autonomy_actions import create_autonomy_pending_action, resolve_autonomy_pending_action
 from orion.mission_control_jtac import MissionControlJtacResult
@@ -55,8 +55,9 @@ def test_confirmed_9line_proposal_builds_grounded_seed() -> None:
         type_name="Buk SR 9S18M1",
         position=MissionPosition(latitude=41.1234567, longitude=41.7654321, altitude_m=300),
     )
+    snapshot = MissionSnapshot(mission_id="mission-1", units=[unit])
     with patch("orion.mission_control_autonomy_actions.confirmation_store", store), patch(
-        "orion.mission_control_autonomy_actions.mission_store.unit", return_value=unit
+        "orion.mission_control_autonomy_actions.mission_store.get", return_value=snapshot
     ):
         pending = create_autonomy_pending_action(_decision(MissionControlAction.SUGGEST_9LINE))
         result = resolve_autonomy_pending_action(pending.action_id, confirm=True)
