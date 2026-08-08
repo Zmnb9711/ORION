@@ -2,12 +2,13 @@ from unittest.mock import patch
 
 from orion.confirmations import ConfirmationStore, PendingActionCreate
 from orion.mission_control_autonomy import MissionControlAction, MissionControlAutonomyDecision
-from orion.mission_control_autonomy_actions import MissionControlAutonomyResolution
+from orion.mission_control_autonomy_actions import Cas9LineSeed, MissionControlAutonomyResolution
 from orion.mission_control_autonomy_voice import (
     AutonomyVoiceDecision,
     autonomy_proposal_text,
     parse_autonomy_voice_confirmation,
     resolve_autonomy_voice_decision,
+    submit_9line_completion_prompt,
     submit_autonomy_proposal_voice,
 )
 from orion.voice_core import VoiceAgent
@@ -32,6 +33,18 @@ def _decision(action: MissionControlAction) -> MissionControlAutonomyDecision:
         reason="updated tactical picture",
         requires_pilot_confirmation=action is not MissionControlAction.OBSERVE,
         available_designators=1,
+    )
+
+
+def _seed() -> Cas9LineSeed:
+    return Cas9LineSeed(
+        target_id="target-1",
+        target_name="SA-11",
+        target_description="Buk SR 9S18M1",
+        target_location="41.123457, 41.765432",
+        target_elevation_ft=984,
+        designator_id="jtac-1",
+        designator_name="Axeman 1-1",
     )
 
 
@@ -84,7 +97,39 @@ def test_clear_voice_confirmation_resolves_named_action() -> None:
     assert result.understood is True
     assert result.confirm is True
     assert result.resolution == expected
+    assert result.voice_command is None
     resolve.assert_called_once_with(pending.action_id, confirm=True)
+
+
+def test_9line_confirmation_prompts_only_missing_fields() -> None:
+    pending = _pending("mission_control:suggest_9line")
+    resolution = MissionControlAutonomyResolution(pending_action=pending, executed=True, cas_9line_seed=_seed())
+    command = submit_9line_completion_prompt(pending.action_id, resolution, language="en")
+    assert command is not None
+    assert command.agent is VoiceAgent.MISSION_CONTROL
+    assert command.intent == "mission_control_autonomy_9line_completion"
+    assert "IP or BP" in command.transcript
+    assert "distance in nautical miles" in command.transcript
+    assert "target location" not in command.transcript.casefold()
+    assert command.context["target_id"] == "target-1"
+    assert command.context["designator_id"] == "jtac-1"
+    assert "distance_nm" in command.context["missing_fields"]
+
+
+def test_voice_9line_confirmation_queues_completion_prompt() -> None:
+    pending = _pending("mission_control:suggest_9line")
+    resolution = MissionControlAutonomyResolution(pending_action=pending, executed=True, cas_9line_seed=_seed())
+    with patch(
+        "orion.mission_control_autonomy_voice.resolve_autonomy_pending_action",
+        return_value=resolution,
+    ):
+        result = resolve_autonomy_voice_decision(
+            pending.action_id,
+            AutonomyVoiceDecision(transcript="affirmative", language="en"),
+        )
+    assert result.voice_command is not None
+    assert result.voice_command.intent == "mission_control_autonomy_9line_completion"
+    assert "friendlies" in result.spoken_text
 
 
 def test_stale_voice_confirmation_creates_replacement_proposal() -> None:
