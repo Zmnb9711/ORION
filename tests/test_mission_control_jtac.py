@@ -1,4 +1,5 @@
 from unittest.mock import patch
+from uuid import UUID
 
 from orion.jtac_runtime import JtacDesignationMethod, JtacSessionState, jtac_sessions
 from orion.mission import Coalition, MissionPosition, MissionSnapshot, MissionUnit, UnitCategory
@@ -15,14 +16,17 @@ def _jtac() -> MissionUnit:
     return MissionUnit(unit_id="jtac-1", name="JTAC Alpha", coalition=Coalition.BLUE, category=UnitCategory.GROUND, type_name="HMMWV", position=MissionPosition(latitude=0, longitude=0))
 
 
+def _queued() -> MissionCommandResult:
+    return MissionCommandResult(command_id=UUID(int=1), status=MissionCommandStatus.QUEUED, message="queued")
+
+
 def setup_function() -> None:
     jtac_sessions.reset()
     mission_store.replace(MissionSnapshot(mission_id="mission-56", units=[_jtac()]))
 
 
 def test_explicit_laser_request_runs_assignment_and_dispatch() -> None:
-    queued = MissionCommandResult(status=MissionCommandStatus.QUEUED, message="queued")
-    with patch("orion.jtac_runtime.mission_bridge.send", return_value=queued) as send, patch("orion.mission_control_jtac.submit_jtac_voice"):
+    with patch("orion.jtac_runtime.mission_bridge.send", return_value=_queued()) as send, patch("orion.mission_control_jtac.submit_jtac_voice"):
         result = orchestrate_jtac(MissionControlJtacRequest(target_id="sam-1", method=JtacDesignationMethod.LASER, laser_code=1688, language="ru"))
     assert result.accepted is True
     assert result.session is not None
@@ -40,8 +44,7 @@ def test_explicit_laser_request_runs_assignment_and_dispatch() -> None:
 def test_primary_surface_threat_can_be_selected_automatically() -> None:
     threat = TacticalThreat(unit_id="sam-primary", name="SA-11", kind=TacticalThreatKind.SAM, level=ThreatLevel.HIGH, score=90, bearing_deg=20, range_nm=15, braa="020/15")
     picture = MissionControlPicture(primary_surface_threat=threat, total_threats=1)
-    queued = MissionCommandResult(status=MissionCommandStatus.QUEUED, message="queued")
-    with patch("orion.mission_control_jtac.build_mission_control_picture", return_value=picture), patch("orion.jtac_runtime.mission_bridge.send", return_value=queued), patch("orion.mission_control_jtac.submit_jtac_voice"):
+    with patch("orion.mission_control_jtac.build_mission_control_picture", return_value=picture), patch("orion.jtac_runtime.mission_bridge.send", return_value=_queued()), patch("orion.mission_control_jtac.submit_jtac_voice"):
         result = orchestrate_jtac(MissionControlJtacRequest(target_mode=JtacTargetMode.PRIMARY_SURFACE_THREAT, language="en"))
     assert result.accepted is True
     assert result.target_id == "sam-primary"
@@ -59,8 +62,7 @@ def test_no_surface_threat_returns_clean_negative_result() -> None:
 
 
 def test_smoke_request_does_not_send_laser_code() -> None:
-    queued = MissionCommandResult(status=MissionCommandStatus.QUEUED, message="queued")
-    with patch("orion.jtac_runtime.mission_bridge.send", return_value=queued) as send, patch("orion.mission_control_jtac.submit_jtac_voice"):
+    with patch("orion.jtac_runtime.mission_bridge.send", return_value=_queued()) as send, patch("orion.mission_control_jtac.submit_jtac_voice"):
         result = orchestrate_jtac(MissionControlJtacRequest(target_id="target-2", method=JtacDesignationMethod.SMOKE, smoke_color="orange"))
     assert result.accepted is True
     command = send.call_args.args[0]
