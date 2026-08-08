@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
+from orion.aar_rendezvous import AarPhase, aar_rendezvous
 from orion.dialogue import DialogueIntent, DialogueLanguage, DialogueRequest, DialogueResult, classify_dialogue
 from orion.mission_context import LiveMissionContext, SupportAsset, build_live_mission_context
 
@@ -15,6 +16,8 @@ class DialogueRuntimeResult(BaseModel):
     confidence: float = Field(ge=0, le=1)
     requires_confirmation: bool = False
     grounded: bool = False
+    action_executed: bool = False
+    action: str | None = None
     reply: str
     facts: dict[str, FactValue] = Field(default_factory=dict)
     issues: list[str] = Field(default_factory=list)
@@ -34,6 +37,8 @@ def run_dialogue(request: DialogueRequest, context: LiveMissionContext | None = 
     if classification.intent is DialogueIntent.AWACS:
         return _support(classification, live_context.awacs, "AWACS", "ДРЛО")
     if classification.intent is DialogueIntent.TANKER:
+        if _explicit_aar_start(request.text):
+            return _start_aar(classification, request.text, live_context)
         return _support(classification, live_context.tankers, "tanker", "дозаправщик")
 
     return _from_classification(classification, issues=live_context.issues)
@@ -110,6 +115,26 @@ def _threats(classification: DialogueResult, context: LiveMissionContext) -> Dia
     return _result(classification, reply=reply, grounded=True, facts=facts, issues=context.issues)
 
 
+def _start_aar(classification: DialogueResult, transcript: str, context: LiveMissionContext) -> DialogueRuntimeResult:
+    result = aar_rendezvous.execute("aar_start", transcript, context=context)
+    facts: dict[str, FactValue] = {
+        "aar_phase": result.session.phase.value,
+        "tanker_unit_id": result.session.tanker_unit_id,
+        "tanker_callsign": result.session.tanker_callsign,
+    }
+    return DialogueRuntimeResult(
+        language=classification.language,
+        intent=classification.intent,
+        confidence=classification.confidence,
+        grounded=result.completed,
+        action_executed=result.completed,
+        action="aar_start",
+        reply=result.spoken_text,
+        facts=facts,
+        issues=[] if result.completed else ["aar_start_failed"],
+    )
+
+
 def _support(
     classification: DialogueResult,
     assets: list[SupportAsset],
@@ -155,6 +180,24 @@ def _support(
             reply += f", TACAN {asset.tacan_channel}{asset.tacan_band or ''}"
         reply += "."
     return _result(classification, reply=reply, grounded=True, facts=facts)
+
+
+def _explicit_aar_start(text: str) -> bool:
+    lowered = text.casefold()
+    markers = (
+        "начать дозаправ",
+        "начинай дозаправ",
+        "запросить дозаправ",
+        "запрос дозаправ",
+        "приступить к дозаправ",
+        "request refuel",
+        "request aerial refuel",
+        "start refuel",
+        "start aerial refuel",
+        "start aar",
+        "begin aar",
+    )
+    return any(marker in lowered for marker in markers)
 
 
 def _from_classification(classification: DialogueResult, issues: list[str] | None = None) -> DialogueRuntimeResult:
