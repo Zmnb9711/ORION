@@ -5,6 +5,7 @@ from enum import StrEnum
 from pydantic import BaseModel, Field
 
 from orion.jtac_assets import JtacAsset, available_jtac_assets
+from orion.jtac_runtime import JtacDesignationMethod
 from orion.mission_control_runtime import MissionControlReadiness, build_mission_control_picture
 
 
@@ -26,6 +27,7 @@ class MissionControlAutonomyDecision(BaseModel):
     selected_designator_name: str | None = None
     selected_designator_supports_laser: bool = False
     selected_designator_supports_smoke: bool = False
+    selected_designation_method: JtacDesignationMethod | None = None
 
 
 def _select_designator(assets: list[JtacAsset]) -> JtacAsset | None:
@@ -41,6 +43,10 @@ def _select_designator(assets: list[JtacAsset]) -> JtacAsset | None:
         )
     )
     return capable[0]
+
+
+def _designation_method(asset: JtacAsset) -> JtacDesignationMethod:
+    return JtacDesignationMethod.LASER if asset.supports_laser else JtacDesignationMethod.SMOKE
 
 
 def evaluate_mission_control_autonomy() -> MissionControlAutonomyDecision:
@@ -74,10 +80,11 @@ def evaluate_mission_control_autonomy() -> MissionControlAutonomyDecision:
             requires_pilot_confirmation=False,
         )
 
+    method = _designation_method(selected)
     is_sam = target.kind.value == "sam"
     # A structured 9-line proposal currently requires a laser-capable designator.
-    # Smoke-only FAC support is still useful, but routes through the generic JTAC workflow.
-    action = MissionControlAction.SUGGEST_9LINE if is_sam and selected.supports_laser else MissionControlAction.SUGGEST_JTAC
+    # Smoke-only FAC support remains useful through the generic JTAC workflow.
+    action = MissionControlAction.SUGGEST_9LINE if is_sam and method is JtacDesignationMethod.LASER else MissionControlAction.SUGGEST_JTAC
     return MissionControlAutonomyDecision(
         action=action,
         target_id=target.unit_id,
@@ -90,4 +97,5 @@ def evaluate_mission_control_autonomy() -> MissionControlAutonomyDecision:
         selected_designator_name=selected.name,
         selected_designator_supports_laser=selected.supports_laser,
         selected_designator_supports_smoke=selected.supports_smoke,
+        selected_designation_method=method,
     )
