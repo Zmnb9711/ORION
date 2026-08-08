@@ -4,7 +4,7 @@ import pytest
 
 import orion.aar_proactive as proactive_module
 import orion.aar_rendezvous as rendezvous_module
-from orion.aar_closure import ClosureBand, compute_closure, spoken_closure
+from orion.aar_closure import ClosureBand, ClosureProfile, compute_closure, spoken_closure
 from orion.aar_proactive import AarProactiveMonitor
 from orion.aar_rendezvous import aar_rendezvous
 from orion.dcs_capabilities import DcsRecipientType
@@ -66,6 +66,46 @@ def test_closure_classifies_stable_and_opening() -> None:
     assert opening_assessment is not None and opening_assessment.band == ClosureBand.OPENING
 
 
+def test_closure_profile_tightens_with_distance() -> None:
+    far = _context(165, distance_km=7.0)
+    far_assessment = compute_closure(far, far.tankers[0])
+    assert far_assessment is not None
+    assert far_assessment.profile == ClosureProfile.FAR
+    assert far_assessment.band == ClosureBand.STABLE
+
+    medium = _context(165, distance_km=3.0)
+    medium_assessment = compute_closure(medium, medium.tankers[0])
+    assert medium_assessment is not None
+    assert medium_assessment.profile == ClosureProfile.MEDIUM
+    assert medium_assessment.band == ClosureBand.HIGH
+
+    close = _context(165, distance_km=1.5)
+    close_assessment = compute_closure(close, close.tankers[0])
+    assert close_assessment is not None
+    assert close_assessment.profile == ClosureProfile.CLOSE
+    assert close_assessment.band == ClosureBand.EXCESSIVE
+
+
+def test_final_profile_is_most_conservative() -> None:
+    context = _context(154, distance_km=0.7)
+    assessment = compute_closure(context, context.tankers[0])
+    assert assessment is not None
+    assert assessment.profile == ClosureProfile.FINAL
+    assert assessment.closure_mps == pytest.approx(4.0)
+    assert assessment.band == ClosureBand.HIGH
+    assert assessment.stable_limit_mps == pytest.approx(2.5722)
+
+
+def test_missing_distance_uses_legacy_safe_profile() -> None:
+    context = _context(160)
+    context.tankers[0].distance_km = None
+    assessment = compute_closure(context, context.tankers[0])
+    assert assessment is not None
+    assert assessment.profile == ClosureProfile.UNKNOWN
+    assert assessment.stable_limit_mps == pytest.approx(15.0)
+    assert assessment.high_limit_mps == pytest.approx(30.0)
+
+
 def test_blue_closure_is_spoken_in_knots() -> None:
     context = _context(160)
     assessment = compute_closure(context, context.tankers[0])
@@ -81,7 +121,6 @@ def test_join_up_monitor_announces_closure_band_change(monkeypatch) -> None:
     aar_rendezvous.execute("aar_start", "Start AAR")
     monitor = AarProactiveMonitor(aar_rendezvous)
     monkeypatch.setattr(proactive_module, "build_live_mission_context", lambda: stable)
-    # Establish the initial stable closure band without a callout.
     assert monitor.poll().should_announce is False
 
     excessive = _context(250)
@@ -92,6 +131,22 @@ def test_join_up_monitor_announces_closure_band_change(monkeypatch) -> None:
     assert update.closure is not None and update.closure.band == ClosureBand.EXCESSIVE
     assert "слишком высокое" in update.spoken_text
     assert "уз" in update.spoken_text
+
+
+def test_distance_alone_can_tighten_band_and_trigger_callout(monkeypatch) -> None:
+    initial = _context(160, distance_km=3.0)
+    monkeypatch.setattr(rendezvous_module, "build_live_mission_context", lambda: initial)
+    aar_rendezvous.execute("aar_start", "Start AAR")
+    monitor = AarProactiveMonitor(aar_rendezvous)
+    monkeypatch.setattr(proactive_module, "build_live_mission_context", lambda: initial)
+    assert monitor.poll().should_announce is False
+
+    closer = _context(160, distance_km=1.5)
+    monkeypatch.setattr(proactive_module, "build_live_mission_context", lambda: closer)
+    update = monitor.poll("ru")
+    assert update.should_announce is True
+    assert update.reason == "closure_high"
+    assert update.closure is not None and update.closure.profile == ClosureProfile.CLOSE
 
 
 def test_same_closure_band_does_not_repeat_callout(monkeypatch) -> None:
