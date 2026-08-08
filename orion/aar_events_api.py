@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 
 from orion.aar_dcs_adapter import AarAdapterResult, AarRawObservation, aar_dcs_adapter
 from orion.aar_events import AarEvent, AarEventResult, aar_events
+from orion.aar_runtime_monitor import AarRuntimeMonitorResult, aar_runtime_monitor
 
 
 router = APIRouter(prefix="/v1/aar", tags=["AAR events"])
@@ -35,3 +36,8 @@ def ingest_raw_aar_observation(observation: AarRawObservation) -> AarAdapterResu
             },
         )
     return result
+
+
+@router.get("/proactive", response_model=AarRuntimeMonitorResult)
+def poll_proactive_aar(language: str = Query(default="en", pattern="^(en|ru)$")) -> AarRuntimeMonitorResult:
+    return aar_runtime_monitor.poll(language)
