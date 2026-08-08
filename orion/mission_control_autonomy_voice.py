@@ -4,7 +4,11 @@ from pydantic import BaseModel, Field
 
 from orion.confirmations import PendingAction
 from orion.mission_control_autonomy import MissionControlAction, MissionControlAutonomyDecision, evaluate_mission_control_autonomy
-from orion.mission_control_autonomy_actions import MissionControlAutonomyResolution, resolve_autonomy_pending_action
+from orion.mission_control_autonomy_actions import (
+    MissionControlAutonomyResolution,
+    create_autonomy_pending_action,
+    resolve_autonomy_pending_action,
+)
 from orion.voice_core import CommandPriority, VoiceAgent, VoiceCommand, VoiceCommandCreate, voice_commands
 
 
@@ -19,6 +23,7 @@ class AutonomyVoiceDecisionResult(BaseModel):
     resolution: MissionControlAutonomyResolution | None = None
     stale: bool = False
     current_decision: MissionControlAutonomyDecision | None = None
+    replacement_action: PendingAction | None = None
     spoken_text: str | None = None
     voice_command: VoiceCommand | None = None
 
@@ -80,25 +85,36 @@ def _stale_voice_text(decision: MissionControlAutonomyDecision, *, language: str
         )
     if decision.action is MissionControlAction.SUGGEST_9LINE:
         return (
-            f"Обстановка изменилась. Предыдущее предложение устарело. Актуально: подготовить 9-line CAS по {target}."
+            f"Обстановка изменилась. Предыдущее предложение устарело. Новое предложение: подготовить 9-line CAS по {target}. Подтвердите или отклоните."
             if ru else
-            f"Situation changed. The previous proposal is stale. Current recommendation: prepare a 9-line CAS brief for {target}."
+            f"Situation changed. The previous proposal is stale. New proposal: prepare a 9-line CAS brief for {target}. Confirm or reject."
         )
     return (
-        f"Обстановка изменилась. Предыдущее предложение устарело. Актуально: запросить JTAC по {target}."
+        f"Обстановка изменилась. Предыдущее предложение устарело. Новое предложение: запросить JTAC по {target}. Подтвердите или отклоните."
         if ru else
-        f"Situation changed. The previous proposal is stale. Current recommendation: request JTAC support for {target}."
+        f"Situation changed. The previous proposal is stale. New proposal: request JTAC support for {target}. Confirm or reject."
     )
 
 
-def _submit_stale_recovery_voice(action_id: str, text: str, *, language: str) -> VoiceCommand:
+def _submit_stale_recovery_voice(
+    old_action_id: str,
+    text: str,
+    *,
+    language: str,
+    replacement_action: PendingAction | None,
+) -> VoiceCommand:
     return voice_commands.submit(
         VoiceCommandCreate(
             transcript=text,
             intent="mission_control_autonomy_stale_recovery",
             agent=VoiceAgent.MISSION_CONTROL,
             priority=CommandPriority.HIGH,
-            context={"action_id": action_id, "language": language, "stale": True},
+            context={
+                "action_id": old_action_id,
+                "replacement_action_id": replacement_action.action_id if replacement_action else None,
+                "language": language,
+                "stale": True,
+            },
         )
     )
 
@@ -116,13 +132,22 @@ def resolve_autonomy_voice_decision(
         stale_error = "stale" in str(exc).casefold() or "changed" in str(exc).casefold()
         if confirm and stale_error:
             current = evaluate_mission_control_autonomy()
+            replacement = None
+            if current.requires_pilot_confirmation and current.action is not MissionControlAction.OBSERVE:
+                replacement = create_autonomy_pending_action(current)
             text = _stale_voice_text(current, language=payload.language)
-            command = _submit_stale_recovery_voice(action_id, text, language=payload.language)
+            command = _submit_stale_recovery_voice(
+                action_id,
+                text,
+                language=payload.language,
+                replacement_action=replacement,
+            )
             return AutonomyVoiceDecisionResult(
                 understood=True,
                 confirm=True,
                 stale=True,
                 current_decision=current,
+                replacement_action=replacement,
                 spoken_text=text,
                 voice_command=command,
             )
