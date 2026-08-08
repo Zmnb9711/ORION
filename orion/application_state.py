@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 from orion.flight_runtime_summary import FlightRuntimeSummary, get_flight_runtime_summary
 from orion.mission_command_status import MissionCommandStatus, mission_command_statuses
 from orion.startup_health import StartupHealthReport, StartupHealthState, inspect_startup_health
+from orion.tactical_situation import TacticalSituationSummary, get_tactical_situation
 from orion.telemetry_handshake import telemetry_handshake
 from orion.voice_core import CommandState, voice_commands
 from orion.windows_audio_worker import AudioPlaybackStatus, windows_audio_worker
@@ -39,6 +40,7 @@ class OrionApplicationState(BaseModel):
     voice: VoiceSummary = Field(default_factory=VoiceSummary)
     audio: AudioPlaybackStatus
     flight: FlightRuntimeSummary = Field(default_factory=FlightRuntimeSummary)
+    tactical: TacticalSituationSummary = Field(default_factory=TacticalSituationSummary)
 
 
 def get_application_state() -> OrionApplicationState:
@@ -60,6 +62,7 @@ def get_application_state() -> OrionApplicationState:
     )
 
     flight = get_flight_runtime_summary()
+    tactical = get_tactical_situation()
 
     if health.state is StartupHealthState.ACTION_REQUIRED:
         readiness = ApplicationReadiness.ACTION_REQUIRED
@@ -77,4 +80,5 @@ def get_application_state() -> OrionApplicationState:
         voice=voice,
         audio=windows_audio_worker.status(),
         flight=flight,
+        tactical=tactical,
     )
