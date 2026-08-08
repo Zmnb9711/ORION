@@ -1,6 +1,6 @@
 from unittest.mock import patch
 
-from orion.confirmations import ConfirmationStore, PendingActionCreate
+from orion.confirmations import ConfirmationStatus, ConfirmationStore, PendingActionCreate
 from orion.mission_control_autonomy import MissionControlAction, MissionControlAutonomyDecision
 from orion.mission_control_autonomy_actions import Cas9LineSeed, MissionControlAutonomyResolution
 from orion.mission_control_autonomy_voice import (
@@ -132,16 +132,18 @@ def test_voice_9line_confirmation_queues_completion_prompt() -> None:
     assert "friendlies" in result.spoken_text
 
 
-def test_stale_voice_confirmation_creates_replacement_proposal() -> None:
+def test_stale_voice_confirmation_reports_core_replacement_proposal() -> None:
     pending = _pending()
+    rejected = pending.model_copy(update={"status": ConfirmationStatus.REJECTED})
     replacement = _pending("mission_control:suggest_9line")
     current = _decision(MissionControlAction.SUGGEST_9LINE)
-    with patch(
-        "orion.mission_control_autonomy_voice.resolve_autonomy_pending_action",
-        side_effect=ValueError("Tactical recommendation changed since proposal creation; proposal is stale"),
-    ), patch("orion.mission_control_autonomy_voice.evaluate_mission_control_autonomy", return_value=current), patch(
-        "orion.mission_control_autonomy_voice.create_autonomy_pending_action", return_value=replacement
-    ) as create:
+    resolution = MissionControlAutonomyResolution(
+        pending_action=rejected,
+        stale=True,
+        current_decision=current,
+        replacement_action=replacement,
+    )
+    with patch("orion.mission_control_autonomy_voice.resolve_autonomy_pending_action", return_value=resolution):
         result = resolve_autonomy_voice_decision(
             pending.action_id,
             AutonomyVoiceDecision(transcript="affirmative", language="en"),
@@ -159,18 +161,18 @@ def test_stale_voice_confirmation_creates_replacement_proposal() -> None:
     assert result.voice_command.intent == "mission_control_autonomy_stale_recovery"
     assert result.voice_command.context["action_id"] == pending.action_id
     assert result.voice_command.context["replacement_action_id"] == replacement.action_id
-    create.assert_called_once_with(current)
 
 
 def test_russian_stale_voice_confirmation_can_fall_back_to_observe() -> None:
     pending = _pending()
+    rejected = pending.model_copy(update={"status": ConfirmationStatus.REJECTED})
     current = _decision(MissionControlAction.OBSERVE)
-    with patch(
-        "orion.mission_control_autonomy_voice.resolve_autonomy_pending_action",
-        side_effect=ValueError("Mission changed since proposal creation; proposal is stale"),
-    ), patch("orion.mission_control_autonomy_voice.evaluate_mission_control_autonomy", return_value=current), patch(
-        "orion.mission_control_autonomy_voice.create_autonomy_pending_action"
-    ) as create:
+    resolution = MissionControlAutonomyResolution(
+        pending_action=rejected,
+        stale=True,
+        current_decision=current,
+    )
+    with patch("orion.mission_control_autonomy_voice.resolve_autonomy_pending_action", return_value=resolution):
         result = resolve_autonomy_voice_decision(
             pending.action_id,
             AutonomyVoiceDecision(transcript="да", language="ru"),
@@ -183,4 +185,3 @@ def test_russian_stale_voice_confirmation_can_fall_back_to_observe() -> None:
     assert result.voice_command is not None
     assert result.voice_command.agent is VoiceAgent.MISSION_CONTROL
     assert result.voice_command.context["replacement_action_id"] == ""
-    create.assert_not_called()
