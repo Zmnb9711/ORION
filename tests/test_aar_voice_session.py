@@ -61,6 +61,11 @@ def test_parser_routes_russian_and_english_aar_commands() -> None:
     assert parse_transcript("Abort AAR").commands[0].intent == "aar_abort"
 
 
+def test_aar_contact_does_not_capture_awacs_contact() -> None:
+    command = parse_transcript("Contact AWACS").commands[0]
+    assert command.intent == "contact_awacs"
+
+
 def test_voice_execution_starts_and_tracks_aar_session(monkeypatch) -> None:
     monkeypatch.setattr(aar_module, "build_live_mission_context", _context)
     create = parse_transcript("Начать дозаправку").commands[0]
