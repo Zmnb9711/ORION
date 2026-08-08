@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 
 from orion.jtac_assets import JtacAsset, select_jtac_asset
 from orion.mission_bridge import MissionCommand, MissionCommandType, mission_bridge
+from orion.mission_command_status import MissionCommandStatus, mission_command_statuses
 
 
 class JtacDesignationMethod(StrEnum):
@@ -81,6 +82,8 @@ class JtacSessionStore:
                 raise KeyError("JTAC session not found")
             if session.state is not JtacSessionState.ASSIGNED:
                 raise ValueError("JTAC session must be assigned before marking")
+            if session.command_id is not None:
+                raise ValueError("JTAC marking command is already pending")
             command = MissionCommand(
                 command=MissionCommandType.LASER if session.method is JtacDesignationMethod.LASER else MissionCommandType.SMOKE,
                 target_unit_id=session.target_id,
@@ -89,13 +92,54 @@ class JtacSessionStore:
                 smoke_color=session.smoke_color,
             )
         result = mission_bridge.send(command)
-        return self.transition(
-            session_id,
-            JtacSessionState.MARKING,
-            marker_active=True,
-            command_id=command.command_id,
-            message=f"JTAC marking command queued: {result.status.value}",
-        )
+        with self._lock:
+            session = self._sessions[session_id]
+            session.command_id = command.command_id
+            session.marker_active = False
+            session.message = f"JTAC marking command queued: {result.status.value}"
+            return session.model_copy(deep=True)
+
+    def reconcile(self, session_id: UUID) -> JtacSession:
+        with self._lock:
+            session = self._sessions.get(session_id)
+            if session is None:
+                raise KeyError("JTAC session not found")
+            command_id = session.command_id
+            state = session.state
+        if command_id is None:
+            return self.get(session_id)  # type: ignore[return-value]
+        result = mission_command_statuses.get(command_id)
+        if result is None or result.status is MissionCommandStatus.QUEUED:
+            return self.get(session_id)  # type: ignore[return-value]
+        if result.status is MissionCommandStatus.ACCEPTED:
+            if state is JtacSessionState.ASSIGNED:
+                return self.transition(
+                    session_id,
+                    JtacSessionState.MARKING,
+                    marker_active=True,
+                    message=result.message or "JTAC marking confirmed by mission-side",
+                )
+            return self.get(session_id)  # type: ignore[return-value]
+        if result.status is MissionCommandStatus.COMPLETED:
+            if state is JtacSessionState.ASSIGNED:
+                self.transition(session_id, JtacSessionState.MARKING, marker_active=True, message="JTAC marking confirmed by mission-side")
+            current = self.get(session_id)
+            if current is not None and current.state is JtacSessionState.MARKING:
+                return self.transition(
+                    session_id,
+                    JtacSessionState.COMPLETE,
+                    marker_active=False,
+                    message=result.message or "JTAC marking complete",
+                )
+            return self.get(session_id)  # type: ignore[return-value]
+        if result.status is MissionCommandStatus.FAILED and state not in {JtacSessionState.COMPLETE, JtacSessionState.FAILED}:
+            return self.transition(
+                session_id,
+                JtacSessionState.FAILED,
+                marker_active=False,
+                message=result.message or "JTAC marking failed",
+            )
+        return self.get(session_id)  # type: ignore[return-value]
 
     def get(self, session_id: UUID) -> JtacSession | None:
         with self._lock:
