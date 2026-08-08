@@ -3,12 +3,8 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 from orion.confirmations import PendingAction
-from orion.mission_control_autonomy import MissionControlAction, MissionControlAutonomyDecision, evaluate_mission_control_autonomy
-from orion.mission_control_autonomy_actions import (
-    MissionControlAutonomyResolution,
-    create_autonomy_pending_action,
-    resolve_autonomy_pending_action,
-)
+from orion.mission_control_autonomy import MissionControlAction, MissionControlAutonomyDecision
+from orion.mission_control_autonomy_actions import MissionControlAutonomyResolution, resolve_autonomy_pending_action
 from orion.voice_core import CommandPriority, VoiceAgent, VoiceCommand, VoiceCommandCreate, voice_commands
 
 
@@ -165,32 +161,25 @@ def resolve_autonomy_voice_decision(
     confirm = parse_autonomy_voice_confirmation(payload.transcript, language=payload.language)
     if confirm is None:
         return AutonomyVoiceDecisionResult(understood=False)
-    try:
-        resolution = resolve_autonomy_pending_action(action_id, confirm=confirm)
-    except ValueError as exc:
-        stale_error = "stale" in str(exc).casefold() or "changed" in str(exc).casefold()
-        if confirm and stale_error:
-            current = evaluate_mission_control_autonomy()
-            replacement = None
-            if current.requires_pilot_confirmation and current.action is not MissionControlAction.OBSERVE:
-                replacement = create_autonomy_pending_action(current)
-            text = _stale_voice_text(current, language=payload.language)
-            command = _submit_stale_recovery_voice(
-                action_id,
-                text,
-                language=payload.language,
-                replacement_action=replacement,
-            )
-            return AutonomyVoiceDecisionResult(
-                understood=True,
-                confirm=True,
-                stale=True,
-                current_decision=current,
-                replacement_action=replacement,
-                spoken_text=text,
-                voice_command=command,
-            )
-        raise
+    resolution = resolve_autonomy_pending_action(action_id, confirm=confirm)
+    if resolution.stale and resolution.current_decision is not None:
+        text = _stale_voice_text(resolution.current_decision, language=payload.language)
+        command = _submit_stale_recovery_voice(
+            action_id,
+            text,
+            language=payload.language,
+            replacement_action=resolution.replacement_action,
+        )
+        return AutonomyVoiceDecisionResult(
+            understood=True,
+            confirm=True,
+            resolution=resolution,
+            stale=True,
+            current_decision=resolution.current_decision,
+            replacement_action=resolution.replacement_action,
+            spoken_text=text,
+            voice_command=command,
+        )
     command = submit_9line_completion_prompt(action_id, resolution, language=payload.language) if confirm else None
     return AutonomyVoiceDecisionResult(
         understood=True,
