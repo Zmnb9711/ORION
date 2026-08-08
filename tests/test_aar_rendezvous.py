@@ -16,7 +16,7 @@ def reset_aar() -> None:
     aar_rendezvous.reset()
 
 
-def _context(distance_km: float = 18.52, *, ownship_speed_mps: float | None = 250.0) -> LiveMissionContext:
+def _context(distance_km: float = 18.52, *, ownship_speed_mps: float | None = 250.0, tanker_longitude: float = 41.2) -> LiveMissionContext:
     return LiveMissionContext(
         available=True,
         ownship=OwnshipContext(
@@ -36,7 +36,7 @@ def _context(distance_km: float = 18.52, *, ownship_speed_mps: float | None = 25
                 available=True,
                 aar_available=True,
                 latitude=41.0,
-                longitude=41.2,
+                longitude=tanker_longitude,
                 altitude_m=7000,
                 distance_km=distance_km,
                 bearing_deg=90,
@@ -67,7 +67,7 @@ def test_start_selects_nearest_available_tanker(monkeypatch) -> None:
 
 
 def test_status_recomputes_intercept_guidance(monkeypatch) -> None:
-    contexts = [_context(18.52), _context(9.26)]
+    contexts = [_context(18.52, tanker_longitude=41.2), _context(9.26, tanker_longitude=41.1)]
     monkeypatch.setattr(aar_module, "build_live_mission_context", lambda: contexts.pop(0))
     started = aar_rendezvous.execute("aar_start", "Начать дозаправку")
     first_eta = started.data["intercept_guidance"]["eta_s"]
