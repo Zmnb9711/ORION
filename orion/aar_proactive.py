@@ -59,14 +59,13 @@ class AarProactiveMonitor:
 
         reason = self._guidance_change(guidance)
         self._last_phase = session.phase
+        previous_guidance = self._last_guidance
+        self._last_guidance = guidance
         if reason is None:
-            if guidance is not None and self._last_guidance is None:
-                self._last_guidance = guidance
             return AarProactiveUpdate(phase=session.phase, guidance=guidance)
 
-        self._last_guidance = guidance
-        if guidance is None:
-            return AarProactiveUpdate(phase=session.phase)
+        if guidance is None or previous_guidance is None:
+            return AarProactiveUpdate(phase=session.phase, guidance=guidance)
         eta_min = guidance.eta_s / 60.0
         text = (
             f"Обновление сближения: курс перехвата {guidance.intercept_heading_deg:.0f}, ETA {eta_min:.1f} минуты."
