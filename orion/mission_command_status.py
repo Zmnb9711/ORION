@@ -40,7 +40,17 @@ class MissionCommandStatusStore:
         )
         with self._lock:
             self._items[command_id] = result
+        self._notify_jtac(command_id)
         return result
+
+    @staticmethod
+    def _notify_jtac(command_id: UUID) -> None:
+        # Lazy import avoids a module cycle: JTAC runtime reads this status store.
+        try:
+            from orion.jtac_status_observer import observe_mission_command_status
+        except ImportError:
+            return
+        observe_mission_command_status(command_id)
 
     def get(self, command_id: UUID) -> MissionCommandResult | None:
         with self._lock:
