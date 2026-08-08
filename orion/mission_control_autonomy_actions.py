@@ -190,7 +190,6 @@ def resolve_autonomy_pending_action(action_id: str, *, confirm: bool) -> Mission
     if resolved.action_type == "mission_control:suggest_9line":
         return MissionControlAutonomyResolution(
             pending_action=resolved,
-            executed=True,
             cas_9line_seed=_build_9line_seed(unit, current),
         )
 
