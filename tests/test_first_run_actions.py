@@ -7,7 +7,7 @@ from orion.first_run_actions import FirstRunAction
 
 
 def test_first_run_action_routes_registered():
-    paths = {route.path for route in app.routes}
+    paths = {getattr(route, "path", None) for route in app.routes}
     assert "/v1/first-run/actions/detect" in paths
     assert "/v1/first-run/actions/select-active" in paths
     assert "/v1/first-run/actions/install-integration" in paths
