@@ -17,9 +17,20 @@ class ClosureBand(StrEnum):
     EXCESSIVE = "excessive"
 
 
+class ClosureProfile(StrEnum):
+    FAR = "far"
+    MEDIUM = "medium"
+    CLOSE = "close"
+    FINAL = "final"
+    UNKNOWN = "unknown"
+
+
 class AarClosureAssessment(BaseModel):
     closure_mps: float
     band: ClosureBand
+    profile: ClosureProfile
+    stable_limit_mps: float
+    high_limit_mps: float
 
 
 def compute_closure(context: LiveMissionContext, tanker: SupportAsset) -> AarClosureAssessment | None:
@@ -48,7 +59,14 @@ def compute_closure(context: LiveMissionContext, tanker: SupportAsset) -> AarClo
     los_north = cos(bearing)
     relative_radial_mps = (tanker_east - own_east) * los_east + (tanker_north - own_north) * los_north
     closure_mps = -relative_radial_mps
-    return AarClosureAssessment(closure_mps=round(closure_mps, 1), band=_band(closure_mps))
+    profile, stable_limit_mps, high_limit_mps = _profile(tanker.distance_km)
+    return AarClosureAssessment(
+        closure_mps=round(closure_mps, 1),
+        band=_band(closure_mps, stable_limit_mps, high_limit_mps),
+        profile=profile,
+        stable_limit_mps=stable_limit_mps,
+        high_limit_mps=high_limit_mps,
+    )
 
 
 def spoken_closure(assessment: AarClosureAssessment, tanker: SupportAsset, language: str) -> str:
@@ -58,13 +76,32 @@ def spoken_closure(assessment: AarClosureAssessment, tanker: SupportAsset, langu
     return f"сближение {speed}" if language == "ru" else f"closure {speed}"
 
 
-def _band(closure_mps: float) -> ClosureBand:
+def _profile(distance_km: float | None) -> tuple[ClosureProfile, float, float]:
+    """Tighten closure limits as the receiver approaches the tanker.
+
+    Limits are stored in SI. The corresponding BLUE values are approximately:
+    >3 NM: 30/60 kt, 1-3 NM: 20/40 kt, 0.5-1 NM: 10/20 kt,
+    <=0.5 NM: 5/10 kt for stable/high boundaries.
+    """
+    if distance_km is None:
+        return ClosureProfile.UNKNOWN, 15.0, 30.0
+    distance_nm = distance_km / 1.852
+    if distance_nm > 3.0:
+        return ClosureProfile.FAR, 15.4333, 30.8667
+    if distance_nm > 1.0:
+        return ClosureProfile.MEDIUM, 10.2889, 20.5778
+    if distance_nm > 0.5:
+        return ClosureProfile.CLOSE, 5.1444, 10.2889
+    return ClosureProfile.FINAL, 2.5722, 5.1444
+
+
+def _band(closure_mps: float, stable_limit_mps: float, high_limit_mps: float) -> ClosureBand:
     if closure_mps < -2.0:
         return ClosureBand.OPENING
     if closure_mps <= 2.0:
         return ClosureBand.HOLD
-    if closure_mps <= 15.0:
+    if closure_mps <= stable_limit_mps:
         return ClosureBand.STABLE
-    if closure_mps <= 30.0:
+    if closure_mps <= high_limit_mps:
         return ClosureBand.HIGH
     return ClosureBand.EXCESSIVE
