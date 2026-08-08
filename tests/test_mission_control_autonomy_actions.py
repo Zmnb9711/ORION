@@ -1,13 +1,19 @@
 from unittest.mock import patch
 
 from orion.confirmations import ConfirmationStatus, ConfirmationStore
+from orion.jtac_runtime import JtacDesignationMethod
 from orion.mission import Coalition, MissionPosition, MissionSnapshot, MissionUnit, UnitCategory
 from orion.mission_control_autonomy import MissionControlAction, MissionControlAutonomyDecision
 from orion.mission_control_autonomy_actions import create_autonomy_pending_action, resolve_autonomy_pending_action
 from orion.mission_control_jtac import MissionControlJtacResult
 
 
-def _decision(action: MissionControlAction) -> MissionControlAutonomyDecision:
+def _decision(
+    action: MissionControlAction,
+    *,
+    method: JtacDesignationMethod | None = JtacDesignationMethod.LASER,
+    designator_id: str | None = "jtac-1",
+) -> MissionControlAutonomyDecision:
     return MissionControlAutonomyDecision(
         action=action,
         target_id="target-1",
@@ -16,6 +22,11 @@ def _decision(action: MissionControlAction) -> MissionControlAutonomyDecision:
         reason="test",
         requires_pilot_confirmation=True,
         available_designators=1,
+        selected_designator_id=designator_id,
+        selected_designator_name="Axeman 1-1" if designator_id else None,
+        selected_designator_supports_laser=method is JtacDesignationMethod.LASER,
+        selected_designator_supports_smoke=method is JtacDesignationMethod.SMOKE,
+        selected_designation_method=method,
     )
 
 
@@ -49,10 +60,10 @@ def test_rejected_proposal_has_no_side_effect() -> None:
     orchestrate.assert_not_called()
 
 
-def test_confirmed_jtac_proposal_executes_orchestration() -> None:
+def test_confirmed_jtac_proposal_executes_selected_laser_method() -> None:
     store = ConfirmationStore()
     snapshot = _snapshot()
-    decision = _decision(MissionControlAction.SUGGEST_JTAC)
+    decision = _decision(MissionControlAction.SUGGEST_JTAC, method=JtacDesignationMethod.LASER)
     jtac_result = MissionControlJtacResult(accepted=True, target_id="target-1", spoken_text="JTAC assigned")
     with patch("orion.mission_control_autonomy_actions.confirmation_store", store), patch(
         "orion.mission_control_autonomy_actions.mission_store.get", return_value=snapshot
@@ -61,10 +72,31 @@ def test_confirmed_jtac_proposal_executes_orchestration() -> None:
     ) as orchestrate:
         pending = create_autonomy_pending_action(decision)
         result = resolve_autonomy_pending_action(pending.action_id, confirm=True)
+    request = orchestrate.call_args.args[0]
     assert result.pending_action.status is ConfirmationStatus.CONFIRMED
     assert result.executed is True
-    assert result.jtac_result == jtac_result
-    assert orchestrate.call_args.args[0].target_id == "target-1"
+    assert request.target_id == "target-1"
+    assert request.requested_asset_id == "jtac-1"
+    assert request.method is JtacDesignationMethod.LASER
+    assert request.laser_code == 1688
+
+
+def test_confirmed_smoke_only_jtac_uses_smoke_method() -> None:
+    store = ConfirmationStore()
+    snapshot = _snapshot()
+    decision = _decision(MissionControlAction.SUGGEST_JTAC, method=JtacDesignationMethod.SMOKE)
+    jtac_result = MissionControlJtacResult(accepted=True, target_id="target-1", spoken_text="JTAC assigned")
+    with patch("orion.mission_control_autonomy_actions.confirmation_store", store), patch(
+        "orion.mission_control_autonomy_actions.mission_store.get", return_value=snapshot
+    ), patch("orion.mission_control_autonomy_actions.evaluate_mission_control_autonomy", return_value=decision), patch(
+        "orion.mission_control_autonomy_actions.orchestrate_jtac", return_value=jtac_result
+    ) as orchestrate:
+        pending = create_autonomy_pending_action(decision)
+        result = resolve_autonomy_pending_action(pending.action_id, confirm=True)
+    request = orchestrate.call_args.args[0]
+    assert result.executed is True
+    assert request.method is JtacDesignationMethod.SMOKE
+    assert request.laser_code is None
 
 
 def test_confirmed_9line_proposal_builds_grounded_seed() -> None:
@@ -80,6 +112,7 @@ def test_confirmed_9line_proposal_builds_grounded_seed() -> None:
     assert result.cas_9line_seed is not None
     assert result.cas_9line_seed.target_location == "41.123457, 41.765432"
     assert result.cas_9line_seed.target_elevation_ft == 984
+    assert result.cas_9line_seed.designator_id == "jtac-1"
     assert "friendlies" in result.cas_9line_seed.missing_fields
     assert "egress" in result.cas_9line_seed.missing_fields
 
@@ -135,6 +168,27 @@ def test_changed_tactical_recommendation_does_not_execute_old_action() -> None:
             assert "Tactical recommendation changed" in str(exc)
         else:
             raise AssertionError("Expected changed recommendation rejection")
+    assert store.get(pending.action_id).status is ConfirmationStatus.PENDING
+    orchestrate.assert_not_called()
+
+
+def test_changed_designation_method_makes_proposal_stale() -> None:
+    store = ConfirmationStore()
+    snapshot = _snapshot()
+    original = _decision(MissionControlAction.SUGGEST_JTAC, method=JtacDesignationMethod.LASER)
+    changed = _decision(MissionControlAction.SUGGEST_JTAC, method=JtacDesignationMethod.SMOKE)
+    with patch("orion.mission_control_autonomy_actions.confirmation_store", store), patch(
+        "orion.mission_control_autonomy_actions.mission_store.get", return_value=snapshot
+    ), patch("orion.mission_control_autonomy_actions.evaluate_mission_control_autonomy", return_value=changed), patch(
+        "orion.mission_control_autonomy_actions.orchestrate_jtac"
+    ) as orchestrate:
+        pending = create_autonomy_pending_action(original)
+        try:
+            resolve_autonomy_pending_action(pending.action_id, confirm=True)
+        except ValueError as exc:
+            assert "Tactical recommendation changed" in str(exc)
+        else:
+            raise AssertionError("Expected designation method change to make proposal stale")
     assert store.get(pending.action_id).status is ConfirmationStatus.PENDING
     orchestrate.assert_not_called()
 
