@@ -21,8 +21,7 @@ def _presentation(state: RecoveryUiState) -> RecoveryPresentation:
 
 
 def test_recovery_stream_route_is_registered():
-    paths = {getattr(route, "path", None) for route in app.routes}
-    assert "/v1/recovery-ui/stream" in paths
+    assert "/v1/recovery-ui/stream" in app.openapi()["paths"]
 
 
 def test_recovery_stream_emits_state_event_and_stops_on_ready(monkeypatch):
