@@ -160,7 +160,11 @@ def evaluate_first_run(
     elif not telemetry_ok:
         state = FirstRunState.WAITING_FOR_DCS
         headline = "Setup complete — waiting for DCS"
-        next_action = "Start DCS and enter an aircraft"
+        next_action = (
+            "Start DCS and enter an aircraft"
+            if payload.require_active_selection
+            else "Start DCS and enter the F/A-18C"
+        )
     else:
         state = FirstRunState.READY_TO_FLY
         headline = "READY TO FLY"
