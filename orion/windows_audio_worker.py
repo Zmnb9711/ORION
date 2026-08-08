@@ -15,6 +15,13 @@ class AudioWorkerState(StrEnum):
     FAILED = "failed"
 
 
+class AudioDuckingPolicy(StrEnum):
+    NONE = "none"
+    MUSIC = "music"
+    NON_RADIO = "non_radio"
+    ALL = "all"
+
+
 class AudioDevice(BaseModel):
     device_id: str = "default"
     name: str = "Windows default audio output"
@@ -27,6 +34,8 @@ class AudioPlaybackRequest(BaseModel):
     output_device_id: str = "default"
     volume: float = Field(default=1.0, ge=0.0, le=1.0)
     duck_game_audio: bool = True
+    ducking_policy: AudioDuckingPolicy = AudioDuckingPolicy.NONE
+    radio_effect: bool = False
 
 
 class AudioPlaybackStatus(BaseModel):
@@ -34,6 +43,8 @@ class AudioPlaybackStatus(BaseModel):
     command_id: UUID | None = None
     audio_path: str | None = None
     output_device_id: str = "default"
+    ducking_policy: AudioDuckingPolicy = AudioDuckingPolicy.NONE
+    radio_effect: bool = False
     message: str = ""
 
 
@@ -71,6 +82,8 @@ class WindowsAudioWorker:
                 command_id=request.command_id,
                 audio_path=request.audio_path,
                 output_device_id=request.output_device_id or self._device.device_id,
+                ducking_policy=request.ducking_policy,
+                radio_effect=request.radio_effect,
                 message="Playback accepted by Windows audio worker",
             )
             return self._status.model_copy(deep=True)
