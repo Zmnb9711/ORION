@@ -55,14 +55,12 @@ class AarRendezvousService:
             return self._session.model_copy(deep=True)
 
     def apply_confirmed_phase(self, phase: AarPhase, tanker_unit_id: str | None = None) -> AarSession:
-        """Apply a phase confirmed by a trusted DCS/Mission Pack event."""
         self._sync_mission()
         with self._lock:
             if self._session.tanker_unit_id is None:
                 raise ValueError("No active AAR session")
             if tanker_unit_id is not None and tanker_unit_id != self._session.tanker_unit_id:
                 raise ValueError("AAR event tanker does not match active session")
-
             allowed: dict[AarPhase, set[AarPhase]] = {
                 AarPhase.RENDEZVOUS: {AarPhase.JOIN_UP, AarPhase.PRE_CONTACT},
                 AarPhase.JOIN_UP: {AarPhase.PRE_CONTACT},
@@ -88,31 +86,22 @@ class AarRendezvousService:
             with self._lock:
                 self._session.phase = AarPhase.COMPLETE
             return self._result(True, "Дозаправка завершена." if language == "ru" else "Aerial refueling complete.")
-
         live_context = context if context is not None else build_live_mission_context()
         if not live_context.available:
             return self._result(False, "Данные Mission Bridge недоступны." if language == "ru" else "Mission Bridge data is unavailable.", {"issues": live_context.issues})
-
         if intent == "aar_start":
             tanker = _nearest_available_tanker(live_context)
             if tanker is None:
                 return self._result(False, "Доступный танкер не найден." if language == "ru" else "No available tanker was found.")
             with self._lock:
-                self._session = AarSession(
-                    mission_id=self._mission_id,
-                    phase=AarPhase.RENDEZVOUS,
-                    tanker_unit_id=tanker.unit_id,
-                    tanker_callsign=tanker.callsign,
-                )
+                self._session = AarSession(mission_id=self._mission_id, phase=AarPhase.RENDEZVOUS, tanker_unit_id=tanker.unit_id, tanker_callsign=tanker.callsign)
                 self._update_phase_from_range_locked(tanker)
             return self._brief(live_context, tanker, language, prefix="Начинаю сближение с" if language == "ru" else "Starting rendezvous with")
-
         with self._lock:
             tanker_unit_id = self._session.tanker_unit_id
         tanker = _session_tanker(live_context, tanker_unit_id)
         if tanker is None:
             return self._result(False, "Активный танкер потерян из контекста миссии." if language == "ru" else "The active tanker is no longer present in mission context.")
-
         if intent == "aar_pre_contact":
             closure = compute_closure(live_context, tanker)
             vertical = compute_vertical(live_context, tanker)
@@ -131,10 +120,13 @@ class AarRendezvousService:
             with self._lock:
                 self._session.phase = AarPhase.CONTACT
             return self._brief(live_context, tanker, language, prefix="Contact с" if language == "ru" else "Contact with")
+        self._update_phase_from_range(tanker)
+        return self._brief(live_context, tanker, language, prefix="Текущий танкер" if language == "ru" else "Current tanker")
 
+    def _update_phase_from_range(self, tanker: SupportAsset) -> None:
+        self._sync_mission()
         with self._lock:
             self._update_phase_from_range_locked(tanker)
-        return self._brief(live_context, tanker, language, prefix="Текущий танкер" if language == "ru" else "Current tanker")
 
     def _update_phase_from_range_locked(self, tanker: SupportAsset) -> None:
         if tanker.distance_km is None or self._session.phase in {AarPhase.PRE_CONTACT, AarPhase.CONTACT, AarPhase.COMPLETE, AarPhase.ABORTED}:
@@ -156,7 +148,6 @@ class AarRendezvousService:
             parts.append(f"Частота {tanker.frequency_mhz:.3f} мегагерц{(' ' + tanker.modulation) if tanker.modulation else ''}." if language == "ru" else f"Frequency {tanker.frequency_mhz:.3f} megahertz{(' ' + tanker.modulation) if tanker.modulation else ''}.")
         if tanker.tacan_channel is not None and tanker.tacan_band is not None:
             parts.append(f"TACAN {tanker.tacan_channel} {tanker.tacan_band}.")
-
         guidance = None
         with self._lock:
             phase = self._session.phase
@@ -169,7 +160,6 @@ class AarRendezvousService:
                     parts.append(f"Рекомендуемый курс перехвата {guidance.intercept_heading_deg:.0f}, ETA {minutes:.1f} минуты, путь до точки встречи {distance}.")
                 else:
                     parts.append(f"Recommended intercept heading {guidance.intercept_heading_deg:.0f}, ETA {minutes:.1f} minutes, distance to rendezvous {distance}.")
-
         data: dict[str, object] = {"phase": phase.value, "tanker": tanker.model_dump(mode="json"), "intercept_guidance": guidance.model_dump() if guidance is not None else None}
         return self._result(True, " ".join(parts), data)
 
