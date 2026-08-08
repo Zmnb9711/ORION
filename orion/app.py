@@ -26,7 +26,7 @@ if LEGACY_CORE_AVAILABLE:
     from orion.mission_command_status import MissionCommandResult, mission_command_statuses
     from orion.mission_store import mission_store
     from orion.models import TelemetryEnvelope
-    from orion.startup_onboarding import apply_completed_onboarding
+    from orion.startup_onboarding import apply_completed_onboarding_at_startup
     from orion.support import SupportRequest, SupportRequestCreate, support_requests
     from orion.telemetry_handshake import telemetry_handshake
     from orion.threats import ThreatAssessment, assess_threats
@@ -47,7 +47,7 @@ if LEGACY_CORE_AVAILABLE:
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
-        apply_completed_onboarding()
+        apply_completed_onboarding_at_startup()
         transport, _ = await start_udp_bridge(store_telemetry)
         try:
             yield
@@ -56,11 +56,11 @@ if LEGACY_CORE_AVAILABLE:
 
     app = FastAPI(title="ORION Core", version=__version__, lifespan=lifespan)
 else:
-    from orion.startup_onboarding import apply_completed_onboarding
+    from orion.startup_onboarding import apply_completed_onboarding_at_startup
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
-        apply_completed_onboarding()
+        apply_completed_onboarding_at_startup()
         yield
 
     app = FastAPI(title="ORION", version="0.1.0", description="ORION AI Flight Assistant API", lifespan=lifespan)
