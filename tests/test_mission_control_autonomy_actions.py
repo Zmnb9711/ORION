@@ -19,14 +19,15 @@ def _decision(
     *,
     method: JtacDesignationMethod | None = JtacDesignationMethod.LASER,
     designator_id: str | None = "jtac-1",
+    target_id: str = "target-1",
 ) -> MissionControlAutonomyDecision:
     return MissionControlAutonomyDecision(
         action=action,
-        target_id="target-1",
-        target_name="SA-11",
+        target_id=target_id if action is not MissionControlAction.OBSERVE else None,
+        target_name="SA-11" if target_id == "target-1" else "SA-15",
         confidence=0.9,
         reason="test",
-        requires_pilot_confirmation=True,
+        requires_pilot_confirmation=action is not MissionControlAction.OBSERVE,
         available_designators=1,
         selected_designator_id=designator_id,
         selected_designator_name="Axeman 1-1" if designator_id else None,
@@ -180,62 +181,41 @@ def test_9line_completion_is_idempotent_per_autonomy_action() -> None:
     assert len(cas_store.list()) == 1
 
 
-def test_stale_proposal_does_not_execute_when_target_disappears() -> None:
+def test_stale_target_closes_old_action_and_creates_replacement() -> None:
     store = ConfirmationStore()
-    snapshots = [_snapshot(), _snapshot(alive=False)]
+    snapshots = [_snapshot(), _snapshot(alive=False), _snapshot(alive=False)]
+    current = _decision(MissionControlAction.SUGGEST_JTAC, target_id="target-2")
     with patch("orion.mission_control_autonomy_actions.confirmation_store", store), patch(
         "orion.mission_control_autonomy_actions.mission_store.get", side_effect=snapshots
-    ), patch("orion.mission_control_autonomy_actions.orchestrate_jtac") as orchestrate:
-        pending = create_autonomy_pending_action(_decision(MissionControlAction.SUGGEST_JTAC))
-        try:
-            resolve_autonomy_pending_action(pending.action_id, confirm=True)
-        except ValueError as exc:
-            assert "stale" in str(exc)
-        else:
-            raise AssertionError("Expected stale proposal rejection")
-    assert store.get(pending.action_id).status is ConfirmationStatus.PENDING
-    orchestrate.assert_not_called()
-
-
-def test_stale_proposal_does_not_cross_mission_boundary() -> None:
-    store = ConfirmationStore()
-    snapshots = [_snapshot(mission_id="mission-1"), _snapshot(mission_id="mission-2")]
-    with patch("orion.mission_control_autonomy_actions.confirmation_store", store), patch(
-        "orion.mission_control_autonomy_actions.mission_store.get", side_effect=snapshots
-    ), patch("orion.mission_control_autonomy_actions.orchestrate_jtac") as orchestrate:
-        pending = create_autonomy_pending_action(_decision(MissionControlAction.SUGGEST_JTAC))
-        try:
-            resolve_autonomy_pending_action(pending.action_id, confirm=True)
-        except ValueError as exc:
-            assert "Mission changed" in str(exc)
-        else:
-            raise AssertionError("Expected stale proposal rejection")
-    assert store.get(pending.action_id).status is ConfirmationStatus.PENDING
-    orchestrate.assert_not_called()
-
-
-def test_changed_tactical_recommendation_does_not_execute_old_action() -> None:
-    store = ConfirmationStore()
-    snapshot = _snapshot()
-    original = _decision(MissionControlAction.SUGGEST_JTAC)
-    changed = _decision(MissionControlAction.SUGGEST_9LINE)
-    with patch("orion.mission_control_autonomy_actions.confirmation_store", store), patch(
-        "orion.mission_control_autonomy_actions.mission_store.get", return_value=snapshot
-    ), patch("orion.mission_control_autonomy_actions.evaluate_mission_control_autonomy", return_value=changed), patch(
+    ), patch("orion.mission_control_autonomy_actions.evaluate_mission_control_autonomy", return_value=current), patch(
         "orion.mission_control_autonomy_actions.orchestrate_jtac"
     ) as orchestrate:
-        pending = create_autonomy_pending_action(original)
-        try:
-            resolve_autonomy_pending_action(pending.action_id, confirm=True)
-        except ValueError as exc:
-            assert "Tactical recommendation changed" in str(exc)
-        else:
-            raise AssertionError("Expected changed recommendation rejection")
-    assert store.get(pending.action_id).status is ConfirmationStatus.PENDING
+        pending = create_autonomy_pending_action(_decision(MissionControlAction.SUGGEST_JTAC))
+        result = resolve_autonomy_pending_action(pending.action_id, confirm=True)
+    assert result.stale is True
+    assert result.pending_action.status is ConfirmationStatus.REJECTED
+    assert result.replacement_action is not None
+    assert result.replacement_action.action_id != pending.action_id
+    assert result.replacement_action.status is ConfirmationStatus.PENDING
     orchestrate.assert_not_called()
 
 
-def test_changed_designation_method_makes_proposal_stale() -> None:
+def test_stale_mission_can_fall_back_to_observe_without_replacement() -> None:
+    store = ConfirmationStore()
+    snapshots = [_snapshot(mission_id="mission-1"), _snapshot(mission_id="mission-2")]
+    current = _decision(MissionControlAction.OBSERVE)
+    with patch("orion.mission_control_autonomy_actions.confirmation_store", store), patch(
+        "orion.mission_control_autonomy_actions.mission_store.get", side_effect=snapshots
+    ), patch("orion.mission_control_autonomy_actions.evaluate_mission_control_autonomy", return_value=current):
+        pending = create_autonomy_pending_action(_decision(MissionControlAction.SUGGEST_JTAC))
+        result = resolve_autonomy_pending_action(pending.action_id, confirm=True)
+    assert result.stale is True
+    assert result.pending_action.status is ConfirmationStatus.REJECTED
+    assert result.current_decision.action is MissionControlAction.OBSERVE
+    assert result.replacement_action is None
+
+
+def test_changed_designation_method_replaces_old_proposal() -> None:
     store = ConfirmationStore()
     snapshot = _snapshot()
     original = _decision(MissionControlAction.SUGGEST_JTAC, method=JtacDesignationMethod.LASER)
@@ -246,13 +226,11 @@ def test_changed_designation_method_makes_proposal_stale() -> None:
         "orion.mission_control_autonomy_actions.orchestrate_jtac"
     ) as orchestrate:
         pending = create_autonomy_pending_action(original)
-        try:
-            resolve_autonomy_pending_action(pending.action_id, confirm=True)
-        except ValueError as exc:
-            assert "Tactical recommendation changed" in str(exc)
-        else:
-            raise AssertionError("Expected designation method change to make proposal stale")
-    assert store.get(pending.action_id).status is ConfirmationStatus.PENDING
+        result = resolve_autonomy_pending_action(pending.action_id, confirm=True)
+    assert result.stale is True
+    assert result.pending_action.status is ConfirmationStatus.REJECTED
+    assert result.replacement_action is not None
+    assert result.replacement_action.payload["designation_method"] == "smoke"
     orchestrate.assert_not_called()
 
 
