@@ -20,6 +20,7 @@ class AutonomyVoiceDecisionResult(BaseModel):
     stale: bool = False
     current_decision: MissionControlAutonomyDecision | None = None
     spoken_text: str | None = None
+    voice_command: VoiceCommand | None = None
 
 
 def autonomy_proposal_text(action: PendingAction, *, language: str = "en") -> str:
@@ -70,7 +71,7 @@ def parse_autonomy_voice_confirmation(transcript: str, *, language: str = "en") 
 
 def _stale_voice_text(decision: MissionControlAutonomyDecision, *, language: str) -> str:
     ru = language.casefold().startswith("ru")
-    target = decision.target_name or decision.target_id or "цель" if ru else decision.target_name or decision.target_id or "target"
+    target = decision.target_name or decision.target_id or ("цель" if ru else "target")
     if decision.action is MissionControlAction.OBSERVE:
         return (
             "Обстановка изменилась. Предыдущее предложение отменено; сейчас вмешательство Mission Control не требуется."
@@ -90,6 +91,18 @@ def _stale_voice_text(decision: MissionControlAutonomyDecision, *, language: str
     )
 
 
+def _submit_stale_recovery_voice(action_id: str, text: str, *, language: str) -> VoiceCommand:
+    return voice_commands.submit(
+        VoiceCommandCreate(
+            transcript=text,
+            intent="mission_control_autonomy_stale_recovery",
+            agent=VoiceAgent.MISSION_CONTROL,
+            priority=CommandPriority.HIGH,
+            context={"action_id": action_id, "language": language, "stale": True},
+        )
+    )
+
+
 def resolve_autonomy_voice_decision(
     action_id: str,
     payload: AutonomyVoiceDecision,
@@ -100,14 +113,18 @@ def resolve_autonomy_voice_decision(
     try:
         resolution = resolve_autonomy_pending_action(action_id, confirm=confirm)
     except ValueError as exc:
-        if confirm and "stale" in str(exc).casefold() or confirm and "changed" in str(exc).casefold():
+        stale_error = "stale" in str(exc).casefold() or "changed" in str(exc).casefold()
+        if confirm and stale_error:
             current = evaluate_mission_control_autonomy()
+            text = _stale_voice_text(current, language=payload.language)
+            command = _submit_stale_recovery_voice(action_id, text, language=payload.language)
             return AutonomyVoiceDecisionResult(
                 understood=True,
                 confirm=True,
                 stale=True,
                 current_decision=current,
-                spoken_text=_stale_voice_text(current, language=payload.language),
+                spoken_text=text,
+                voice_command=command,
             )
         raise
     return AutonomyVoiceDecisionResult(understood=True, confirm=confirm, resolution=resolution)
