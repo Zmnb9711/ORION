@@ -164,77 +164,97 @@ def send_mission_command(command: MissionCommand) -> MissionCommandResult:
     return result
 
 
+@app.get("/v1/mission-bridge/commands", response_model=list[MissionCommandResult])
+def list_mission_command_results() -> list[MissionCommandResult]:
+    return mission_command_statuses.list()
+
+
+@app.get("/v1/mission-bridge/commands/{command_id}", response_model=MissionCommandResult)
+def get_mission_command_result(command_id: UUID) -> MissionCommandResult:
+    result = mission_command_statuses.get(command_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Mission command not found")
+    return result
+
+
 @app.put("/v1/mission-bridge/commands/{command_id}/status", response_model=MissionCommandResult)
-def update_mission_command_status(command_id: UUID, result: MissionCommandResult) -> MissionCommandResult:
-    try:
-        updated = mission_command_statuses.set(command_id, result)
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    _journal.append("mission_bridge_command_status", updated.model_dump(mode="json", exclude_none=True))
-    return updated
+def update_mission_command_result(command_id: UUID, result: MissionCommandResult) -> MissionCommandResult:
+    if result.command_id != command_id:
+        raise HTTPException(status_code=400, detail="Command ID mismatch")
+    stored = mission_command_statuses.set(command_id, result.status, result.message)
+    _journal.append("mission_bridge_command_status", stored.model_dump(mode="json"))
+    return stored
+
+
+@app.post("/v1/dialogue", response_model=DialogueResult)
+def process_dialogue(payload: DialogueRequest) -> DialogueResult:
+    result = classify_dialogue(payload)
+    _journal.append("dialogue", {"request": payload.model_dump(mode="json"), "result": result.model_dump(mode="json")})
+    return result
+
+
+@app.post("/v1/pending-actions", response_model=PendingAction, status_code=201)
+def create_pending_action(payload: PendingActionCreate) -> PendingAction:
+    action = confirmation_store.create(payload)
+    _journal.append("pending_action", action.model_dump(mode="json"))
+    return action
+
+
+@app.get("/v1/pending-actions", response_model=list[PendingAction])
+def list_pending_actions(status: ConfirmationStatus | None = Query(default=None)) -> list[PendingAction]:
+    return confirmation_store.list(status=status)
+
+
+@app.post("/v1/pending-actions/{action_id}/decision", response_model=PendingAction)
+def decide_pending_action(action_id: str, decision: ConfirmationDecision) -> PendingAction:
+    action = confirmation_store.resolve(action_id, decision.confirm)
+    if action is None:
+        raise HTTPException(status_code=404, detail="Pending action not found or already resolved")
+    _journal.append("pending_action_decision", action.model_dump(mode="json"))
+    return action
+
+
+@app.put("/v1/mission", response_model=MissionSnapshot)
+def replace_mission(snapshot: MissionSnapshot) -> MissionSnapshot:
+    mission_store.replace(snapshot)
+    _journal.append("mission_snapshot", snapshot.model_dump(mode="json"))
+    return snapshot
 
 
 @app.get("/v1/mission", response_model=MissionSnapshot)
 def get_mission() -> MissionSnapshot:
     snapshot = mission_store.get()
     if snapshot is None:
-        raise HTTPException(status_code=404, detail="Mission not loaded")
-    return snapshot
-
-
-@app.put("/v1/mission", response_model=MissionSnapshot)
-def put_mission(snapshot: MissionSnapshot) -> MissionSnapshot:
-    mission_store.replace(snapshot)
-    _journal.append("mission_snapshot", snapshot.model_dump(mode="json"))
+        raise HTTPException(status_code=404, detail="No mission snapshot received")
     return snapshot
 
 
 @app.get("/v1/mission/units", response_model=list[MissionUnit])
-def get_mission_units(coalition: Coalition | None = None, alive_only: bool = True) -> list[MissionUnit]:
+def list_mission_units(coalition: Coalition | None = Query(default=None), alive_only: bool = Query(default=True)) -> list[MissionUnit]:
     return mission_store.units(coalition=coalition, alive_only=alive_only)
 
 
-@app.get("/v1/mission/units/{unit_id}", response_model=MissionUnit)
-def get_mission_unit(unit_id: str) -> MissionUnit:
-    unit = mission_store.unit(unit_id)
-    if unit is None:
-        raise HTTPException(status_code=404, detail="Mission unit not found")
-    return unit
-
-
-@app.get("/v1/threats", response_model=ThreatAssessment)
-def get_threats() -> ThreatAssessment:
-    return assess_threats(mission_store.units())
-
-
-@app.post("/v1/dialogue", response_model=DialogueResult)
-def dialogue(payload: DialogueRequest) -> DialogueResult:
-    return classify_dialogue(payload)
+@app.get("/v1/mission/threats", response_model=list[ThreatAssessment])
+def list_threats(latitude: float | None = Query(default=None, ge=-90, le=90), longitude: float | None = Query(default=None, ge=-180, le=180), altitude_m: float | None = Query(default=None), own_coalition: Coalition = Query(default=Coalition.BLUE), horizon_s: float = Query(default=60, ge=0, le=600)) -> list[ThreatAssessment]:
+    snapshot = mission_store.get()
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="No mission snapshot received")
+    if latitude is None or longitude is None:
+        if _latest is None:
+            raise HTTPException(status_code=400, detail="Provide latitude and longitude or ingest own-aircraft telemetry first")
+        own_position = MissionPosition(latitude=_latest.state.position.latitude, longitude=_latest.state.position.longitude, altitude_m=_latest.state.position.altitude_m)
+    else:
+        own_position = MissionPosition(latitude=latitude, longitude=longitude, altitude_m=altitude_m or 0)
+    return assess_threats(snapshot=snapshot, own_position=own_position, own_coalition=own_coalition, horizon_s=horizon_s)
 
 
 @app.post("/v1/support-requests", response_model=SupportRequest, status_code=201)
 def create_support_request(payload: SupportRequestCreate) -> SupportRequest:
-    return support_requests.create(payload)
+    request = support_requests.create(payload)
+    _journal.append("support_request", request.model_dump(mode="json"))
+    return request
 
 
 @app.get("/v1/support-requests", response_model=list[SupportRequest])
 def list_support_requests() -> list[SupportRequest]:
     return support_requests.list()
-
-
-@app.post("/v1/confirmations", response_model=PendingAction, status_code=201)
-def create_confirmation(payload: PendingActionCreate) -> PendingAction:
-    return confirmation_store.create(payload)
-
-
-@app.get("/v1/confirmations", response_model=list[PendingAction])
-def list_confirmations(status: ConfirmationStatus | None = Query(default=None)) -> list[PendingAction]:
-    return confirmation_store.list(status=status)
-
-
-@app.put("/v1/confirmations/{action_id}", response_model=PendingAction)
-def decide_confirmation(action_id: UUID, decision: ConfirmationDecision) -> PendingAction:
-    try:
-        return confirmation_store.decide(action_id, decision)
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
