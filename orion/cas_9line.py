@@ -44,6 +44,12 @@ class Cas9LineReadback(BaseModel):
     restrictions: str | None = None
 
 
+class Cas9LineReadbackResult(BaseModel):
+    brief: Cas9LineBrief
+    verified: bool
+    mismatches: list[str] = Field(default_factory=list)
+
+
 class Cas9LineBrief(BaseModel):
     brief_id: UUID = Field(default_factory=uuid4)
     state: Cas9LineState = Cas9LineState.DRAFT
@@ -64,6 +70,7 @@ class Cas9LineBrief(BaseModel):
     smoke_color: str = "red"
     language: str = "en"
     readback_verified: bool = False
+    readback_mismatches: list[str] = Field(default_factory=list)
     jtac_result: MissionControlJtacResult | None = None
 
 
@@ -88,25 +95,29 @@ class Cas9LineStore:
             if brief.state is not Cas9LineState.DRAFT:
                 raise ValueError("Only draft CAS briefs can be issued")
             brief.state = Cas9LineState.READBACK_PENDING
+            brief.readback_mismatches = []
             return brief.model_copy(deep=True)
 
-    def verify_readback(self, brief_id: UUID, readback: Cas9LineReadback) -> Cas9LineBrief:
+    def verify_readback_result(self, brief_id: UUID, readback: Cas9LineReadback) -> Cas9LineReadbackResult:
         with self._lock:
             brief = self._require(brief_id)
             if brief.state is not Cas9LineState.READBACK_PENDING:
                 raise ValueError("CAS brief is not awaiting readback")
-            mismatches: list[str] = []
-            if readback.target_elevation_ft != brief.target_elevation_ft:
-                mismatches.append("target elevation")
-            if _norm(readback.target_location) != _norm(brief.target_location):
-                mismatches.append("target location")
-            if brief.restrictions and _norm(readback.restrictions or "") != _norm(brief.restrictions):
-                mismatches.append("restrictions")
+            mismatches = self._readback_mismatches(brief, readback)
+            brief.readback_mismatches = mismatches
             if mismatches:
-                raise ValueError("Readback mismatch: " + ", ".join(mismatches))
+                brief.readback_verified = False
+                return Cas9LineReadbackResult(brief=brief.model_copy(deep=True), verified=False, mismatches=mismatches)
             brief.readback_verified = True
+            brief.readback_mismatches = []
             brief.state = Cas9LineState.VERIFIED
-            return brief.model_copy(deep=True)
+            return Cas9LineReadbackResult(brief=brief.model_copy(deep=True), verified=True)
+
+    def verify_readback(self, brief_id: UUID, readback: Cas9LineReadback) -> Cas9LineBrief:
+        result = self.verify_readback_result(brief_id, readback)
+        if not result.verified:
+            raise ValueError("Readback mismatch: " + ", ".join(result.mismatches))
+        return result.brief
 
     def task(self, brief_id: UUID) -> Cas9LineBrief:
         with self._lock:
@@ -147,6 +158,16 @@ class Cas9LineStore:
     def reset(self) -> None:
         with self._lock:
             self._briefs.clear()
+
+    def _readback_mismatches(self, brief: Cas9LineBrief, readback: Cas9LineReadback) -> list[str]:
+        mismatches: list[str] = []
+        if readback.target_elevation_ft != brief.target_elevation_ft:
+            mismatches.append("target elevation")
+        if _norm(readback.target_location) != _norm(brief.target_location):
+            mismatches.append("target location")
+        if brief.restrictions and _norm(readback.restrictions or "") != _norm(brief.restrictions):
+            mismatches.append("restrictions")
+        return mismatches
 
     def _require(self, brief_id: UUID) -> Cas9LineBrief:
         brief = self._briefs.get(brief_id)
