@@ -104,6 +104,10 @@ def test_stale_voice_confirmation_returns_updated_recommendation() -> None:
     assert result.current_decision == current
     assert "previous proposal is stale" in result.spoken_text
     assert "SA-15" in result.spoken_text
+    assert result.voice_command is not None
+    assert result.voice_command.agent is VoiceAgent.MISSION_CONTROL
+    assert result.voice_command.intent == "mission_control_autonomy_stale_recovery"
+    assert result.voice_command.context["action_id"] == pending.action_id
 
 
 def test_russian_stale_voice_confirmation_can_fall_back_to_observe() -> None:
@@ -121,3 +125,5 @@ def test_russian_stale_voice_confirmation_can_fall_back_to_observe() -> None:
     assert result.current_decision.action is MissionControlAction.OBSERVE
     assert "Обстановка изменилась" in result.spoken_text
     assert "не требуется" in result.spoken_text
+    assert result.voice_command is not None
+    assert result.voice_command.agent is VoiceAgent.MISSION_CONTROL
