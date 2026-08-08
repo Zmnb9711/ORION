@@ -42,6 +42,7 @@ class JtacSession(BaseModel):
     smoke_color: str | None = None
     marker_active: bool = False
     command_id: UUID | None = None
+    language: str = "en"
     message: str = "JTAC support requested"
 
 
@@ -50,7 +51,7 @@ class JtacSessionStore:
         self._lock = RLock()
         self._sessions: dict[UUID, JtacSession] = {}
 
-    def create(self, payload: JtacSessionCreate) -> JtacSession:
+    def create(self, payload: JtacSessionCreate, *, language: str = "en") -> JtacSession:
         if payload.method is JtacDesignationMethod.SMOKE and payload.laser_code is not None:
             raise ValueError("Laser code is only valid for laser designation")
         if payload.method is JtacDesignationMethod.LASER and payload.laser_code is None:
@@ -60,6 +61,7 @@ class JtacSessionStore:
             method=payload.method,
             laser_code=payload.laser_code if payload.method is JtacDesignationMethod.LASER else None,
             smoke_color=payload.smoke_color if payload.method is JtacDesignationMethod.SMOKE else None,
+            language=language,
         )
         with self._lock:
             self._sessions[session.session_id] = session
@@ -140,6 +142,13 @@ class JtacSessionStore:
                 message=result.message or "JTAC marking failed",
             )
         return self.get(session_id)  # type: ignore[return-value]
+
+    def find_by_command_id(self, command_id: UUID) -> JtacSession | None:
+        with self._lock:
+            for session in self._sessions.values():
+                if session.command_id == command_id:
+                    return session.model_copy(deep=True)
+        return None
 
     def get(self, session_id: UUID) -> JtacSession | None:
         with self._lock:
