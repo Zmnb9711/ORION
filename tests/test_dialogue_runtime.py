@@ -123,6 +123,42 @@ def test_russian_explicit_refueling_request_starts_aar_session() -> None:
     assert "Начинаю сближение с Texaco" in result.reply
 
 
+def test_active_aar_update_is_read_only_and_keeps_session() -> None:
+    run_dialogue(DialogueRequest(text="Start AAR"), _context())
+    result = run_dialogue(DialogueRequest(text="AAR status"), _context())
+    assert result.intent is DialogueIntent.TANKER
+    assert result.action == "aar_update"
+    assert result.action_executed is False
+    assert result.grounded is True
+    assert result.facts["aar_phase"] == "rendezvous"
+    assert aar_rendezvous.snapshot().phase is AarPhase.RENDEZVOUS
+    assert "Current tanker Texaco" in result.reply
+
+
+def test_precontact_request_is_rejected_until_joinup_is_stable() -> None:
+    run_dialogue(DialogueRequest(text="Start AAR"), _context())
+    result = run_dialogue(DialogueRequest(text="Ready for pre-contact"), _context())
+    assert result.intent is DialogueIntent.TANKER
+    assert result.action == "aar_pre_contact"
+    assert result.action_executed is False
+    assert result.grounded is False
+    assert result.facts["aar_phase"] == "rendezvous"
+    assert result.issues == ["aar_pre_contact_failed"]
+    assert aar_rendezvous.snapshot().phase is AarPhase.RENDEZVOUS
+    assert "Pre-contact is not ready yet" in result.reply
+
+
+def test_abort_refueling_ends_active_dialogue_session() -> None:
+    run_dialogue(DialogueRequest(text="Start AAR"), _context())
+    result = run_dialogue(DialogueRequest(text="Abort refueling"), _context())
+    assert result.intent is DialogueIntent.TANKER
+    assert result.action == "aar_abort"
+    assert result.action_executed is True
+    assert result.facts["aar_phase"] == "aborted"
+    assert aar_rendezvous.snapshot().phase is AarPhase.ABORTED
+    assert "Aerial refueling procedure aborted" in result.reply
+
+
 def test_laser_request_remains_unexecuted_and_requires_confirmation() -> None:
     result = run_dialogue(DialogueRequest(text="Подсвети цель лазером"), _context())
     assert result.intent is DialogueIntent.LASER
