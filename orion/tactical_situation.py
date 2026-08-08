@@ -7,6 +7,8 @@ from pydantic import BaseModel, Field
 from orion.live_telemetry_store import live_telemetry
 from orion.mission import Coalition, MissionPosition, UnitCategory
 from orion.mission_store import mission_store
+from orion.tactical_kinematics import ThreatKinematics, assess_threat_kinematics
+from orion.threat_trend_history import ThreatTrendHistory, threat_trend_tracker
 from orion.threats import ThreatAssessment, ThreatLevel, assess_threats
 
 
@@ -37,6 +39,9 @@ class TacticalThreat(BaseModel):
     altitude_ft: int | None = None
     braa: str
     reasons: list[str] = Field(default_factory=list)
+    kinematics: ThreatKinematics = Field(default_factory=ThreatKinematics)
+    trend_history: ThreatTrendHistory = Field(default_factory=ThreatTrendHistory)
+    tactical_priority: float = Field(default=0, ge=0, le=100)
 
 
 class TacticalSituationSummary(BaseModel):
@@ -65,11 +70,15 @@ def get_tactical_situation(limit: int = 5) -> TacticalSituationSummary:
     units = {unit.unit_id: unit for unit in snapshot.units}
 
     tactical: list[TacticalThreat] = []
+    active_ids: set[str] = set()
     for assessment in assessments:
         unit = units.get(assessment.unit_id)
         kind = _kind(unit.category if unit else UnitCategory.UNKNOWN, unit.type_name if unit else None)
         altitude_ft = round(unit.position.altitude_m * 3.28084) if unit else None
         range_nm = assessment.distance_m / 1852.0
+        kinematics = assess_threat_kinematics(unit, own_position) if unit else ThreatKinematics()
+        trend_history = threat_trend_tracker.observe(assessment.unit_id, range_nm)
+        active_ids.add(assessment.unit_id)
         tactical.append(
             TacticalThreat(
                 unit_id=assessment.unit_id,
@@ -83,11 +92,16 @@ def get_tactical_situation(limit: int = 5) -> TacticalSituationSummary:
                 altitude_ft=altitude_ft,
                 braa=_braa(assessment, altitude_ft),
                 reasons=assessment.reasons,
+                kinematics=kinematics,
+                trend_history=trend_history,
+                tactical_priority=_priority(assessment.score, kind, kinematics, trend_history),
             )
         )
+    threat_trend_tracker.retain(active_ids)
 
+    tactical.sort(key=lambda item: (item.tactical_priority, item.score), reverse=True)
     highest = tactical[0] if tactical else None
-    overall = highest.level if highest else ThreatLevel.LOW
+    overall = max((item.level for item in tactical), key=_level_rank, default=ThreatLevel.LOW)
     return TacticalSituationSummary(
         available=True,
         overall_level=overall,
@@ -98,6 +112,34 @@ def get_tactical_situation(limit: int = 5) -> TacticalSituationSummary:
         highest_priority=highest,
         priority_threats=tactical[: max(1, limit)],
     )
+
+
+def _priority(score: float, kind: TacticalThreatKind, kinematics: ThreatKinematics, trend_history: ThreatTrendHistory | None = None) -> float:
+    value = score
+    if kind is TacticalThreatKind.AIR:
+        if kinematics.aspect.value == "hot":
+            value += 15
+        elif kinematics.aspect.value == "flanking":
+            value += 5
+        if kinematics.range_trend.value == "closing":
+            value += min(15, max(0, (kinematics.closure_kts or 0) / 40))
+        elif kinematics.range_trend.value == "diverging":
+            value -= 10
+        if trend_history is not None and trend_history.sustained:
+            if trend_history.trend.value == "closing":
+                value += 8
+            elif trend_history.trend.value == "diverging":
+                value -= 6
+    return round(min(100, max(0, value)), 1)
+
+
+def _level_rank(level: ThreatLevel) -> int:
+    return {
+        ThreatLevel.LOW: 0,
+        ThreatLevel.MEDIUM: 1,
+        ThreatLevel.HIGH: 2,
+        ThreatLevel.CRITICAL: 3,
+    }[level]
 
 
 def _kind(category: UnitCategory, type_name: str | None) -> TacticalThreatKind:
