@@ -51,6 +51,13 @@ def _context(distance_km: float = 18.52, *, ownship_speed_mps: float | None = 25
     )
 
 
+def _stable_precontact_context() -> LiveMissionContext:
+    context = _context(0.5, ownship_speed_mps=151.0, tanker_longitude=41.005)
+    context.ownship.altitude_m = 7000
+    context.tankers[0].heading_deg = 90
+    return context
+
+
 def test_start_selects_nearest_available_tanker(monkeypatch) -> None:
     monkeypatch.setattr(aar_module, "build_live_mission_context", _context)
     result = aar_rendezvous.execute("aar_start", "Начать дозаправку")
@@ -94,17 +101,25 @@ def test_range_drives_only_rendezvous_and_join_up(monkeypatch) -> None:
     assert result.session.phase == AarPhase.JOIN_UP
 
 
-def test_pre_contact_and_contact_require_explicit_transition(monkeypatch) -> None:
-    monkeypatch.setattr(aar_module, "build_live_mission_context", lambda: _context(0.5))
+def test_pre_contact_is_gated_by_stabilized_join_up(monkeypatch) -> None:
+    unstable = _context(0.5)
+    monkeypatch.setattr(aar_module, "build_live_mission_context", lambda: unstable)
     aar_rendezvous.execute("aar_start", "Начать дозаправку")
-    assert aar_rendezvous.snapshot().phase == AarPhase.JOIN_UP
+    rejected = aar_rendezvous.execute("aar_pre_contact", "Pre-contact")
+    assert rejected.completed is False
+    assert rejected.session.phase == AarPhase.JOIN_UP
+    assert rejected.data["precontact_readiness"]["ready_for_precontact"] is False
 
+    stable = _stable_precontact_context()
+    monkeypatch.setattr(aar_module, "build_live_mission_context", lambda: stable)
     pre = aar_rendezvous.execute("aar_pre_contact", "Pre-contact")
+    assert pre.completed is True
     assert pre.session.phase == AarPhase.PRE_CONTACT
     assert pre.data["intercept_guidance"] is None
+    assert pre.data["precontact_readiness"]["ready_for_precontact"] is True
+
     status = aar_rendezvous.execute("aar_status", "Status")
     assert status.session.phase == AarPhase.PRE_CONTACT
-
     contact = aar_rendezvous.execute("aar_contact", "Contact with tanker")
     assert contact.session.phase == AarPhase.CONTACT
 

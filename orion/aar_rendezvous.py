@@ -4,7 +4,10 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
+from orion.aar_closure import compute_closure
 from orion.aar_guidance import compute_intercept_guidance
+from orion.aar_stability import evaluate_joinup_stability
+from orion.aar_vertical import compute_vertical
 from orion.coalition_units import spoken_altitude, spoken_distance, spoken_speed
 from orion.mission_context import LiveMissionContext, SupportAsset, build_live_mission_context
 
@@ -68,8 +71,20 @@ class AarRendezvousService:
             return self._result(False, "Активный танкер потерян из контекста миссии." if language == "ru" else "The active tanker is no longer present in mission context.")
 
         if intent == "aar_pre_contact":
+            closure = compute_closure(context, tanker)
+            vertical = compute_vertical(context, tanker)
+            stability = evaluate_joinup_stability(tanker, closure, vertical)
+            if self._session.phase != AarPhase.JOIN_UP or not stability.ready_for_precontact:
+                text = (
+                    "Pre-contact пока не разрешён: сначала стабилизируйте дистанцию, сближение и высоту."
+                    if language == "ru"
+                    else "Pre-contact is not ready yet: stabilize range, closure and altitude first."
+                )
+                return self._result(False, text, {"precontact_readiness": stability.model_dump()})
             self._session.phase = AarPhase.PRE_CONTACT
-            return self._brief(context, tanker, language, prefix="Переходим к pre-contact с" if language == "ru" else "Proceeding to pre-contact with")
+            result = self._brief(context, tanker, language, prefix="Переходим к pre-contact с" if language == "ru" else "Proceeding to pre-contact with")
+            result.data["precontact_readiness"] = stability.model_dump()
+            return result
         if intent == "aar_contact":
             self._session.phase = AarPhase.CONTACT
             return self._brief(context, tanker, language, prefix="Contact с" if language == "ru" else "Contact with")

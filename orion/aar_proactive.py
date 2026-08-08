@@ -3,6 +3,7 @@ from __future__ import annotations
 from pydantic import BaseModel
 
 from orion.aar_closure import AarClosureAssessment, ClosureBand, compute_closure, spoken_closure
+from orion.aar_contact_envelope import AarContactEnvelope, evaluate_contact_envelope
 from orion.aar_guidance import AarInterceptGuidance, compute_intercept_guidance
 from orion.aar_rendezvous import AarPhase, AarRendezvousService
 from orion.aar_stability import AarJoinupStability, evaluate_joinup_stability
@@ -19,6 +20,7 @@ class AarProactiveUpdate(BaseModel):
     closure: AarClosureAssessment | None = None
     vertical: AarVerticalAssessment | None = None
     stability: AarJoinupStability | None = None
+    contact_envelope: AarContactEnvelope | None = None
 
 
 class AarProactiveMonitor:
@@ -34,6 +36,7 @@ class AarProactiveMonitor:
         self._last_closure_band: ClosureBand | None = None
         self._last_vertical_band: VerticalBand | None = None
         self._last_precontact_ready = False
+        self._last_contact_envelope: bool | None = None
 
     def reset(self) -> None:
         self._last_phase = AarPhase.IDLE
@@ -41,15 +44,17 @@ class AarProactiveMonitor:
         self._last_closure_band = None
         self._last_vertical_band = None
         self._last_precontact_ready = False
+        self._last_contact_envelope = None
 
     def poll(self, language: str = "en") -> AarProactiveUpdate:
         session = self._rendezvous.snapshot()
-        if session.phase not in {AarPhase.RENDEZVOUS, AarPhase.JOIN_UP} or not session.tanker_unit_id:
+        if session.phase not in {AarPhase.RENDEZVOUS, AarPhase.JOIN_UP, AarPhase.PRE_CONTACT} or not session.tanker_unit_id:
             self._last_phase = session.phase
             self._last_guidance = None
             self._last_closure_band = None
             self._last_vertical_band = None
             self._last_precontact_ready = False
+            self._last_contact_envelope = None
             return AarProactiveUpdate(phase=session.phase)
 
         context = build_live_mission_context()
@@ -57,12 +62,42 @@ class AarProactiveMonitor:
         if not context.available or tanker is None:
             return AarProactiveUpdate(phase=session.phase)
 
+        closure = compute_closure(context, tanker)
+        vertical = compute_vertical(context, tanker)
+
+        if session.phase == AarPhase.PRE_CONTACT:
+            envelope = evaluate_contact_envelope(tanker, closure, vertical)
+            previous = self._last_contact_envelope
+            self._last_contact_envelope = envelope.within_envelope
+            self._last_phase = session.phase
+            self._last_guidance = None
+            self._last_closure_band = closure.band if closure is not None else None
+            self._last_vertical_band = vertical.band if vertical is not None else None
+            if previous is None:
+                return AarProactiveUpdate(phase=session.phase, closure=closure, vertical=vertical, contact_envelope=envelope)
+            if envelope.within_envelope != previous:
+                if envelope.within_envelope:
+                    text = (
+                        f"{tanker.callsign}, contact envelope восстановлен. Параметры стабилизированы."
+                        if language == "ru"
+                        else f"{tanker.callsign}, contact envelope restored. Parameters stabilized."
+                    )
+                    reason = "contact_envelope_restored"
+                else:
+                    detail = _envelope_detail(envelope, language)
+                    text = (
+                        f"Вне contact envelope: {detail}. Исправьте параметры до contact."
+                        if language == "ru"
+                        else f"Outside contact envelope: {detail}. Correct parameters before contact."
+                    )
+                    reason = "contact_envelope_lost"
+                return AarProactiveUpdate(should_announce=True, spoken_text=text, reason=reason, phase=session.phase, closure=closure, vertical=vertical, contact_envelope=envelope)
+            return AarProactiveUpdate(phase=session.phase, closure=closure, vertical=vertical, contact_envelope=envelope)
+
         previous_phase = session.phase
         self._rendezvous._update_phase_from_range(tanker)
         session = self._rendezvous.snapshot()
         guidance = compute_intercept_guidance(context, tanker)
-        closure = compute_closure(context, tanker)
-        vertical = compute_vertical(context, tanker)
         stability = evaluate_joinup_stability(tanker, closure, vertical)
 
         if session.phase != previous_phase and session.phase == AarPhase.JOIN_UP:
@@ -82,11 +117,7 @@ class AarProactiveMonitor:
                 self._last_guidance = guidance
                 self._last_closure_band = closure.band if closure is not None else None
                 self._last_vertical_band = vertical.band if vertical is not None else None
-                text = (
-                    f"{tanker.callsign}, сближение стабилизировано. Готовы к запросу pre-contact."
-                    if language == "ru"
-                    else f"{tanker.callsign}, join-up stabilized. Ready to request pre-contact."
-                )
+                text = f"{tanker.callsign}, сближение стабилизировано. Готовы к запросу pre-contact." if language == "ru" else f"{tanker.callsign}, join-up stabilized. Ready to request pre-contact."
                 return AarProactiveUpdate(should_announce=True, spoken_text=text, reason="precontact_ready", phase=session.phase, guidance=guidance, closure=closure, vertical=vertical, stability=stability)
 
             previous_vertical = self._last_vertical_band
@@ -134,6 +165,21 @@ class AarProactiveMonitor:
         if current is None or self._last_closure_band is None or current.band == self._last_closure_band:
             return None
         return f"closure_{current.band.value}"
+
+
+def _envelope_detail(envelope: AarContactEnvelope, language: str) -> str:
+    labels_ru = {
+        "distance_outside_contact_envelope": "дистанция",
+        "closure_outside_contact_envelope": "скорость сближения",
+        "vertical_outside_contact_envelope": "высота",
+    }
+    labels_en = {
+        "distance_outside_contact_envelope": "range",
+        "closure_outside_contact_envelope": "closure",
+        "vertical_outside_contact_envelope": "altitude",
+    }
+    labels = labels_ru if language == "ru" else labels_en
+    return ", ".join(labels.get(reason, reason) for reason in envelope.reasons)
 
 
 def _vertical_callout(vertical: AarVerticalAssessment, tanker, language: str) -> str:
