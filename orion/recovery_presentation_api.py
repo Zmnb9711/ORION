@@ -3,9 +3,11 @@ from uuid import UUID
 from fastapi import APIRouter, Query
 
 from orion.recovery_presentation import RecoveryPresentation, get_recovery_presentation, start_dcs_from_presentation
+from orion.recovery_stream_api import router as recovery_stream_router
 
 
 router = APIRouter(prefix="/v1/recovery-ui", tags=["Startup Recovery UI"])
+router.include_router(recovery_stream_router)
 
 
 @router.get("", response_model=RecoveryPresentation)
