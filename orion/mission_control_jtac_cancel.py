@@ -28,7 +28,6 @@ def cancel_jtac(session_id: UUID) -> JtacCancellationResult:
         raise KeyError("JTAC session not found")
     if session.state in {JtacSessionState.COMPLETE, JtacSessionState.CANCELLED, JtacSessionState.FAILED}:
         return JtacCancellationResult(accepted=False, session_id=session_id, spoken_text=_already_finished_text(session))
-
     command = MissionCommand(
         command=MissionCommandType.STOP_LASER if session.method is JtacDesignationMethod.LASER else MissionCommandType.STOP_SMOKE,
         target_unit_id=session.target_id,
@@ -59,6 +58,8 @@ def observe_cancel_status(command_id: UUID) -> JtacSession | None:
     if result.status is MissionCommandStatus.COMPLETED:
         updated = jtac_sessions.transition(session_id, JtacSessionState.CANCELLED, marker_active=False, message=result.message or "JTAC cancellation confirmed by mission-side")
         submit_jtac_voice(updated, updated.language)
+        from orion.mission_control_jtac_retask import complete_pending_retask
+        complete_pending_retask(command_id)
     else:
         updated = session
     with _lock:
