@@ -8,7 +8,11 @@ from orion.first_run_wizard import FirstRunRequest, FirstRunState, evaluate_firs
 def test_first_run_requires_explicit_active_selection(tmp_path: Path):
     store = DcsInstallationStore()
     active = ActiveDcsInstallationStore(tmp_path / "active.json")
-    report = evaluate_first_run(FirstRunRequest(), installation_store=store, active_store=active)
+    report = evaluate_first_run(
+        FirstRunRequest(require_active_selection=True),
+        installation_store=store,
+        active_store=active,
+    )
     check = next(item for item in report.checks if item.key == "dcs_installation")
     assert not check.passed
     assert check.blocking
@@ -36,6 +40,7 @@ def test_first_run_uses_active_steam_selection_and_saved_games(tmp_path: Path, m
     monkeypatch.setattr("orion.first_run_wizard.component_registry.get", lambda component_id: object())
     report = evaluate_first_run(
         FirstRunRequest(
+            require_active_selection=True,
             installed_components=["orion-core", "dcs-integration", "aircraft-fa18c"],
             telemetry_received=True,
             aircraft_type="FA-18C_hornet",
