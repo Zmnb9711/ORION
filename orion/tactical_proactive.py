@@ -1,0 +1,111 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from threading import RLock
+
+from orion.tactical_situation import TacticalSituationSummary, TacticalThreat, TacticalThreatKind, get_tactical_situation
+from orion.threats import ThreatLevel
+from orion.voice_core import CommandPriority, VoiceAgent, VoiceCommand, VoiceCommandCreate, voice_commands
+
+
+@dataclass(frozen=True)
+class _ThreatMemory:
+    level: ThreatLevel
+    range_nm: float
+
+
+class TacticalProactiveMonitor:
+    """Emit sparse tactical voice callouts only for meaningful threat changes."""
+
+    def __init__(self) -> None:
+        self._lock = RLock()
+        self._seen: dict[str, _ThreatMemory] = {}
+
+    def reset(self) -> None:
+        with self._lock:
+            self._seen.clear()
+
+    def poll(self, language: str = "en") -> list[VoiceCommand]:
+        summary = get_tactical_situation(limit=5)
+        if not summary.available:
+            return []
+
+        commands: list[VoiceCommand] = []
+        current_ids = {item.unit_id for item in summary.priority_threats}
+        with self._lock:
+            for threat in summary.priority_threats:
+                previous = self._seen.get(threat.unit_id)
+                if not _meaningful_change(threat, previous):
+                    self._seen[threat.unit_id] = _ThreatMemory(threat.level, threat.range_nm)
+                    continue
+                command = voice_commands.submit(
+                    VoiceCommandCreate(
+                        transcript=_callout(threat, language),
+                        intent="tactical_threat_callout",
+                        agent=VoiceAgent.AWACS if threat.kind is TacticalThreatKind.AIR else VoiceAgent.MISSION_CONTROL,
+                        priority=_priority(threat.level),
+                        context={
+                            "unit_id": threat.unit_id,
+                            "kind": threat.kind.value,
+                            "threat_level": threat.level.value,
+                            "range_nm": threat.range_nm,
+                            "bearing_deg": threat.bearing_deg,
+                            "braa": threat.braa,
+                        },
+                    )
+                )
+                commands.append(command)
+                self._seen[threat.unit_id] = _ThreatMemory(threat.level, threat.range_nm)
+
+            for stale_id in list(self._seen):
+                if stale_id not in current_ids:
+                    del self._seen[stale_id]
+        return commands
+
+
+def _meaningful_change(threat: TacticalThreat, previous: _ThreatMemory | None) -> bool:
+    if threat.level not in {ThreatLevel.HIGH, ThreatLevel.CRITICAL}:
+        return False
+    if previous is None:
+        return True
+    if _severity(threat.level) > _severity(previous.level):
+        return True
+    # Re-announce only after substantial closure; avoids per-frame chatter.
+    return previous.range_nm - threat.range_nm >= 10.0
+
+
+def _severity(level: ThreatLevel) -> int:
+    return {
+        ThreatLevel.LOW: 0,
+        ThreatLevel.MEDIUM: 1,
+        ThreatLevel.HIGH: 2,
+        ThreatLevel.CRITICAL: 3,
+    }[level]
+
+
+def _priority(level: ThreatLevel) -> CommandPriority:
+    return CommandPriority.CRITICAL if level is ThreatLevel.CRITICAL else CommandPriority.HIGH
+
+
+def _callout(threat: TacticalThreat, language: str) -> str:
+    ru = language.casefold().startswith("ru")
+    if threat.kind is TacticalThreatKind.AIR:
+        return (
+            f"Воздушная угроза, {threat.braa}. Уровень {threat.level.value}."
+            if ru
+            else f"Air threat, {threat.braa}. Threat level {threat.level.value}."
+        )
+    if threat.kind is TacticalThreatKind.SAM:
+        return (
+            f"Угроза ПВО, азимут {threat.bearing_deg:.0f}, дальность {threat.range_nm:.0f} морских миль. Уровень {threat.level.value}."
+            if ru
+            else f"SAM threat, bearing {threat.bearing_deg:.0f}, range {threat.range_nm:.0f} nautical miles. Threat level {threat.level.value}."
+        )
+    return (
+        f"Тактическая угроза, азимут {threat.bearing_deg:.0f}, дальность {threat.range_nm:.0f} морских миль."
+        if ru
+        else f"Tactical threat, bearing {threat.bearing_deg:.0f}, range {threat.range_nm:.0f} nautical miles."
+    )
+
+
+tactical_proactive = TacticalProactiveMonitor()
