@@ -156,7 +156,7 @@ def _native_backend() -> AudioBackend:
             raise RuntimeError(result.message)
         return result.output_path
 
-    return AudioBackend(native.play_wav, native.stop, synthesize)
+    return AudioBackend(native.play_wav, native.stop, synthesize, prepare_radio=native.prepare_radio)
 
 
 def main(argv: list[str] | None = None) -> int:
