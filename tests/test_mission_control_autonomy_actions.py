@@ -52,11 +52,14 @@ def test_rejected_proposal_has_no_side_effect() -> None:
 def test_confirmed_jtac_proposal_executes_orchestration() -> None:
     store = ConfirmationStore()
     snapshot = _snapshot()
+    decision = _decision(MissionControlAction.SUGGEST_JTAC)
     jtac_result = MissionControlJtacResult(accepted=True, target_id="target-1", spoken_text="JTAC assigned")
     with patch("orion.mission_control_autonomy_actions.confirmation_store", store), patch(
         "orion.mission_control_autonomy_actions.mission_store.get", return_value=snapshot
-    ), patch("orion.mission_control_autonomy_actions.orchestrate_jtac", return_value=jtac_result) as orchestrate:
-        pending = create_autonomy_pending_action(_decision(MissionControlAction.SUGGEST_JTAC))
+    ), patch("orion.mission_control_autonomy_actions.evaluate_mission_control_autonomy", return_value=decision), patch(
+        "orion.mission_control_autonomy_actions.orchestrate_jtac", return_value=jtac_result
+    ) as orchestrate:
+        pending = create_autonomy_pending_action(decision)
         result = resolve_autonomy_pending_action(pending.action_id, confirm=True)
     assert result.pending_action.status is ConfirmationStatus.CONFIRMED
     assert result.executed is True
@@ -67,10 +70,11 @@ def test_confirmed_jtac_proposal_executes_orchestration() -> None:
 def test_confirmed_9line_proposal_builds_grounded_seed() -> None:
     store = ConfirmationStore()
     snapshot = _snapshot()
+    decision = _decision(MissionControlAction.SUGGEST_9LINE)
     with patch("orion.mission_control_autonomy_actions.confirmation_store", store), patch(
         "orion.mission_control_autonomy_actions.mission_store.get", return_value=snapshot
-    ):
-        pending = create_autonomy_pending_action(_decision(MissionControlAction.SUGGEST_9LINE))
+    ), patch("orion.mission_control_autonomy_actions.evaluate_mission_control_autonomy", return_value=decision):
+        pending = create_autonomy_pending_action(decision)
         result = resolve_autonomy_pending_action(pending.action_id, confirm=True)
     assert result.executed is True
     assert result.cas_9line_seed is not None
@@ -110,6 +114,27 @@ def test_stale_proposal_does_not_cross_mission_boundary() -> None:
             assert "Mission changed" in str(exc)
         else:
             raise AssertionError("Expected stale proposal rejection")
+    assert store.get(pending.action_id).status is ConfirmationStatus.PENDING
+    orchestrate.assert_not_called()
+
+
+def test_changed_tactical_recommendation_does_not_execute_old_action() -> None:
+    store = ConfirmationStore()
+    snapshot = _snapshot()
+    original = _decision(MissionControlAction.SUGGEST_JTAC)
+    changed = _decision(MissionControlAction.SUGGEST_9LINE)
+    with patch("orion.mission_control_autonomy_actions.confirmation_store", store), patch(
+        "orion.mission_control_autonomy_actions.mission_store.get", return_value=snapshot
+    ), patch("orion.mission_control_autonomy_actions.evaluate_mission_control_autonomy", return_value=changed), patch(
+        "orion.mission_control_autonomy_actions.orchestrate_jtac"
+    ) as orchestrate:
+        pending = create_autonomy_pending_action(original)
+        try:
+            resolve_autonomy_pending_action(pending.action_id, confirm=True)
+        except ValueError as exc:
+            assert "Tactical recommendation changed" in str(exc)
+        else:
+            raise AssertionError("Expected changed recommendation rejection")
     assert store.get(pending.action_id).status is ConfirmationStatus.PENDING
     orchestrate.assert_not_called()
 
