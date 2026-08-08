@@ -66,4 +66,4 @@ def test_russian_awacs_callout_includes_kinematics():
     text = _callout(_threat(), "ru")
     assert "идёт навстречу" in text
     assert "сближается" in text
-    assert "480 узлов" in text
+    assert "889 километров в час" in text
