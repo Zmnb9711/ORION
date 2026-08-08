@@ -36,7 +36,7 @@ class DialogueResult(BaseModel):
 
 
 _RU_MARKERS = ("что", "где", "запрос", "угроз", "топлив", "дозаправ", "лазер", "дым", "привет", "как дела")
-_EN_MARKERS = ("what", "where", "request", "threat", "fuel", "tanker", "laser", "smoke", "hello", "how are")
+_EN_MARKERS = ("what", "where", "request", "threat", "fuel", "tanker", "refuel", "aar", "laser", "smoke", "hello", "how are")
 
 
 def detect_language(text: str) -> DialogueLanguage:
@@ -57,7 +57,7 @@ def classify_dialogue(request: DialogueRequest) -> DialogueResult:
     intents: list[tuple[DialogueIntent, tuple[str, ...], bool]] = [
         (DialogueIntent.LASER, ("лазер", "подсвет", "laser", "lase"), True),
         (DialogueIntent.SMOKE, ("дым", "smoke", "mark with smoke"), True),
-        (DialogueIntent.TANKER, ("дозаправ", "танкер", "tanker", "refuel", "fuel"), False),
+        (DialogueIntent.TANKER, ("дозаправ", "танкер", "tanker", "refuel", "aerial refuel", "aar", "fuel"), False),
         (DialogueIntent.AWACS, ("дрло", "авакс", "awacs", "picture"), False),
         (DialogueIntent.THREATS, ("угроз", "контакт", "threat", "bogey", "bandit"), False),
         (DialogueIntent.STATUS, ("статус", "состояние", "параметр", "status", "state", "altitude", "speed"), False),
