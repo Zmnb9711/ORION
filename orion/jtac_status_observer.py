@@ -8,7 +8,13 @@ from orion.mission_control_jtac import retry_failed_jtac
 
 
 def observe_mission_command_status(command_id: UUID) -> JtacSession | None:
-    """Reconcile JTAC state and let Mission Control recover failed designators."""
+    """Reconcile JTAC state and let Mission Control recover/cancel tasks."""
+    from orion.mission_control_jtac_cancel import observe_cancel_status
+
+    cancelled = observe_cancel_status(command_id)
+    if cancelled is not None:
+        return cancelled
+
     linked = jtac_sessions.find_by_command_id(command_id)
     if linked is None:
         return None
@@ -16,11 +22,9 @@ def observe_mission_command_status(command_id: UUID) -> JtacSession | None:
     updated = jtac_sessions.reconcile(linked.session_id)
     if updated.state is previous_state:
         return updated
-
     if updated.state is JtacSessionState.FAILED:
         retry = retry_failed_jtac(updated)
         if retry is not None:
             return retry.session
-
     submit_jtac_voice(updated, updated.language)
     return updated
