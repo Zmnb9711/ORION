@@ -5,15 +5,18 @@ import pytest
 import orion.aar_rendezvous as aar_module
 from orion.aar_rendezvous import AarPhase, aar_rendezvous
 from orion.dcs_capabilities import DcsRecipientType
-from orion.mission import Coalition
+from orion.mission import Coalition, MissionSnapshot
 from orion.mission_context import LiveMissionContext, OwnshipContext, SupportAsset
+from orion.mission_store import mission_store
 
 
 @pytest.fixture(autouse=True)
 def reset_aar() -> None:
     aar_rendezvous.reset()
+    mission_store.reset()
     yield
     aar_rendezvous.reset()
+    mission_store.reset()
 
 
 def _context(distance_km: float = 18.52, *, ownship_speed_mps: float | None = 250.0, tanker_longitude: float = 41.2) -> LiveMissionContext:
@@ -142,3 +145,17 @@ def test_missing_mission_context_does_not_invent_tanker(monkeypatch) -> None:
     assert result.completed is False
     assert result.session.phase == AarPhase.IDLE
     assert result.data["issues"] == ["mission_snapshot_unavailable"]
+
+
+def test_session_is_reset_when_active_mission_changes(monkeypatch) -> None:
+    mission_store.replace(MissionSnapshot(mission_id="mission-a"))
+    monkeypatch.setattr(aar_module, "build_live_mission_context", _context)
+    started = aar_rendezvous.execute("aar_start", "Start refueling")
+    assert started.session.mission_id == "mission-a"
+    assert started.session.phase == AarPhase.RENDEZVOUS
+
+    mission_store.replace(MissionSnapshot(mission_id="mission-b"))
+    snapshot = aar_rendezvous.snapshot()
+    assert snapshot.mission_id == "mission-b"
+    assert snapshot.phase == AarPhase.IDLE
+    assert snapshot.tanker_unit_id is None
