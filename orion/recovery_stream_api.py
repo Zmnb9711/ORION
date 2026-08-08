@@ -11,13 +11,13 @@ from fastapi.responses import StreamingResponse
 from orion.recovery_presentation import RecoveryPresentation, RecoveryUiState, get_recovery_presentation
 
 
-router = APIRouter(prefix="/v1/recovery-ui", tags=["Startup Recovery UI"])
+router = APIRouter()
 
 
 def _format_state_event(presentation: RecoveryPresentation) -> str:
     payload = presentation.model_dump(mode="json")
     return (
-        f"event: recovery_state\n"
+        "event: recovery_state\n"
         f"data: {json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}\n\n"
     )
 
