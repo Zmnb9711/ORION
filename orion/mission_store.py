@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import logging
+from collections.abc import Callable
 from threading import RLock
 
 from orion.mission import Coalition, MissionSnapshot, MissionUnit
+
+logger = logging.getLogger(__name__)
 
 
 class MissionStore:
@@ -13,9 +17,16 @@ class MissionStore:
     def replace(self, snapshot: MissionSnapshot) -> MissionSnapshot:
         with self._lock:
             self._snapshot = snapshot
-        self._notify_jtac_target_changes(snapshot)
-        self._notify_proactive_mission_control(snapshot)
-        self._notify_coordination_mission_control(snapshot)
+        observers: tuple[tuple[str, Callable[[MissionSnapshot], None]], ...] = (
+            ("jtac_retask", self._notify_jtac_target_changes),
+            ("proactive_mission_control", self._notify_proactive_mission_control),
+            ("coordination_mission_control", self._notify_coordination_mission_control),
+        )
+        for name, observer in observers:
+            try:
+                observer(snapshot)
+            except Exception:
+                logger.exception("Mission snapshot observer failed: %s", name)
         return snapshot
 
     @staticmethod
@@ -24,6 +35,7 @@ class MissionStore:
         try:
             from orion.mission_control_jtac_retask import observe_snapshot_for_jtac_retask
         except ImportError:
+            logger.warning("JTAC retask observer is unavailable", exc_info=True)
             return
         observe_snapshot_for_jtac_retask(snapshot)
 
@@ -33,6 +45,7 @@ class MissionStore:
         try:
             from orion.mission_control_proactive import observe_snapshot_for_proactive_mission_control
         except ImportError:
+            logger.warning("Proactive Mission Control observer is unavailable", exc_info=True)
             return
         observe_snapshot_for_proactive_mission_control(snapshot)
 
@@ -42,6 +55,7 @@ class MissionStore:
         try:
             from orion.mission_control_coordination_runtime import observe_snapshot_for_coordination_mission_control
         except ImportError:
+            logger.warning("Coordination Mission Control observer is unavailable", exc_info=True)
             return
         observe_snapshot_for_coordination_mission_control(snapshot)
 
