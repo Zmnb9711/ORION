@@ -16,8 +16,11 @@ from orion.airport_surface import (
     RunwayState,
     TaxiRoute,
 )
+from orion.airport_taxi_guidance import TaxiGuidanceCue, TaxiGuidanceEngine
+from orion.airport_taxi_navigation import AirportSurfaceGraph, SurfacePosition
+from orion.airport_taxi_replanning import TaxiDeviationState, TaxiReplanDecision, TaxiRouteReplanner
 from orion.atc_core import ControllerAgency, ControllerAuthorityScope
-from orion.atc_operations import CommitmentState, OperationalInstruction, VoicePriority
+from orion.atc_operations import CommitmentState, FreshnessClass, OperationalInstruction, VoicePriority
 from orion.atc_runtime import AtcCoreFlow
 
 
@@ -82,6 +85,10 @@ class AirportSurfaceCoordinator:
             details={"revision": route.revision, "topology_version": route.topology_version},
         )
         return route.model_copy(deep=True)
+
+    def get_route(self, session_id: UUID) -> TaxiRoute | None:
+        item = self._routes.get(session_id)
+        return item.model_copy(deep=True) if item else None
 
     def add_hold_short(self, constraint: HoldShortConstraint) -> HoldShortConstraint:
         key = (constraint.session_id, constraint.resource_id)
@@ -198,7 +205,7 @@ class AirportSurfaceCoordinator:
 
 
 class AirportGroundController:
-    """First procedural Ground controller built on Virtual ATC Core."""
+    """Procedural Ground controller with canonical taxi-route navigation support."""
 
     def __init__(self, surface: AirportSurfaceCoordinator | None = None) -> None:
         self.surface = surface or AirportSurfaceCoordinator()
@@ -228,6 +235,112 @@ class AirportGroundController:
             voice_priority=VoicePriority.PROCEDURAL,
         )
         return self.core.issue_instruction(instruction)
+
+    def evaluate_taxi_position(
+        self,
+        *,
+        session_id: UUID,
+        graph: AirportSurfaceGraph,
+        position: SurfacePosition,
+        freshness: FreshnessClass,
+    ) -> TaxiReplanDecision:
+        route = self.surface.get_route(session_id)
+        if route is None:
+            raise ValueError("No active taxi route for session")
+        decision = TaxiRouteReplanner(graph).evaluate(
+            session_id=session_id,
+            active_route=route,
+            position=position,
+            freshness=freshness,
+        )
+        if decision.state is TaxiDeviationState.DEVIATED and decision.replacement_route is not None:
+            self.surface.set_route(decision.replacement_route)
+            self.core.history.record(
+                session_id=session_id,
+                event_type="taxi_route_replanned",
+                reason=decision.reason,
+                source_agency=ControllerAgency.AIRPORT_GROUND,
+                related_id=decision.replacement_route.route_id,
+                details={
+                    "matched_node_id": decision.matched_node_id or "unknown",
+                    "revision": decision.replacement_route.revision,
+                },
+            )
+        elif decision.state is TaxiDeviationState.POSITION_UNCERTAIN:
+            details: dict[str, str | int | float | bool] = {"position_known": False}
+            if decision.matched_node_id is not None:
+                details["matched_node_id"] = decision.matched_node_id
+            self.core.history.record(
+                session_id=session_id,
+                event_type="taxi_position_uncertain",
+                reason=decision.reason,
+                source_agency=ControllerAgency.AIRPORT_GROUND,
+                details=details,
+            )
+        return decision
+
+    def guidance_after_position_update(
+        self,
+        *,
+        session_id: UUID,
+        graph: AirportSurfaceGraph,
+        position: SurfacePosition,
+        freshness: FreshnessClass,
+    ) -> TaxiGuidanceCue:
+        decision = self.evaluate_taxi_position(
+            session_id=session_id,
+            graph=graph,
+            position=position,
+            freshness=freshness,
+        )
+        route = self.surface.get_route(session_id)
+        if route is None:
+            raise ValueError("No active taxi route for session")
+        match = graph.match_position(position, freshness=freshness)
+        cue = TaxiGuidanceEngine(graph).next_cue(route, match)
+        if decision.state is TaxiDeviationState.DEVIATED:
+            cue = cue.model_copy(update={"text": f"Route recalculated. {cue.text}"})
+        self.core.history.record(
+            session_id=session_id,
+            event_type="taxi_guidance_generated",
+            reason=cue.text,
+            source_agency=ControllerAgency.AIRPORT_GROUND,
+            details={
+                "action": cue.action.value,
+                "route_revision": route.revision,
+                "safety_critical": cue.safety_critical,
+            },
+        )
+        return cue
+
+    def answer_taxi_question(
+        self,
+        *,
+        session_id: UUID,
+        graph: AirportSurfaceGraph,
+        position: SurfacePosition,
+        freshness: FreshnessClass,
+        question: str,
+    ) -> TaxiGuidanceCue:
+        self.evaluate_taxi_position(
+            session_id=session_id,
+            graph=graph,
+            position=position,
+            freshness=freshness,
+        )
+        route = self.surface.get_route(session_id)
+        if route is None:
+            raise ValueError("No active taxi route for session")
+        match = graph.match_position(position, freshness=freshness)
+        cue = TaxiGuidanceEngine(graph).answer_free_form(route, match, question)
+        self.core.history.record(
+            session_id=session_id,
+            event_type="taxi_question_answered",
+            reason=question,
+            source_agency=ControllerAgency.AIRPORT_GROUND,
+            details={"action": cue.action.value, "route_revision": route.revision},
+        )
+        return cue
 
     def issue_hold_short(self, constraint: HoldShortConstraint) -> OperationalInstruction:
         self.add_hold_short_instruction(constraint)
