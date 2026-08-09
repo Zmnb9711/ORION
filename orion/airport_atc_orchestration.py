@@ -27,7 +27,9 @@ class AirportAtcOrchestrator:
         self.tower = tower
         self.core = service.core
         self._departure_handoffs: dict[UUID, UUID] = {}
+        self._completed_departure_handoffs: dict[UUID, UUID] = {}
         self._ground_continuations: set[UUID] = set()
+        self._completed_ground_continuations: set[UUID] = set()
 
     def assume_tower_local_traffic(self, session_id: UUID, *, reason: str) -> None:
         self.service.claim_authority(
@@ -47,6 +49,8 @@ class AirportAtcOrchestrator:
     ) -> ControllerHandoffTransaction:
         if session_id in self._departure_handoffs:
             raise ValueError("Tower to Departure handoff is already armed for this session")
+        if session_id in self._completed_departure_handoffs:
+            raise ValueError("Tower to Departure handoff is already completed for this session")
         owner = self.core.authority.get_owner(session_id, ControllerAuthorityScope.FLIGHT_TRAFFIC)
         if owner is None or owner.agency is not ControllerAgency.AIRPORT_TOWER:
             raise ValueError("Tower must own FLIGHT_TRAFFIC before Departure handoff can be armed")
@@ -77,6 +81,12 @@ class AirportAtcOrchestrator:
         reason: str,
         contact_established: bool | None = None,
     ) -> ControllerHandoffTransaction:
+        completed_id = self._completed_departure_handoffs.get(session_id)
+        if completed_id is not None:
+            completed = self.core.authority.get_handoff(completed_id)
+            if completed is None:
+                raise RuntimeError("Completed Departure handoff is missing from authority registry")
+            return completed
         handoff_id = self._departure_handoffs.get(session_id)
         if handoff_id is None:
             raise ValueError("Tower to Departure handoff is not armed for this session")
@@ -91,6 +101,7 @@ class AirportAtcOrchestrator:
         )
         self.service.transition(session_id, DEPARTURE_SERVICE_STATE, reason=reason)
         self._departure_handoffs.pop(session_id, None)
+        self._completed_departure_handoffs[session_id] = completed.handoff_id
         self.core.history.record(
             session_id=session_id,
             event_type="airport_departure_authority_transferred",
@@ -104,6 +115,8 @@ class AirportAtcOrchestrator:
     def arm_runway_vacated_to_ground(self, session_id: UUID, *, reason: str) -> None:
         if session_id in self._ground_continuations:
             raise ValueError("Runway-vacated Ground continuation is already armed for this session")
+        if session_id in self._completed_ground_continuations:
+            raise ValueError("Runway-vacated Ground continuation is already completed for this session")
         tower_owner = self.core.authority.get_owner(session_id, ControllerAuthorityScope.LANDING_AREA)
         if tower_owner is None or tower_owner.agency is not ControllerAgency.AIRPORT_TOWER:
             raise ValueError("Tower must own LANDING_AREA before Ground continuation can be armed")
@@ -120,6 +133,8 @@ class AirportAtcOrchestrator:
         )
 
     def complete_ground_continuation_on_runway_vacated(self, session_id: UUID, *, reason: str) -> None:
+        if session_id in self._completed_ground_continuations:
+            return
         if session_id not in self._ground_continuations:
             raise ValueError("Runway-vacated Ground continuation is not armed for this session")
         arrival = self.tower._require_arrival(session_id)
@@ -133,6 +148,7 @@ class AirportAtcOrchestrator:
         )
         self.service.transition(session_id, GROUND_SERVICE_STATE, reason=reason)
         self._ground_continuations.remove(session_id)
+        self._completed_ground_continuations.add(session_id)
         self.core.history.record(
             session_id=session_id,
             event_type="airport_ground_surface_authority_acquired",
