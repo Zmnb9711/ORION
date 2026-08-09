@@ -42,6 +42,24 @@ def test_scoped_authority_allows_tower_and_lso_without_conflict() -> None:
     assert registry.get_owner(session_id, ControllerAuthorityScope.FINAL_GUIDANCE).agency is ControllerAgency.CARRIER_LSO
 
 
+def test_airport_scopes_allow_clearance_ground_tower_approach_and_par_to_coexist() -> None:
+    registry = AtcAuthorityRegistry()
+    session_id = uuid4()
+    assignments = {
+        ControllerAuthorityScope.ROUTE_CLEARANCE: ControllerAgency.AIRPORT_CLEARANCE_DELIVERY,
+        ControllerAuthorityScope.SURFACE_MOVEMENT: ControllerAgency.AIRPORT_GROUND,
+        ControllerAuthorityScope.LANDING_AREA: ControllerAgency.AIRPORT_TOWER,
+        ControllerAuthorityScope.FLIGHT_TRAFFIC: ControllerAgency.AIRPORT_APPROACH,
+        ControllerAuthorityScope.FINAL_GUIDANCE: ControllerAgency.AIRPORT_PAR,
+    }
+
+    for scope, agency in assignments.items():
+        registry.claim(session_id=session_id, scope=scope, agency=agency, reason="airport scoped authority")
+
+    owners = {item.scope: item.agency for item in registry.list_ownership(session_id)}
+    assert owners == assignments
+
+
 def test_same_scope_cannot_have_two_owners() -> None:
     registry = AtcAuthorityRegistry()
     session_id = uuid4()
@@ -58,6 +76,25 @@ def test_same_scope_cannot_have_two_owners() -> None:
             scope=ControllerAuthorityScope.FLIGHT_TRAFFIC,
             agency=ControllerAgency.CARRIER_APPROACH,
             reason="Conflicting premature Approach claim",
+        )
+
+
+def test_surface_movement_scope_cannot_have_ground_and_tower_as_simultaneous_owners() -> None:
+    registry = AtcAuthorityRegistry()
+    session_id = uuid4()
+    registry.claim(
+        session_id=session_id,
+        scope=ControllerAuthorityScope.SURFACE_MOVEMENT,
+        agency=ControllerAgency.AIRPORT_GROUND,
+        reason="Ground owns taxi movement",
+    )
+
+    with pytest.raises(ValueError, match="already owned"):
+        registry.claim(
+            session_id=session_id,
+            scope=ControllerAuthorityScope.SURFACE_MOVEMENT,
+            agency=ControllerAgency.AIRPORT_TOWER,
+            reason="Tower cannot conflict with Ground surface ownership",
         )
 
 
