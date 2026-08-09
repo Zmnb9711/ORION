@@ -22,67 +22,55 @@ Each audible agency must have a distinct VoiceAgent/voice identity. LSO must be 
 
 ## Shared carrier operational state
 
-`CarrierOperationalState` should be the single moving-reference source of truth consumed by all carrier controllers. Required fields:
+`CarrierOperationalState` should be the single moving-reference source of truth consumed by all carrier controllers. Required fields include mission/carrier identity, live position/heading/velocity, BRC, final bearing, wind/environment inputs, recovery case, launch/recovery cycle, landing-area state, catapult availability, TACAN/ICLS/ACLS/PALS configuration, carrier frequencies, and freshness/confidence flags. Unknown values remain unknown rather than being invented.
 
-- mission_id, carrier unit_id/name/type
-- position, heading, ground velocity and timestamp
-- BRC (base recovery course)
-- expected/actual final bearing where available or derivable
-- wind direction/speed and wind-over-deck estimate when data is available
-- current recovery case: CASE_I / CASE_II / CASE_III
-- current cycle: IDLE / LAUNCH / RECOVERY / MIXED / SUSPENDED
-- landing area state: CLEAR / FOUL / UNKNOWN
-- launch availability and catapult states when exposed by DCS
-- TACAN channel/callsign
-- ICLS/ACLS/PALS capabilities and channels when known
-- carrier ATC frequencies when known
-- visibility/ceiling/time-of-day inputs used to select or validate recovery case
-- data freshness/confidence flags; unknown values must remain unknown rather than invented
-
-All geometry is computed relative to the current carrier state. Marshal fixes, radial/DME positions, pattern references, final course, departure gates and handoff boundaries must move with the ship.
+All geometry is computed relative to the current carrier state. Marshal fixes, radial/DME positions, pattern references, final course, departure gates and handoff boundaries move with the ship.
 
 ## Recovery case selection
 
-Case selection is policy, not a hard-coded assumption. ORION should consume mission/environment data and carrier configuration, then expose both the selected case and the reason.
-
-Baseline rules for the DCS/Navy-compatible policy layer:
-
-- CASE I: visual daytime recovery under suitable ceiling/visibility.
-- CASE II: instrument penetration/arrival with a visual transition near the ship when conditions permit.
-- CASE III: instrument recovery for night and/or lower weather conditions.
-
-Mission designers or explicit carrier state may override auto-selection. ORION must never silently change a mission-authoritative case solely because one weather input is missing.
+Case selection is policy, not a hard-coded assumption. ORION consumes mission/environment data and carrier configuration and exposes both selected case and reason. Mission-authoritative case selection wins over incomplete auto-detection.
 
 ## Aircraft recovery session
 
-Each inbound aircraft receives a mission-scoped `CarrierRecoverySession` with at least:
-
-- session_id, mission_id, carrier_id
-- aircraft_id/callsign/type
-- fuel state and emergency/bingo flags when known
-- assigned recovery case
-- assigned marshal radial/DME/altitude or visual holding slot
-- expected approach time (EAT) when applicable
-- sequence number / traffic relationship
-- current controller agency
-- current state
-- timestamps for last pilot/controller transmission and last state transition
-- bolter count, waveoff count, divert state
-- stale-data and lost-comms state
-
-A session is invalidated on mission change, carrier identity change, aircraft destruction/despawn, explicit divert/abort completion, or timeout policy.
+Each inbound aircraft receives a mission-scoped `CarrierRecoverySession` carrying aircraft/carrier identity, fuel/emergency state, recovery case, marshal/holding assignment, EAT where applicable, traffic relationship, current controller/state, timestamps, bolter/waveoff counters, divert/lost-comms state and freshness information.
 
 ## Common recovery state machine
 
-Common high-level states:
-
 `INBOUND -> CHECKED_IN -> ASSIGNED -> HOLDING -> COMMENCING -> APPROACH -> FINAL -> LANDING_ATTEMPT -> RECOVERED`
 
-Alternative terminal paths:
+Alternative paths include BOLTER/RESEQUENCE, WAVEOFF/RESEQUENCE, EMERGENCY_PRIORITY, DIVERTED and LOST_COMMS.
 
-`LANDING_ATTEMPT -> BOLTER -> RESEQUENCE`
+## CASE I engine
 
-`FINAL/LANDING_ATTEMPT -> WAVEOFF -> RESEQUENCE`
+Case I is a dedicated visual traffic engine, not free-form tower chatter.
+
+### Case I session states
+
+`INBOUND -> CHECKED_IN -> VISUAL_HOLDING -> CLEARED_TO_INITIAL -> INITIAL -> BREAK -> DOWNWIND -> ABEAM -> FINAL_TURN_180 -> FINAL_TURN_90 -> GROOVE_ENTRY -> BALL_CALL -> IN_GROOVE -> LANDING_ATTEMPT`
+
+Terminal outcomes are TRAP/RECOVERED, BOLTER/BOLTER_PATTERN/RESEQUENCE and WAVEOFF/WAVEOFF_PATTERN/RESEQUENCE. Emergency priority can interrupt normal sequencing while protecting already committed traffic where safe.
+
+Tower/PriFly owns visual sequencing through groove entry; LSO owns final landing guidance. Tower/PriFly retains landing-area authority. Geometry and pattern occupancy are carrier-relative and confidence-rated. State transitions require telemetry or explicit event evidence; ORION must not fabricate ball calls, traps, bolters or precise pattern positions. Stable geometry is silent. Section/division relationships are represented explicitly and split into individual landing sequences. Bolter/waveoff preserves the same recovery session and triggers deterministic resequencing. LSO safety calls use a high-priority low-latency voice path.
+
+## CASE II engine
+
+Case II is modeled as a hybrid engine: Marshal/Approach own the instrument portion and an explicit visual-acquisition transition moves the aircraft into the visual carrier pattern. Failure to establish the required visual transition keeps the aircraft under instrument control or moves it to missed/divert policy; ORION never pretends the carrier is in sight.
+
+## CASE III engine
+
+Case III is a timed instrument-recovery system and therefore defines the most demanding traffic-control primitives required by Virtual ATC Core.
+
+### Case III session states
+
+`INBOUND -> CHECKED_IN -> MARSHAL_ASSIGNED -> PROCEEDING_TO_MARSHAL -> ESTABLISHED -> EAT_WAIT -> COMMENCE_AUTHORIZED -> COMMENCING -> PENETRATION -> PLATFORM -> APPROACH_CONTROLLED -> FINAL -> LSO_HANDOFF -> IN_GROOVE -> LANDING_ATTEMPT`
+
+Terminal/recovery branches:
+
+`LANDING_ATTEMPT -> TRAP -> RECOVERED`
+
+`LANDING_ATTEMPT -> BOLTER -> MISSED_APPROACH -> RESEQUENCE`
+
+`FINAL/IN_GROOVE -> WAVEOFF -> MISSED_APPROACH -> RESEQUENCE`
 
 `* -> EMERGENCY_PRIORITY`
 
@@ -90,289 +78,171 @@ Alternative terminal paths:
 
 `* -> LOST_COMMS`
 
-Case-specific engines refine these states without duplicating shared session identity, traffic priority or handoff logic.
+### Marshal assignment model
 
-## CASE I engine
+A Case III marshal assignment is structured data, not only spoken text. It includes, when known/authoritative:
 
-Case I is a dedicated visual traffic engine. It must not be reduced to free-form tower chatter.
+- carrier-relative marshal radial/bearing reference
+- DME/range reference
+- assigned altitude/block
+- expected approach time (EAT)
+- recovery case and approach type/capability
+- BRC/final bearing information appropriate to the phase
+- altimeter/weather information when available
+- controlling agency/frequency when known
+- assignment revision number and timestamp
 
-### Case I session states
+Assignments are mission-scoped and versioned. If the carrier changes course/speed materially or the recovery plan changes, the sequencer may issue a revised assignment. A stale assignment is never silently treated as current.
 
-`INBOUND -> CHECKED_IN -> VISUAL_HOLDING -> CLEARED_TO_INITIAL -> INITIAL -> BREAK -> DOWNWIND -> ABEAM -> FINAL_TURN_180 -> FINAL_TURN_90 -> GROOVE_ENTRY -> BALL_CALL -> IN_GROOVE -> LANDING_ATTEMPT`
+### CarrierTrafficSequencer and EAT scheduler
 
-Terminal outcomes:
+`CarrierTrafficSequencer` owns the ordered recovery plan. EAT is first-class state, not a phrase generated on demand. For each aircraft the scheduler tracks assigned EAT, sequence predecessor/successor, minimum spacing policy, current marshal status, estimated time-to-commence, fuel/emergency priority and whether the aircraft is already committed to penetration/final.
 
-`LANDING_ATTEMPT -> TRAP -> RECOVERED`
+The scheduler must be deterministic and explainable. Recalculation can be triggered by:
 
-`LANDING_ATTEMPT -> BOLTER -> BOLTER_PATTERN -> RESEQUENCE`
+- new inbound traffic or cancellation/divert
+- declared emergency or materially worsening fuel state
+- aircraft failing to establish or commence within tolerance
+- bolter/waveoff/missed approach
+- landing area becoming foul/clear
+- recovery suspension/resumption
+- material carrier course/speed change affecting moving-reference geometry
+- loss/restoration of approach/navigation capability
 
-`GROOVE_ENTRY/IN_GROOVE/LANDING_ATTEMPT -> WAVEOFF -> WAVEOFF_PATTERN -> RESEQUENCE`
+Recalculation does not casually reorder committed traffic. Aircraft already commencing, on approach or final receive commitment protection unless an emergency/safety condition requires intervention.
 
-Emergency override:
+Every resequence emits a machine-readable reason and old/new slot data for observability and debrief.
 
-`* -> EMERGENCY_PRIORITY`, with sequencing recalculated but current committed traffic protected unless safety requires otherwise.
+### Marshal stack separation
 
-### Case I controller ownership
+Marshal occupancy is explicit. ORION tracks aircraft assigned to each marshal altitude/slot and prevents known conflicting assignments. If telemetry/capability is insufficient to prove a slot is clear, the allocator uses conservative capacity rather than assuming availability.
 
-- Inbound/check-in and holding assignment may be handled by Marshal/arrival control when configured.
-- Tower/PriFly owns visual pattern sequencing from release to initial through groove entry.
-- LSO owns final landing guidance from ball-call/groove acceptance through touchdown, bolter or waveoff.
-- Tower/PriFly retains landing-area authority; LSO guidance must not imply a clear deck if landing-area state is unknown or foul.
+The model supports sections/formations checking in together, while preserving a relationship that can later split into individual approach slots when procedure/configuration requires it.
 
-### Case I moving-reference geometry
+### Establishment and EAT waiting
 
-All pattern geometry is defined in a carrier-relative frame and recalculated from live carrier state. The engine needs at least:
+`PROCEEDING_TO_MARSHAL -> ESTABLISHED` requires either an explicit pilot/DCS establishment event or sufficiently confident carrier-relative geometry. ORION does not infer an `established` report solely because time has elapsed.
 
-- carrier position/heading/velocity freshness
-- BRC and final bearing where available
-- ownship position, altitude, groundspeed, heading and track
-- traffic positions for occupancy/conflict checks
-- landing-area state or an explicit UNKNOWN capability state
+While `ESTABLISHED/EAT_WAIT`, Marshal owns the aircraft. The scheduler continually compares mission time against EAT and expected travel/commence tolerance. Stable waiting is silent except for required reports, revisions or safety changes.
 
-Derived geometric observations may include distance/bearing to ship, relative track to BRC/final bearing, pattern side, approximate initial/break/downwind/abeam/180/90/groove regions and closure trends. These observations are confidence-rated; low confidence prevents precise procedural claims.
+### Commence gate
 
-### Case I pattern occupancy
+`EAT_WAIT -> COMMENCE_AUTHORIZED` occurs only when the scheduler releases the aircraft. Inputs include EAT tolerance, preceding traffic progress, approach capacity, landing-area/recovery-cycle state, and emergency overrides.
 
-`CarrierTrafficSequencer` maintains pattern occupancy slots, not merely an ordered queue. At minimum it tracks:
+`COMMENCE_AUTHORIZED -> COMMENCING` requires acknowledgement or observed commencement evidence according to capability. If the aircraft does not commence within policy tolerance, ORION records a missed slot and resequences rather than pretending the approach has begun.
 
-- aircraft/section cleared toward initial
-- aircraft committed to the break
-- aircraft on downwind
-- aircraft in final turn
-- aircraft in groove / landing attempt
-- bolter/waveoff traffic re-entering
+### Penetration and platform
 
-A new clearance to initial or break is suppressed if it would create a known conflict with occupied pattern capacity. When telemetry is insufficient to establish safe spacing, ORION must delay or use conservative instructions rather than inventing separation.
+The instrument descent is represented explicitly because it is both a procedural and separation boundary. `COMMENCING -> PENETRATION -> PLATFORM` uses carrier-relative geometry, altitude/descent trends and/or explicit reports. Precision claims are suppressed when telemetry is stale.
 
-### Case I transition evidence
+The `platform` event is first-class because it is useful for timing, handoff and debrief even if a particular DCS module exposes it only through pilot voice rather than telemetry.
 
-Transitions are event-driven and require evidence. Examples:
+### Marshal to Approach handoff
 
-- `CHECKED_IN -> VISUAL_HOLDING`: carrier/mission accepts the aircraft into Case I recovery flow.
-- `VISUAL_HOLDING -> CLEARED_TO_INITIAL`: sequencer grants a release slot and landing area/cycle policy allows continuation.
-- `CLEARED_TO_INITIAL -> INITIAL`: aircraft enters configured carrier-relative initial region with compatible track/altitude confidence.
-- `INITIAL -> BREAK`: observed turn/track change in the break region or an explicit pilot/controller event.
-- `BREAK -> DOWNWIND`: aircraft settles onto the expected downwind side/track.
-- `DOWNWIND -> ABEAM`: aircraft passes the carrier-relative abeam gate with expected geometry.
-- `ABEAM -> FINAL_TURN_180 -> FINAL_TURN_90`: progressive carrier-relative final-turn geometry.
-- `FINAL_TURN_90 -> GROOVE_ENTRY`: aircraft approaches final bearing/landing axis within configured geometry and stability limits.
-- `GROOVE_ENTRY -> BALL_CALL`: explicit pilot ball call or DCS-equivalent event; ORION must not fabricate this acknowledgement.
-- `BALL_CALL -> IN_GROOVE`: LSO accepts/continues final guidance and telemetry remains fresh enough.
-- `LANDING_ATTEMPT -> TRAP`: arrestment/touchdown event positively indicates successful recovery.
-- `LANDING_ATTEMPT -> BOLTER`: touchdown/landing attempt followed by no arrestment and continued flight, when inferable with adequate confidence or explicit DCS event.
-- `* -> WAVEOFF`: LSO/Tower safety decision or DCS event; this has immediate voice priority.
+Handoff is a transaction with source agency, destination agency, frequency/channel when known, reason, issue time and acknowledgement state. Marshal remains owner until handoff conditions are met. Approach becomes controlling owner only after the handoff transition is accepted/observed.
 
-### Case I radio behavior
+A radio frequency change alone is not sufficient proof of controller ownership. ORION must avoid simultaneous conflicting ownership.
 
-The engine should preserve real procedural rhythm without becoming a canned script. Required categories include:
+### Approach-controlled phase
 
-- inbound/check-in response
-- holding/recovery information
-- release toward initial when traffic permits
-- pattern sequencing/advisories when required
-- ball-call exchange
-- LSO corrections/waveoff
-- trap/bolter/waveoff outcome and resequence instructions
+Approach owns separation and procedural guidance from accepted handoff toward final. The session records approach type/capability actually available in DCS/configuration. ICLS/ACLS/PALS-related guidance is capability-gated; ORION never advertises an aid simply because a real carrier would normally have it.
 
-Stable geometry is silent. ORION should not narrate every state transition. Speech is generated for control instructions, mandatory reports/acknowledgements, materially changed sequencing and safety events.
+Approach guidance uses live carrier-relative final geometry and final-bearing freshness. If final-bearing/navigation data becomes stale or unavailable, the controller degrades phraseology and may hold/missed-approach/divert according to policy instead of issuing fabricated precision vectors.
 
-### Case I section/formation support
+### Final and LSO handoff
 
-The session model must allow a section/division to check in together while still tracking individual aircraft through the landing pattern when they split for recovery. The leader may own the radio session initially, but individual aircraft become separately sequenced before landing attempts. This should be represented explicitly rather than by cloning identical sessions with no relationship.
+`APPROACH_CONTROLLED -> FINAL -> LSO_HANDOFF` requires adequate final geometry/approach state. LSO takes the safety-critical final landing guidance path only when the aircraft reaches the configured handoff/groove boundary and required telemetry is fresh enough.
 
-Suggested fields:
+Tower/PriFly continues to own landing-area availability even while LSO owns final guidance. A foul/unknown deck can therefore force waveoff regardless of otherwise valid LSO geometry.
 
-- `formation_id`
-- `formation_role`
-- `radio_lead_aircraft_id`
-- `split_state`
-- `preceding_aircraft_id`
+### Bolter, waveoff and missed approach
 
-### Bolter and waveoff policy
+Case III bolter/waveoff preserves the existing recovery session. It increments counters, enters `MISSED_APPROACH`, updates fuel state, and requests a new slot from the sequencer. Emergency/fuel priority can move the aircraft forward, but resequencing remains explicit and auditable.
 
-Bolter and waveoff do not destroy the recovery session. They create a re-entry state in the same session, increment counters, preserve fuel/emergency state and trigger deterministic resequencing. LSO outcome and Tower pattern ownership are separate events so ORION can reason about a clear/foul deck independently of pilot performance.
+A bolter is not automatically classified from a generic airborne state; it requires an arrestment/touchdown/continued-flight signal or explicit event with sufficient confidence.
 
-### LSO latency and safety boundary
+### Recovery suspension and fouled deck
 
-The LSO path must bypass ordinary conversational latency. Safety-critical calls use a higher-priority voice queue and can pre-empt routine Tower/Marshal/Mission Control chatter. Precision corrections are only allowed when ownship/carrier telemetry meets freshness and confidence thresholds; otherwise ORION limits itself to non-precision safety calls or suppresses guidance.
+`CarrierOpsDirector` may suspend recovery. During suspension:
 
-### Case I observability
+- no new commence authorization is issued
+- already committed aircraft are handled by explicit continue/waveoff/missed-approach policy
+- EATs and slots are marked delayed rather than silently rewritten
+- Marshal receives revised timing only when the new plan is known
 
-Status/debug output should expose, per recovery session:
+Landing-area `UNKNOWN` is not equivalent to `CLEAR`. Precision landing clearance/guidance that depends on a clear deck must be withheld or conservatively qualified according to controller role.
 
-- current Case I state
-- current controlling agency
-- preceding/following traffic relation
-- pattern occupancy slot
-- geometry confidence and last update age
-- ball-call received flag
+### Emergency and fuel priority
+
+Priority policy remains deterministic:
+
+1. immediate declared emergency/safety condition
+2. critically low fuel/bingo state
+3. traffic already committed to final/approach
+4. assigned EAT/sequence
+5. normal arrival order
+
+A priority override records the reason and affected traffic. ORION should be able to explain why an aircraft was advanced or delayed.
+
+### Lost communications
+
+Lost-comms is a real session state, not simply a timeout exception. Detection combines radio/session timeout policy with telemetry evidence. The scheduler reserves/protects traffic space according to configured procedure instead of immediately deleting the aircraft from the plan. Recovery or divert outcome closes the condition explicitly.
+
+### Case III voice behavior
+
+Marshal, Approach, Tower/PriFly and LSO remain distinct voice identities. Routine timing revisions are anti-spam controlled; safety changes, waveoff and emergency instructions can pre-empt normal traffic. Free-form conversation never blocks procedural or LSO calls.
+
+### Case III observability
+
+Status/debug output per aircraft should expose:
+
+- session/recovery case/current state/current controlling agency
+- marshal assignment and revision
+- EAT and scheduler tolerance/status
+- predecessor/successor and commitment state
+- current handoff transaction
+- approach/nav-aid capabilities actually available
 - landing-area state/freshness
-- bolter/waveoff counters
-- last sequencer decision and reason
-
-This is required for auditability and later debrief.
-
-## CASE II engine
-
-Case II is modeled as a hybrid engine:
-
-- Marshal/Approach control the instrument portion.
-- A visual acquisition/transition event moves the aircraft into the visual carrier pattern.
-- If the expected visual transition cannot be established, the session must remain instrument-controlled or move to a missed/divert policy; it must not pretend the carrier is in sight.
-- Handoff boundaries are explicit state transitions, not merely voice changes.
-
-## CASE III engine
-
-Case III requires a real scheduler.
-
-`CarrierTrafficSequencer` maintains:
-
-- ordered inbound traffic
-- marshal assignments
-- EATs / commencement slots
-- separation constraints
+- carrier geometry/final-bearing freshness
 - fuel/emergency priority
-- delay caused by fouled deck, waveoffs, bolters or preceding traffic
-- recalculation when the carrier course/speed or traffic picture changes materially
+- bolter/waveoff/missed-slot counters
+- last scheduler decision and reason
 
-Required flow:
-
-`CHECK_IN -> MARSHAL_ASSIGNED -> ESTABLISHED -> EAT_WAIT -> COMMENCING -> PLATFORM/APPROACH -> FINAL -> LSO`
-
-The exact phraseology adapter may vary by aircraft/module and DCS behavior, but scheduler state remains aircraft-agnostic.
+The sequencer also exposes a carrier-wide ordered recovery board so multi-aircraft behavior can be audited.
 
 ## Handoff model
 
-Controller ownership is explicit:
-
-- launch: Deck/Catapult -> Departure -> external ATC/Mission Control as applicable
-- CASE I recovery: arrival/Marshal as needed -> Tower/PriFly -> LSO
-- CASE II: Marshal -> Approach -> Tower/PriFly -> LSO
-- CASE III: Marshal -> Approach/Final -> LSO, with Tower/PriFly retaining landing-area authority
-
-A handoff contains source agency, destination agency, reason, expected frequency/channel when known, and acknowledgement state. An aircraft cannot be simultaneously owned by two ATC agencies for conflicting control instructions.
+Controller ownership is explicit. Launch flows Deck/Catapult -> Departure -> external control as applicable. Case I flows arrival/Marshal as needed -> Tower/PriFly -> LSO. Case II flows Marshal -> Approach -> Tower/PriFly -> LSO. Case III flows Marshal -> Approach/Final -> LSO, while Tower/PriFly retains landing-area authority.
 
 ## Launch operations
 
-Carrier launch is also first-class state, with a separate `CarrierLaunchSession`:
-
-`STARTUP -> DECK_MOVE -> CAT_ASSIGNED -> HOOKUP -> TENSION/READY -> LAUNCH_CLEARED -> AIRBORNE -> DEPARTURE -> HANDED_OFF`
-
-ORION should track catapult availability and deck state only when grounded in DCS data or explicit mission configuration. Unknown catapult/deck state must not be reported as ready.
-
-Launch and recovery cycle arbitration belongs to `CarrierOpsDirector`; the ATC controllers consume that decision rather than independently assuming deck availability.
+Carrier launch is first-class state with `CarrierLaunchSession`: `STARTUP -> DECK_MOVE -> CAT_ASSIGNED -> HOOKUP -> TENSION/READY -> LAUNCH_CLEARED -> AIRBORNE -> DEPARTURE -> HANDED_OFF`. Unknown catapult/deck state is never reported as ready. Launch/recovery cycle arbitration belongs to `CarrierOpsDirector`.
 
 ## LSO subsystem
 
-LSO is a dedicated controller with a lower-latency execution path than conversational ATC.
-
-Suggested states:
-
-`AWAITING_BALL -> BALL_CALLED -> IN_GROOVE -> CORRECTION_ACTIVE -> TOUCHDOWN | BOLTER | WAVEOFF`
-
-Requirements:
-
-- distinct LSO voice identity
-- safety-critical calls can pre-empt non-critical ATC speech
-- corrections require sufficiently fresh aircraft/carrier geometry; if confidence is inadequate, ORION must suppress precision corrections
-- bolter/waveoff creates a deterministic re-entry/resequence event in the same recovery session
-- grading is an observation/debrief artifact and must not interfere with real-time control
+LSO is a dedicated low-latency controller. Suggested states: `AWAITING_BALL -> BALL_CALLED -> IN_GROOVE -> CORRECTION_ACTIVE -> TOUCHDOWN | BOLTER | WAVEOFF`. Safety-critical calls pre-empt non-critical ATC speech; precision corrections require fresh geometry; grading remains a debrief artifact.
 
 ## Traffic priority
 
-Traffic sequencing is deterministic and explainable. Policy inputs include:
-
-1. declared emergency / immediate safety condition
-2. critically low fuel / bingo state
-3. aircraft already on final or committed approach
-4. assigned EAT/sequence order
-5. normal arrival order
-
-Priority changes are recorded as events so voice callouts and debrief can explain why sequencing changed.
+Traffic sequencing is deterministic and explainable: emergency, critical fuel, committed approach/final, EAT/sequence, then normal arrival order. Priority changes are recorded as events.
 
 ## Radio and voice behavior
 
-Carrier ATC uses role-specific agents, not one `ATC` voice:
-
-- CARRIER_AIR_BOSS
-- CARRIER_DEPARTURE
-- CARRIER_MARSHAL
-- CARRIER_APPROACH
-- CARRIER_TOWER
-- CARRIER_LSO
-
-The exact enum names may be adjusted during #61 implementation, but identity separation is mandatory.
-
-Radio anti-spam rules:
-
-- stable state is silent unless a procedural report is due
-- state transitions and safety-critical changes may generate callouts
-- repeated identical instructions are suppressed until an acknowledgement timeout/retry policy is reached
-- LSO safety calls override normal suppression when necessary
-- conversational/free-form responses never pre-empt urgent ATC/LSO calls
+Carrier ATC uses role-specific agents: `CARRIER_AIR_BOSS`, `CARRIER_DEPARTURE`, `CARRIER_MARSHAL`, `CARRIER_APPROACH`, `CARRIER_TOWER`, `CARRIER_LSO`. Stable state is silent; repeated instructions are suppressed until retry policy; LSO safety calls override normal suppression; conversational/free-form responses never pre-empt urgent ATC/LSO calls.
 
 ## DCS integration requirements
 
-Minimum carrier-side data desired from DCS/mission bridge:
-
-- carrier identity/type and live position/heading/speed
-- ownship and relevant traffic live positions/altitudes/speeds/headings
-- mission time and environmental data
-- carrier radio/TACAN/ICLS configuration when exposed
-- landing/deck/catapult state where exposed
-- aircraft launch/recovery events, touchdown, arrestment, bolter/waveoff indicators where available
-
-The adapter exposes capability flags for each datum. Controllers must branch on capability rather than assuming Supercarrier exposes every real-world state.
+Desired carrier-side data includes carrier identity/type/live motion, ownship/relevant traffic kinematics, mission/environment time, radio/TACAN/ICLS configuration, landing/deck/catapult state where exposed, and launch/recovery/touchdown/arrestment/bolter/waveoff events where available. The adapter exposes capability/freshness flags rather than pretending all real-world data is available.
 
 ## Boundary with Mission Control
 
-Carrier ATC owns traffic control, separation, launch/recovery sequencing and landing safety. Mission Control owns tactical mission reasoning.
-
-Allowed information exchange includes:
-
-- threat-driven recommendation to alter a recovery/departure plan
-- carrier/aircraft availability status exposed to Mission Control
-- divert/bingo/emergency state shared with tactical planning
-
-Mission Control cannot issue groove/LSO corrections or bypass ATC sequencing. Carrier ATC cannot select targets or authorize weapons employment.
+Carrier ATC owns traffic control, separation, launch/recovery sequencing and landing safety. Mission Control owns tactical mission reasoning. They may exchange threat-driven routing recommendations, availability and divert/bingo/emergency state, but neither bypasses the other's authority domain.
 
 ## Architecture baseline for #61+
 
-Proposed modules/services:
+Proposed modules/services: `CarrierStateProvider`, `CarrierOpsDirector`, `CarrierTrafficSequencer`, `CarrierRecoverySessionStore`, `CarrierLaunchSessionStore`, `CaseIRecoveryEngine`, `CaseIIRecoveryEngine`, `CaseIIIRecoveryEngine`, `CarrierMarshalController`, `CarrierApproachController`, `CarrierTowerController`, `CarrierDepartureController`, `CarrierLSOController`, `CarrierDeckCoordinator`, `CarrierVoiceRouter`, `CarrierDcsAdapter`.
 
-`CarrierStateProvider`
-
-`CarrierOpsDirector`
-
-`CarrierTrafficSequencer`
-
-`CarrierRecoverySessionStore`
-
-`CarrierLaunchSessionStore`
-
-`CaseIRecoveryEngine`
-
-`CaseIIRecoveryEngine`
-
-`CaseIIIRecoveryEngine`
-
-`CarrierMarshalController`
-
-`CarrierApproachController`
-
-`CarrierTowerController`
-
-`CarrierDepartureController`
-
-`CarrierLSOController`
-
-`CarrierDeckCoordinator`
-
-`CarrierVoiceRouter`
-
-`CarrierDcsAdapter`
-
-Virtual ATC Core #61 should provide common session/radio/controller primitives that these carrier-specific engines can use, but carrier procedures must remain a dedicated domain layer rather than being flattened into generic airport runway logic.
+Virtual ATC Core #61 should provide common session/radio/controller primitives these carrier engines can use, while carrier procedures remain a dedicated domain layer rather than generic airport runway logic.
 
 ## Implementation order after design sign-off
 
@@ -388,4 +258,4 @@ Virtual ATC Core #61 should provide common session/radio/controller primitives t
 
 ## Source baseline
 
-Design is grounded primarily in the DCS Supercarrier Operations Guide (manual updated 20 Nov 2024), official DCS Supercarrier feature documentation, and publicly available U.S. Navy/CNATRA carrier ATC descriptions. The implementation should prefer DCS-observable behavior when simulator behavior differs from real-world procedures, while keeping real-world terminology and control-role separation where feasible.
+Design is grounded primarily in the DCS Supercarrier Operations Guide (manual updated 20 Nov 2024), official DCS Supercarrier feature documentation, and publicly available U.S. Navy/CNATRA carrier ATC descriptions. Implementation should prefer DCS-observable behavior when simulator behavior differs from real-world procedures, while keeping real-world terminology and control-role separation where feasible.
