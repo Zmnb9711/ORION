@@ -14,6 +14,7 @@ from orion.airport_taxi_navigation import (
     SurfacePosition,
 )
 from orion.airport_tower_runtime import AirportTowerController
+from orion.atc_operations import FreshnessClass
 
 
 def make_graph() -> AirportSurfaceGraph:
@@ -40,9 +41,18 @@ def make_runtime() -> tuple[AirportTaxiInRuntime, AirportGroundController, Airpo
     return runtime, ground, tower, surface
 
 
+def observed_clear_runway() -> RunwayState:
+    return RunwayState(
+        runway_id="27",
+        availability=RunwayAvailability.CLEAR,
+        freshness=FreshnessClass.FRESH,
+        reason="observed clear",
+    )
+
+
 def prepare_vacated_arrival(ground: AirportGroundController, tower: AirportTowerController, surface: AirportSurfaceCoordinator, session_id) -> None:
     tower.assume_runway_control(session_id, reason="arrival")
-    surface.runways.observe(RunwayState(runway_id="27", availability=RunwayAvailability.CLEAR, confidence=1.0, reason="observed clear"))
+    surface.runways.observe(observed_clear_runway())
     tower.start_arrival(session_id=session_id, runway_id="27")
     tower.clear_landing(session_id, reason="landing")
     tower.begin_landing_attempt(session_id)
@@ -84,7 +94,7 @@ def test_taxi_in_requires_ground_surface_authority() -> None:
     runtime, ground, tower, surface = make_runtime()
     session_id = uuid4()
     tower.assume_runway_control(session_id, reason="arrival")
-    surface.runways.observe(RunwayState(runway_id="27", availability=RunwayAvailability.CLEAR, confidence=1.0, reason="observed clear"))
+    surface.runways.observe(observed_clear_runway())
     tower.start_arrival(session_id=session_id, runway_id="27")
     tower.clear_landing(session_id, reason="landing")
     tower.begin_landing_attempt(session_id)
