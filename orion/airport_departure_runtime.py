@@ -13,13 +13,17 @@ from orion.atc_operations import AcknowledgementState, OperationalInstruction
 
 class AirportDepartureState(StrEnum):
     HOLDING_POINT = "holding_point"
+    HOLDING_FOR_TRAFFIC = "holding_for_traffic"
     LINE_UP_CLEARED = "line_up_cleared"
     LINED_UP = "lined_up"
     TAKEOFF_CLEARED = "takeoff_cleared"
+    TAKEOFF_CLEARANCE_CANCELLED = "takeoff_clearance_cancelled"
     TAKEOFF_ROLL = "takeoff_roll"
     AIRBORNE = "airborne"
     DEPARTURE_CONTROL = "departure_control"
     REJECTED_TAKEOFF = "rejected_takeoff"
+    STOPPED_ON_RUNWAY = "stopped_on_runway"
+    RUNWAY_VACATED_AFTER_ABORT = "runway_vacated_after_abort"
 
 
 class AirportDepartureSession(BaseModel):
@@ -62,6 +66,24 @@ class AirportDepartureRuntime:
         self._record(session, "departure procedure started at holding point")
         return session.model_copy(deep=True)
 
+    def hold_for_traffic(self, session_id: UUID, *, reason: str) -> AirportDepartureSession:
+        session = self._require(session_id)
+        if session.state not in {AirportDepartureState.HOLDING_POINT, AirportDepartureState.HOLDING_FOR_TRAFFIC}:
+            raise ValueError("Traffic hold is only valid before runway-entry clearance")
+        session.state = AirportDepartureState.HOLDING_FOR_TRAFFIC
+        self._sessions[session_id] = session
+        self._record(session, reason)
+        return session.model_copy(deep=True)
+
+    def resume_from_traffic_hold(self, session_id: UUID, *, reason: str) -> AirportDepartureSession:
+        session = self._require(session_id)
+        if session.state is not AirportDepartureState.HOLDING_FOR_TRAFFIC:
+            raise ValueError("Departure is not holding for traffic")
+        session.state = AirportDepartureState.HOLDING_POINT
+        self._sessions[session_id] = session
+        self._record(session, reason)
+        return session.model_copy(deep=True)
+
     def clear_line_up(self, session_id: UUID, *, reason: str) -> OperationalInstruction:
         session = self._require(session_id)
         if session.state is not AirportDepartureState.HOLDING_POINT:
@@ -94,6 +116,26 @@ class AirportDepartureRuntime:
         self._record(session, reason)
         return instruction
 
+    def cancel_takeoff_clearance(self, session_id: UUID, *, reason: str) -> AirportDepartureSession:
+        session = self._require(session_id)
+        if session.state is not AirportDepartureState.TAKEOFF_CLEARED:
+            raise ValueError("Takeoff clearance can only be cancelled before takeoff roll")
+        self.tower.cancel_takeoff_clearance(session_id, reason=reason)
+        session.state = AirportDepartureState.TAKEOFF_CLEARANCE_CANCELLED
+        session.takeoff_instruction_id = None
+        self._sessions[session_id] = session
+        self._record(session, reason)
+        return session.model_copy(deep=True)
+
+    def return_to_holding_point(self, session_id: UUID, *, reason: str) -> AirportDepartureSession:
+        session = self._require(session_id)
+        if session.state is not AirportDepartureState.TAKEOFF_CLEARANCE_CANCELLED:
+            raise ValueError("Return to holding point requires cancelled takeoff clearance")
+        session.state = AirportDepartureState.HOLDING_POINT
+        self._sessions[session_id] = session
+        self._record(session, reason)
+        return session.model_copy(deep=True)
+
     def confirm_takeoff_roll(self, session_id: UUID) -> AirportDepartureSession:
         session = self._require(session_id)
         if session.state is not AirportDepartureState.TAKEOFF_CLEARED:
@@ -119,6 +161,8 @@ class AirportDepartureRuntime:
         session = self._require(session_id)
         if session.state is not AirportDepartureState.AIRBORNE:
             raise ValueError("Tower to Departure handoff requires confirmed AIRBORNE state")
+        if session.departure_handoff_id is not None:
+            return session.departure_handoff_id
         handoff_id = self.core.acknowledgement_handoff(
             session_id=session_id,
             source=ControllerAgency.AIRPORT_TOWER,
@@ -132,6 +176,8 @@ class AirportDepartureRuntime:
 
     def complete_departure_handoff(self, session_id: UUID) -> AirportDepartureSession:
         session = self._require(session_id)
+        if session.state is AirportDepartureState.DEPARTURE_CONTROL:
+            return session.model_copy(deep=True)
         if session.state is not AirportDepartureState.AIRBORNE or session.departure_handoff_id is None:
             raise ValueError("Departure handoff is not ready to complete")
         self.core.complete_acknowledged_handoff(session.departure_handoff_id)
@@ -146,6 +192,26 @@ class AirportDepartureRuntime:
             raise ValueError("Rejected takeoff requires active takeoff roll")
         self.tower.reject_takeoff(session_id, reason=reason)
         session.state = AirportDepartureState.REJECTED_TAKEOFF
+        self._sessions[session_id] = session
+        self._record(session, reason)
+        return session.model_copy(deep=True)
+
+    def confirm_stopped_on_runway(self, session_id: UUID, *, reason: str = "aircraft stopped on runway after rejected takeoff") -> AirportDepartureSession:
+        session = self._require(session_id)
+        if session.state is not AirportDepartureState.REJECTED_TAKEOFF:
+            raise ValueError("Stopped-on-runway state requires rejected takeoff")
+        self.tower.mark_stopped_on_runway(session_id, reason=reason)
+        session.state = AirportDepartureState.STOPPED_ON_RUNWAY
+        self._sessions[session_id] = session
+        self._record(session, reason)
+        return session.model_copy(deep=True)
+
+    def confirm_runway_vacated_after_abort(self, session_id: UUID, *, reason: str = "runway vacated after rejected takeoff") -> AirportDepartureSession:
+        session = self._require(session_id)
+        if session.state is not AirportDepartureState.STOPPED_ON_RUNWAY:
+            raise ValueError("Runway-vacated-after-abort requires stopped-on-runway state")
+        self.tower.mark_runway_vacated_after_abort(session_id, reason=reason)
+        session.state = AirportDepartureState.RUNWAY_VACATED_AFTER_ABORT
         self._sessions[session_id] = session
         self._record(session, reason)
         return session.model_copy(deep=True)
