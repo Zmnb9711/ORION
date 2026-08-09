@@ -92,7 +92,7 @@ class AirportTaxiInRuntime:
             route = self.ground.surface.get_route(session_id)
             if route is None:
                 raise ValueError("No active taxi-in route at stand arrival")
-            stand = next((item for item in self.stands.list_available() if item.node_id == route.destination), None)
+            stand = self.stands.get_by_node(route.destination)
             self.ground.core.history.record(
                 session_id=session_id,
                 event_type="taxi_in_completed",
