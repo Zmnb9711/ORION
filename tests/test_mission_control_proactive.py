@@ -174,10 +174,10 @@ def test_deescalation_requires_consecutive_observations() -> None:
     ), patch("orion.mission_control_proactive.submit_autonomy_proposal_voice"):
         first = runtime.observe(_snapshot())
         second = runtime.observe(_snapshot())
+        assert second.suppressed is True
+        assert second.suppression_reason == "de-escalation hysteresis active"
+        assert store.get(first.proposal.action_id).status is ConfirmationStatus.PENDING
         third = runtime.observe(_snapshot())
-    assert second.suppressed is True
-    assert second.suppression_reason == "de-escalation hysteresis active"
-    assert store.get(first.proposal.action_id).status is ConfirmationStatus.PENDING
     assert third.cancelled_action_id == first.proposal.action_id
     assert store.get(first.proposal.action_id).status is ConfirmationStatus.REJECTED
 
