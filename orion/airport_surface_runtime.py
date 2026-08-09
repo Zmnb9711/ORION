@@ -3,6 +3,11 @@ from __future__ import annotations
 from threading import RLock
 from uuid import UUID
 
+from orion.airport_runway_coordination import (
+    RunwayOperationType,
+    RunwayReservation,
+    RunwayReservationManager,
+)
 from orion.airport_surface import (
     CrossingState,
     HoldShortConstraint,
@@ -12,11 +17,8 @@ from orion.airport_surface import (
     TaxiRoute,
 )
 from orion.atc_core import ControllerAgency, ControllerAuthorityScope
-from orion.atc_operations import OperationalInstruction, ResourceAssignment, VoicePriority
+from orion.atc_operations import CommitmentState, OperationalInstruction, VoicePriority
 from orion.atc_runtime import AtcCoreFlow
-
-
-RUNWAY_PROTECTED_RESOURCE = "runway_protected"
 
 
 class RunwayOccupancyManager:
@@ -56,11 +58,12 @@ class RunwayOccupancyManager:
 
 
 class AirportSurfaceCoordinator:
-    """Coordinates taxi routes, hold-short constraints and exclusive runway use."""
+    """Coordinates taxi routes, holds and crossings around one canonical runway reservation manager."""
 
     def __init__(self, core: AtcCoreFlow | None = None) -> None:
         self.core = core or AtcCoreFlow()
         self.runways = RunwayOccupancyManager()
+        self.reservations = RunwayReservationManager(self.core)
         self._routes: dict[UUID, TaxiRoute] = {}
         self._holds: dict[tuple[UUID, str], HoldShortConstraint] = {}
         self._crossings: dict[UUID, RunwayCrossingTransaction] = {}
@@ -109,31 +112,20 @@ class AirportSurfaceCoordinator:
         )
         return crossing.model_copy(deep=True)
 
-    def reserve_protected_runway(self, *, session_id: UUID, runway_id: str, reason: str) -> ResourceAssignment:
-        self.runways.require_positive_clearance_state(runway_id)
-        return self.core.coordination.assign_resource(
-            ResourceAssignment(
-                session_id=session_id,
-                resource_type=RUNWAY_PROTECTED_RESOURCE,
-                resource_id=runway_id,
-                reason=reason,
-            )
-        )
-
-    def release_protected_runway(self, *, session_id: UUID, runway_id: str) -> None:
-        self.core.coordination.release_resource(
-            resource_type=RUNWAY_PROTECTED_RESOURCE,
-            resource_id=runway_id,
-            session_id=session_id,
-        )
-
     def clear_crossing(self, crossing_id: UUID) -> RunwayCrossingTransaction:
         crossing = self._require_crossing(crossing_id)
+        owner = self.core.authority.get_owner(crossing.session_id, ControllerAuthorityScope.LANDING_AREA)
+        if owner is None or owner.agency is not ControllerAgency.AIRPORT_TOWER:
+            raise ValueError("Tower does not own LANDING_AREA authority for this crossing")
         runway = self.runways.require_positive_clearance_state(crossing.runway_id)
-        self.reserve_protected_runway(
-            session_id=crossing.session_id,
-            runway_id=crossing.runway_id,
-            reason=f"Runway crossing {crossing.crossing_id}",
+        self.reservations.reserve(
+            RunwayReservation(
+                session_id=crossing.session_id,
+                runway_id=crossing.runway_id,
+                operation=RunwayOperationType.CROSSING,
+                reason=f"Runway crossing {crossing.crossing_id}",
+            ),
+            runway,
         )
         crossing.clear(runway)
         self._crossings[crossing_id] = crossing
@@ -156,6 +148,12 @@ class AirportSurfaceCoordinator:
     def commit_crossing(self, crossing_id: UUID) -> RunwayCrossingTransaction:
         crossing = self._require_crossing(crossing_id)
         crossing.commit()
+        self.reservations.advance_commitment(
+            runway_id=crossing.runway_id,
+            session_id=crossing.session_id,
+            commitment=CommitmentState.PHYSICALLY_COMMITTED,
+            reason="aircraft physically committed to crossing",
+        )
         self._crossings[crossing_id] = crossing
         hold = self._holds.get((crossing.session_id, crossing.runway_id))
         if hold is not None and hold.active:
@@ -174,8 +172,12 @@ class AirportSurfaceCoordinator:
     def complete_crossing(self, crossing_id: UUID) -> RunwayCrossingTransaction:
         crossing = self._require_crossing(crossing_id)
         crossing.complete()
+        self.reservations.complete(
+            runway_id=crossing.runway_id,
+            session_id=crossing.session_id,
+            reason="aircraft vacated runway crossing resource",
+        )
         self._crossings[crossing_id] = crossing
-        self.release_protected_runway(session_id=crossing.session_id, runway_id=crossing.runway_id)
         self.core.history.record(
             session_id=crossing.session_id,
             event_type="runway_crossing_completed",
@@ -226,17 +228,21 @@ class AirportGroundController:
         return self.core.issue_instruction(instruction)
 
     def issue_hold_short(self, constraint: HoldShortConstraint) -> OperationalInstruction:
-        self.surface.add_hold_short(constraint)
-        instruction = OperationalInstruction(
-            session_id=constraint.session_id,
-            issuing_agency=ControllerAgency.AIRPORT_GROUND,
-            authority_scope=ControllerAuthorityScope.SURFACE_MOVEMENT,
-            semantic_action="hold_short",
-            parameters={"resource_id": constraint.resource_id},
-            acknowledgement_required=True,
-            voice_priority=VoicePriority.IMMEDIATE_SAFETY,
+        self.add_hold_short_instruction(constraint)
+        return self.core.issue_instruction(
+            OperationalInstruction(
+                session_id=constraint.session_id,
+                issuing_agency=ControllerAgency.AIRPORT_GROUND,
+                authority_scope=ControllerAuthorityScope.SURFACE_MOVEMENT,
+                semantic_action="hold_short",
+                parameters={"resource_id": constraint.resource_id},
+                acknowledgement_required=True,
+                voice_priority=VoicePriority.IMMEDIATE_SAFETY,
+            )
         )
-        return self.core.issue_instruction(instruction)
+
+    def add_hold_short_instruction(self, constraint: HoldShortConstraint) -> HoldShortConstraint:
+        return self.surface.add_hold_short(constraint)
 
     def request_runway_crossing(self, crossing: RunwayCrossingTransaction) -> RunwayCrossingTransaction:
         crossing.hold_short()
