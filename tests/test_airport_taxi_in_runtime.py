@@ -4,6 +4,7 @@ import pytest
 
 from orion.airport_surface import RunwayAvailability, RunwayState
 from orion.airport_surface_runtime import AirportGroundController, AirportSurfaceCoordinator
+from orion.airport_taxi_guidance import TaxiGuidanceAction
 from orion.airport_taxi_in import ParkingStand, ParkingStandCatalog
 from orion.airport_taxi_in_runtime import AirportTaxiInRuntime
 from orion.airport_taxi_navigation import (
@@ -79,6 +80,30 @@ def test_taxi_in_selects_best_available_stand_deterministically() -> None:
     prepare_vacated_arrival(ground, tower, surface, session_id)
     selection, _ = runtime.start_taxi_in(session_id=session_id, runway_exit_node_id="exit")
     assert selection.stand.stand_id == "2"
+
+
+def test_taxi_in_guidance_runs_to_selected_stand_and_audits_completion() -> None:
+    runtime, ground, tower, surface = make_runtime()
+    session_id = uuid4()
+    prepare_vacated_arrival(ground, tower, surface, session_id)
+    runtime.start_taxi_in(session_id=session_id, runway_exit_node_id="exit", requested_stand_id="1")
+
+    cue = runtime.update_position(
+        session_id=session_id,
+        position=SurfacePosition(x_m=50, z_m=0),
+        freshness=FreshnessClass.FRESH,
+    )
+    assert cue.action in {TaxiGuidanceAction.TURN_RIGHT, TaxiGuidanceAction.CONTINUE}
+
+    arrived = runtime.update_position(
+        session_id=session_id,
+        position=SurfacePosition(x_m=100, z_m=-20),
+        freshness=FreshnessClass.FRESH,
+    )
+    assert arrived.action is TaxiGuidanceAction.ARRIVED
+    assert "Stand 1" in arrived.text
+    events = ground.core.history.list(session_id)
+    assert any(event.event_type == "taxi_in_completed" for event in events)
 
 
 def test_taxi_in_is_blocked_before_runway_vacated() -> None:
