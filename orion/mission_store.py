@@ -15,6 +15,7 @@ class MissionStore:
             self._snapshot = snapshot
         self._notify_jtac_target_changes(snapshot)
         self._notify_proactive_mission_control(snapshot)
+        self._notify_coordination_mission_control(snapshot)
         return snapshot
 
     @staticmethod
@@ -34,6 +35,15 @@ class MissionStore:
         except ImportError:
             return
         observe_snapshot_for_proactive_mission_control(snapshot)
+
+    @staticmethod
+    def _notify_coordination_mission_control(snapshot: MissionSnapshot) -> None:
+        # Multi-threat coordination is another optional post-store observer.
+        try:
+            from orion.mission_control_coordination_runtime import observe_snapshot_for_coordination_mission_control
+        except ImportError:
+            return
+        observe_snapshot_for_coordination_mission_control(snapshot)
 
     def get(self) -> MissionSnapshot | None:
         with self._lock:
