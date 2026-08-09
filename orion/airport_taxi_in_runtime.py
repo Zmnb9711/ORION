@@ -3,15 +3,16 @@ from __future__ import annotations
 from uuid import UUID
 
 from orion.airport_surface_runtime import AirportGroundController
+from orion.airport_taxi_guidance import TaxiGuidanceAction, TaxiGuidanceCue
 from orion.airport_taxi_in import ParkingSelection, ParkingStandCatalog
-from orion.airport_taxi_navigation import AirportSurfaceGraph
+from orion.airport_taxi_navigation import AirportSurfaceGraph, SurfacePosition
 from orion.airport_tower_runtime import AirportTowerController, TowerArrivalState
 from orion.atc_core import ControllerAgency, ControllerAuthorityScope
-from orion.atc_operations import OperationalInstruction
+from orion.atc_operations import FreshnessClass, OperationalInstruction
 
 
 class AirportTaxiInRuntime:
-    """Starts taxi-in only after Tower confirms RUNWAY_VACATED and Ground owns surface movement."""
+    """Runs taxi-in from confirmed runway vacation through arrival at the selected stand."""
 
     def __init__(
         self,
@@ -73,3 +74,35 @@ class AirportTaxiInRuntime:
             },
         )
         return selection, instruction
+
+    def update_position(
+        self,
+        *,
+        session_id: UUID,
+        position: SurfacePosition,
+        freshness: FreshnessClass,
+    ) -> TaxiGuidanceCue:
+        cue = self.ground.guidance_after_position_update(
+            session_id=session_id,
+            graph=self.graph,
+            position=position,
+            freshness=freshness,
+        )
+        if cue.action is TaxiGuidanceAction.ARRIVED:
+            route = self.ground.surface.get_route(session_id)
+            if route is None:
+                raise ValueError("No active taxi-in route at stand arrival")
+            stand = next((item for item in self.stands.list_available() if item.node_id == route.destination), None)
+            self.ground.core.history.record(
+                session_id=session_id,
+                event_type="taxi_in_completed",
+                reason="aircraft reached assigned parking stand",
+                source_agency=ControllerAgency.AIRPORT_GROUND,
+                related_id=route.route_id,
+                details={
+                    "destination_node_id": route.destination,
+                    "stand_id": stand.stand_id if stand is not None else route.destination,
+                    "route_revision": route.revision,
+                },
+            )
+        return cue
