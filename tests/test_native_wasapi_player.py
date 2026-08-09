@@ -14,6 +14,7 @@ class FakeStream:
         self.owner = owner
         self.aborted = False
         self.writes = 0
+        self.payloads: list[bytes] = []
 
     def __enter__(self):
         self.owner.last_stream = self
@@ -24,6 +25,7 @@ class FakeStream:
 
     def write(self, data: bytes) -> None:
         self.writes += 1
+        self.payloads.append(data)
         if self.owner.stop_after_first_write and self.writes == 1:
             self.owner.player.stop()
 
@@ -57,12 +59,12 @@ class FakeSoundDevice:
         return FakeStream(self)
 
 
-def _wav(path: Path, frames: int = 5000) -> None:
+def _wav(path: Path, frames: int = 5000, sample: int = 0) -> None:
     with wave.open(str(path), "wb") as output:
         output.setnchannels(1)
         output.setsampwidth(2)
         output.setframerate(16000)
-        output.writeframes(b"\x00\x00" * frames)
+        output.writeframes(sample.to_bytes(2, "little", signed=True) * frames)
 
 
 def test_resolves_vr_endpoint_to_wasapi_output_device(tmp_path: Path) -> None:
@@ -93,6 +95,30 @@ def test_stop_aborts_active_stream_and_ends_chunked_playback(tmp_path: Path) -> 
 
     assert sd.last_stream.aborted is True
     assert sd.last_stream.writes == 1
+
+
+def test_volume_scales_pcm_samples(tmp_path: Path) -> None:
+    sd = FakeSoundDevice()
+    player = NativeWasapiPlayer(sd, chunk_frames=4)
+    sd.player = player
+    path = tmp_path / "voice.wav"
+    _wav(path, frames=4, sample=10000)
+
+    player.play(path, WasapiEndpoint(device_id="pnp-1", name="Pimax Dream Air Audio"), volume=0.5)
+
+    assert sd.last_stream.payloads
+    first_sample = int.from_bytes(sd.last_stream.payloads[0][:2], "little", signed=True)
+    assert first_sample == 5000
+
+
+def test_volume_outside_supported_range_is_rejected(tmp_path: Path) -> None:
+    sd = FakeSoundDevice()
+    player = NativeWasapiPlayer(sd)
+    path = tmp_path / "voice.wav"
+    _wav(path)
+
+    with pytest.raises(ValueError, match="volume"):
+        player.play(path, WasapiEndpoint(device_id="pnp-1", name="Pimax Dream Air Audio"), volume=1.1)
 
 
 def test_missing_matching_wasapi_device_is_rejected(tmp_path: Path) -> None:
