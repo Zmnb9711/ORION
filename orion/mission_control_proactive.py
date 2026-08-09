@@ -13,7 +13,7 @@ from orion.mission_control_autonomy_voice import submit_autonomy_proposal_voice
 
 
 class ProactiveMissionControlResult(BaseModel):
-    decision: MissionControlAutonomyDecision
+    decision: MissionControlAutonomyDecision | None = None
     proposal: PendingAction | None = None
     replaced_action_id: str | None = None
     cancelled_action_id: str | None = None
@@ -24,15 +24,33 @@ class ProactiveMissionControlResult(BaseModel):
 class ProactiveMissionControlRuntime:
     def __init__(self, *, cooldown_seconds: float = 30.0) -> None:
         self._lock = RLock()
+        self._enabled = False
         self._mission_id: str | None = None
         self._active_action_id: str | None = None
         self._last_signature: tuple[str, str, str, str] | None = None
         self._last_announced_at: datetime | None = None
         self._cooldown = timedelta(seconds=cooldown_seconds)
 
+    @property
+    def enabled(self) -> bool:
+        with self._lock:
+            return self._enabled
+
+    def enable(self) -> None:
+        with self._lock:
+            self._enabled = True
+
+    def disable(self) -> None:
+        with self._lock:
+            self._enabled = False
+            self._reset_state()
+
     def observe(self, snapshot: MissionSnapshot, *, now: datetime | None = None, language: str = "en") -> ProactiveMissionControlResult:
         now = now or datetime.now(UTC)
         with self._lock:
+            if not self._enabled:
+                return ProactiveMissionControlResult(suppressed=True, suppression_reason="runtime disabled")
+
             if snapshot.mission_id != self._mission_id:
                 self._mission_id = snapshot.mission_id
                 self._active_action_id = None
@@ -73,10 +91,13 @@ class ProactiveMissionControlRuntime:
 
     def reset(self) -> None:
         with self._lock:
-            self._mission_id = None
-            self._active_action_id = None
-            self._last_signature = None
-            self._last_announced_at = None
+            self._reset_state()
+
+    def _reset_state(self) -> None:
+        self._mission_id = None
+        self._active_action_id = None
+        self._last_signature = None
+        self._last_announced_at = None
 
     def _active_pending(self) -> PendingAction | None:
         if self._active_action_id is None:
