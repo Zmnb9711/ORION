@@ -49,3 +49,7 @@ target-version = "py311"
 # Correctness-first linting. #65.5 adds bug-risk rules incrementally rather than
 # forcing a repository-wide style rewrite in one change.
 select = ["E9", "F63", "F7", "F82", "B006", "B008"]
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI intentionally uses Query(...) objects as declarative endpoint defaults.
+extend-immutable-calls = ["fastapi.Query"]
