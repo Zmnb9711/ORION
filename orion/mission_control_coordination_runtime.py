@@ -6,9 +6,8 @@ from pydantic import BaseModel, Field
 
 from orion.confirmations import ConfirmationStatus, PendingAction, confirmation_store
 from orion.mission import MissionSnapshot
-from orion.mission_control_autonomy import MissionControlAction, MissionControlAutonomyDecision
-from orion.mission_control_autonomy_actions import create_autonomy_pending_action
 from orion.mission_control_coordination import MissionControlAssignment, build_mission_control_coordination_plan
+from orion.mission_control_coordination_actions import create_coordination_pending_action
 from orion.orion_settings import CommunicationMode, orion_settings
 from orion.voice_core import CommandPriority, VoiceAgent, VoiceCommandCreate, voice_commands
 
@@ -103,7 +102,7 @@ class MissionControlCoordinationRuntime:
             for target_id, assignment in desired.items():
                 if target_id in self._active_by_target:
                     continue
-                pending = create_autonomy_pending_action(self._decision(assignment))
+                pending = create_coordination_pending_action(assignment)
                 self._active_by_target[target_id] = pending.action_id
                 result.created.append(pending)
 
@@ -196,27 +195,6 @@ class MissionControlCoordinationRuntime:
             pending.payload.get("target_id") == assignment.target_id
             and pending.payload.get("designator_id") == assignment.designator_id
             and pending.payload.get("designation_method") == assignment.designation_method.value
-        )
-
-    @staticmethod
-    def _decision(assignment: MissionControlAssignment) -> MissionControlAutonomyDecision:
-        action = (
-            MissionControlAction.SUGGEST_9LINE
-            if assignment.target_kind.value == "sam" and assignment.designation_method.value == "laser"
-            else MissionControlAction.SUGGEST_JTAC
-        )
-        return MissionControlAutonomyDecision(
-            action=action,
-            target_id=assignment.target_id,
-            target_name=assignment.target_name,
-            confidence=0.9 if action is MissionControlAction.SUGGEST_9LINE else 0.75,
-            reason="Coordinated multi-threat assignment with an available JTAC/designator",
-            requires_pilot_confirmation=True,
-            selected_designator_id=assignment.designator_id,
-            selected_designator_name=assignment.designator_name,
-            selected_designator_supports_laser=assignment.supports_laser,
-            selected_designator_supports_smoke=assignment.supports_smoke,
-            selected_designation_method=assignment.designation_method,
         )
 
 
