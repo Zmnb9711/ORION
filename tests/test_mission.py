@@ -43,20 +43,21 @@ def test_mission_store_filters_units() -> None:
     }
 
 
-def test_replace_notifies_jtac_and_proactive_observers_once() -> None:
+def test_replace_notifies_jtac_proactive_and_coordination_observers_once() -> None:
     store = MissionStore()
     snapshot = MissionSnapshot(mission_id="mission-events")
     with patch.object(store, "_notify_jtac_target_changes") as jtac, patch.object(
         store, "_notify_proactive_mission_control"
-    ) as proactive:
+    ) as proactive, patch.object(store, "_notify_coordination_mission_control") as coordination:
         returned = store.replace(snapshot)
     assert returned is snapshot
     assert store.get() is snapshot
     jtac.assert_called_once_with(snapshot)
     proactive.assert_called_once_with(snapshot)
+    coordination.assert_called_once_with(snapshot)
 
 
-def test_snapshot_is_stored_before_proactive_observer_runs() -> None:
+def test_snapshot_is_stored_before_proactive_and_coordination_observers_run() -> None:
     store = MissionStore()
     snapshot = MissionSnapshot(mission_id="mission-visible")
     observed: list[MissionSnapshot | None] = []
@@ -67,23 +68,26 @@ def test_snapshot_is_stored_before_proactive_observer_runs() -> None:
 
     with patch.object(store, "_notify_jtac_target_changes"), patch.object(
         store, "_notify_proactive_mission_control", side_effect=observe
-    ):
+    ), patch.object(store, "_notify_coordination_mission_control", side_effect=observe):
         store.replace(snapshot)
-    assert observed == [snapshot]
+    assert observed == [snapshot, snapshot]
 
 
-def test_each_snapshot_replacement_emits_one_proactive_event() -> None:
+def test_each_snapshot_replacement_emits_one_proactive_and_coordination_event() -> None:
     store = MissionStore()
     first = MissionSnapshot(mission_id="mission-1", mission_time_s=10)
     second = MissionSnapshot(mission_id="mission-1", mission_time_s=11)
     with patch.object(store, "_notify_jtac_target_changes"), patch.object(
         store, "_notify_proactive_mission_control"
-    ) as proactive:
+    ) as proactive, patch.object(store, "_notify_coordination_mission_control") as coordination:
         store.replace(first)
         store.replace(second)
     assert proactive.call_count == 2
     assert proactive.call_args_list[0].args == (first,)
     assert proactive.call_args_list[1].args == (second,)
+    assert coordination.call_count == 2
+    assert coordination.call_args_list[0].args == (first,)
+    assert coordination.call_args_list[1].args == (second,)
 
 
 def test_target_marking_requires_target() -> None:
