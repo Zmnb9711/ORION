@@ -76,6 +76,7 @@ for _router_module in (
     "orion.mission_control_queries_api",
     "orion.mission_control_jtac_api",
     "orion.mission_control_autonomy_api",
+    "orion.mission_control_proactive_api",
     "orion.cas_9line_api",
     "orion.jtac_api",
     "orion.dialogue_runtime_api",
