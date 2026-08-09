@@ -4,6 +4,7 @@ from uuid import UUID
 
 from orion.atc_core import AtcSessionIdentity, ControllerAgency, ControllerAuthorityScope
 from orion.atc_operations import (
+    CapabilitySupport,
     CommitmentState,
     OperationalInstruction,
     OperationalOverlay,
@@ -24,7 +25,6 @@ from orion.atc_simulator_sync import (
     NativeActionRequest,
     NativeSyncState,
 )
-from orion.atc_operations import CapabilitySupport
 
 
 class AtcIntegratedRuntime:
