@@ -41,6 +41,11 @@ class MissionControlCoordinationRuntime:
         self._max_active_proposals = max(1, max_active_proposals)
         self._last_announced_signature: str | None = None
 
+    @property
+    def enabled(self) -> bool:
+        with self._lock:
+            return self._enabled
+
     def enable(self) -> None:
         with self._lock:
             self._enabled = True
@@ -162,11 +167,11 @@ class MissionControlCoordinationRuntime:
                 agent=VoiceAgent.MISSION_CONTROL,
                 priority=CommandPriority.HIGH,
                 context={
-                    "mission_id": self._mission_id,
+                    "mission_id": self._mission_id or "",
                     "created": created,
                     "cancelled": cancelled,
-                    "active_targets": sorted(active),
-                    "unassigned_targets": result.unassigned_target_ids,
+                    "active_targets": ",".join(sorted(active)),
+                    "unassigned_targets": ",".join(result.unassigned_target_ids),
                     "language": language,
                 },
             )
@@ -226,7 +231,6 @@ def observe_snapshot_for_coordination_mission_control(snapshot: MissionSnapshot)
     if proactive_mission_control.enabled:
         if not coordination_mission_control.enabled:
             coordination_mission_control.enable()
-    else:
-        if coordination_mission_control.enabled:
-            coordination_mission_control.disable()
+    elif coordination_mission_control.enabled:
+        coordination_mission_control.disable()
     return coordination_mission_control.observe(snapshot)
