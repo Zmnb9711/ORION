@@ -9,7 +9,8 @@ from orion.confirmations import ConfirmationStatus, PendingAction, confirmation_
 from orion.mission import MissionSnapshot
 from orion.mission_control_autonomy import MissionControlAction, MissionControlAutonomyDecision, evaluate_mission_control_autonomy
 from orion.mission_control_autonomy_actions import create_autonomy_pending_action
-from orion.mission_control_autonomy_voice import submit_autonomy_proposal_voice
+from orion.mission_control_autonomy_voice import autonomy_proposal_text
+from orion.voice_core import CommandPriority, VoiceAgent, VoiceCommandCreate, voice_commands
 
 
 class ProactiveMissionControlResult(BaseModel):
@@ -19,6 +20,20 @@ class ProactiveMissionControlResult(BaseModel):
     cancelled_action_id: str | None = None
     suppressed: bool = False
     suppression_reason: str | None = None
+
+
+class ProactiveMissionControlStatus(BaseModel):
+    enabled: bool
+    mission_id: str | None = None
+    active_action_id: str | None = None
+    active_action_type: str | None = None
+    active_target_id: str | None = None
+    last_announced_at: datetime | None = None
+    deescalation_count: int = 0
+    deescalation_required: int = 0
+    replacement_candidate_count: int = 0
+    replacement_required: int = 0
+    cooldown_seconds: float = 0.0
 
 
 class ProactiveMissionControlRuntime:
@@ -58,6 +73,23 @@ class ProactiveMissionControlRuntime:
             self._enabled = False
             self._reset_state()
 
+    def status(self) -> ProactiveMissionControlStatus:
+        with self._lock:
+            active = self._active_pending()
+            return ProactiveMissionControlStatus(
+                enabled=self._enabled,
+                mission_id=self._mission_id,
+                active_action_id=active.action_id if active else None,
+                active_action_type=active.action_type if active else None,
+                active_target_id=str(active.payload.get("target_id")) if active and active.payload.get("target_id") else None,
+                last_announced_at=self._last_announced_at,
+                deescalation_count=self._deescalation_count,
+                deescalation_required=self._deescalation_observations,
+                replacement_candidate_count=self._candidate_count,
+                replacement_required=self._replacement_observations,
+                cooldown_seconds=self._cooldown.total_seconds(),
+            )
+
     def observe(
         self,
         snapshot: MissionSnapshot,
@@ -93,6 +125,7 @@ class ProactiveMissionControlRuntime:
                 cancelled = self._reject(active)
                 self._active_action_id = None
                 self._deescalation_count = 0
+                self._announce_deescalation(language=language, cancelled_action_id=cancelled)
                 return ProactiveMissionControlResult(decision=decision, cancelled_action_id=cancelled)
 
             self._deescalation_count = 0
@@ -110,7 +143,7 @@ class ProactiveMissionControlRuntime:
                 if self._is_escalation(active, decision):
                     self._reset_candidate()
                     replaced = self._reject(active)
-                    proposal = self._create(decision, now=now, language=language)
+                    proposal = self._create(decision, now=now, language=language, escalation=True)
                     return ProactiveMissionControlResult(
                         decision=decision,
                         proposal=proposal,
@@ -132,7 +165,7 @@ class ProactiveMissionControlRuntime:
 
                 self._reset_candidate()
                 replaced = self._reject(active)
-                proposal = self._create(decision, now=now, language=language)
+                proposal = self._create(decision, now=now, language=language, changed=True)
                 return ProactiveMissionControlResult(
                     decision=decision,
                     proposal=proposal,
@@ -176,13 +209,75 @@ class ProactiveMissionControlRuntime:
             return None
         return item
 
-    def _create(self, decision: MissionControlAutonomyDecision, *, now: datetime, language: str) -> PendingAction:
+    def _create(
+        self,
+        decision: MissionControlAutonomyDecision,
+        *,
+        now: datetime,
+        language: str,
+        escalation: bool = False,
+        changed: bool = False,
+    ) -> PendingAction:
         proposal = create_autonomy_pending_action(decision)
-        submit_autonomy_proposal_voice(proposal, language=language)
+        self._announce_proposal(proposal, language=language, escalation=escalation, changed=changed)
         self._active_action_id = proposal.action_id
         self._last_signature = self._signature(decision)
         self._last_announced_at = now
         return proposal
+
+    @staticmethod
+    def _announce_proposal(
+        proposal: PendingAction,
+        *,
+        language: str,
+        escalation: bool,
+        changed: bool,
+    ) -> None:
+        ru = language.casefold().startswith("ru")
+        text = autonomy_proposal_text(proposal, language=language)
+        if escalation:
+            text = ("Угроза усилилась. " if ru else "Threat escalation. ") + text
+        elif changed:
+            text = ("Тактическая обстановка изменилась. " if ru else "Tactical picture changed. ") + text
+        voice_commands.submit(
+            VoiceCommandCreate(
+                transcript=text,
+                intent="mission_control_proactive_escalation" if escalation else "mission_control_proactive_proposal",
+                agent=VoiceAgent.MISSION_CONTROL,
+                priority=CommandPriority.CRITICAL if escalation else CommandPriority.HIGH,
+                context={
+                    "action_id": proposal.action_id,
+                    "action_type": proposal.action_type,
+                    "language": language,
+                    "proactive": True,
+                    "escalation": escalation,
+                },
+            )
+        )
+
+    @staticmethod
+    def _announce_deescalation(*, language: str, cancelled_action_id: str | None) -> None:
+        if cancelled_action_id is None:
+            return
+        ru = language.casefold().startswith("ru")
+        text = (
+            "Обстановка стабилизировалась. Предыдущее предложение Mission Control отменено."
+            if ru
+            else "Situation stabilized. The previous Mission Control proposal has been cancelled."
+        )
+        voice_commands.submit(
+            VoiceCommandCreate(
+                transcript=text,
+                intent="mission_control_proactive_deescalation",
+                agent=VoiceAgent.MISSION_CONTROL,
+                priority=CommandPriority.NORMAL,
+                context={
+                    "cancelled_action_id": cancelled_action_id,
+                    "language": language,
+                    "proactive": True,
+                },
+            )
+        )
 
     @staticmethod
     def _reject(action: PendingAction | None) -> str | None:
