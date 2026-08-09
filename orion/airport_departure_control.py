@@ -4,6 +4,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
+from orion.aerodrome_information import AerodromePressureObservation
 from orion.atc_core import ControllerAgency, ControllerAuthorityScope
 from orion.atc_operations import OperationalInstruction, VoicePriority
 
@@ -14,6 +15,11 @@ class DepartureRoute(BaseModel):
     transition_fix: str | None = Field(default=None, max_length=80)
 
 
+class DeparturePressureContext(BaseModel):
+    transition_altitude_ft: int | None = Field(default=None, ge=0)
+    transition_level: int | None = Field(default=None, ge=0)
+
+
 class DepartureClearance(BaseModel):
     heading_deg: int | None = Field(default=None, ge=0, le=359)
     altitude_ft: int | None = Field(default=None, ge=0)
@@ -22,7 +28,7 @@ class DepartureClearance(BaseModel):
     speed_kt: int | None = Field(default=None, ge=0)
     frequency_mhz: float | None = Field(default=None, gt=0)
     qnh_hpa: float | None = Field(default=None, gt=0)
-    standard_pressure: bool = False
+    standard_pressure: bool | None = None
 
     def parameters(self) -> dict[str, str | int | float | bool]:
         values: dict[str, str | int | float | bool] = {}
@@ -45,8 +51,8 @@ class DepartureClearance(BaseModel):
             values["frequency_mhz"] = self.frequency_mhz
         if self.qnh_hpa is not None:
             values["qnh_hpa"] = self.qnh_hpa
-        if self.standard_pressure:
-            values["standard_pressure"] = True
+        if self.standard_pressure is not None:
+            values["standard_pressure"] = self.standard_pressure
         return values
 
 
@@ -84,12 +90,25 @@ class AirportDepartureController:
 
     def amend_clearance(self, session_id: UUID, amendment: DepartureClearance, *, reason: str) -> OperationalInstruction:
         self._require_departure_authority(session_id)
-        current = self._clearances.get(session_id, DepartureClearance())
-        update = amendment.model_dump(exclude_none=True)
-        if not update:
+        if not amendment.model_fields_set:
             raise ValueError("Departure amendment must contain at least one known instruction")
+        current = self._clearances.get(session_id, DepartureClearance())
+        update = {name: getattr(amendment, name) for name in amendment.model_fields_set}
         merged = current.model_copy(update=update, deep=True)
         return self.issue_clearance(session_id, merged, reason=reason)
+
+    def pressure_clearance(
+        self,
+        *,
+        altitude_ft: int,
+        pressure: AerodromePressureObservation | None,
+        context: DeparturePressureContext,
+    ) -> DepartureClearance:
+        if context.transition_altitude_ft is not None and altitude_ft >= context.transition_altitude_ft:
+            return DepartureClearance(standard_pressure=True)
+        if pressure is not None and pressure.usable_for_current_pressure_answer:
+            return DepartureClearance(qnh_hpa=pressure.qnh_hpa, standard_pressure=False)
+        return DepartureClearance()
 
     def current_clearance(self, session_id: UUID) -> DepartureClearance | None:
         item = self._clearances.get(session_id)
@@ -107,7 +126,7 @@ class AirportDepartureController:
         if "frequency" in q or "частот" in q:
             return f"Departure frequency {clearance.frequency_mhz:.3f} MHz." if clearance.frequency_mhz is not None else "Departure frequency is not available."
         if "pressure" in q or "давлен" in q or "qnh" in q:
-            if clearance.standard_pressure:
+            if clearance.standard_pressure is True:
                 return "Set STANDARD 1013.25 hPa / 29.92 inHg."
             if clearance.qnh_hpa is not None:
                 return f"Set QNH {clearance.qnh_hpa:.0f} hPa."
