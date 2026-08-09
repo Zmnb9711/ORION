@@ -6,7 +6,7 @@ from math import atan2, degrees
 from pydantic import BaseModel, Field
 
 from orion.airport_surface import TaxiRoute
-from orion.airport_taxi_navigation import AirportSurfaceGraph, PositionMatch, SurfaceNodeKind
+from orion.airport_taxi_navigation import AirportSurfaceGraph, PlannedTaxiPath, PositionMatch, SurfaceNodeKind
 
 
 class TaxiGuidanceAction(StrEnum):
@@ -31,7 +31,7 @@ class TaxiGuidanceCue(BaseModel):
 
 
 class TaxiGuidanceEngine:
-    """Deterministic turn-by-turn guidance over a canonical TaxiRoute and surface graph."""
+    """Deterministic turn-by-turn guidance over the issued canonical TaxiRoute."""
 
     def __init__(self, graph: AirportSurfaceGraph) -> None:
         self.graph = graph
@@ -44,7 +44,7 @@ class TaxiGuidanceEngine:
                 confidence=position_match.confidence,
             )
 
-        path = self.graph.shortest_path(route.origin, route.destination)
+        path = self._issued_route_path(route)
         current = position_match.node_id
         if current == route.destination:
             destination = self.graph.node(route.destination)
@@ -127,6 +127,33 @@ class TaxiGuidanceEngine:
         if any(token in normalized for token in ("где останов", "hold short", "stop")):
             return cue.model_copy(update={"text": cue.text if cue.safety_critical else "No stop is required at the next route step."})
         return cue.model_copy(update={"text": f"Current taxi guidance: {cue.text}"})
+
+    def _issued_route_path(self, route: TaxiRoute) -> PlannedTaxiPath:
+        if route.facility_id != self.graph.facility_id:
+            raise ValueError("Taxi route and surface graph facility mismatch")
+        self.graph.node(route.origin)
+        self.graph.node(route.destination)
+        cursor = route.origin
+        node_ids = [cursor]
+        edge_ids: list[str] = []
+        total_distance_m = 0.0
+
+        for segment in route.segments:
+            edge = self.graph.edge(segment.segment_id)
+            if edge.start_node_id == cursor:
+                next_node = edge.end_node_id
+            elif edge.bidirectional and edge.end_node_id == cursor:
+                next_node = edge.start_node_id
+            else:
+                raise ValueError("Issued taxi route segments are not contiguous in the surface graph")
+            edge_ids.append(edge.edge_id)
+            node_ids.append(next_node)
+            total_distance_m += edge.length_m
+            cursor = next_node
+
+        if cursor != route.destination:
+            raise ValueError("Issued taxi route does not terminate at its declared destination")
+        return PlannedTaxiPath(node_ids=node_ids, edge_ids=edge_ids, total_distance_m=total_distance_m)
 
     def _turn_action(self, node_ids: list[str], current_index: int) -> TaxiGuidanceAction:
         if current_index == 0 or current_index + 1 >= len(node_ids):
