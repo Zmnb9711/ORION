@@ -10,6 +10,7 @@ from orion.mission import MissionSnapshot
 from orion.mission_control_autonomy import MissionControlAction, MissionControlAutonomyDecision, evaluate_mission_control_autonomy
 from orion.mission_control_autonomy_actions import create_autonomy_pending_action
 from orion.mission_control_autonomy_voice import autonomy_proposal_text
+from orion.orion_settings import CommunicationMode, orion_settings
 from orion.voice_core import CommandPriority, VoiceAgent, VoiceCommandCreate, voice_commands
 
 
@@ -28,6 +29,7 @@ class ProactiveMissionControlStatus(BaseModel):
     active_action_id: str | None = None
     active_action_type: str | None = None
     active_target_id: str | None = None
+    language: str = "en"
     last_announced_at: datetime | None = None
     deescalation_count: int = 0
     deescalation_required: int = 0
@@ -70,6 +72,7 @@ class ProactiveMissionControlRuntime:
 
     def disable(self) -> None:
         with self._lock:
+            self._reject(self._active_pending())
             self._enabled = False
             self._reset_state()
 
@@ -82,6 +85,7 @@ class ProactiveMissionControlRuntime:
                 active_action_id=active.action_id if active else None,
                 active_action_type=active.action_type if active else None,
                 active_target_id=str(active.payload.get("target_id")) if active and active.payload.get("target_id") else None,
+                language=self._resolve_language(None),
                 last_announced_at=self._last_announced_at,
                 deescalation_count=self._deescalation_count,
                 deescalation_required=self._deescalation_observations,
@@ -95,14 +99,17 @@ class ProactiveMissionControlRuntime:
         snapshot: MissionSnapshot,
         *,
         now: datetime | None = None,
-        language: str = "en",
+        language: str | None = None,
     ) -> ProactiveMissionControlResult:
         now = now or datetime.now(UTC)
+        resolved_language = self._resolve_language(language)
         with self._lock:
             if not self._enabled:
                 return ProactiveMissionControlResult(suppressed=True, suppression_reason="runtime disabled")
 
             if snapshot.mission_id != self._mission_id:
+                if self._mission_id is not None:
+                    self._reject(self._active_pending())
                 self._reset_state()
                 self._mission_id = snapshot.mission_id
 
@@ -125,7 +132,7 @@ class ProactiveMissionControlRuntime:
                 cancelled = self._reject(active)
                 self._active_action_id = None
                 self._deescalation_count = 0
-                self._announce_deescalation(language=language, cancelled_action_id=cancelled)
+                self._announce_deescalation(language=resolved_language, cancelled_action_id=cancelled)
                 return ProactiveMissionControlResult(decision=decision, cancelled_action_id=cancelled)
 
             self._deescalation_count = 0
@@ -143,12 +150,8 @@ class ProactiveMissionControlRuntime:
                 if self._is_escalation(active, decision):
                     self._reset_candidate()
                     replaced = self._reject(active)
-                    proposal = self._create(decision, now=now, language=language, escalation=True)
-                    return ProactiveMissionControlResult(
-                        decision=decision,
-                        proposal=proposal,
-                        replaced_action_id=replaced,
-                    )
+                    proposal = self._create(decision, now=now, language=resolved_language, escalation=True)
+                    return ProactiveMissionControlResult(decision=decision, proposal=proposal, replaced_action_id=replaced)
 
                 if self._candidate_signature == signature:
                     self._candidate_count += 1
@@ -165,12 +168,8 @@ class ProactiveMissionControlRuntime:
 
                 self._reset_candidate()
                 replaced = self._reject(active)
-                proposal = self._create(decision, now=now, language=language, changed=True)
-                return ProactiveMissionControlResult(
-                    decision=decision,
-                    proposal=proposal,
-                    replaced_action_id=replaced,
-                )
+                proposal = self._create(decision, now=now, language=resolved_language, changed=True)
+                return ProactiveMissionControlResult(decision=decision, proposal=proposal, replaced_action_id=replaced)
 
             self._reset_candidate()
             if self._last_signature == signature and self._last_announced_at is not None:
@@ -181,11 +180,12 @@ class ProactiveMissionControlRuntime:
                         suppression_reason="proposal cooldown active",
                     )
 
-            proposal = self._create(decision, now=now, language=language)
+            proposal = self._create(decision, now=now, language=resolved_language)
             return ProactiveMissionControlResult(decision=decision, proposal=proposal)
 
     def reset(self) -> None:
         with self._lock:
+            self._reject(self._active_pending())
             self._reset_state()
 
     def _reset_state(self) -> None:
@@ -224,6 +224,21 @@ class ProactiveMissionControlRuntime:
         self._last_signature = self._signature(decision)
         self._last_announced_at = now
         return proposal
+
+    @staticmethod
+    def _resolve_language(requested: str | None) -> str:
+        if requested:
+            normalized = requested.casefold().strip()
+            if normalized.startswith("ru"):
+                return "ru"
+            if normalized.startswith("en"):
+                return "en"
+        settings = orion_settings.get()
+        if settings.communication_mode is CommunicationMode.AVIATION_ENGLISH:
+            return "en"
+        if settings.communication_mode is CommunicationMode.AVIATION_RUSSIAN:
+            return "ru"
+        return settings.interface_language.value
 
     @staticmethod
     def _announce_proposal(
