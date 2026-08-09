@@ -47,8 +47,8 @@ def store_telemetry(payload: TelemetryEnvelope) -> None:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     apply_completed_onboarding_at_startup()
-    proactive_mission_control.enable()
     transport, _ = await start_udp_bridge(store_telemetry)
+    proactive_mission_control.enable()
     try:
         yield
     finally:
