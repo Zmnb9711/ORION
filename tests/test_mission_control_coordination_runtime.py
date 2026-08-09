@@ -6,6 +6,7 @@ from orion.mission import MissionSnapshot
 from orion.mission_control_coordination import MissionControlAssignment, MissionControlCoordinationPlan
 from orion.mission_control_coordination_runtime import MissionControlCoordinationRuntime
 from orion.tactical_situation import TacticalThreatKind
+from orion.voice_core import VoiceAgent
 
 
 def _snapshot(mission_id: str = "mission-a") -> MissionSnapshot:
@@ -38,7 +39,9 @@ def test_creates_bounded_parallel_proposals_and_retains_stable_assignments() -> 
     store = ConfirmationStore()
     plan = MissionControlCoordinationPlan(assignments=[_assignment("t1", "d1", sam=True), _assignment("t2", "d2"), _assignment("t3", "d3")])
     p1, p2 = _store_patches(store)
-    with p1, p2, patch("orion.mission_control_coordination_runtime.build_mission_control_coordination_plan", return_value=plan):
+    with p1, p2, patch("orion.mission_control_coordination_runtime.build_mission_control_coordination_plan", return_value=plan), patch(
+        "orion.mission_control_coordination_runtime.voice_commands.submit"
+    ) as submit:
         first = runtime.observe(_snapshot())
         second = runtime.observe(_snapshot())
         status = runtime.status()
@@ -46,6 +49,10 @@ def test_creates_bounded_parallel_proposals_and_retains_stable_assignments() -> 
     assert not second.created
     assert set(second.retained_action_ids) == {item.action_id for item in first.created}
     assert len(status.active_action_ids) == 2
+    submit.assert_called_once()
+    callout = submit.call_args.args[0]
+    assert callout.agent is VoiceAgent.MISSION_CONTROL
+    assert callout.context["created"] == 2
 
 
 def test_replans_changed_designator_and_rejects_old_proposal() -> None:
