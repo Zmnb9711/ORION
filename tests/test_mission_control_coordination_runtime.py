@@ -1,6 +1,6 @@
 from unittest.mock import patch
 
-from orion.confirmations import ConfirmationStatus, confirmation_store
+from orion.confirmations import ConfirmationStatus, ConfirmationStore
 from orion.jtac_runtime import JtacDesignationMethod
 from orion.mission import MissionSnapshot
 from orion.mission_control_coordination import MissionControlAssignment, MissionControlCoordinationPlan
@@ -25,15 +25,20 @@ def _assignment(target: str, designator: str, *, sam: bool = False) -> MissionCo
     )
 
 
-def setup_function() -> None:
-    confirmation_store.clear()
+def _store_patches(store: ConfirmationStore):
+    return (
+        patch("orion.mission_control_coordination_runtime.confirmation_store", store),
+        patch("orion.mission_control_autonomy_actions.confirmation_store", store),
+    )
 
 
 def test_creates_bounded_parallel_proposals_and_retains_stable_assignments() -> None:
     runtime = MissionControlCoordinationRuntime(max_active_proposals=2)
     runtime.enable()
+    store = ConfirmationStore()
     plan = MissionControlCoordinationPlan(assignments=[_assignment("t1", "d1", sam=True), _assignment("t2", "d2"), _assignment("t3", "d3")])
-    with patch("orion.mission_control_coordination_runtime.build_mission_control_coordination_plan", return_value=plan):
+    p1, p2 = _store_patches(store)
+    with p1, p2, patch("orion.mission_control_coordination_runtime.build_mission_control_coordination_plan", return_value=plan):
         first = runtime.observe(_snapshot())
         second = runtime.observe(_snapshot())
     assert len(first.created) == 2
@@ -45,35 +50,42 @@ def test_creates_bounded_parallel_proposals_and_retains_stable_assignments() -> 
 def test_replans_changed_designator_and_rejects_old_proposal() -> None:
     runtime = MissionControlCoordinationRuntime(max_active_proposals=2)
     runtime.enable()
+    store = ConfirmationStore()
     first_plan = MissionControlCoordinationPlan(assignments=[_assignment("t1", "d1")])
     second_plan = MissionControlCoordinationPlan(assignments=[_assignment("t1", "d2")])
-    with patch("orion.mission_control_coordination_runtime.build_mission_control_coordination_plan", return_value=first_plan):
-        first = runtime.observe(_snapshot())
-    old = first.created[0]
-    with patch("orion.mission_control_coordination_runtime.build_mission_control_coordination_plan", return_value=second_plan):
-        second = runtime.observe(_snapshot())
-    assert second.cancelled_action_ids == [old.action_id]
-    assert confirmation_store.get(old.action_id).status is ConfirmationStatus.REJECTED
-    assert second.created[0].payload["designator_id"] == "d2"
+    p1, p2 = _store_patches(store)
+    with p1, p2:
+        with patch("orion.mission_control_coordination_runtime.build_mission_control_coordination_plan", return_value=first_plan):
+            first = runtime.observe(_snapshot())
+        old = first.created[0]
+        with patch("orion.mission_control_coordination_runtime.build_mission_control_coordination_plan", return_value=second_plan):
+            second = runtime.observe(_snapshot())
+        assert second.cancelled_action_ids == [old.action_id]
+        assert store.get(old.action_id).status is ConfirmationStatus.REJECTED
+        assert second.created[0].payload["designator_id"] == "d2"
 
 
 def test_mission_change_rejects_old_actions() -> None:
     runtime = MissionControlCoordinationRuntime()
     runtime.enable()
+    store = ConfirmationStore()
     plan = MissionControlCoordinationPlan(assignments=[_assignment("t1", "d1")])
-    with patch("orion.mission_control_coordination_runtime.build_mission_control_coordination_plan", return_value=plan):
+    p1, p2 = _store_patches(store)
+    with p1, p2, patch("orion.mission_control_coordination_runtime.build_mission_control_coordination_plan", return_value=plan):
         first = runtime.observe(_snapshot("mission-a"))
         runtime.observe(_snapshot("mission-b"))
-    assert confirmation_store.get(first.created[0].action_id).status is ConfirmationStatus.REJECTED
-    assert runtime.status().mission_id == "mission-b"
+        assert store.get(first.created[0].action_id).status is ConfirmationStatus.REJECTED
+        assert runtime.status().mission_id == "mission-b"
 
 
 def test_disable_rejects_all_parallel_pending_actions() -> None:
     runtime = MissionControlCoordinationRuntime()
     runtime.enable()
+    store = ConfirmationStore()
     plan = MissionControlCoordinationPlan(assignments=[_assignment("t1", "d1"), _assignment("t2", "d2")])
-    with patch("orion.mission_control_coordination_runtime.build_mission_control_coordination_plan", return_value=plan):
+    p1, p2 = _store_patches(store)
+    with p1, p2, patch("orion.mission_control_coordination_runtime.build_mission_control_coordination_plan", return_value=plan):
         result = runtime.observe(_snapshot())
-    runtime.disable()
-    assert all(confirmation_store.get(item.action_id).status is ConfirmationStatus.REJECTED for item in result.created)
-    assert runtime.status().active_action_ids == []
+        runtime.disable()
+        assert all(store.get(item.action_id).status is ConfirmationStatus.REJECTED for item in result.created)
+        assert runtime.status().active_action_ids == []
