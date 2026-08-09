@@ -70,6 +70,17 @@ def test_guidance_detects_off_route_position() -> None:
     assert cue.action is TaxiGuidanceAction.OFF_ROUTE
 
 
+def test_guidance_stays_on_issued_route_when_new_shorter_path_appears() -> None:
+    graph = _graph()
+    route = graph.build_taxi_route(session_id=uuid4(), origin_node_id="stand", destination_node_id="hp", reason="departure taxi")
+    graph.add_edge(SurfaceEdge(edge_id="shortcut", start_node_id="stand", end_node_id="b", length_m=1, label="Shortcut"))
+
+    cue = TaxiGuidanceEngine(graph).next_cue(route, _match("stand"))
+
+    assert cue.next_node_id == "a"
+    assert cue.named_surface == "Alpha"
+
+
 def test_free_form_right_question_is_answered_against_route() -> None:
     graph = _graph()
     route = graph.build_taxi_route(session_id=uuid4(), origin_node_id="stand", destination_node_id="hp", reason="departure taxi")
