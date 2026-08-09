@@ -44,7 +44,7 @@ def test_ground_controller_installs_replanned_route_and_audits_it() -> None:
     assert active is not None
     assert active.origin == "bravo"
     assert active.revision == 2
-    events = controller.core.history.list_for_session(session_id)
+    events = controller.core.history.list(session_id)
     assert any(event.event_type == "taxi_route_replanned" for event in events)
 
 
@@ -68,5 +68,5 @@ def test_ground_controller_does_not_replace_route_when_position_uncertain() -> N
     assert active is not None
     assert active.origin == "stand"
     assert active.revision == 1
-    events = controller.core.history.list_for_session(session_id)
+    events = controller.core.history.list(session_id)
     assert any(event.event_type == "taxi_position_uncertain" for event in events)
