@@ -41,10 +41,11 @@ def test_creates_bounded_parallel_proposals_and_retains_stable_assignments() -> 
     with p1, p2, patch("orion.mission_control_coordination_runtime.build_mission_control_coordination_plan", return_value=plan):
         first = runtime.observe(_snapshot())
         second = runtime.observe(_snapshot())
+        status = runtime.status()
     assert len(first.created) == 2
     assert not second.created
     assert set(second.retained_action_ids) == {item.action_id for item in first.created}
-    assert len(runtime.status().active_action_ids) == 2
+    assert len(status.active_action_ids) == 2
 
 
 def test_replans_changed_designator_and_rejects_old_proposal() -> None:
