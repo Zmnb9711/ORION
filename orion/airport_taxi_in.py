@@ -34,6 +34,12 @@ class ParkingStandCatalog:
             raise ValueError("Parking stand must reference a PARKING surface node")
         self._stands[stand.stand_id] = stand.model_copy(deep=True)
 
+    def get_by_node(self, node_id: str) -> ParkingStand | None:
+        for stand in self._stands.values():
+            if stand.node_id == node_id:
+                return stand.model_copy(deep=True)
+        return None
+
     def select(self, requested_stand_id: str | None = None) -> ParkingSelection:
         if requested_stand_id is not None:
             stand = self._stands.get(requested_stand_id)
