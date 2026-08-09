@@ -131,6 +131,7 @@ class AirportDepartureRuntime:
         session = self._require(session_id)
         if session.state is not AirportDepartureState.TAKEOFF_CLEARANCE_CANCELLED:
             raise ValueError("Return to holding point requires cancelled takeoff clearance")
+        self.tower.return_to_hold_short(session_id, reason=reason)
         session.state = AirportDepartureState.HOLDING_POINT
         self._sessions[session_id] = session
         self._record(session, reason)
