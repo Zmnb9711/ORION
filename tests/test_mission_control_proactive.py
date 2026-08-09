@@ -12,12 +12,17 @@ def _snapshot(mission_id: str = "mission-1") -> MissionSnapshot:
     return MissionSnapshot(mission_id=mission_id)
 
 
-def _decision(target_id: str = "target-1") -> MissionControlAutonomyDecision:
+def _decision(
+    target_id: str = "target-1",
+    *,
+    action: MissionControlAction = MissionControlAction.SUGGEST_JTAC,
+    confidence: float = 0.8,
+) -> MissionControlAutonomyDecision:
     return MissionControlAutonomyDecision(
-        action=MissionControlAction.SUGGEST_JTAC,
+        action=action,
         target_id=target_id,
         target_name="SA-11",
-        confidence=0.8,
+        confidence=confidence,
         reason="priority surface threat",
         requires_pilot_confirmation=True,
         available_designators=1,
@@ -37,24 +42,26 @@ def _observe_decision() -> MissionControlAutonomyDecision:
     )
 
 
-def _patch_runtime(store: ConfirmationStore, decision: MissionControlAutonomyDecision):
-    def create(current: MissionControlAutonomyDecision):
-        return store.create(
-            PendingActionCreate(
-                action_type=f"mission_control:{current.action.value}",
-                summary="proactive test",
-                payload={
-                    "target_id": current.target_id,
-                    "designator_id": current.selected_designator_id,
-                    "designation_method": current.selected_designation_method.value if current.selected_designation_method else None,
-                },
-            )
+def _create_in(store: ConfirmationStore, current: MissionControlAutonomyDecision):
+    return store.create(
+        PendingActionCreate(
+            action_type=f"mission_control:{current.action.value}",
+            summary="proactive test",
+            payload={
+                "target_id": current.target_id,
+                "designator_id": current.selected_designator_id,
+                "designation_method": current.selected_designation_method.value if current.selected_designation_method else None,
+                "confidence": current.confidence,
+            },
         )
+    )
 
+
+def _patch_runtime(store: ConfirmationStore, decision: MissionControlAutonomyDecision):
     return (
         patch("orion.mission_control_proactive.confirmation_store", store),
         patch("orion.mission_control_proactive.evaluate_mission_control_autonomy", return_value=decision),
-        patch("orion.mission_control_proactive.create_autonomy_pending_action", side_effect=create),
+        patch("orion.mission_control_proactive.create_autonomy_pending_action", side_effect=lambda current: _create_in(store, current)),
         patch("orion.mission_control_proactive.submit_autonomy_proposal_voice"),
     )
 
@@ -94,66 +101,104 @@ def test_matching_pending_proposal_suppresses_duplicate() -> None:
     assert submit.call_count == 1
 
 
-def test_changed_tactical_recommendation_replaces_active_proposal() -> None:
-    runtime = ProactiveMissionControlRuntime()
+def test_lateral_change_requires_replacement_hysteresis() -> None:
+    runtime = ProactiveMissionControlRuntime(replacement_observations=2)
     runtime.enable()
     store = ConfirmationStore()
-    current = [_decision("target-1"), _decision("target-2")]
-
-    def create(decision: MissionControlAutonomyDecision):
-        return store.create(
-            PendingActionCreate(
-                action_type=f"mission_control:{decision.action.value}",
-                summary="proactive test",
-                payload={
-                    "target_id": decision.target_id,
-                    "designator_id": decision.selected_designator_id,
-                    "designation_method": decision.selected_designation_method.value,
-                },
-            )
-        )
-
+    decisions = [_decision("target-1"), _decision("target-2"), _decision("target-2")]
     with patch("orion.mission_control_proactive.confirmation_store", store), patch(
-        "orion.mission_control_proactive.evaluate_mission_control_autonomy", side_effect=current
-    ), patch("orion.mission_control_proactive.create_autonomy_pending_action", side_effect=create), patch(
-        "orion.mission_control_proactive.submit_autonomy_proposal_voice"
-    ):
+        "orion.mission_control_proactive.evaluate_mission_control_autonomy", side_effect=decisions
+    ), patch(
+        "orion.mission_control_proactive.create_autonomy_pending_action",
+        side_effect=lambda current: _create_in(store, current),
+    ), patch("orion.mission_control_proactive.submit_autonomy_proposal_voice"):
+        first = runtime.observe(_snapshot())
+        second = runtime.observe(_snapshot())
+        third = runtime.observe(_snapshot())
+    assert second.suppressed is True
+    assert second.suppression_reason == "replacement hysteresis active"
+    assert second.proposal.action_id == first.proposal.action_id
+    assert third.replaced_action_id == first.proposal.action_id
+    assert store.get(first.proposal.action_id).status is ConfirmationStatus.REJECTED
+    assert third.proposal.action_id != first.proposal.action_id
+
+
+def test_action_escalation_replaces_immediately() -> None:
+    runtime = ProactiveMissionControlRuntime(replacement_observations=3)
+    runtime.enable()
+    store = ConfirmationStore()
+    decisions = [
+        _decision(action=MissionControlAction.SUGGEST_JTAC, confidence=0.75),
+        _decision(action=MissionControlAction.SUGGEST_9LINE, confidence=0.9),
+    ]
+    with patch("orion.mission_control_proactive.confirmation_store", store), patch(
+        "orion.mission_control_proactive.evaluate_mission_control_autonomy", side_effect=decisions
+    ), patch(
+        "orion.mission_control_proactive.create_autonomy_pending_action",
+        side_effect=lambda current: _create_in(store, current),
+    ), patch("orion.mission_control_proactive.submit_autonomy_proposal_voice"):
         first = runtime.observe(_snapshot())
         second = runtime.observe(_snapshot())
     assert second.replaced_action_id == first.proposal.action_id
-    assert store.get(first.proposal.action_id).status is ConfirmationStatus.REJECTED
-    assert second.proposal.action_id != first.proposal.action_id
+    assert second.suppressed is False
+    assert second.proposal.action_type == "mission_control:suggest_9line"
 
 
-def test_deescalation_cancels_active_proposal() -> None:
-    runtime = ProactiveMissionControlRuntime()
+def test_confidence_escalation_replaces_immediately() -> None:
+    runtime = ProactiveMissionControlRuntime(confidence_escalation_delta=0.15, replacement_observations=3)
     runtime.enable()
     store = ConfirmationStore()
-    decisions = [_decision(), _observe_decision()]
-
-    def create(decision: MissionControlAutonomyDecision):
-        return store.create(
-            PendingActionCreate(
-                action_type=f"mission_control:{decision.action.value}",
-                summary="proactive test",
-                payload={
-                    "target_id": decision.target_id,
-                    "designator_id": decision.selected_designator_id,
-                    "designation_method": decision.selected_designation_method.value,
-                },
-            )
-        )
-
+    decisions = [_decision("target-1", confidence=0.6), _decision("target-2", confidence=0.8)]
     with patch("orion.mission_control_proactive.confirmation_store", store), patch(
         "orion.mission_control_proactive.evaluate_mission_control_autonomy", side_effect=decisions
-    ), patch("orion.mission_control_proactive.create_autonomy_pending_action", side_effect=create), patch(
-        "orion.mission_control_proactive.submit_autonomy_proposal_voice"
-    ):
+    ), patch(
+        "orion.mission_control_proactive.create_autonomy_pending_action",
+        side_effect=lambda current: _create_in(store, current),
+    ), patch("orion.mission_control_proactive.submit_autonomy_proposal_voice"):
         first = runtime.observe(_snapshot())
         second = runtime.observe(_snapshot())
-    assert second.cancelled_action_id == first.proposal.action_id
+    assert second.replaced_action_id == first.proposal.action_id
+    assert second.proposal is not None
+
+
+def test_deescalation_requires_consecutive_observations() -> None:
+    runtime = ProactiveMissionControlRuntime(deescalation_observations=2)
+    runtime.enable()
+    store = ConfirmationStore()
+    decisions = [_decision(), _observe_decision(), _observe_decision()]
+    with patch("orion.mission_control_proactive.confirmation_store", store), patch(
+        "orion.mission_control_proactive.evaluate_mission_control_autonomy", side_effect=decisions
+    ), patch(
+        "orion.mission_control_proactive.create_autonomy_pending_action",
+        side_effect=lambda current: _create_in(store, current),
+    ), patch("orion.mission_control_proactive.submit_autonomy_proposal_voice"):
+        first = runtime.observe(_snapshot())
+        second = runtime.observe(_snapshot())
+        third = runtime.observe(_snapshot())
+    assert second.suppressed is True
+    assert second.suppression_reason == "de-escalation hysteresis active"
+    assert store.get(first.proposal.action_id).status is ConfirmationStatus.PENDING
+    assert third.cancelled_action_id == first.proposal.action_id
     assert store.get(first.proposal.action_id).status is ConfirmationStatus.REJECTED
-    assert second.proposal is None
+
+
+def test_single_observe_does_not_cancel_if_threat_returns() -> None:
+    runtime = ProactiveMissionControlRuntime(deescalation_observations=2)
+    runtime.enable()
+    store = ConfirmationStore()
+    decisions = [_decision(), _observe_decision(), _decision()]
+    with patch("orion.mission_control_proactive.confirmation_store", store), patch(
+        "orion.mission_control_proactive.evaluate_mission_control_autonomy", side_effect=decisions
+    ), patch(
+        "orion.mission_control_proactive.create_autonomy_pending_action",
+        side_effect=lambda current: _create_in(store, current),
+    ), patch("orion.mission_control_proactive.submit_autonomy_proposal_voice"):
+        first = runtime.observe(_snapshot())
+        runtime.observe(_snapshot())
+        third = runtime.observe(_snapshot())
+    assert third.suppressed is True
+    assert third.suppression_reason == "matching proposal already pending"
+    assert store.get(first.proposal.action_id).status is ConfirmationStatus.PENDING
 
 
 def test_recently_resolved_signature_is_suppressed_by_cooldown() -> None:
