@@ -2,12 +2,17 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from orion.airport_tower_runtime import AirportTowerController, TowerDepartureState
+from orion.airport_tower_runtime import (
+    AirportTowerController,
+    TowerArrivalState,
+    TowerDepartureState,
+)
 from orion.atc_core import ControllerAgency, ControllerAuthorityScope, ControllerHandoffTransaction
 from orion.atc_service import VirtualAtcService
 
 
 AIRBORNE_EVENT = "airborne"
+RUNWAY_VACATED_EVENT = "runway_vacated"
 
 
 class AirportAtcOrchestrator:
@@ -20,6 +25,7 @@ class AirportAtcOrchestrator:
         self.tower = tower
         self.core = service.core
         self._departure_handoffs: dict[UUID, UUID] = {}
+        self._ground_continuations: set[UUID] = set()
 
     def assume_tower_local_traffic(self, session_id: UUID, *, reason: str) -> None:
         """Give Tower local airborne traffic authority before departure handoff is armed."""
@@ -92,3 +98,48 @@ class AirportAtcOrchestrator:
             details={"gate": AIRBORNE_EVENT},
         )
         return completed
+
+    def arm_runway_vacated_to_ground(self, session_id: UUID, *, reason: str) -> None:
+        """Arm Ground surface authority acquisition after Tower confirms runway vacated.
+
+        This is intentionally not a LANDING_AREA handoff. Tower retains runway-domain
+        authority while Ground acquires the separate SURFACE_MOVEMENT scope after the
+        aircraft has physically vacated the runway.
+        """
+        if session_id in self._ground_continuations:
+            raise ValueError("Runway-vacated Ground continuation is already armed for this session")
+        tower_owner = self.core.authority.get_owner(session_id, ControllerAuthorityScope.LANDING_AREA)
+        if tower_owner is None or tower_owner.agency is not ControllerAgency.AIRPORT_TOWER:
+            raise ValueError("Tower must own LANDING_AREA before Ground continuation can be armed")
+        surface_owner = self.core.authority.get_owner(session_id, ControllerAuthorityScope.SURFACE_MOVEMENT)
+        if surface_owner is not None:
+            raise ValueError("SURFACE_MOVEMENT must be unowned before Ground continuation is armed")
+        self._ground_continuations.add(session_id)
+        self.core.history.record(
+            session_id=session_id,
+            event_type="airport_ground_continuation_armed",
+            reason=reason,
+            source_agency=ControllerAgency.AIRPORT_TOWER,
+            details={"gate": RUNWAY_VACATED_EVENT},
+        )
+
+    def complete_ground_continuation_on_runway_vacated(self, session_id: UUID, *, reason: str) -> None:
+        if session_id not in self._ground_continuations:
+            raise ValueError("Runway-vacated Ground continuation is not armed for this session")
+        arrival = self.tower._require_arrival(session_id)
+        if arrival.state is not TowerArrivalState.RUNWAY_VACATED:
+            raise ValueError("Ground continuation requires confirmed RUNWAY_VACATED state")
+        self.service.claim_authority(
+            session_id=session_id,
+            scope=ControllerAuthorityScope.SURFACE_MOVEMENT,
+            agency=ControllerAgency.AIRPORT_GROUND,
+            reason=reason,
+        )
+        self._ground_continuations.remove(session_id)
+        self.core.history.record(
+            session_id=session_id,
+            event_type="airport_ground_surface_authority_acquired",
+            reason=reason,
+            source_agency=ControllerAgency.AIRPORT_GROUND,
+            details={"gate": RUNWAY_VACATED_EVENT},
+        )
