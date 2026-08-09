@@ -3,11 +3,12 @@ from uuid import uuid4
 import pytest
 
 from orion.airport_departure_control import AirportDepartureController, DepartureClearance, DepartureRoute
-from orion.atc_core import AtcCore, ControllerAgency, ControllerAuthorityScope
+from orion.atc_core import ControllerAgency, ControllerAuthorityScope
+from orion.atc_runtime import AtcCoreFlow
 
 
 def prepared_controller() -> tuple[AirportDepartureController, object]:
-    core = AtcCore()
+    core = AtcCoreFlow()
     session_id = uuid4()
     core.claim_authority(
         session_id=session_id,
@@ -19,7 +20,7 @@ def prepared_controller() -> tuple[AirportDepartureController, object]:
 
 
 def test_departure_clearance_requires_departure_authority() -> None:
-    core = AtcCore()
+    core = AtcCoreFlow()
     controller = AirportDepartureController(core)
     with pytest.raises(ValueError, match="Departure must own"):
         controller.issue_clearance(uuid4(), DepartureClearance(heading_deg=270), reason="initial")
