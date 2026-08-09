@@ -42,7 +42,10 @@ The numeric designator is the magnetic course rounded to the nearest ten degrees
 
 A `DERIVED_MAGNETIC` numeric designator is valid for normal ATC phraseology, including instructions such as `hold short runway 27`.
 
-## Runway heading information service — forward contract
+## Aerodrome information layer
+Runway identity/course and pressure information are cross-domain aerodrome data, not Ground-only state. Ground, Tower, Departure, Approach and free-form conversational modes must consume one shared aerodrome-information contract.
+
+### Runway heading information service — forward contract
 Runway identity/course data must be reusable outside Ground ATC. Future Departure/Approach/free-flight integrations must expose a general query that can answer, for any known aerodrome and runway, questions such as:
 - `какой курс полосы?`
 - `какой курс ВПП 27 в Батуми?`
@@ -51,7 +54,23 @@ Runway identity/course data must be reusable outside Ground ATC. Future Departur
 
 The answer must be available while taxiing, airborne, or on approach and should return the exact known/derived magnetic runway course, not merely `designator * 10`. When useful and available, ORION may also return reciprocal runway, true course and source/confidence. The query must not depend on the aircraft currently being at that aerodrome.
 
-This is a cross-domain runway-information capability. #64 establishes the runway identity/course data contract; later airborne ATC PRs must consume the same contract rather than implement a separate runway-heading database.
+### Aerodrome pressure information service — forward contract
+ORION must also answer pressure questions for any known aerodrome regardless of the aircraft's current location or phase of flight.
+
+Default interpretation of `какое давление на аэродроме?` is current **QNH**. Explicit requests may ask for QFE. Responses should expose common units (`hPa`, `inHg`, and when useful `mmHg`) plus observation time, source, freshness and confidence.
+
+Pressure is dynamic meteorological information and must come from a runtime observation/source such as DCS environment/weather, mission weather, ATIS/METAR-like data or another trusted adapter. ORION must never synthesize a current QNH merely from aerodrome geometry/elevation. Stale pressure may be reported only with an explicit stale/uncertain indication and must not be presented as fresh.
+
+QFE may be aerodrome- or runway/threshold-specific when that datum is available. `STANDARD` (`1013.25 hPa` / `29.92 inHg`) is a separate flight-level altimeter setting and must never be substituted as the answer to a normal aerodrome-QNH request.
+
+Representative free-form queries include:
+- `какое давление в Батуми?`
+- `QNH Кутаиси?`
+- `дай QFE полосы 07`
+- `какое давление поставить?`
+- `pressure at Senaki?`
+
+#64 establishes the shared pressure answer/observation contract; later airborne ATC integrations must consume the same contract rather than create separate pressure stores.
 
 ## Safety invariants
 1. Hold-short and runway-boundary constraints override convenience/navigation prompts.
@@ -63,6 +82,8 @@ This is a cross-domain runway-information capability. #64 establishes the runway
 7. All safety-critical instructions remain acknowledgement-aware under existing Virtual ATC Core rules.
 8. Reliable magnetic runway course may be used to derive the numeric runway designator even when painted/explicit runway-number data is absent.
 9. Parallel-runway suffixes `L/C/R` are never guessed from magnetic course alone.
+10. Dynamic aerodrome pressure must retain source/freshness; stale/unknown pressure is never silently treated as current.
+11. Standard pressure is not aerodrome QNH.
 
 ## Initial implementation boundary
 PR #64 will build the generic Ground taxi navigation engine and tests above the existing airport surface model. DCS-specific extraction for every individual airfield may be supplied incrementally by adapters/data packs; the generic engine must support full, partial and degraded topology from the start.
