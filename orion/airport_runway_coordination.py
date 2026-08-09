@@ -29,7 +29,7 @@ class RunwayReservation(BaseModel):
 
 
 class RunwayReservationManager:
-    """One protected runway resource shared by crossing, line-up, takeoff and landing."""
+    """Canonical protected-runway resource shared by crossing, line-up, takeoff and landing."""
 
     def __init__(self, core: AtcCoreFlow | None = None) -> None:
         self.core = core or AtcCoreFlow()
@@ -47,11 +47,9 @@ class RunwayReservationManager:
         with self._lock:
             current = self._by_runway.get(reservation.runway_id)
             if current is not None and current.session_id != reservation.session_id:
-                raise ValueError(
-                    f"Runway {reservation.runway_id} already reserved for {current.operation.value}"
-                )
-            if current is not None and current.operation is not reservation.operation:
-                raise ValueError("Same session cannot silently change runway operation type")
+                raise ValueError(f"Runway {reservation.runway_id} already reserved for {current.operation.value}")
+            if current is not None:
+                raise ValueError("Runway operation is already reserved for this session")
             self._by_runway[reservation.runway_id] = reservation.model_copy(deep=True)
             self.core.history.record(
                 session_id=reservation.session_id,
@@ -67,6 +65,37 @@ class RunwayReservationManager:
             )
             return reservation.model_copy(deep=True)
 
+    def change_operation(
+        self,
+        *,
+        runway_id: str,
+        session_id: UUID,
+        operation: RunwayOperationType,
+        reason: str,
+    ) -> RunwayReservation:
+        """Explicitly change an uncommitted reservation, e.g. LINE_UP -> TAKEOFF."""
+        with self._lock:
+            current = self._require(runway_id, session_id)
+            if current.commitment >= CommitmentState.PHYSICALLY_COMMITTED:
+                raise ValueError("Physically committed runway operation cannot change type")
+            old_operation = current.operation
+            current.operation = operation
+            current.reason = reason
+            self._by_runway[runway_id] = current.model_copy(deep=True)
+            self.core.history.record(
+                session_id=session_id,
+                event_type="runway_operation_changed",
+                reason=reason,
+                source_agency=ControllerAgency.AIRPORT_TOWER,
+                related_id=current.reservation_id,
+                details={
+                    "runway_id": runway_id,
+                    "old_operation": old_operation.value,
+                    "operation": operation.value,
+                },
+            )
+            return current.model_copy(deep=True)
+
     def advance_commitment(
         self,
         *,
@@ -80,7 +109,7 @@ class RunwayReservationManager:
             if commitment < current.commitment:
                 raise ValueError("Runway commitment cannot decrease implicitly")
             current.commitment = commitment
-            self._by_runway[runway_id] = current
+            self._by_runway[runway_id] = current.model_copy(deep=True)
             self.core.history.record(
                 session_id=session_id,
                 event_type="runway_commitment_changed",
@@ -109,8 +138,8 @@ class RunwayReservationManager:
 
     def complete(self, *, runway_id: str, session_id: UUID, reason: str) -> RunwayReservation:
         with self._lock:
-            current = self._require(runway_id, session_id)
-            removed = self._by_runway.pop(runway_id)
+            removed = self._require(runway_id, session_id)
+            self._by_runway.pop(runway_id)
             self.core.history.record(
                 session_id=session_id,
                 event_type="runway_operation_completed",
