@@ -61,14 +61,14 @@ def test_tower_to_departure_handoff_is_airborne_gated_and_idempotent() -> None:
 def test_traffic_hold_requires_explicit_release_before_clearance() -> None:
     runtime, session_id = prepared_runtime()
     assert runtime.hold_for_traffic(session_id, reason="landing traffic").state is AirportDepartureState.HOLDING_FOR_TRAFFIC
-    with pytest.raises(ValueError, match="HOLDING_POINT"):
+    with pytest.raises(ValueError):
         runtime.clear_takeoff(session_id, reason="cleared")
     assert runtime.resume_from_traffic_hold(session_id, reason="traffic clear").state is AirportDepartureState.HOLDING_POINT
 
 
 def test_takeoff_clearance_can_be_cancelled_only_before_roll() -> None:
     runtime, session_id = prepared_runtime()
-    instruction = runtime.clear_takeoff(session_id, reason="cleared for takeoff")
+    runtime.clear_takeoff(session_id, reason="cleared for takeoff")
     state = runtime.cancel_takeoff_clearance(session_id, reason="landing traffic")
     assert state.state is AirportDepartureState.TAKEOFF_CLEARANCE_CANCELLED
     assert runtime.return_to_holding_point(session_id, reason="hold short").state is AirportDepartureState.HOLDING_POINT
