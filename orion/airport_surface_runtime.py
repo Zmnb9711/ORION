@@ -114,6 +114,8 @@ class AirportSurfaceCoordinator:
 
     def clear_crossing(self, crossing_id: UUID) -> RunwayCrossingTransaction:
         crossing = self._require_crossing(crossing_id)
+        if crossing.state not in {CrossingState.REQUESTED, CrossingState.HOLD_SHORT}:
+            raise ValueError("Crossing is not clearable")
         owner = self.core.authority.get_owner(crossing.session_id, ControllerAuthorityScope.LANDING_AREA)
         if owner is None or owner.agency is not ControllerAgency.AIRPORT_TOWER:
             raise ValueError("Tower does not own LANDING_AREA authority for this crossing")
