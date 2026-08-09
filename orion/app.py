@@ -19,6 +19,7 @@ from orion.live_telemetry_store import live_telemetry
 from orion.mission import Coalition, MissionPosition, MissionSnapshot, MissionUnit
 from orion.mission_bridge import MissionCommand, mission_bridge
 from orion.mission_command_status import MissionCommandResult, mission_command_statuses
+from orion.mission_control_proactive import proactive_mission_control
 from orion.mission_store import mission_store
 from orion.models import TelemetryEnvelope
 from orion.startup_onboarding import apply_completed_onboarding_at_startup
@@ -47,9 +48,11 @@ def store_telemetry(payload: TelemetryEnvelope) -> None:
 async def lifespan(_: FastAPI):
     apply_completed_onboarding_at_startup()
     transport, _ = await start_udp_bridge(store_telemetry)
+    proactive_mission_control.enable()
     try:
         yield
     finally:
+        proactive_mission_control.disable()
         transport.close()
 
 
@@ -73,6 +76,7 @@ for _router_module in (
     "orion.mission_control_queries_api",
     "orion.mission_control_jtac_api",
     "orion.mission_control_autonomy_api",
+    "orion.mission_control_proactive_api",
     "orion.cas_9line_api",
     "orion.jtac_api",
     "orion.dialogue_runtime_api",

@@ -14,6 +14,7 @@ class MissionStore:
         with self._lock:
             self._snapshot = snapshot
         self._notify_jtac_target_changes(snapshot)
+        self._notify_proactive_mission_control(snapshot)
         return snapshot
 
     @staticmethod
@@ -24,6 +25,15 @@ class MissionStore:
         except ImportError:
             return
         observe_snapshot_for_jtac_retask(snapshot)
+
+    @staticmethod
+    def _notify_proactive_mission_control(snapshot: MissionSnapshot) -> None:
+        # Keep proactive supervision optional at import time and downstream from snapshot storage.
+        try:
+            from orion.mission_control_proactive import observe_snapshot_for_proactive_mission_control
+        except ImportError:
+            return
+        observe_snapshot_for_proactive_mission_control(snapshot)
 
     def get(self) -> MissionSnapshot | None:
         with self._lock:
