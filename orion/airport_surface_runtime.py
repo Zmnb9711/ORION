@@ -16,6 +16,9 @@ from orion.atc_operations import OperationalInstruction, ResourceAssignment, Voi
 from orion.atc_runtime import AtcCoreFlow
 
 
+RUNWAY_PROTECTED_RESOURCE = "runway_protected"
+
+
 class RunwayOccupancyManager:
     """Conservative runway-state registry for airport procedures."""
 
@@ -106,16 +109,31 @@ class AirportSurfaceCoordinator:
         )
         return crossing.model_copy(deep=True)
 
+    def reserve_protected_runway(self, *, session_id: UUID, runway_id: str, reason: str) -> ResourceAssignment:
+        self.runways.require_positive_clearance_state(runway_id)
+        return self.core.coordination.assign_resource(
+            ResourceAssignment(
+                session_id=session_id,
+                resource_type=RUNWAY_PROTECTED_RESOURCE,
+                resource_id=runway_id,
+                reason=reason,
+            )
+        )
+
+    def release_protected_runway(self, *, session_id: UUID, runway_id: str) -> None:
+        self.core.coordination.release_resource(
+            resource_type=RUNWAY_PROTECTED_RESOURCE,
+            resource_id=runway_id,
+            session_id=session_id,
+        )
+
     def clear_crossing(self, crossing_id: UUID) -> RunwayCrossingTransaction:
         crossing = self._require_crossing(crossing_id)
         runway = self.runways.require_positive_clearance_state(crossing.runway_id)
-        self.core.coordination.assign_resource(
-            ResourceAssignment(
-                session_id=crossing.session_id,
-                resource_type="runway_crossing",
-                resource_id=crossing.runway_id,
-                reason=f"Runway crossing {crossing.crossing_id}",
-            )
+        self.reserve_protected_runway(
+            session_id=crossing.session_id,
+            runway_id=crossing.runway_id,
+            reason=f"Runway crossing {crossing.crossing_id}",
         )
         crossing.clear(runway)
         self._crossings[crossing_id] = crossing
@@ -157,11 +175,7 @@ class AirportSurfaceCoordinator:
         crossing = self._require_crossing(crossing_id)
         crossing.complete()
         self._crossings[crossing_id] = crossing
-        self.core.coordination.release_resource(
-            resource_type="runway_crossing",
-            resource_id=crossing.runway_id,
-            session_id=crossing.session_id,
-        )
+        self.release_protected_runway(session_id=crossing.session_id, runway_id=crossing.runway_id)
         self.core.history.record(
             session_id=crossing.session_id,
             event_type="runway_crossing_completed",
