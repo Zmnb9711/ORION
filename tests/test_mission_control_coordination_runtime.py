@@ -29,7 +29,7 @@ def _assignment(target: str, designator: str, *, sam: bool = False) -> MissionCo
 def _store_patches(store: ConfirmationStore):
     return (
         patch("orion.mission_control_coordination_runtime.confirmation_store", store),
-        patch("orion.mission_control_autonomy_actions.confirmation_store", store),
+        patch("orion.mission_control_coordination_actions.confirmation_store", store),
     )
 
 
@@ -46,6 +46,7 @@ def test_creates_bounded_parallel_proposals_and_retains_stable_assignments() -> 
         second = runtime.observe(_snapshot())
         status = runtime.status()
     assert len(first.created) == 2
+    assert all(item.action_type == "mission_control:coordinate_designator" for item in first.created)
     assert not second.created
     assert set(second.retained_action_ids) == {item.action_id for item in first.created}
     assert len(status.active_action_ids) == 2
