@@ -30,6 +30,29 @@ Both modes share the same active route and safety constraints; navigation assist
 ## Degraded topology invariant
 ORION must never invent taxiway names or exact geometry. If DCS/mission/static airport data cannot support a named route with adequate confidence, guidance degrades explicitly to reliable geometric/relative cues only. If even those cues are uncertain, ORION must say that position/route confidence is insufficient rather than fabricate directions.
 
+### Deliberate runway-number exception
+A runway numeric designator is not treated as fabricated when ORION derives it from a sufficiently reliable magnetic runway course. This is a deliberate exception to the general degraded-topology rule because runway numbers are conventionally derived from magnetic direction.
+
+Source precedence:
+1. published/authoritative runway designator when available;
+2. DCS/mission runway designator when reliable;
+3. `DERIVED_MAGNETIC` numeric designator computed from a reliable magnetic runway course.
+
+The numeric designator is the magnetic course rounded to the nearest ten degrees and expressed as `01..36`; north is `36`, never `00`. The reciprocal runway direction is derived independently from the reciprocal magnetic course. `L/C/R` suffixes are never inferred from course alone: they require authoritative data or known parallel-runway geometry/order.
+
+A `DERIVED_MAGNETIC` numeric designator is valid for normal ATC phraseology, including instructions such as `hold short runway 27`.
+
+## Runway heading information service — forward contract
+Runway identity/course data must be reusable outside Ground ATC. Future Departure/Approach/free-flight integrations must expose a general query that can answer, for any known aerodrome and runway, questions such as:
+- `какой курс полосы?`
+- `какой курс ВПП 27 в Батуми?`
+- `runway heading?`
+- `what is the magnetic course of runway 09?`
+
+The answer must be available while taxiing, airborne, or on approach and should return the exact known/derived magnetic runway course, not merely `designator * 10`. When useful and available, ORION may also return reciprocal runway, true course and source/confidence. The query must not depend on the aircraft currently being at that aerodrome.
+
+This is a cross-domain runway-information capability. #64 establishes the runway identity/course data contract; later airborne ATC PRs must consume the same contract rather than implement a separate runway-heading database.
+
 ## Safety invariants
 1. Hold-short and runway-boundary constraints override convenience/navigation prompts.
 2. A turn-by-turn prompt cannot authorize entry into a protected runway resource.
@@ -38,6 +61,8 @@ ORION must never invent taxiway names or exact geometry. If DCS/mission/static a
 5. Pilot deviation triggers re-evaluation/replanning; ORION does not silently pretend the aircraft remains on the old route.
 6. `RUNWAY_VACATED` gates taxi-in Ground continuation.
 7. All safety-critical instructions remain acknowledgement-aware under existing Virtual ATC Core rules.
+8. Reliable magnetic runway course may be used to derive the numeric runway designator even when painted/explicit runway-number data is absent.
+9. Parallel-runway suffixes `L/C/R` are never guessed from magnetic course alone.
 
 ## Initial implementation boundary
 PR #64 will build the generic Ground taxi navigation engine and tests above the existing airport surface model. DCS-specific extraction for every individual airfield may be supplied incrementally by adapters/data packs; the generic engine must support full, partial and degraded topology from the start.
