@@ -46,6 +46,16 @@ class AirportDepartureRuntime:
         tower_owner = self.core.authority.get_owner(session_id, ControllerAuthorityScope.LANDING_AREA)
         if tower_owner is None or tower_owner.agency is not ControllerAgency.AIRPORT_TOWER:
             raise ValueError("Tower must own LANDING_AREA before departure can start")
+        flight_owner = self.core.authority.get_owner(session_id, ControllerAuthorityScope.FLIGHT_TRAFFIC)
+        if flight_owner is None:
+            self.core.claim_authority(
+                session_id=session_id,
+                scope=ControllerAuthorityScope.FLIGHT_TRAFFIC,
+                agency=ControllerAgency.AIRPORT_TOWER,
+                reason="Tower controls departure traffic until airborne handoff",
+            )
+        elif flight_owner.agency is not ControllerAgency.AIRPORT_TOWER:
+            raise ValueError("Tower must own FLIGHT_TRAFFIC before departure can start")
         self.tower.start_departure(session_id=session_id, runway_id=runway_id)
         session = AirportDepartureSession(session_id=session_id, runway_id=runway_id)
         self._sessions[session_id] = session
@@ -112,8 +122,8 @@ class AirportDepartureRuntime:
         handoff_id = self.core.acknowledgement_handoff(
             session_id=session_id,
             source=ControllerAgency.AIRPORT_TOWER,
-            destination=ControllerAgency.DEPARTURE,
-            scope=ControllerAuthorityScope.TERMINAL_AIRSPACE,
+            destination=ControllerAgency.AIRPORT_DEPARTURE,
+            scope=ControllerAuthorityScope.FLIGHT_TRAFFIC,
             reason=reason,
         )
         session.departure_handoff_id = handoff_id
@@ -127,7 +137,7 @@ class AirportDepartureRuntime:
         self.core.complete_acknowledged_handoff(session.departure_handoff_id)
         session.state = AirportDepartureState.DEPARTURE_CONTROL
         self._sessions[session_id] = session
-        self._record(session, "Departure accepted terminal-airspace control")
+        self._record(session, "Departure accepted flight-traffic control")
         return session.model_copy(deep=True)
 
     def reject_takeoff(self, session_id: UUID, *, reason: str) -> AirportDepartureSession:
@@ -158,10 +168,15 @@ class AirportDepartureRuntime:
         return item.model_copy(deep=True)
 
     def _record(self, session: AirportDepartureSession, reason: str) -> None:
+        source = (
+            ControllerAgency.AIRPORT_DEPARTURE
+            if session.state is AirportDepartureState.DEPARTURE_CONTROL
+            else ControllerAgency.AIRPORT_TOWER
+        )
         self.core.history.record(
             session_id=session.session_id,
             event_type="airport_departure_state_changed",
             reason=reason,
-            source_agency=ControllerAgency.AIRPORT_TOWER,
+            source_agency=source,
             details={"state": session.state.value, "runway_id": session.runway_id},
         )
