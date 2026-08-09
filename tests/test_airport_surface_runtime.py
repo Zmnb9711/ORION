@@ -3,6 +3,7 @@ from uuid import uuid4
 import pytest
 
 from orion.airport_surface import (
+    CrossingState,
     HoldShortConstraint,
     RunwayAvailability,
     RunwayCrossingTransaction,
@@ -104,6 +105,32 @@ def test_crossing_clearance_requires_tower_runway_authority() -> None:
 
     with pytest.raises(ValueError, match="LANDING_AREA"):
         controller.surface.clear_crossing(crossing.crossing_id)
+
+
+def test_invalid_crossing_state_does_not_leak_runway_reservation() -> None:
+    controller, identity = _controller()
+    _claim_tower(controller.surface, identity.session_id)
+    controller.surface.runways.observe(
+        RunwayState(
+            runway_id="07/25",
+            availability=RunwayAvailability.CLEAR,
+            freshness=FreshnessClass.FRESH,
+            reason="fresh observation",
+        )
+    )
+    crossing = controller.surface.request_crossing(
+        RunwayCrossingTransaction(
+            session_id=identity.session_id,
+            runway_id="07/25",
+            state=CrossingState.CANCELLED,
+            reason="cancelled crossing",
+        )
+    )
+
+    with pytest.raises(ValueError, match="not clearable"):
+        controller.surface.clear_crossing(crossing.crossing_id)
+
+    assert controller.surface.reservations.get("07/25") is None
 
 
 def test_unknown_runway_blocks_crossing_clearance() -> None:
