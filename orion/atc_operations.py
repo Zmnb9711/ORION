@@ -76,6 +76,7 @@ class OperationalOverlay(StrEnum):
     TELEMETRY_STALE = "telemetry_stale"
     NAV_AID_DEGRADED = "nav_aid_degraded"
     RECOVERY_SUSPENDED_AFFECTED = "recovery_suspended_affected"
+    SIMULATOR_SYNC_DEGRADED = "simulator_sync_degraded"
 
 
 class CapabilityValue(BaseModel):
