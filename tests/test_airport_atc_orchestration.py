@@ -105,6 +105,29 @@ def test_airborne_event_transfers_flight_traffic_to_departure_and_updates_servic
     assert "procedural_state_changed" in event_types
 
 
+def test_repeated_airborne_completion_is_idempotent() -> None:
+    service, tower, orchestrator, identity = _departure_runtime()
+    handoff = orchestrator.arm_tower_to_departure(identity.session_id, reason="departure ready")
+    tower.clear_takeoff(identity.session_id, reason="runway clear")
+    tower.begin_takeoff_roll(identity.session_id)
+    tower.mark_airborne(identity.session_id)
+
+    first = orchestrator.complete_tower_to_departure_on_airborne(identity.session_id, reason="first airborne")
+    events_after_first = service.core.history.list(identity.session_id)
+    transition_count = sum(event.event_type == "procedural_state_changed" for event in events_after_first)
+    transfer_count = sum(event.event_type == "airport_departure_authority_transferred" for event in events_after_first)
+
+    second = orchestrator.complete_tower_to_departure_on_airborne(identity.session_id, reason="duplicate airborne")
+    events_after_second = service.core.history.list(identity.session_id)
+
+    assert first.handoff_id == handoff.handoff_id == second.handoff_id
+    assert sum(event.event_type == "procedural_state_changed" for event in events_after_second) == transition_count
+    assert sum(event.event_type == "airport_departure_authority_transferred" for event in events_after_second) == transfer_count
+    owner = service.core.authority.get_owner(identity.session_id, ControllerAuthorityScope.FLIGHT_TRAFFIC)
+    assert owner.agency is ControllerAgency.AIRPORT_DEPARTURE
+    assert service.status(identity.session_id).procedural_state == DEPARTURE_SERVICE_STATE
+
+
 def test_duplicate_departure_handoff_arm_is_rejected() -> None:
     _, _, orchestrator, identity = _departure_runtime()
     orchestrator.arm_tower_to_departure(identity.session_id, reason="first handoff")
@@ -156,6 +179,34 @@ def test_runway_vacated_event_acquires_ground_surface_authority_and_updates_serv
     event_types = [event.event_type for event in service.core.history.list(identity.session_id)]
     assert "airport_ground_surface_authority_acquired" in event_types
     assert "procedural_state_changed" in event_types
+
+
+def test_repeated_runway_vacated_completion_is_idempotent() -> None:
+    service, tower, orchestrator, identity = _arrival_runtime()
+    orchestrator.arm_runway_vacated_to_ground(identity.session_id, reason="Ground ready after runway exit")
+    tower.clear_landing(identity.session_id, reason="runway clear")
+    tower.begin_landing_attempt(identity.session_id)
+    tower.mark_rollout(identity.session_id)
+    tower.mark_runway_vacated(identity.session_id)
+
+    orchestrator.complete_ground_continuation_on_runway_vacated(identity.session_id, reason="first runway vacated")
+    events_after_first = service.core.history.list(identity.session_id)
+    transition_count = sum(event.event_type == "procedural_state_changed" for event in events_after_first)
+    acquisition_count = sum(
+        event.event_type == "airport_ground_surface_authority_acquired" for event in events_after_first
+    )
+
+    orchestrator.complete_ground_continuation_on_runway_vacated(identity.session_id, reason="duplicate runway vacated")
+    events_after_second = service.core.history.list(identity.session_id)
+
+    assert sum(event.event_type == "procedural_state_changed" for event in events_after_second) == transition_count
+    assert (
+        sum(event.event_type == "airport_ground_surface_authority_acquired" for event in events_after_second)
+        == acquisition_count
+    )
+    surface_owner = service.core.authority.get_owner(identity.session_id, ControllerAuthorityScope.SURFACE_MOVEMENT)
+    assert surface_owner.agency is ControllerAgency.AIRPORT_GROUND
+    assert service.status(identity.session_id).procedural_state == GROUND_SERVICE_STATE
 
 
 def test_ground_continuation_rejects_preexisting_surface_owner() -> None:
