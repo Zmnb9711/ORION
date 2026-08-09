@@ -261,17 +261,20 @@ class AirportGroundController:
                 source_agency=ControllerAgency.AIRPORT_GROUND,
                 related_id=decision.replacement_route.route_id,
                 details={
-                    "matched_node_id": decision.matched_node_id,
+                    "matched_node_id": decision.matched_node_id or "unknown",
                     "revision": decision.replacement_route.revision,
                 },
             )
         elif decision.state is TaxiDeviationState.POSITION_UNCERTAIN:
+            details: dict[str, str | int | float | bool] = {"position_known": False}
+            if decision.matched_node_id is not None:
+                details["matched_node_id"] = decision.matched_node_id
             self.core.history.record(
                 session_id=session_id,
                 event_type="taxi_position_uncertain",
                 reason=decision.reason,
                 source_agency=ControllerAgency.AIRPORT_GROUND,
-                details={"matched_node_id": decision.matched_node_id},
+                details=details,
             )
         return decision
 
