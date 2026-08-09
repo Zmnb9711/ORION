@@ -1,20 +1,20 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from uuid import UUID, uuid4
+from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
+from orion.airport_runway_coordination import (
+    RunwayOperationType,
+    RunwayReservation,
+)
 from orion.airport_surface_runtime import AirportSurfaceCoordinator
 from orion.atc_core import ControllerAgency, ControllerAuthorityScope
-from orion.atc_operations import OperationalInstruction, VoicePriority
+from orion.atc_operations import CommitmentState, OperationalInstruction, VoicePriority
 
 
-class RunwayOperationKind(StrEnum):
-    CROSSING = "crossing"
-    LINE_UP = "line_up"
-    TAKEOFF = "takeoff"
-    LANDING = "landing"
+RunwayOperationKind = RunwayOperationType
 
 
 class TowerDepartureState(StrEnum):
@@ -33,15 +33,6 @@ class TowerArrivalState(StrEnum):
     ROLLOUT = "rollout"
     RUNWAY_VACATED = "runway_vacated"
     GO_AROUND = "go_around"
-
-
-class RunwayReservation(BaseModel):
-    reservation_id: UUID = Field(default_factory=uuid4)
-    session_id: UUID
-    runway_id: str = Field(min_length=1, max_length=80)
-    operation: RunwayOperationKind
-    reason: str = Field(min_length=1, max_length=500)
-    committed: bool = False
 
 
 class TowerDepartureSession(BaseModel):
@@ -64,7 +55,7 @@ class AirportTowerController:
     def __init__(self, surface: AirportSurfaceCoordinator) -> None:
         self.surface = surface
         self.core = surface.core
-        self._reservations: dict[UUID, RunwayReservation] = {}
+        self.reservations = surface.reservations
         self._departures: dict[UUID, TowerDepartureSession] = {}
         self._arrivals: dict[UUID, TowerArrivalSession] = {}
 
@@ -77,7 +68,6 @@ class AirportTowerController:
         )
 
     def record_ground_boundary_contact(self, session_id: UUID, *, reason: str) -> None:
-        """Record the Ground/Tower procedural boundary without transferring SURFACE_MOVEMENT."""
         ground_owner = self.core.authority.get_owner(session_id, ControllerAuthorityScope.SURFACE_MOVEMENT)
         tower_owner = self.core.authority.get_owner(session_id, ControllerAuthorityScope.LANDING_AREA)
         if ground_owner is None or ground_owner.agency is not ControllerAgency.AIRPORT_GROUND:
@@ -99,23 +89,19 @@ class AirportTowerController:
         operation: RunwayOperationKind,
         reason: str,
     ) -> RunwayReservation:
-        self.surface.reserve_protected_runway(session_id=session_id, runway_id=runway_id, reason=reason)
-        reservation = RunwayReservation(
-            session_id=session_id,
-            runway_id=runway_id,
-            operation=operation,
-            reason=reason,
+        owner = self.core.authority.get_owner(session_id, ControllerAuthorityScope.LANDING_AREA)
+        if owner is None or owner.agency is not ControllerAgency.AIRPORT_TOWER:
+            raise ValueError("Tower does not own LANDING_AREA authority for this session")
+        runway = self.surface.runways.require_positive_clearance_state(runway_id)
+        return self.reservations.reserve(
+            RunwayReservation(
+                session_id=session_id,
+                runway_id=runway_id,
+                operation=operation,
+                reason=reason,
+            ),
+            runway,
         )
-        self._reservations[reservation.reservation_id] = reservation
-        self.core.history.record(
-            session_id=session_id,
-            event_type="runway_operation_reserved",
-            reason=reason,
-            source_agency=ControllerAgency.AIRPORT_TOWER,
-            related_id=reservation.reservation_id,
-            details={"runway_id": runway_id, "operation": operation.value},
-        )
-        return reservation.model_copy(deep=True)
 
     def start_departure(self, *, session_id: UUID, runway_id: str) -> TowerDepartureSession:
         session = TowerDepartureSession(session_id=session_id, runway_id=runway_id)
@@ -161,10 +147,13 @@ class AirportTowerController:
             )
             session.reservation_id = reservation.reservation_id
         else:
-            reservation = self._require_reservation(session.reservation_id)
-            reservation.operation = RunwayOperationKind.TAKEOFF
-            reservation.reason = reason
-            self._reservations[reservation.reservation_id] = reservation
+            reservation = self.reservations.change_operation(
+                runway_id=session.runway_id,
+                session_id=session_id,
+                operation=RunwayOperationKind.TAKEOFF,
+                reason=reason,
+            )
+            session.reservation_id = reservation.reservation_id
         session.state = TowerDepartureState.TAKEOFF_CLEARED
         self._departures[session_id] = session
         return self._issue_runway_instruction(
@@ -177,7 +166,12 @@ class AirportTowerController:
         session = self._require_departure(session_id)
         if session.state is not TowerDepartureState.TAKEOFF_CLEARED:
             raise ValueError("Takeoff roll requires takeoff clearance")
-        self.commit_reservation(self._require_reservation_id(session.reservation_id))
+        self.reservations.advance_commitment(
+            runway_id=session.runway_id,
+            session_id=session_id,
+            commitment=CommitmentState.PHYSICALLY_COMMITTED,
+            reason="takeoff roll observed",
+        )
         session.state = TowerDepartureState.TAKEOFF_ROLL
         self._departures[session_id] = session
         self._record_departure_state(session, "takeoff roll observed")
@@ -187,9 +181,12 @@ class AirportTowerController:
         session = self._require_departure(session_id)
         if session.state is not TowerDepartureState.TAKEOFF_ROLL:
             raise ValueError("Airborne event requires takeoff roll")
+        self.reservations.complete(
+            runway_id=session.runway_id,
+            session_id=session_id,
+            reason="airborne event confirmed",
+        )
         session.state = TowerDepartureState.AIRBORNE
-        self._departures[session_id] = session
-        self.complete_reservation(self._require_reservation_id(session.reservation_id))
         session.reservation_id = None
         self._departures[session_id] = session
         self._record_departure_state(session, "airborne event confirmed")
@@ -239,7 +236,12 @@ class AirportTowerController:
         session = self._require_arrival(session_id)
         if session.state is not TowerArrivalState.LANDING_CLEARED:
             raise ValueError("Landing attempt requires landing clearance")
-        self.commit_reservation(self._require_reservation_id(session.reservation_id))
+        self.reservations.advance_commitment(
+            runway_id=session.runway_id,
+            session_id=session_id,
+            commitment=CommitmentState.PHYSICALLY_COMMITTED,
+            reason="landing attempt committed",
+        )
         session.state = TowerArrivalState.LANDING_ATTEMPT
         self._arrivals[session_id] = session
         self._record_arrival_state(session, "landing attempt committed")
@@ -258,9 +260,12 @@ class AirportTowerController:
         session = self._require_arrival(session_id)
         if session.state is not TowerArrivalState.ROLLOUT:
             raise ValueError("Runway-vacated event requires rollout")
+        self.reservations.complete(
+            runway_id=session.runway_id,
+            session_id=session_id,
+            reason="runway-vacated event confirmed",
+        )
         session.state = TowerArrivalState.RUNWAY_VACATED
-        self._arrivals[session_id] = session
-        self.complete_reservation(self._require_reservation_id(session.reservation_id))
         session.reservation_id = None
         self._arrivals[session_id] = session
         self._record_arrival_state(session, "runway-vacated event confirmed")
@@ -271,50 +276,26 @@ class AirportTowerController:
         if session.state not in {TowerArrivalState.FINAL, TowerArrivalState.LANDING_CLEARED}:
             raise ValueError("Go-around is not valid from current arrival state")
         if session.reservation_id is not None:
-            reservation = self._require_reservation(session.reservation_id)
-            if not reservation.committed:
-                self.release_reservation(reservation.reservation_id)
+            reservation = self.reservations.get(session.runway_id)
+            if reservation is not None and reservation.commitment < CommitmentState.PHYSICALLY_COMMITTED:
+                self.reservations.release(
+                    runway_id=session.runway_id,
+                    session_id=session_id,
+                    reason=reason,
+                )
             session.reservation_id = None
         session.state = TowerArrivalState.GO_AROUND
         self._arrivals[session_id] = session
         self._record_arrival_state(session, reason)
         return session.model_copy(deep=True)
 
-    def commit_reservation(self, reservation_id: UUID) -> RunwayReservation:
-        reservation = self._require_reservation(reservation_id)
-        reservation.committed = True
-        self._reservations[reservation_id] = reservation
-        self.core.history.record(
-            session_id=reservation.session_id,
-            event_type="runway_operation_committed",
-            reason=reservation.reason,
-            source_agency=ControllerAgency.AIRPORT_TOWER,
-            related_id=reservation.reservation_id,
-            details={"runway_id": reservation.runway_id, "operation": reservation.operation.value},
-        )
-        return reservation.model_copy(deep=True)
-
-    def release_reservation(self, reservation_id: UUID) -> None:
-        reservation = self._require_reservation(reservation_id)
-        if reservation.committed:
-            raise ValueError("Committed runway operation cannot be normally released")
-        self.surface.release_protected_runway(session_id=reservation.session_id, runway_id=reservation.runway_id)
-        self._reservations.pop(reservation_id, None)
-
-    def complete_reservation(self, reservation_id: UUID) -> None:
-        reservation = self._require_reservation(reservation_id)
-        self.surface.release_protected_runway(session_id=reservation.session_id, runway_id=reservation.runway_id)
-        self._reservations.pop(reservation_id, None)
-        self.core.history.record(
-            session_id=reservation.session_id,
-            event_type="runway_operation_completed",
-            reason=reservation.reason,
-            source_agency=ControllerAgency.AIRPORT_TOWER,
-            related_id=reservation.reservation_id,
-            details={"runway_id": reservation.runway_id, "operation": reservation.operation.value},
-        )
-
-    def _issue_runway_instruction(self, *, session_id: UUID, semantic_action: str, runway_id: str) -> OperationalInstruction:
+    def _issue_runway_instruction(
+        self,
+        *,
+        session_id: UUID,
+        semantic_action: str,
+        runway_id: str,
+    ) -> OperationalInstruction:
         return self.core.issue_instruction(
             OperationalInstruction(
                 session_id=session_id,
@@ -356,15 +337,3 @@ class AirportTowerController:
         if item is None:
             raise KeyError("Tower arrival session not found")
         return item.model_copy(deep=True)
-
-    def _require_reservation(self, reservation_id: UUID) -> RunwayReservation:
-        item = self._reservations.get(reservation_id)
-        if item is None:
-            raise KeyError("Runway reservation not found")
-        return item.model_copy(deep=True)
-
-    @staticmethod
-    def _require_reservation_id(reservation_id: UUID | None) -> UUID:
-        if reservation_id is None:
-            raise ValueError("Runway reservation is missing")
-        return reservation_id
