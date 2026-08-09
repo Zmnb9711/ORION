@@ -13,6 +13,7 @@ from orion.atc_service import VirtualAtcService
 
 AIRBORNE_EVENT = "airborne"
 RUNWAY_VACATED_EVENT = "runway_vacated"
+RUNWAY_VACATED_AFTER_ABORT_EVENT = "runway_vacated_after_abort"
 DEPARTURE_SERVICE_STATE = "departure_control"
 GROUND_SERVICE_STATE = "ground_taxi_in"
 
@@ -30,6 +31,8 @@ class AirportAtcOrchestrator:
         self._completed_departure_handoffs: dict[UUID, UUID] = {}
         self._ground_continuations: set[UUID] = set()
         self._completed_ground_continuations: set[UUID] = set()
+        self._abort_ground_continuations: set[UUID] = set()
+        self._completed_abort_ground_continuations: set[UUID] = set()
 
     def assume_tower_local_traffic(self, session_id: UUID, *, reason: str) -> None:
         self.service.claim_authority(
@@ -155,4 +158,53 @@ class AirportAtcOrchestrator:
             reason=reason,
             source_agency=ControllerAgency.AIRPORT_GROUND,
             details={"gate": RUNWAY_VACATED_EVENT, "procedural_state": GROUND_SERVICE_STATE},
+        )
+
+    def arm_rejected_takeoff_to_ground(self, session_id: UUID, *, reason: str) -> None:
+        if session_id in self._abort_ground_continuations:
+            raise ValueError("Rejected-takeoff Ground continuation is already armed for this session")
+        if session_id in self._completed_abort_ground_continuations:
+            raise ValueError("Rejected-takeoff Ground continuation is already completed for this session")
+        tower_owner = self.core.authority.get_owner(session_id, ControllerAuthorityScope.LANDING_AREA)
+        if tower_owner is None or tower_owner.agency is not ControllerAgency.AIRPORT_TOWER:
+            raise ValueError("Tower must own LANDING_AREA before rejected-takeoff Ground continuation can be armed")
+        departure = self.tower._require_departure(session_id)
+        if departure.state not in {TowerDepartureState.REJECTED_TAKEOFF, TowerDepartureState.STOPPED_ON_RUNWAY}:
+            raise ValueError("Rejected-takeoff Ground continuation requires an active rejected takeoff")
+        self._abort_ground_continuations.add(session_id)
+        self.core.history.record(
+            session_id=session_id,
+            event_type="airport_abort_ground_continuation_armed",
+            reason=reason,
+            source_agency=ControllerAgency.AIRPORT_TOWER,
+            details={"gate": RUNWAY_VACATED_AFTER_ABORT_EVENT},
+        )
+
+    def complete_ground_continuation_on_abort_vacated(self, session_id: UUID, *, reason: str) -> None:
+        if session_id in self._completed_abort_ground_continuations:
+            return
+        if session_id not in self._abort_ground_continuations:
+            raise ValueError("Rejected-takeoff Ground continuation is not armed for this session")
+        departure = self.tower._require_departure(session_id)
+        if departure.state is not TowerDepartureState.RUNWAY_VACATED_AFTER_ABORT:
+            raise ValueError("Ground continuation requires confirmed RUNWAY_VACATED_AFTER_ABORT state")
+        surface_owner = self.core.authority.get_owner(session_id, ControllerAuthorityScope.SURFACE_MOVEMENT)
+        if surface_owner is None:
+            self.service.claim_authority(
+                session_id=session_id,
+                scope=ControllerAuthorityScope.SURFACE_MOVEMENT,
+                agency=ControllerAgency.AIRPORT_GROUND,
+                reason=reason,
+            )
+        elif surface_owner.agency is not ControllerAgency.AIRPORT_GROUND:
+            raise ValueError("SURFACE_MOVEMENT is owned by a non-Ground agency after rejected takeoff")
+        self.service.transition(session_id, GROUND_SERVICE_STATE, reason=reason)
+        self._abort_ground_continuations.remove(session_id)
+        self._completed_abort_ground_continuations.add(session_id)
+        self.core.history.record(
+            session_id=session_id,
+            event_type="airport_abort_ground_surface_authority_acquired",
+            reason=reason,
+            source_agency=ControllerAgency.AIRPORT_GROUND,
+            details={"gate": RUNWAY_VACATED_AFTER_ABORT_EVENT, "procedural_state": GROUND_SERVICE_STATE},
         )

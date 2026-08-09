@@ -230,6 +230,69 @@ def test_duplicate_ground_continuation_arm_is_rejected() -> None:
         orchestrator.arm_runway_vacated_to_ground(identity.session_id, reason="duplicate continuation")
 
 
+def test_rejected_takeoff_ground_continuation_is_runway_vacated_gated() -> None:
+    service, tower, orchestrator, identity = _departure_runtime()
+    tower.clear_takeoff(identity.session_id, reason="runway clear")
+    tower.begin_takeoff_roll(identity.session_id)
+    tower.reject_takeoff(identity.session_id, reason="abort")
+    orchestrator.arm_rejected_takeoff_to_ground(identity.session_id, reason="Ground ready after abort")
+
+    with pytest.raises(ValueError, match="RUNWAY_VACATED_AFTER_ABORT"):
+        orchestrator.complete_ground_continuation_on_abort_vacated(identity.session_id, reason="too early")
+
+    assert service.core.authority.get_owner(identity.session_id, ControllerAuthorityScope.SURFACE_MOVEMENT) is None
+    assert service.status(identity.session_id).procedural_state == "tower_departure"
+
+
+def test_rejected_takeoff_runway_vacated_returns_surface_control_to_ground() -> None:
+    service, tower, orchestrator, identity = _departure_runtime()
+    tower.clear_takeoff(identity.session_id, reason="runway clear")
+    tower.begin_takeoff_roll(identity.session_id)
+    tower.reject_takeoff(identity.session_id, reason="abort")
+    orchestrator.arm_rejected_takeoff_to_ground(identity.session_id, reason="Ground ready after abort")
+    tower.mark_stopped_on_runway(identity.session_id, reason="stopped after abort")
+    tower.mark_runway_vacated_after_abort(identity.session_id, reason="vacated after abort")
+
+    orchestrator.complete_ground_continuation_on_abort_vacated(
+        identity.session_id,
+        reason="runway vacated after rejected takeoff",
+    )
+
+    surface_owner = service.core.authority.get_owner(identity.session_id, ControllerAuthorityScope.SURFACE_MOVEMENT)
+    assert surface_owner is not None and surface_owner.agency is ControllerAgency.AIRPORT_GROUND
+    runway_owner = service.core.authority.get_owner(identity.session_id, ControllerAuthorityScope.LANDING_AREA)
+    assert runway_owner is not None and runway_owner.agency is ControllerAgency.AIRPORT_TOWER
+    assert service.status(identity.session_id).procedural_state == GROUND_SERVICE_STATE
+    event_types = [event.event_type for event in service.core.history.list(identity.session_id)]
+    assert "airport_abort_ground_continuation_armed" in event_types
+    assert "airport_abort_ground_surface_authority_acquired" in event_types
+
+
+def test_repeated_abort_ground_completion_is_idempotent() -> None:
+    service, tower, orchestrator, identity = _departure_runtime()
+    tower.clear_takeoff(identity.session_id, reason="runway clear")
+    tower.begin_takeoff_roll(identity.session_id)
+    tower.reject_takeoff(identity.session_id, reason="abort")
+    orchestrator.arm_rejected_takeoff_to_ground(identity.session_id, reason="Ground ready after abort")
+    tower.mark_stopped_on_runway(identity.session_id, reason="stopped after abort")
+    tower.mark_runway_vacated_after_abort(identity.session_id, reason="vacated after abort")
+
+    orchestrator.complete_ground_continuation_on_abort_vacated(identity.session_id, reason="first")
+    events_after_first = service.core.history.list(identity.session_id)
+    transition_count = sum(event.event_type == "procedural_state_changed" for event in events_after_first)
+    acquisition_count = sum(
+        event.event_type == "airport_abort_ground_surface_authority_acquired" for event in events_after_first
+    )
+
+    orchestrator.complete_ground_continuation_on_abort_vacated(identity.session_id, reason="duplicate")
+    events_after_second = service.core.history.list(identity.session_id)
+    assert sum(event.event_type == "procedural_state_changed" for event in events_after_second) == transition_count
+    assert (
+        sum(event.event_type == "airport_abort_ground_surface_authority_acquired" for event in events_after_second)
+        == acquisition_count
+    )
+
+
 def test_orchestrator_requires_shared_atc_core() -> None:
     service = VirtualAtcService()
     surface = AirportSurfaceCoordinator()
