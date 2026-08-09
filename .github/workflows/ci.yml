@@ -52,6 +52,15 @@ jobs:
       - name: Ruff correctness checks
         run: python -m ruff check orion tests
 
+      - name: Pyright core hardening gate
+        run: >-
+          python -m pyright
+          orion/mission_store.py
+          orion/native_wasapi_player.py
+          orion/windows_sapi_backend.py
+          orion/airport_departure_runtime.py
+          orion/airport_departure_control.py
+
       - name: Run test suite with coverage
         run: python -m pytest -q --cov=orion --cov-report=term-missing
 
