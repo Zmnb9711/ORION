@@ -13,6 +13,8 @@ from orion.atc_service import VirtualAtcService
 
 AIRBORNE_EVENT = "airborne"
 RUNWAY_VACATED_EVENT = "runway_vacated"
+DEPARTURE_SERVICE_STATE = "departure_control"
+GROUND_SERVICE_STATE = "ground_taxi_in"
 
 
 class AirportAtcOrchestrator:
@@ -28,7 +30,6 @@ class AirportAtcOrchestrator:
         self._ground_continuations: set[UUID] = set()
 
     def assume_tower_local_traffic(self, session_id: UUID, *, reason: str) -> None:
-        """Give Tower local airborne traffic authority before departure handoff is armed."""
         self.service.claim_authority(
             session_id=session_id,
             scope=ControllerAuthorityScope.FLIGHT_TRAFFIC,
@@ -88,6 +89,7 @@ class AirportAtcOrchestrator:
             reason=reason,
             contact_established=contact_established,
         )
+        self.service.transition(session_id, DEPARTURE_SERVICE_STATE, reason=reason)
         self._departure_handoffs.pop(session_id, None)
         self.core.history.record(
             session_id=session_id,
@@ -95,17 +97,11 @@ class AirportAtcOrchestrator:
             reason=reason,
             source_agency=ControllerAgency.AIRPORT_DEPARTURE,
             related_id=completed.handoff_id,
-            details={"gate": AIRBORNE_EVENT},
+            details={"gate": AIRBORNE_EVENT, "procedural_state": DEPARTURE_SERVICE_STATE},
         )
         return completed
 
     def arm_runway_vacated_to_ground(self, session_id: UUID, *, reason: str) -> None:
-        """Arm Ground surface authority acquisition after Tower confirms runway vacated.
-
-        This is intentionally not a LANDING_AREA handoff. Tower retains runway-domain
-        authority while Ground acquires the separate SURFACE_MOVEMENT scope after the
-        aircraft has physically vacated the runway.
-        """
         if session_id in self._ground_continuations:
             raise ValueError("Runway-vacated Ground continuation is already armed for this session")
         tower_owner = self.core.authority.get_owner(session_id, ControllerAuthorityScope.LANDING_AREA)
@@ -135,11 +131,12 @@ class AirportAtcOrchestrator:
             agency=ControllerAgency.AIRPORT_GROUND,
             reason=reason,
         )
+        self.service.transition(session_id, GROUND_SERVICE_STATE, reason=reason)
         self._ground_continuations.remove(session_id)
         self.core.history.record(
             session_id=session_id,
             event_type="airport_ground_surface_authority_acquired",
             reason=reason,
             source_agency=ControllerAgency.AIRPORT_GROUND,
-            details={"gate": RUNWAY_VACATED_EVENT},
+            details={"gate": RUNWAY_VACATED_EVENT, "procedural_state": GROUND_SERVICE_STATE},
         )
