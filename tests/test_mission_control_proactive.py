@@ -126,7 +126,11 @@ def test_lateral_change_requires_replacement_hysteresis() -> None:
     assert third.replaced_action_id == first.proposal.action_id
     assert store.get(first.proposal.action_id).status is ConfirmationStatus.REJECTED
     assert third.proposal.action_id != first.proposal.action_id
-    assert "Tactical picture changed" in submit.call_args.args[0].transcript
+    replacement = submit.call_args.args[0]
+    assert replacement.intent == "mission_control_proactive_proposal"
+    assert replacement.context["proactive"] is True
+    assert replacement.context["escalation"] is False
+    assert any(marker in replacement.transcript for marker in ("Tactical picture changed", "Тактическая обстановка изменилась"))
 
 
 def test_action_escalation_replaces_immediately_with_critical_callout() -> None:
@@ -151,7 +155,8 @@ def test_action_escalation_replaces_immediately_with_critical_callout() -> None:
     escalation = submit.call_args.args[0]
     assert escalation.priority is CommandPriority.CRITICAL
     assert escalation.intent == "mission_control_proactive_escalation"
-    assert "Threat escalation" in escalation.transcript
+    assert escalation.context["escalation"] is True
+    assert any(marker in escalation.transcript for marker in ("Threat escalation", "Угроза усилилась"))
 
 
 def test_confidence_escalation_replaces_immediately() -> None:
