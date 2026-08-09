@@ -5,7 +5,7 @@ from orion.jtac_runtime import JtacDesignationMethod
 from orion.mission import MissionSnapshot
 from orion.mission_control_autonomy import MissionControlAction, MissionControlAutonomyDecision
 from orion.mission_control_proactive import ProactiveMissionControlRuntime
-from orion.orion_settings import CommunicationMode, InterfaceLanguage, OrionSettings, orion_settings
+from orion.orion_settings import CommunicationMode, InterfaceLanguage, OrionSettings
 
 
 def _decision() -> MissionControlAutonomyDecision:
@@ -80,21 +80,19 @@ def test_event_driven_language_follows_live_communication_settings() -> None:
     runtime.enable()
     store = ConfirmationStore()
     decision = _decision()
-    original = orion_settings.get()
-    try:
-        orion_settings._settings = OrionSettings(
-            interface_language=InterfaceLanguage.RU,
-            communication_mode=CommunicationMode.AVIATION_RUSSIAN,
-        )
-        with patch("orion.mission_control_proactive.confirmation_store", store), patch(
-            "orion.mission_control_proactive.evaluate_mission_control_autonomy", return_value=decision
-        ), patch(
-            "orion.mission_control_proactive.create_autonomy_pending_action",
-            side_effect=lambda current: _create_in(store, current),
-        ), patch("orion.mission_control_proactive.voice_commands.submit") as submit:
-            runtime.observe(MissionSnapshot(mission_id="mission-ru"))
-        payload = submit.call_args.args[0]
-        assert payload.context["language"] == "ru"
-        assert "Обнаружена" in payload.transcript
-    finally:
-        orion_settings._settings = original
+    settings = OrionSettings(
+        interface_language=InterfaceLanguage.RU,
+        communication_mode=CommunicationMode.AVIATION_RUSSIAN,
+    )
+    with patch("orion.mission_control_proactive.confirmation_store", store), patch(
+        "orion.mission_control_proactive.evaluate_mission_control_autonomy", return_value=decision
+    ), patch(
+        "orion.mission_control_proactive.create_autonomy_pending_action",
+        side_effect=lambda current: _create_in(store, current),
+    ), patch("orion.mission_control_proactive.orion_settings.get", return_value=settings), patch(
+        "orion.mission_control_proactive.voice_commands.submit"
+    ) as submit:
+        runtime.observe(MissionSnapshot(mission_id="mission-ru"))
+    payload = submit.call_args.args[0]
+    assert payload.context["language"] == "ru"
+    assert "Обнаружена" in payload.transcript
