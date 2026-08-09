@@ -94,16 +94,123 @@ Case-specific engines refine these states without duplicating shared session ide
 
 ## CASE I engine
 
-Primary requirements:
+Case I is a dedicated visual traffic engine. It must not be reduced to free-form tower chatter.
 
-- visual inbound check-in and carrier-relative holding/pattern geometry
-- deterministic sequencing of multiple aircraft/sections
-- pattern occupancy tracking so ORION does not issue conflicting break/landing instructions
-- transitions through initial/break/downwind/abeam/180/90/groove as aircraft data permits
-- Tower/PriFly owns the visual pattern; LSO owns final landing guidance
-- bolter/waveoff returns to a policy-defined resequencing point rather than creating a new unrelated session
+### Case I session states
 
-The engine must tolerate limited telemetry. If ORION cannot reliably infer a detailed pattern leg, it should maintain coarse states and use conservative phraseology instead of fabricating precision.
+`INBOUND -> CHECKED_IN -> VISUAL_HOLDING -> CLEARED_TO_INITIAL -> INITIAL -> BREAK -> DOWNWIND -> ABEAM -> FINAL_TURN_180 -> FINAL_TURN_90 -> GROOVE_ENTRY -> BALL_CALL -> IN_GROOVE -> LANDING_ATTEMPT`
+
+Terminal outcomes:
+
+`LANDING_ATTEMPT -> TRAP -> RECOVERED`
+
+`LANDING_ATTEMPT -> BOLTER -> BOLTER_PATTERN -> RESEQUENCE`
+
+`GROOVE_ENTRY/IN_GROOVE/LANDING_ATTEMPT -> WAVEOFF -> WAVEOFF_PATTERN -> RESEQUENCE`
+
+Emergency override:
+
+`* -> EMERGENCY_PRIORITY`, with sequencing recalculated but current committed traffic protected unless safety requires otherwise.
+
+### Case I controller ownership
+
+- Inbound/check-in and holding assignment may be handled by Marshal/arrival control when configured.
+- Tower/PriFly owns visual pattern sequencing from release to initial through groove entry.
+- LSO owns final landing guidance from ball-call/groove acceptance through touchdown, bolter or waveoff.
+- Tower/PriFly retains landing-area authority; LSO guidance must not imply a clear deck if landing-area state is unknown or foul.
+
+### Case I moving-reference geometry
+
+All pattern geometry is defined in a carrier-relative frame and recalculated from live carrier state. The engine needs at least:
+
+- carrier position/heading/velocity freshness
+- BRC and final bearing where available
+- ownship position, altitude, groundspeed, heading and track
+- traffic positions for occupancy/conflict checks
+- landing-area state or an explicit UNKNOWN capability state
+
+Derived geometric observations may include distance/bearing to ship, relative track to BRC/final bearing, pattern side, approximate initial/break/downwind/abeam/180/90/groove regions and closure trends. These observations are confidence-rated; low confidence prevents precise procedural claims.
+
+### Case I pattern occupancy
+
+`CarrierTrafficSequencer` maintains pattern occupancy slots, not merely an ordered queue. At minimum it tracks:
+
+- aircraft/section cleared toward initial
+- aircraft committed to the break
+- aircraft on downwind
+- aircraft in final turn
+- aircraft in groove / landing attempt
+- bolter/waveoff traffic re-entering
+
+A new clearance to initial or break is suppressed if it would create a known conflict with occupied pattern capacity. When telemetry is insufficient to establish safe spacing, ORION must delay or use conservative instructions rather than inventing separation.
+
+### Case I transition evidence
+
+Transitions are event-driven and require evidence. Examples:
+
+- `CHECKED_IN -> VISUAL_HOLDING`: carrier/mission accepts the aircraft into Case I recovery flow.
+- `VISUAL_HOLDING -> CLEARED_TO_INITIAL`: sequencer grants a release slot and landing area/cycle policy allows continuation.
+- `CLEARED_TO_INITIAL -> INITIAL`: aircraft enters configured carrier-relative initial region with compatible track/altitude confidence.
+- `INITIAL -> BREAK`: observed turn/track change in the break region or an explicit pilot/controller event.
+- `BREAK -> DOWNWIND`: aircraft settles onto the expected downwind side/track.
+- `DOWNWIND -> ABEAM`: aircraft passes the carrier-relative abeam gate with expected geometry.
+- `ABEAM -> FINAL_TURN_180 -> FINAL_TURN_90`: progressive carrier-relative final-turn geometry.
+- `FINAL_TURN_90 -> GROOVE_ENTRY`: aircraft approaches final bearing/landing axis within configured geometry and stability limits.
+- `GROOVE_ENTRY -> BALL_CALL`: explicit pilot ball call or DCS-equivalent event; ORION must not fabricate this acknowledgement.
+- `BALL_CALL -> IN_GROOVE`: LSO accepts/continues final guidance and telemetry remains fresh enough.
+- `LANDING_ATTEMPT -> TRAP`: arrestment/touchdown event positively indicates successful recovery.
+- `LANDING_ATTEMPT -> BOLTER`: touchdown/landing attempt followed by no arrestment and continued flight, when inferable with adequate confidence or explicit DCS event.
+- `* -> WAVEOFF`: LSO/Tower safety decision or DCS event; this has immediate voice priority.
+
+### Case I radio behavior
+
+The engine should preserve real procedural rhythm without becoming a canned script. Required categories include:
+
+- inbound/check-in response
+- holding/recovery information
+- release toward initial when traffic permits
+- pattern sequencing/advisories when required
+- ball-call exchange
+- LSO corrections/waveoff
+- trap/bolter/waveoff outcome and resequence instructions
+
+Stable geometry is silent. ORION should not narrate every state transition. Speech is generated for control instructions, mandatory reports/acknowledgements, materially changed sequencing and safety events.
+
+### Case I section/formation support
+
+The session model must allow a section/division to check in together while still tracking individual aircraft through the landing pattern when they split for recovery. The leader may own the radio session initially, but individual aircraft become separately sequenced before landing attempts. This should be represented explicitly rather than by cloning identical sessions with no relationship.
+
+Suggested fields:
+
+- `formation_id`
+- `formation_role`
+- `radio_lead_aircraft_id`
+- `split_state`
+- `preceding_aircraft_id`
+
+### Bolter and waveoff policy
+
+Bolter and waveoff do not destroy the recovery session. They create a re-entry state in the same session, increment counters, preserve fuel/emergency state and trigger deterministic resequencing. LSO outcome and Tower pattern ownership are separate events so ORION can reason about a clear/foul deck independently of pilot performance.
+
+### LSO latency and safety boundary
+
+The LSO path must bypass ordinary conversational latency. Safety-critical calls use a higher-priority voice queue and can pre-empt routine Tower/Marshal/Mission Control chatter. Precision corrections are only allowed when ownship/carrier telemetry meets freshness and confidence thresholds; otherwise ORION limits itself to non-precision safety calls or suppresses guidance.
+
+### Case I observability
+
+Status/debug output should expose, per recovery session:
+
+- current Case I state
+- current controlling agency
+- preceding/following traffic relation
+- pattern occupancy slot
+- geometry confidence and last update age
+- ball-call received flag
+- landing-area state/freshness
+- bolter/waveoff counters
+- last sequencer decision and reason
+
+This is required for auditability and later debrief.
 
 ## CASE II engine
 
