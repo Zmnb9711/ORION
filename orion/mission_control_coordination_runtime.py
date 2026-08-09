@@ -9,6 +9,8 @@ from orion.mission import MissionSnapshot
 from orion.mission_control_autonomy import MissionControlAction, MissionControlAutonomyDecision
 from orion.mission_control_autonomy_actions import create_autonomy_pending_action
 from orion.mission_control_coordination import MissionControlAssignment, build_mission_control_coordination_plan
+from orion.orion_settings import CommunicationMode, orion_settings
+from orion.voice_core import CommandPriority, VoiceAgent, VoiceCommandCreate, voice_commands
 
 
 class MissionControlCoordinationRuntimeStatus(BaseModel):
@@ -17,6 +19,8 @@ class MissionControlCoordinationRuntimeStatus(BaseModel):
     active_action_ids: list[str] = Field(default_factory=list)
     active_target_ids: list[str] = Field(default_factory=list)
     max_active_proposals: int = 0
+    language: str = "en"
+    last_announced_signature: str | None = None
 
 
 class MissionControlCoordinationRuntimeResult(BaseModel):
@@ -35,6 +39,7 @@ class MissionControlCoordinationRuntime:
         self._mission_id: str | None = None
         self._active_by_target: dict[str, str] = {}
         self._max_active_proposals = max(1, max_active_proposals)
+        self._last_announced_signature: str | None = None
 
     def enable(self) -> None:
         with self._lock:
@@ -45,11 +50,13 @@ class MissionControlCoordinationRuntime:
             self._cancel_all()
             self._enabled = False
             self._mission_id = None
+            self._last_announced_signature = None
 
     def reset(self) -> None:
         with self._lock:
             self._cancel_all()
             self._mission_id = None
+            self._last_announced_signature = None
 
     def status(self) -> MissionControlCoordinationRuntimeStatus:
         with self._lock:
@@ -60,6 +67,8 @@ class MissionControlCoordinationRuntime:
                 active_action_ids=[item.action_id for item in active.values()],
                 active_target_ids=list(active),
                 max_active_proposals=self._max_active_proposals,
+                language=self._resolve_language(),
+                last_announced_signature=self._last_announced_signature,
             )
 
     def observe(self, snapshot: MissionSnapshot) -> MissionControlCoordinationRuntimeResult:
@@ -70,6 +79,7 @@ class MissionControlCoordinationRuntime:
             if snapshot.mission_id != self._mission_id:
                 self._cancel_all()
                 self._mission_id = snapshot.mission_id
+                self._last_announced_signature = None
 
             plan = build_mission_control_coordination_plan(limit=self._max_active_proposals + 2)
             desired = {assignment.target_id: assignment for assignment in plan.assignments[: self._max_active_proposals]}
@@ -92,6 +102,7 @@ class MissionControlCoordinationRuntime:
                 self._active_by_target[target_id] = pending.action_id
                 result.created.append(pending)
 
+            self._announce_if_changed(result)
             return result
 
     def _active_pending(self) -> dict[str, PendingAction]:
@@ -108,6 +119,67 @@ class MissionControlCoordinationRuntime:
         for pending in self._active_pending().values():
             self._reject(pending)
         self._active_by_target.clear()
+
+    def _announce_if_changed(self, result: MissionControlCoordinationRuntimeResult) -> None:
+        if not result.created and not result.cancelled_action_ids:
+            return
+        active = self._active_pending()
+        signature = "|".join(
+            sorted(
+                f"{target}:{item.payload.get('designator_id')}:{item.payload.get('designation_method')}"
+                for target, item in active.items()
+            )
+        )
+        if signature == self._last_announced_signature:
+            return
+        self._last_announced_signature = signature
+        language = self._resolve_language()
+        ru = language.startswith("ru")
+        created = len(result.created)
+        cancelled = len(result.cancelled_action_ids)
+        if created and cancelled:
+            text = (
+                f"План целеуказания обновлён: новых назначений {created}, отменено {cancelled}."
+                if ru
+                else f"Designation plan updated: {created} new assignment(s), {cancelled} cancelled."
+            )
+        elif created:
+            text = (
+                f"План целеуказания обновлён. Новых назначений: {created}."
+                if ru
+                else f"Designation plan updated. {created} new assignment(s)."
+            )
+        else:
+            text = (
+                f"План целеуказания обновлён. Отменено назначений: {cancelled}."
+                if ru
+                else f"Designation plan updated. {cancelled} assignment(s) cancelled."
+            )
+        voice_commands.submit(
+            VoiceCommandCreate(
+                transcript=text,
+                intent="mission_control_coordination_update",
+                agent=VoiceAgent.MISSION_CONTROL,
+                priority=CommandPriority.HIGH,
+                context={
+                    "mission_id": self._mission_id,
+                    "created": created,
+                    "cancelled": cancelled,
+                    "active_targets": sorted(active),
+                    "unassigned_targets": result.unassigned_target_ids,
+                    "language": language,
+                },
+            )
+        )
+
+    @staticmethod
+    def _resolve_language() -> str:
+        settings = orion_settings.get()
+        if settings.communication_mode is CommunicationMode.AVIATION_RUSSIAN:
+            return "ru"
+        if settings.communication_mode is CommunicationMode.AVIATION_ENGLISH:
+            return "en"
+        return settings.interface_language.value
 
     @staticmethod
     def _reject(pending: PendingAction) -> bool:
@@ -144,3 +216,17 @@ class MissionControlCoordinationRuntime:
 
 
 coordination_mission_control = MissionControlCoordinationRuntime()
+
+
+def observe_snapshot_for_coordination_mission_control(snapshot: MissionSnapshot) -> MissionControlCoordinationRuntimeResult:
+    # Follow the established proactive Mission Control application lifecycle without
+    # introducing another global startup dependency in app.py.
+    from orion.mission_control_proactive import proactive_mission_control
+
+    if proactive_mission_control.enabled:
+        if not coordination_mission_control.enabled:
+            coordination_mission_control.enable()
+    else:
+        if coordination_mission_control.enabled:
+            coordination_mission_control.disable()
+    return coordination_mission_control.observe(snapshot)
