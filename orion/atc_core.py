@@ -9,10 +9,12 @@ from pydantic import BaseModel, Field
 
 
 class ControllerAgency(StrEnum):
+    AIRPORT_CLEARANCE_DELIVERY = "airport_clearance_delivery"
     AIRPORT_GROUND = "airport_ground"
     AIRPORT_TOWER = "airport_tower"
     AIRPORT_DEPARTURE = "airport_departure"
     AIRPORT_APPROACH = "airport_approach"
+    AIRPORT_PAR = "airport_par"
     CARRIER_AIR_BOSS = "carrier_air_boss"
     CARRIER_DEPARTURE = "carrier_departure"
     CARRIER_MARSHAL = "carrier_marshal"
@@ -24,6 +26,8 @@ class ControllerAgency(StrEnum):
 
 
 class ControllerAuthorityScope(StrEnum):
+    ROUTE_CLEARANCE = "route_clearance"
+    SURFACE_MOVEMENT = "surface_movement"
     DECK_RESOURCE = "deck_resource"
     FLIGHT_TRAFFIC = "flight_traffic"
     LANDING_AREA = "landing_area"
