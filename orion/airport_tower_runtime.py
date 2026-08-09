@@ -118,6 +118,15 @@ class AirportTowerController:
         self._record_departure_state(session, reason)
         return session.model_copy(deep=True)
 
+    def return_to_hold_short(self, session_id: UUID, *, reason: str) -> TowerDepartureSession:
+        session = self._require_departure(session_id)
+        if session.state is not TowerDepartureState.TAKEOFF_CLEARANCE_CANCELLED:
+            raise ValueError("Return to hold-short requires cancelled takeoff clearance")
+        session.state = TowerDepartureState.HOLD_SHORT
+        self._departures[session_id] = session
+        self._record_departure_state(session, reason)
+        return session.model_copy(deep=True)
+
     def begin_takeoff_roll(self, session_id: UUID) -> TowerDepartureSession:
         session = self._require_departure(session_id)
         if session.state is not TowerDepartureState.TAKEOFF_CLEARED:
