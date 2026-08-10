@@ -63,9 +63,6 @@ class AirportArrivalSafetyController:
 
     @staticmethod
     def _unsafe_action(state: AirportArrivalState) -> ArrivalSafetyAction:
-        if state in {
-            AirportArrivalState.TOWER,
-            AirportArrivalState.LANDING_CLEARED,
-        }:
+        if state is AirportArrivalState.LANDING_CLEARED:
             return ArrivalSafetyAction.GO_AROUND
         return ArrivalSafetyAction.WITHHOLD_LANDING_CLEARANCE
