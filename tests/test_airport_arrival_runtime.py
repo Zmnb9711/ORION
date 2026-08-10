@@ -33,8 +33,7 @@ def advance_to_final(runtime: AirportArrivalRuntime, session_id) -> None:
 
 
 def complete_tower_handoff(runtime: AirportArrivalRuntime, session_id) -> None:
-    handoff_id = runtime.begin_tower_handoff(session_id, reason="contact tower")
-    runtime.core.acknowledge_handoff(handoff_id)
+    runtime.begin_tower_handoff(session_id, reason="contact tower")
     runtime.complete_tower_handoff(session_id, reason="tower contact established")
 
 
@@ -81,6 +80,22 @@ def test_landing_clearance_requires_positive_runway_safety() -> None:
         runtime.clear_landing(session_id, reason="unsafe")
 
 
+def test_landing_clearance_rejects_stale_runway_state() -> None:
+    runtime, session_id = prepared_runtime()
+    advance_to_final(runtime, session_id)
+    complete_tower_handoff(runtime, session_id)
+    runtime.surface.runways.observe(
+        RunwayState(
+            runway_id="27",
+            availability=RunwayAvailability.CLEAR,
+            freshness=FreshnessClass.STALE,
+            reason="old observation",
+        )
+    )
+    with pytest.raises(ValueError):
+        runtime.clear_landing(session_id, reason="stale runway state")
+
+
 def test_go_around_from_tower_returns_flight_traffic_to_approach() -> None:
     runtime, session_id = prepared_runtime()
     advance_to_final(runtime, session_id)
@@ -92,6 +107,27 @@ def test_go_around_from_tower_returns_flight_traffic_to_approach() -> None:
     assert runtime.enter_missed_approach(session_id, reason="missed approach").state is AirportArrivalState.MISSED_APPROACH
     assert runtime.enter_approach_control(session_id, reason="approach reacquired").state is AirportArrivalState.APPROACH_CONTROL
     assert runtime.reposition(session_id, reason="vectors for second approach").state is AirportArrivalState.REPOSITION
+
+
+def test_go_around_can_complete_second_approach() -> None:
+    runtime, session_id = prepared_runtime()
+    advance_to_final(runtime, session_id)
+    complete_tower_handoff(runtime, session_id)
+    runtime.go_around(session_id, reason="runway conflict")
+    runtime.enter_missed_approach(session_id, reason="missed approach")
+    runtime.enter_approach_control(session_id, reason="approach reacquired")
+    runtime.reposition(session_id, reason="vectors for second approach")
+    runtime.issue_descent_vectors(session_id, heading_deg=270, altitude_ft=2500, reason="reposition vector")
+    runtime.enter_approach_control(session_id, reason="ready for second approach")
+    runtime.position_for_approach(session_id, reason="second positioning")
+    runtime.clear_approach(session_id, approach_type=ApproachType.VISUAL, reason="second approach")
+    runtime.confirm_final(session_id)
+    complete_tower_handoff(runtime, session_id)
+    runtime.clear_landing(session_id, reason="cleared to land second approach")
+    runtime.confirm_touchdown(session_id)
+    runtime.confirm_rollout(session_id)
+    runtime.confirm_runway_vacated(session_id)
+    assert runtime.transfer_to_ground(session_id, reason="contact ground").state is AirportArrivalState.GROUND
 
 
 def test_supported_approach_types_are_dcs_relevant_only() -> None:
