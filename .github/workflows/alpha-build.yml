@@ -37,7 +37,7 @@ jobs:
         shell: pwsh
         run: |
           $icon = "branding/orion.ico"
-          $expected = "0dd2b5c9207291781a6bec24222e34b9cf9b0767522952e4987cd061dab1ffbf"
+          $expected = "e5197c2de9ed7b3a3f2bcf505627222253e39f2317028f72117c073396c76b6c"
           if (-not (Test-Path $icon)) { throw "Approved ORION icon is missing: $icon" }
           $actual = (Get-FileHash $icon -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($actual -ne $expected) {
