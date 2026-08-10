@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from enum import StrEnum
 from pathlib import Path
 
@@ -81,14 +82,19 @@ def install_export_integration(saved_games_path: str) -> DcsReadinessReport:
             encoding="utf-8",
         )
 
+    source = _packaged_export_source()
+    if not source.is_file():
+        raise FileNotFoundError(f"ORION DCS exporter payload is missing: {source}")
     integration = orion_dir / "Export.lua"
-    if not integration.is_file():
-        integration.write_text(
-            "-- ORION integration entrypoint\n"
-            "-- Runtime telemetry exporter will be installed/updated by the DCS integration component.\n",
-            encoding="utf-8",
-        )
+    integration.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
     return inspect_dcs_readiness(str(root))
+
+
+def _packaged_export_source() -> Path:
+    bundle_root = getattr(sys, "_MEIPASS", None)
+    if bundle_root:
+        return Path(bundle_root) / "dcs-export" / "Export.lua"
+    return Path(__file__).resolve().parent.parent / "dcs-export" / "Export.lua"
 
 
 def _saved_games_root() -> Path:
