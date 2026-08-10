@@ -35,7 +35,7 @@ jobs:
       - name: Run packaging smoke tests
         shell: pwsh
         run: |
-          python -m pytest -q tests/test_dcs_readiness.py tests/test_launcher.py
+          python -m pytest -q tests/test_dcs_readiness.py tests/test_launcher.py tests/test_alpha_smoke_diagnostics.py
 
       - name: Build ORION application bundle
         shell: pwsh
@@ -68,6 +68,23 @@ jobs:
             if (-not $ready) { throw "Frozen ORION health endpoint did not become ready" }
           } finally {
             if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force }
+          }
+
+      - name: Frozen diagnostics smoke test
+        shell: pwsh
+        run: |
+          & "dist/ORION/ORION.exe" --diagnostics
+          if ($LASTEXITCODE -ne 0) { throw "Frozen ORION diagnostics mode failed" }
+          $bundle = Get-ChildItem "dist/ORION/runtime/diagnostics/orion-alpha-smoke-*.zip" | Select-Object -First 1
+          if (-not $bundle) { throw "Frozen ORION diagnostics bundle was not created" }
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = [System.IO.Compression.ZipFile]::OpenRead($bundle.FullName)
+          try {
+            $names = $zip.Entries | ForEach-Object { $_.FullName }
+            if ($names -notcontains "summary.txt") { throw "Diagnostics bundle missing summary.txt" }
+            if (-not ($names | Where-Object { $_ -like "orion-alpha-smoke-*.json" })) { throw "Diagnostics bundle missing JSON report" }
+          } finally {
+            $zip.Dispose()
           }
 
       - name: Locate Inno Setup
