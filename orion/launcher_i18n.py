@@ -38,6 +38,13 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "updates.current": "Current functionality",
         "updates.installed": "Installed version",
         "updates.notes": "Changes in this version",
+        "diagnostics.title": "ORION Diagnostics",
+        "diagnostics.created": "Diagnostic bundle created",
+        "diagnostics.open_folder": "Open folder",
+        "diagnostics.save_as": "Save as…",
+        "diagnostics.close": "Close",
+        "diagnostics.all_files": "All files",
+        "diagnostics.saved": "Diagnostic bundle saved to:\n{path}",
     },
     "ru": {
         "nav.home": "Главная",
@@ -72,6 +79,13 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "updates.current": "Функциональность текущей версии",
         "updates.installed": "Установленная версия",
         "updates.notes": "Изменения в этой версии",
+        "diagnostics.title": "Диагностика ORION",
+        "diagnostics.created": "Диагностический пакет создан",
+        "diagnostics.open_folder": "Открыть папку",
+        "diagnostics.save_as": "Сохранить как…",
+        "diagnostics.close": "Закрыть",
+        "diagnostics.all_files": "Все файлы",
+        "diagnostics.saved": "Диагностический пакет сохранён:\n{path}",
     },
 }
 
