@@ -8,11 +8,15 @@ from orion.airport_arrival_runtime import ApproachType, ArrivalClearance
 
 
 class ArrivalRequestIntent(StrEnum):
+    RETURN_TO_BASE = "return_to_base"
     REQUEST_ILS = "request_ils"
     REQUEST_TACAN = "request_tacan"
     REQUEST_VISUAL = "request_visual"
     REQUEST_LOWER = "request_lower"
     REQUEST_VECTOR = "request_vector"
+    REQUEST_QNH = "request_qnh"
+    REQUEST_ACTIVE_RUNWAY = "request_active_runway"
+    REPORT_RUNWAY_IN_SIGHT = "report_runway_in_sight"
     REPORT_RUNWAY_NOT_IN_SIGHT = "report_runway_not_in_sight"
     GO_AROUND = "go_around"
     UNKNOWN = "unknown"
@@ -25,8 +29,10 @@ class ArrivalRequest(BaseModel):
 
 def classify_arrival_request(text: str) -> ArrivalRequest:
     normalized = " ".join(text.lower().strip().split())
-    if any(token in normalized for token in ("ухожу на второй", "go around", "going around", "missed approach")):
+    if any(token in normalized for token in ("ухожу на второй", "уходим на второй", "go around", "going around", "missed approach")):
         intent = ArrivalRequestIntent.GO_AROUND
+    elif any(token in normalized for token in ("возвращаюсь на базу", "иду домой", "returning to base", "rtb")):
+        intent = ArrivalRequestIntent.RETURN_TO_BASE
     elif "ils" in normalized or "илс" in normalized:
         intent = ArrivalRequestIntent.REQUEST_ILS
     elif "tacan" in normalized or "такан" in normalized:
@@ -35,6 +41,12 @@ def classify_arrival_request(text: str) -> ArrivalRequest:
         intent = ArrivalRequestIntent.REQUEST_VISUAL
     elif any(token in normalized for token in ("полосу не вижу", "runway not in sight", "negative runway")):
         intent = ArrivalRequestIntent.REPORT_RUNWAY_NOT_IN_SIGHT
+    elif any(token in normalized for token in ("полосу вижу", "вижу полосу", "runway in sight")):
+        intent = ArrivalRequestIntent.REPORT_RUNWAY_IN_SIGHT
+    elif any(token in normalized for token in ("qnh", "кью эн эйч", "давление", "pressure setting")):
+        intent = ArrivalRequestIntent.REQUEST_QNH
+    elif any(token in normalized for token in ("какая полоса", "активная полоса", "рабочая полоса", "active runway", "runway in use")):
+        intent = ArrivalRequestIntent.REQUEST_ACTIVE_RUNWAY
     elif any(token in normalized for token in ("снизиться", "ниже", "lower", "descend")):
         intent = ArrivalRequestIntent.REQUEST_LOWER
     elif any(token in normalized for token in ("дай курс", "vector", "вектор", "heading")):
