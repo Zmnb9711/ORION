@@ -130,6 +130,54 @@ def test_go_around_can_complete_second_approach() -> None:
     assert runtime.transfer_to_ground(session_id, reason="contact ground").state is AirportArrivalState.GROUND
 
 
+def test_active_approach_clearance_can_be_amended_without_resetting_session() -> None:
+    runtime, session_id = prepared_runtime()
+    runtime.assume_arrival_control(session_id, reason="arrival")
+    runtime.enter_approach_control(session_id, reason="approach")
+    runtime.position_for_approach(session_id, reason="position")
+    runtime.clear_approach(
+        session_id,
+        approach_type=ApproachType.TACAN,
+        heading_deg=270,
+        altitude_ft=2500,
+        speed_kt=220,
+        frequency="251.000",
+        pressure_setting="QNH 1013",
+        reason="initial tacan approach",
+    )
+
+    instruction = runtime.amend_approach_clearance(
+        session_id,
+        approach_type=ApproachType.ILS,
+        altitude_ft=1800,
+        reason="pilot requested ILS",
+    )
+
+    session = runtime.get(session_id)
+    assert session is not None and session.state is AirportArrivalState.APPROACH
+    assert session.clearance is not None
+    assert session.clearance.approach_type is ApproachType.ILS
+    assert session.clearance.altitude_ft == 1800
+    assert session.clearance.heading_deg == 270
+    assert session.clearance.speed_kt == 220
+    assert session.clearance.frequency == "251.000"
+    assert session.clearance.pressure_setting == "QNH 1013"
+    assert instruction.semantic_action == "approach_clearance_amendment"
+
+
+def test_clearance_amendment_requires_active_approach_and_a_real_change() -> None:
+    runtime, session_id = prepared_runtime()
+    with pytest.raises(ValueError, match="APPROACH or FINAL"):
+        runtime.amend_approach_clearance(session_id, approach_type=ApproachType.VISUAL, reason="too early")
+
+    runtime.assume_arrival_control(session_id, reason="arrival")
+    runtime.enter_approach_control(session_id, reason="approach")
+    runtime.position_for_approach(session_id, reason="position")
+    runtime.clear_approach(session_id, approach_type=ApproachType.TACAN, reason="initial")
+    with pytest.raises(ValueError, match="At least one"):
+        runtime.amend_approach_clearance(session_id, reason="no change")
+
+
 def test_supported_approach_types_are_dcs_relevant_only() -> None:
     assert set(ApproachType) == {ApproachType.ILS, ApproachType.TACAN, ApproachType.VISUAL}
 
