@@ -77,7 +77,12 @@ class WindowsOrionDesktopLauncher(OrionDesktopLauncher):
 def run_desktop_launcher(runtime_dir: Path, host: str = "127.0.0.1", port: int = 8000) -> int:
     core = CoreServer(host, port)
     core.start()
-    root = Tk()
-    WindowsOrionDesktopLauncher(root, runtime_dir=runtime_dir, core=core)
-    root.mainloop()
+    try:
+        root = Tk()
+        WindowsOrionDesktopLauncher(root, runtime_dir=runtime_dir, core=core)
+        root.mainloop()
+    finally:
+        # Tk creation or the main loop can fail before the normal Exit path.
+        # Always release Core/UDP resources on every Windows launcher exit.
+        core.stop()
     return 0
