@@ -7,6 +7,7 @@ on:
     paths:
       - "orion/**"
       - "dcs-export/**"
+      - "branding/**"
       - "packaging/**"
       - "pyproject.toml"
       - ".github/workflows/alpha-build.yml"
@@ -40,16 +41,22 @@ jobs:
       - name: Build ORION application bundle
         shell: pwsh
         run: |
-          python -m PyInstaller `
-            --noconfirm `
-            --clean `
-            --onedir `
-            --windowed `
-            --name ORION `
-            --collect-submodules orion `
-            --collect-submodules uvicorn `
-            --add-data "dcs-export;dcs-export" `
-            orion/launcher.py
+          $pyinstallerArgs = @(
+            "--noconfirm",
+            "--clean",
+            "--onedir",
+            "--windowed",
+            "--name", "ORION",
+            "--collect-submodules", "orion",
+            "--collect-submodules", "uvicorn",
+            "--add-data", "dcs-export;dcs-export"
+          )
+          if (Test-Path "branding/orion.ico") {
+            $pyinstallerArgs += @("--icon", "branding/orion.ico")
+            $pyinstallerArgs += @("--add-data", "branding/orion.ico;branding")
+          }
+          $pyinstallerArgs += "orion/launcher.py"
+          python -m PyInstaller @pyinstallerArgs
           if (-not (Test-Path "dist/ORION/ORION.exe")) { throw "ORION.exe was not created" }
 
       - name: Frozen headless core smoke test
