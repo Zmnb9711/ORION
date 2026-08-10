@@ -125,6 +125,45 @@ def test_download_update_rejects_bad_checksum(monkeypatch, tmp_path: Path) -> No
     with pytest.raises(ValueError, match="SHA-256"):
         update_center.download_update(release, tmp_path)
     assert not (tmp_path / "ORION-Setup.exe").exists()
+    assert not (tmp_path / "ORION-Setup.exe.part").exists()
+
+
+def test_download_update_requires_checksum(tmp_path: Path) -> None:
+    release = ReleaseInfo("0.2.0", "Update", "", None, "https://example.invalid/setup.exe", "ORION-Setup.exe")
+    with pytest.raises(ValueError, match="required SHA-256"):
+        update_center.download_update(release, tmp_path)
+
+
+def test_download_update_rejects_unsafe_asset_name(tmp_path: Path) -> None:
+    release = ReleaseInfo("0.2.0", "Update", "", None, "https://example.invalid/setup.exe", "../ORION-Setup.exe", "a" * 64)
+    with pytest.raises(ValueError, match="invalid ORION installer asset name"):
+        update_center.download_update(release, tmp_path)
+
+
+def test_download_update_rejects_non_https_url(tmp_path: Path) -> None:
+    release = ReleaseInfo("0.2.0", "Update", "", None, "http://example.invalid/setup.exe", "ORION-Setup.exe", "a" * 64)
+    with pytest.raises(ValueError, match="must use HTTPS"):
+        update_center.download_update(release, tmp_path)
+
+
+def test_download_update_rejects_wrong_manifest_size(monkeypatch, tmp_path: Path) -> None:
+    payload = b"installer-bytes"
+    digest = hashlib.sha256(payload).hexdigest()
+    monkeypatch.setattr(update_center.urllib.request, "urlopen", lambda *args, **kwargs: _binary_response(payload, True))
+    release = ReleaseInfo(
+        "0.2.0",
+        "Update",
+        "",
+        None,
+        "https://example.invalid/setup.exe",
+        "ORION-Setup.exe",
+        digest,
+        size_bytes=len(payload) + 1,
+    )
+    with pytest.raises(ValueError, match="size does not match"):
+        update_center.download_update(release, tmp_path)
+    assert not (tmp_path / "ORION-Setup.exe").exists()
+    assert not (tmp_path / "ORION-Setup.exe.part").exists()
 
 
 def test_download_update_accepts_matching_checksum_and_reports_progress(monkeypatch, tmp_path: Path) -> None:
@@ -136,6 +175,7 @@ def test_download_update_accepts_matching_checksum_and_reports_progress(monkeypa
     path = update_center.download_update(release, tmp_path, progress=lambda done, total: progress.append((done, total)))
     assert path.read_bytes() == payload
     assert progress[-1] == (len(payload), len(payload))
+    assert not (tmp_path / "ORION-Setup.exe.part").exists()
 
 
 def test_feature_manifest_exposes_current_and_planned_capabilities() -> None:
