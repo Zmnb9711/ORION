@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from orion import branding
 from orion.desktop_app import LauncherConfig, LauncherConfigStore
 from orion.launcher_i18n import normalize_language, translate
 from orion.windows_autostart import launcher_command, set_autostart
@@ -44,3 +45,11 @@ def test_set_autostart_is_safe_noop_off_windows() -> None:
 
     if os.name != "nt":
         assert set_autostart(True) is False
+
+
+def test_packaged_icon_path_prefers_frozen_bundle(monkeypatch, tmp_path: Path) -> None:
+    icon = tmp_path / "branding" / "orion.ico"
+    icon.parent.mkdir(parents=True)
+    icon.write_bytes(b"approved-icon")
+    monkeypatch.setattr(branding.sys, "_MEIPASS", str(tmp_path), raising=False)
+    assert branding.packaged_icon_path() == icon
