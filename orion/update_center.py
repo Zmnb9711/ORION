@@ -206,10 +206,13 @@ def download_update(
     target_dir = destination_dir or Path(tempfile.gettempdir()) / "ORION" / "updates"
     target_dir.mkdir(parents=True, exist_ok=True)
     target = target_dir / installer_name
+    partial = target.with_name(f"{target.name}.part")
     request = urllib.request.Request(release.installer_url, headers={"User-Agent": f"ORION/{__version__}"})
     downloaded = 0
+
+    partial.unlink(missing_ok=True)
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response, target.open("wb") as handle:
+        with urllib.request.urlopen(request, timeout=timeout) as response, partial.open("wb") as handle:
             total_header = response.headers.get("Content-Length") if hasattr(response, "headers") else None
             total = int(total_header) if total_header and str(total_header).isdigit() else release.size_bytes
             while True:
@@ -220,19 +223,18 @@ def download_update(
                 downloaded += len(chunk)
                 if progress is not None:
                     progress(downloaded, total)
-    except Exception:
-        target.unlink(missing_ok=True)
-        raise
 
-    if release.size_bytes is not None and downloaded != release.size_bytes:
-        target.unlink(missing_ok=True)
-        raise ValueError("Downloaded installer size does not match the release manifest")
+        if release.size_bytes is not None and downloaded != release.size_bytes:
+            raise ValueError("Downloaded installer size does not match the release manifest")
 
-    digest = hashlib.sha256(target.read_bytes()).hexdigest()
-    if digest.lower() != release.sha256.lower():
-        target.unlink(missing_ok=True)
-        raise ValueError("Downloaded installer SHA-256 does not match the release manifest")
-    return target
+        digest = hashlib.sha256(partial.read_bytes()).hexdigest()
+        if digest.lower() != release.sha256.lower():
+            raise ValueError("Downloaded installer SHA-256 does not match the release manifest")
+
+        partial.replace(target)
+        return target
+    finally:
+        partial.unlink(missing_ok=True)
 
 
 def launch_installer(path: Path) -> None:
