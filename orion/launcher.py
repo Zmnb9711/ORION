@@ -51,7 +51,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.desktop:
-        from orion.desktop_launcher_v2 import run_desktop_launcher
+        # Keep the stable compatibility module as the public desktop dispatch
+        # surface. Besides preserving external imports, this makes the launcher
+        # entry point straightforward to replace in headless tests.
+        from orion.desktop_launcher import run_desktop_launcher
 
         return run_desktop_launcher(runtime, host=args.host, port=args.port)
 
