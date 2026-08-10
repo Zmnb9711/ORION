@@ -1,0 +1,143 @@
+name: ORION Alpha Windows Build
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - "orion/**"
+      - "dcs-export/**"
+      - "packaging/**"
+      - "pyproject.toml"
+      - ".github/workflows/alpha-build.yml"
+
+jobs:
+  build-alpha:
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install build dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev,windows-audio]"
+
+      - name: Run packaging smoke tests
+        shell: pwsh
+        run: |
+          python -m pytest -q tests/test_dcs_readiness.py tests/test_launcher.py tests/test_alpha_smoke_diagnostics.py
+
+      - name: Build ORION application bundle
+        shell: pwsh
+        run: |
+          python -m PyInstaller `
+            --noconfirm `
+            --clean `
+            --onedir `
+            --windowed `
+            --name ORION `
+            --collect-submodules orion `
+            --collect-submodules uvicorn `
+            --add-data "dcs-export;dcs-export" `
+            orion/launcher.py
+          if (-not (Test-Path "dist/ORION/ORION.exe")) { throw "ORION.exe was not created" }
+
+      - name: Frozen headless core smoke test
+        shell: pwsh
+        run: |
+          $process = Start-Process -FilePath "dist/ORION/ORION.exe" -ArgumentList "--no-browser","--port","8123" -PassThru
+          try {
+            $ready = $false
+            for ($i = 0; $i -lt 30; $i++) {
+              Start-Sleep -Milliseconds 500
+              try {
+                $response = Invoke-RestMethod -Uri "http://127.0.0.1:8123/health" -TimeoutSec 2
+                if ($response.status -eq "ok") { $ready = $true; break }
+              } catch {}
+            }
+            if (-not $ready) { throw "Frozen ORION health endpoint did not become ready" }
+          } finally {
+            if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force }
+          }
+
+      - name: Frozen desktop launcher smoke test
+        shell: pwsh
+        run: |
+          $process = Start-Process -FilePath "dist/ORION/ORION.exe" -ArgumentList "--desktop","--port","8124" -PassThru
+          try {
+            $ready = $false
+            for ($i = 0; $i -lt 30; $i++) {
+              Start-Sleep -Milliseconds 500
+              if ($process.HasExited) { throw "Desktop launcher exited before Core API became ready" }
+              try {
+                $response = Invoke-RestMethod -Uri "http://127.0.0.1:8124/health" -TimeoutSec 2
+                if ($response.status -eq "ok") { $ready = $true; break }
+              } catch {}
+            }
+            if (-not $ready) { throw "Desktop launcher did not start its Core API" }
+          } finally {
+            if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force }
+          }
+
+      - name: Frozen diagnostics smoke test
+        shell: pwsh
+        run: |
+          $process = Start-Process -FilePath "dist/ORION/ORION.exe" -ArgumentList "--diagnostics" -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Frozen ORION diagnostics mode failed with exit code $($process.ExitCode)" }
+          $bundle = Get-ChildItem "dist/ORION/runtime/diagnostics/orion-alpha-smoke-*.zip" | Select-Object -First 1
+          if (-not $bundle) { throw "Frozen ORION diagnostics bundle was not created" }
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = [System.IO.Compression.ZipFile]::OpenRead($bundle.FullName)
+          try {
+            $names = $zip.Entries | ForEach-Object { $_.FullName }
+            if ($names -notcontains "summary.txt") { throw "Diagnostics bundle missing summary.txt" }
+            if (-not ($names | Where-Object { $_ -like "orion-alpha-smoke-*.json" })) { throw "Diagnostics bundle missing JSON report" }
+          } finally {
+            $zip.Dispose()
+          }
+
+      - name: Locate Inno Setup
+        id: inno
+        shell: pwsh
+        run: |
+          $candidates = @(
+            "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
+            "C:\Program Files\Inno Setup 6\ISCC.exe"
+          )
+          $iscc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) {
+            choco install innosetup --yes --no-progress
+            $iscc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          }
+          if (-not $iscc) { throw "Inno Setup compiler not found" }
+          "iscc=$iscc" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Build Windows installer
+        shell: pwsh
+        run: |
+          & "${{ steps.inno.outputs.iscc }}" "packaging/orion-alpha.iss"
+          if (-not (Test-Path "dist-installer/ORION-Alpha-0.1-Setup.exe")) { throw "Installer was not created" }
+
+      - name: Upload portable bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: ORION-Alpha-0.1-portable
+          path: dist/ORION
+          if-no-files-found: error
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: ORION-Alpha-0.1-Setup
+          path: dist-installer/ORION-Alpha-0.1-Setup.exe
+          if-no-files-found: error

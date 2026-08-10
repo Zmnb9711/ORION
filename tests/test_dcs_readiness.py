@@ -15,12 +15,17 @@ def test_export_install_preserves_existing_export_and_is_idempotent(tmp_path: Pa
     first = install_export_integration(str(tmp_path))
     second = install_export_integration(str(tmp_path))
     content = export.read_text(encoding="utf-8")
+    integration = scripts / "ORION" / "Export.lua"
+    integration_content = integration.read_text(encoding="utf-8")
 
     assert first.state == ReadinessState.READY
     assert second.export_configured is True
     assert "-- existing integration" in content
     assert content.count(ORION_EXPORT_LINE) == 1
-    assert (scripts / "ORION" / "Export.lua").is_file()
+    assert integration.is_file()
+    assert "-- ORION DCS Export prototype" in integration_content
+    assert "ORION_TELEMETRY_PORT = 45100" in integration_content
+    assert "Runtime telemetry exporter will be installed/updated" not in integration_content
 
 
 def test_readiness_api_can_install_export(tmp_path: Path) -> None:
