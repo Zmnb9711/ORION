@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import threading
 from pathlib import Path
-from tkinter import BOTH, LEFT, RIGHT, X, StringVar, TclError, Tk, Toplevel, messagebox
+from tkinter import BOTH, LEFT, RIGHT, X, StringVar, TclError, Tk, Toplevel, filedialog, messagebox
 from tkinter import ttk
 
+from orion.alpha_smoke_diagnostics import write_alpha_diagnostics_bundle
 from orion.branding import packaged_icon_path
 from orion.desktop_app import CoreServer, OrionDesktopLauncher
+from orion.diagnostics_export import copy_diagnostics_bundle, reveal_in_file_manager
 from orion.first_run_actions import (
     SelectActiveRequest,
     detect_installations,
@@ -93,6 +95,68 @@ class WindowsOrionDesktopLauncher(OrionDesktopLauncher):
             self.show_page(self.current_page)
         else:
             self.show_page(self.current_page)
+
+    def _diagnostics_async(self) -> None:
+        def worker() -> None:
+            try:
+                bundle = write_alpha_diagnostics_bundle()
+            except Exception as exc:
+                error = str(exc)
+                self.root.after(0, lambda message=error: messagebox.showerror(self.t("diagnostics.title"), message))
+                return
+            self.root.after(0, lambda path=Path(bundle): self._show_diagnostics_result(path))
+
+        threading.Thread(target=worker, name="orion-diagnostics", daemon=True).start()
+
+    def _show_diagnostics_result(self, bundle: Path) -> None:
+        window = Toplevel(self.root)
+        self._apply_window_icon(window)
+        window.title(self.t("diagnostics.title"))
+        window.geometry("760x260")
+        window.transient(self.root)
+
+        body = ttk.Frame(window, padding=18)
+        body.pack(fill=BOTH, expand=True)
+        ttk.Label(body, text=self.t("diagnostics.created"), style="Section.TLabel").pack(anchor="w")
+        ttk.Label(body, text=str(bundle), wraplength=700, justify="left").pack(anchor="w", pady=(10, 18))
+
+        buttons = ttk.Frame(body)
+        buttons.pack(fill=X)
+        ttk.Button(
+            buttons,
+            text=self.t("diagnostics.open_folder"),
+            style="Primary.TButton",
+            command=lambda: self._open_diagnostics_folder(bundle),
+        ).pack(side=LEFT, padx=(0, 8))
+        ttk.Button(
+            buttons,
+            text=self.t("diagnostics.save_as"),
+            command=lambda: self._save_diagnostics_as(bundle),
+        ).pack(side=LEFT, padx=(0, 8))
+        ttk.Button(buttons, text=self.t("diagnostics.close"), command=window.destroy).pack(side=RIGHT)
+
+    def _open_diagnostics_folder(self, bundle: Path) -> None:
+        try:
+            reveal_in_file_manager(bundle)
+        except OSError as exc:
+            messagebox.showerror(self.t("diagnostics.title"), str(exc))
+
+    def _save_diagnostics_as(self, bundle: Path) -> None:
+        destination = filedialog.asksaveasfilename(
+            parent=self.root,
+            title=self.t("diagnostics.save_as"),
+            defaultextension=".zip",
+            initialfile=bundle.name,
+            filetypes=(("ZIP", "*.zip"), (self.t("diagnostics.all_files"), "*.*")),
+        )
+        if not destination:
+            return
+        try:
+            saved = copy_diagnostics_bundle(bundle, Path(destination))
+        except OSError as exc:
+            messagebox.showerror(self.t("diagnostics.title"), str(exc))
+            return
+        messagebox.showinfo(self.t("diagnostics.title"), self.t("diagnostics.saved", values={"path": saved}))
 
     def _open_setup(self) -> None:
         """Open the Windows first-run/repair flow without blocking Tk's UI thread."""
