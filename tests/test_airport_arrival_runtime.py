@@ -76,7 +76,7 @@ def test_landing_clearance_requires_positive_runway_safety() -> None:
             reason="traffic on runway",
         )
     )
-    with pytest.raises(ValueError, match="confirmed clear"):
+    with pytest.raises(ValueError, match="not safe enough for positive clearance"):
         runtime.clear_landing(session_id, reason="unsafe")
 
 
