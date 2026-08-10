@@ -3,10 +3,15 @@ from orion.airport_arrival_runtime import ApproachType, ArrivalClearance
 
 
 def test_free_form_arrival_requests_cover_ru_and_en() -> None:
+    assert classify_arrival_request("Орион, возвращаюсь на базу").intent is ArrivalRequestIntent.RETURN_TO_BASE
+    assert classify_arrival_request("RTB").intent is ArrivalRequestIntent.RETURN_TO_BASE
     assert classify_arrival_request("Орион, давай лучше по ILS").intent is ArrivalRequestIntent.REQUEST_ILS
     assert classify_arrival_request("Хочу TACAN заход").intent is ArrivalRequestIntent.REQUEST_TACAN
     assert classify_arrival_request("Давай визуально").intent is ArrivalRequestIntent.REQUEST_VISUAL
     assert classify_arrival_request("Полосу не вижу").intent is ArrivalRequestIntent.REPORT_RUNWAY_NOT_IN_SIGHT
+    assert classify_arrival_request("Runway in sight").intent is ArrivalRequestIntent.REPORT_RUNWAY_IN_SIGHT
+    assert classify_arrival_request("Какой QNH?").intent is ArrivalRequestIntent.REQUEST_QNH
+    assert classify_arrival_request("Какая полоса сейчас используется?").intent is ArrivalRequestIntent.REQUEST_ACTIVE_RUNWAY
     assert classify_arrival_request("Можно еще снизиться?").intent is ArrivalRequestIntent.REQUEST_LOWER
     assert classify_arrival_request("Дай курс на полосу").intent is ArrivalRequestIntent.REQUEST_VECTOR
     assert classify_arrival_request("Ухожу на второй").intent is ArrivalRequestIntent.GO_AROUND
@@ -32,3 +37,7 @@ def test_clearance_amendment_preserves_unspecified_fields() -> None:
     assert amended.direct_to == "IAF"
     assert amended.frequency == "251.000"
     assert amended.pressure_setting == "QNH 1013"
+
+
+def test_unknown_free_form_request_stays_unknown() -> None:
+    assert classify_arrival_request("Орион, как настроение?").intent is ArrivalRequestIntent.UNKNOWN
