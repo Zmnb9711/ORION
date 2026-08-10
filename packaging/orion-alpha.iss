@@ -20,6 +20,9 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 PrivilegesRequired=lowest
 UninstallDisplayIcon={app}\{#MyAppExeName}
+#if FileExists("..\branding\orion.ico")
+SetupIconFile=..\branding\orion.ico
+#endif
 
 [Files]
 Source: "..\dist\ORION\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs

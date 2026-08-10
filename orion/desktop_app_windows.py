@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import threading
 from pathlib import Path
-from tkinter import BOTH, LEFT, RIGHT, X, StringVar, Tk, Toplevel, messagebox
+from tkinter import BOTH, LEFT, RIGHT, X, StringVar, TclError, Tk, Toplevel, messagebox
 from tkinter import ttk
 
+from orion.branding import packaged_icon_path
 from orion.desktop_app import CoreServer, OrionDesktopLauncher
 from orion.first_run_actions import (
     SelectActiveRequest,
@@ -23,6 +24,18 @@ class WindowsOrionDesktopLauncher(OrionDesktopLauncher):
         self._really_exiting = False
         self._tray = WindowsTrayController(self._request_restore, self._request_exit)
         super().__init__(root, runtime_dir, core)
+        self._apply_window_icon(root)
+
+    @staticmethod
+    def _apply_window_icon(window: Tk | Toplevel) -> None:
+        icon = packaged_icon_path()
+        if icon is None:
+            return
+        try:
+            window.iconbitmap(default=str(icon))
+        except TclError:
+            # Branding must never prevent the launcher from starting.
+            return
 
     def _request_restore(self) -> None:
         self.root.after(0, self._restore_from_tray)
@@ -85,6 +98,7 @@ class WindowsOrionDesktopLauncher(OrionDesktopLauncher):
         """Open the Windows first-run/repair flow without blocking Tk's UI thread."""
 
         window = Toplevel(self.root)
+        self._apply_window_icon(window)
         window.title(self.t("setup.title"))
         window.geometry("760x520")
         body = ttk.Frame(window, padding=18)
