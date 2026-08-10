@@ -107,13 +107,20 @@ class WindowsSapiBackend:
         if not path.exists():
             raise FileNotFoundError(path)
         import winsound
-        winsound.PlaySound(str(path), winsound.SND_FILENAME | winsound.SND_ASYNC)
+
+        play_sound = getattr(winsound, "PlaySound")
+        snd_filename = int(getattr(winsound, "SND_FILENAME"))
+        snd_async = int(getattr(winsound, "SND_ASYNC"))
+        play_sound(str(path), snd_filename | snd_async)
 
     def stop(self) -> None:
         if not self.available:
             return
         import winsound
-        winsound.PlaySound(None, winsound.SND_PURGE)
+
+        play_sound = getattr(winsound, "PlaySound")
+        snd_purge = int(getattr(winsound, "SND_PURGE"))
+        play_sound(None, snd_purge)
 
 
 def _powershell_sapi_script(
