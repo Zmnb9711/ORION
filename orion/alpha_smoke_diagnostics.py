@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-import platform
+import platform as platform_module
 import socket
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -32,8 +32,8 @@ class AlphaSmokeReport(BaseModel):
     generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     orion_version: str = __version__
     hostname: str = Field(default_factory=socket.gethostname)
-    platform: str = Field(default_factory=platform.platform)
-    python: str = Field(default_factory=platform.python_version)
+    platform: str = Field(default_factory=platform_module.platform)
+    python: str = Field(default_factory=platform_module.python_version)
     checks: list[SmokeCheck] = Field(default_factory=list)
     startup: StartupHealthReport
     dcs_connection: DcsConnectionReport
