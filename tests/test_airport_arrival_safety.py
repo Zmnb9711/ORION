@@ -47,7 +47,7 @@ def test_safety_withholds_clearance_before_tower_when_runway_unknown() -> None:
     assert runtime.get(session_id).state is AirportArrivalState.FINAL
 
 
-def test_safety_orders_go_around_for_tower_runway_conflict() -> None:
+def test_safety_withholds_landing_clearance_under_tower_while_runway_occupied() -> None:
     runtime, session_id = _runtime_on_final()
     _tower(runtime, session_id)
     runtime.surface.runways.observe(
@@ -59,6 +59,23 @@ def test_safety_orders_go_around_for_tower_runway_conflict() -> None:
         )
     )
     decision = AirportArrivalSafetyController(runtime).enforce(session_id, reason="runway conflict")
+    assert decision.action is ArrivalSafetyAction.WITHHOLD_LANDING_CLEARANCE
+    assert runtime.get(session_id).state is AirportArrivalState.TOWER
+
+
+def test_safety_orders_go_around_after_landing_clearance_if_runway_becomes_unsafe() -> None:
+    runtime, session_id = _runtime_on_final()
+    _tower(runtime, session_id)
+    runtime.clear_landing(session_id, reason="cleared to land")
+    runtime.surface.runways.observe(
+        RunwayState(
+            runway_id="27",
+            availability=RunwayAvailability.OCCUPIED,
+            freshness=FreshnessClass.FRESH,
+            reason="runway incursion",
+        )
+    )
+    decision = AirportArrivalSafetyController(runtime).enforce(session_id, reason="runway incursion")
     assert decision.action is ArrivalSafetyAction.GO_AROUND
     assert runtime.get(session_id).state is AirportArrivalState.GO_AROUND
     owner = runtime.core.authority.get_owner(session_id, ControllerAuthorityScope.FLIGHT_TRAFFIC)
