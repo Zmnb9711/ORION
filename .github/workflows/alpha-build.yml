@@ -2,6 +2,12 @@ name: ORION Alpha Windows Build
 
 on:
   workflow_dispatch:
+    inputs:
+      require_approved_icon:
+        description: "Require the approved ORION icon for this build"
+        required: false
+        default: false
+        type: boolean
   pull_request:
     branches: [main]
     paths:
@@ -32,6 +38,25 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev,windows-audio]"
+
+      - name: Verify approved ORION icon
+        shell: pwsh
+        env:
+          REQUIRE_APPROVED_ICON: ${{ github.event_name == 'workflow_dispatch' && inputs.require_approved_icon || false }}
+        run: |
+          $icon = "branding/orion.ico"
+          $approved = "4c7059d3d6909442433e550ec8a5582679924f8b12bbbdfdb37d90125258fce0"
+          if (Test-Path $icon) {
+            $actual = (Get-FileHash -Algorithm SHA256 $icon).Hash.ToLowerInvariant()
+            if ($actual -ne $approved) {
+              throw "branding/orion.ico does not match the approved ORION icon: $actual"
+            }
+            Write-Host "Approved ORION icon verified: $actual"
+          } elseif ($env:REQUIRE_APPROVED_ICON -eq "true") {
+            throw "Approved branding/orion.ico is required for this branded build"
+          } else {
+            Write-Host "Approved ORION icon not present; continuing unbranded CI build"
+          }
 
       - name: Run packaging smoke tests
         shell: pwsh
@@ -118,8 +143,8 @@ jobs:
         shell: pwsh
         run: |
           $candidates = @(
-            "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
-            "C:\Program Files\Inno Setup 6\ISCC.exe"
+            "C:\\Program Files (x86)\\Inno Setup 6\\ISCC.exe",
+            "C:\\Program Files\\Inno Setup 6\\ISCC.exe"
           )
           $iscc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
           if (-not $iscc) {
