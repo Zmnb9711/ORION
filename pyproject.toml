@@ -29,6 +29,9 @@ windows-audio = [
   "sounddevice>=0.5,<1.0",
 ]
 
+[tool.setuptools.packages.find]
+include = ["orion*"]
+
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
