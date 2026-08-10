@@ -65,12 +65,23 @@ class AirportArrivalRuntime:
         self.tower = AirportTowerController(self.surface)
         self._sessions: dict[UUID, AirportArrivalSession] = {}
 
-    def start(self, *, session_id: UUID, runway_id: str, reason: str = "arrival contact established") -> AirportArrivalSession:
+    def start(
+        self,
+        *,
+        session_id: UUID,
+        runway_id: str,
+        reason: str = "arrival contact established",
+    ) -> AirportArrivalSession:
         if session_id in self._sessions:
             raise ValueError("Arrival session already exists")
         owner = self.core.authority.get_owner(session_id, ControllerAuthorityScope.FLIGHT_TRAFFIC)
         if owner is None:
-            self.core.claim_authority(session_id=session_id, scope=ControllerAuthorityScope.FLIGHT_TRAFFIC, agency=ControllerAgency.AIRPORT_APPROACH, reason=reason)
+            self.core.claim_authority(
+                session_id=session_id,
+                scope=ControllerAuthorityScope.FLIGHT_TRAFFIC,
+                agency=ControllerAgency.AIRPORT_APPROACH,
+                reason=reason,
+            )
         elif owner.agency is not ControllerAgency.AIRPORT_APPROACH:
             raise ValueError("Approach must own FLIGHT_TRAFFIC before arrival can start")
         session = AirportArrivalSession(session_id=session_id, runway_id=runway_id)
@@ -79,49 +90,162 @@ class AirportArrivalRuntime:
         return session.model_copy(deep=True)
 
     def assume_arrival_control(self, session_id: UUID, *, reason: str) -> AirportArrivalSession:
-        return self._transition(session_id, {AirportArrivalState.ARRIVAL_CONTACT}, AirportArrivalState.ARRIVAL_CONTROL, reason)
+        return self._transition(
+            session_id,
+            {AirportArrivalState.ARRIVAL_CONTACT},
+            AirportArrivalState.ARRIVAL_CONTROL,
+            reason,
+        )
 
-    def issue_descent_vectors(self, session_id: UUID, *, heading_deg: int | None = None, altitude_ft: int | None = None, speed_kt: int | None = None, direct_to: str | None = None, reason: str) -> OperationalInstruction:
+    def issue_descent_vectors(
+        self,
+        session_id: UUID,
+        *,
+        heading_deg: int | None = None,
+        altitude_ft: int | None = None,
+        speed_kt: int | None = None,
+        direct_to: str | None = None,
+        reason: str,
+    ) -> OperationalInstruction:
         session = self._require(session_id)
-        if session.state not in {AirportArrivalState.ARRIVAL_CONTROL, AirportArrivalState.DESCENT_VECTORS, AirportArrivalState.REPOSITION}:
+        if session.state not in {
+            AirportArrivalState.ARRIVAL_CONTROL,
+            AirportArrivalState.DESCENT_VECTORS,
+            AirportArrivalState.REPOSITION,
+        }:
             raise ValueError("Descent/vector instructions are not valid from current arrival state")
-        params = {k: v for k, v in {"heading_deg": heading_deg, "altitude_ft": altitude_ft, "speed_kt": speed_kt, "direct_to": direct_to}.items() if v is not None}
+        params = {
+            key: value
+            for key, value in {
+                "heading_deg": heading_deg,
+                "altitude_ft": altitude_ft,
+                "speed_kt": speed_kt,
+                "direct_to": direct_to,
+            }.items()
+            if value is not None
+        }
         if not params:
             raise ValueError("At least one arrival instruction parameter is required")
-        instruction = self.core.issue_instruction(OperationalInstruction(session_id=session_id, issuing_agency=ControllerAgency.AIRPORT_APPROACH, authority_scope=ControllerAuthorityScope.FLIGHT_TRAFFIC, semantic_action="arrival_vector", parameters=params, acknowledgement_required=True, voice_priority=VoicePriority.PROCEDURAL))
+        instruction = self.core.issue_instruction(
+            OperationalInstruction(
+                session_id=session_id,
+                issuing_agency=ControllerAgency.AIRPORT_APPROACH,
+                authority_scope=ControllerAuthorityScope.FLIGHT_TRAFFIC,
+                semantic_action="arrival_vector",
+                parameters=params,
+                acknowledgement_required=True,
+                voice_priority=VoicePriority.PROCEDURAL,
+            )
+        )
         session.state = AirportArrivalState.DESCENT_VECTORS
         self._sessions[session_id] = session
         self._record(session, reason)
         return instruction
 
     def enter_approach_control(self, session_id: UUID, *, reason: str) -> AirportArrivalSession:
-        return self._transition(session_id, {AirportArrivalState.ARRIVAL_CONTROL, AirportArrivalState.DESCENT_VECTORS, AirportArrivalState.MISSED_APPROACH}, AirportArrivalState.APPROACH_CONTROL, reason)
+        return self._transition(
+            session_id,
+            {
+                AirportArrivalState.ARRIVAL_CONTROL,
+                AirportArrivalState.DESCENT_VECTORS,
+                AirportArrivalState.MISSED_APPROACH,
+            },
+            AirportArrivalState.APPROACH_CONTROL,
+            reason,
+        )
 
     def position_for_approach(self, session_id: UUID, *, reason: str) -> AirportArrivalSession:
-        return self._transition(session_id, {AirportArrivalState.APPROACH_CONTROL, AirportArrivalState.REPOSITION}, AirportArrivalState.APPROACH_POSITIONING, reason)
+        return self._transition(
+            session_id,
+            {AirportArrivalState.APPROACH_CONTROL, AirportArrivalState.REPOSITION},
+            AirportArrivalState.APPROACH_POSITIONING,
+            reason,
+        )
 
-    def clear_approach(self, session_id: UUID, *, approach_type: ApproachType, heading_deg: int | None = None, altitude_ft: int | None = None, speed_kt: int | None = None, direct_to: str | None = None, frequency: str | None = None, pressure_setting: str | None = None, reason: str) -> OperationalInstruction:
+    def clear_approach(
+        self,
+        session_id: UUID,
+        *,
+        approach_type: ApproachType,
+        heading_deg: int | None = None,
+        altitude_ft: int | None = None,
+        speed_kt: int | None = None,
+        direct_to: str | None = None,
+        frequency: str | None = None,
+        pressure_setting: str | None = None,
+        reason: str,
+    ) -> OperationalInstruction:
         session = self._require(session_id)
         if session.state is not AirportArrivalState.APPROACH_POSITIONING:
             raise ValueError("Approach clearance requires APPROACH_POSITIONING state")
-        clearance = ArrivalClearance(runway_id=session.runway_id, approach_type=approach_type, heading_deg=heading_deg, altitude_ft=altitude_ft, speed_kt=speed_kt, direct_to=direct_to, frequency=frequency, pressure_setting=pressure_setting)
-        instruction = self.core.issue_instruction(OperationalInstruction(session_id=session_id, issuing_agency=ControllerAgency.AIRPORT_APPROACH, authority_scope=ControllerAuthorityScope.FLIGHT_TRAFFIC, semantic_action="approach_clearance", parameters=clearance.model_dump(mode="json", exclude_none=True), acknowledgement_required=True, voice_priority=VoicePriority.PROCEDURAL))
+        clearance = ArrivalClearance(
+            runway_id=session.runway_id,
+            approach_type=approach_type,
+            heading_deg=heading_deg,
+            altitude_ft=altitude_ft,
+            speed_kt=speed_kt,
+            direct_to=direct_to,
+            frequency=frequency,
+            pressure_setting=pressure_setting,
+        )
+        instruction = self.core.issue_instruction(
+            OperationalInstruction(
+                session_id=session_id,
+                issuing_agency=ControllerAgency.AIRPORT_APPROACH,
+                authority_scope=ControllerAuthorityScope.FLIGHT_TRAFFIC,
+                semantic_action="approach_clearance",
+                parameters=clearance.model_dump(mode="json", exclude_none=True),
+                acknowledgement_required=True,
+                voice_priority=VoicePriority.PROCEDURAL,
+            )
+        )
         session.clearance = clearance
         session.state = AirportArrivalState.APPROACH
         self._sessions[session_id] = session
         self._record(session, reason)
         return instruction
 
-    def confirm_final(self, session_id: UUID, *, reason: str = "aircraft established on final") -> AirportArrivalSession:
-        return self._transition(session_id, {AirportArrivalState.APPROACH}, AirportArrivalState.FINAL, reason)
+    def confirm_final(
+        self,
+        session_id: UUID,
+        *,
+        reason: str = "aircraft established on final",
+    ) -> AirportArrivalSession:
+        return self._transition(
+            session_id,
+            {AirportArrivalState.APPROACH},
+            AirportArrivalState.FINAL,
+            reason,
+        )
 
-    def begin_tower_handoff(self, session_id: UUID, *, reason: str, frequency: str | None = None) -> UUID:
+    def begin_tower_handoff(
+        self,
+        session_id: UUID,
+        *,
+        reason: str,
+        frequency: str | None = None,
+    ) -> UUID:
         session = self._require(session_id)
         if session.state is not AirportArrivalState.FINAL:
             raise ValueError("Tower handoff requires FINAL state")
         if session.tower_handoff_id is not None:
             return session.tower_handoff_id
-        handoff_id = self.core.acknowledgement_handoff(session_id=session_id, source=ControllerAgency.AIRPORT_APPROACH, destination=ControllerAgency.AIRPORT_TOWER, scope=ControllerAuthorityScope.FLIGHT_TRAFFIC, reason=reason, frequency=frequency)
+        handoff_id = self.core.acknowledgement_handoff(
+            session_id=session_id,
+            source=ControllerAgency.AIRPORT_APPROACH,
+            destination=ControllerAgency.AIRPORT_TOWER,
+            scope=ControllerAuthorityScope.FLIGHT_TRAFFIC,
+            reason=reason,
+        )
+        if frequency is not None:
+            self.core.history.record(
+                session_id=session_id,
+                event_type="airport_arrival_tower_frequency",
+                reason=reason,
+                source_agency=ControllerAgency.AIRPORT_APPROACH,
+                related_id=handoff_id,
+                details={"frequency": frequency},
+            )
         session.tower_handoff_id = handoff_id
         self._sessions[session_id] = session
         return handoff_id
@@ -157,7 +281,12 @@ class AirportArrivalRuntime:
         self._record(session, reason)
         return instruction
 
-    def confirm_touchdown(self, session_id: UUID, *, reason: str = "touchdown physically confirmed") -> AirportArrivalSession:
+    def confirm_touchdown(
+        self,
+        session_id: UUID,
+        *,
+        reason: str = "touchdown physically confirmed",
+    ) -> AirportArrivalSession:
         session = self._require(session_id)
         if session.state is not AirportArrivalState.LANDING_CLEARED:
             raise ValueError("Touchdown requires LANDING_CLEARED state")
@@ -167,7 +296,12 @@ class AirportArrivalRuntime:
         self._record(session, reason)
         return session.model_copy(deep=True)
 
-    def confirm_rollout(self, session_id: UUID, *, reason: str = "landing rollout observed") -> AirportArrivalSession:
+    def confirm_rollout(
+        self,
+        session_id: UUID,
+        *,
+        reason: str = "landing rollout observed",
+    ) -> AirportArrivalSession:
         session = self._require(session_id)
         if session.state is not AirportArrivalState.TOUCHDOWN:
             raise ValueError("Rollout requires TOUCHDOWN state")
@@ -177,7 +311,12 @@ class AirportArrivalRuntime:
         self._record(session, reason)
         return session.model_copy(deep=True)
 
-    def confirm_runway_vacated(self, session_id: UUID, *, reason: str = "runway vacated physically confirmed") -> AirportArrivalSession:
+    def confirm_runway_vacated(
+        self,
+        session_id: UUID,
+        *,
+        reason: str = "runway vacated physically confirmed",
+    ) -> AirportArrivalSession:
         session = self._require(session_id)
         if session.state is not AirportArrivalState.ROLLOUT:
             raise ValueError("Runway vacated requires ROLLOUT state")
@@ -193,7 +332,12 @@ class AirportArrivalRuntime:
             raise ValueError("Ground transfer requires confirmed RUNWAY_VACATED state")
         owner = self.core.authority.get_owner(session_id, ControllerAuthorityScope.SURFACE_MOVEMENT)
         if owner is None:
-            self.core.claim_authority(session_id=session_id, scope=ControllerAuthorityScope.SURFACE_MOVEMENT, agency=ControllerAgency.AIRPORT_GROUND, reason=reason)
+            self.core.claim_authority(
+                session_id=session_id,
+                scope=ControllerAuthorityScope.SURFACE_MOVEMENT,
+                agency=ControllerAgency.AIRPORT_GROUND,
+                reason=reason,
+            )
         elif owner.agency is not ControllerAgency.AIRPORT_GROUND:
             raise ValueError("SURFACE_MOVEMENT is owned by a non-Ground agency")
         session.state = AirportArrivalState.GROUND
@@ -203,14 +347,24 @@ class AirportArrivalRuntime:
 
     def go_around(self, session_id: UUID, *, reason: str) -> AirportArrivalSession:
         session = self._require(session_id)
-        if session.state not in {AirportArrivalState.APPROACH, AirportArrivalState.FINAL, AirportArrivalState.TOWER, AirportArrivalState.LANDING_CLEARED}:
+        if session.state not in {
+            AirportArrivalState.APPROACH,
+            AirportArrivalState.FINAL,
+            AirportArrivalState.TOWER,
+            AirportArrivalState.LANDING_CLEARED,
+        }:
             raise ValueError("Go-around is not valid from current arrival state")
         if session.state in {AirportArrivalState.TOWER, AirportArrivalState.LANDING_CLEARED}:
             self.tower.go_around(session_id, reason=reason)
             owner = self.core.authority.get_owner(session_id, ControllerAuthorityScope.FLIGHT_TRAFFIC)
             if owner is not None and owner.agency is ControllerAgency.AIRPORT_TOWER:
-                handoff_id = self.core.acknowledgement_handoff(session_id=session_id, source=ControllerAgency.AIRPORT_TOWER, destination=ControllerAgency.AIRPORT_APPROACH, scope=ControllerAuthorityScope.FLIGHT_TRAFFIC, reason=reason)
-                self.core.acknowledge_handoff(handoff_id)
+                handoff_id = self.core.acknowledgement_handoff(
+                    session_id=session_id,
+                    source=ControllerAgency.AIRPORT_TOWER,
+                    destination=ControllerAgency.AIRPORT_APPROACH,
+                    scope=ControllerAuthorityScope.FLIGHT_TRAFFIC,
+                    reason=reason,
+                )
                 self.core.complete_acknowledged_handoff(handoff_id)
         session.state = AirportArrivalState.GO_AROUND
         session.tower_handoff_id = None
@@ -219,16 +373,32 @@ class AirportArrivalRuntime:
         return session.model_copy(deep=True)
 
     def enter_missed_approach(self, session_id: UUID, *, reason: str) -> AirportArrivalSession:
-        return self._transition(session_id, {AirportArrivalState.GO_AROUND}, AirportArrivalState.MISSED_APPROACH, reason)
+        return self._transition(
+            session_id,
+            {AirportArrivalState.GO_AROUND},
+            AirportArrivalState.MISSED_APPROACH,
+            reason,
+        )
 
     def reposition(self, session_id: UUID, *, reason: str) -> AirportArrivalSession:
-        return self._transition(session_id, {AirportArrivalState.MISSED_APPROACH, AirportArrivalState.APPROACH_CONTROL}, AirportArrivalState.REPOSITION, reason)
+        return self._transition(
+            session_id,
+            {AirportArrivalState.MISSED_APPROACH, AirportArrivalState.APPROACH_CONTROL},
+            AirportArrivalState.REPOSITION,
+            reason,
+        )
 
     def get(self, session_id: UUID) -> AirportArrivalSession | None:
         item = self._sessions.get(session_id)
         return item.model_copy(deep=True) if item else None
 
-    def _transition(self, session_id: UUID, allowed: set[AirportArrivalState], target: AirportArrivalState, reason: str) -> AirportArrivalSession:
+    def _transition(
+        self,
+        session_id: UUID,
+        allowed: set[AirportArrivalState],
+        target: AirportArrivalState,
+        reason: str,
+    ) -> AirportArrivalSession:
         session = self._require(session_id)
         if session.state not in allowed:
             raise ValueError(f"Cannot transition from {session.state.value} to {target.value}")
@@ -246,8 +416,20 @@ class AirportArrivalRuntime:
     def _record(self, session: AirportArrivalSession, reason: str) -> None:
         if session.state is AirportArrivalState.GROUND:
             source = ControllerAgency.AIRPORT_GROUND
-        elif session.state in {AirportArrivalState.TOWER, AirportArrivalState.LANDING_CLEARED, AirportArrivalState.TOUCHDOWN, AirportArrivalState.ROLLOUT, AirportArrivalState.RUNWAY_VACATED}:
+        elif session.state in {
+            AirportArrivalState.TOWER,
+            AirportArrivalState.LANDING_CLEARED,
+            AirportArrivalState.TOUCHDOWN,
+            AirportArrivalState.ROLLOUT,
+            AirportArrivalState.RUNWAY_VACATED,
+        }:
             source = ControllerAgency.AIRPORT_TOWER
         else:
             source = ControllerAgency.AIRPORT_APPROACH
-        self.core.history.record(session_id=session.session_id, event_type="airport_arrival_state_changed", reason=reason, source_agency=source, details={"state": session.state.value, "runway_id": session.runway_id})
+        self.core.history.record(
+            session_id=session.session_id,
+            event_type="airport_arrival_state_changed",
+            reason=reason,
+            source_agency=source,
+            details={"state": session.state.value, "runway_id": session.runway_id},
+        )
