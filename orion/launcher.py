@@ -5,11 +5,32 @@ import os
 import sys
 import webbrowser
 from pathlib import Path
+from typing import TextIO
 
 import uvicorn
 
 from orion import __version__
 from orion.alpha_smoke_diagnostics import write_alpha_diagnostics_bundle
+
+_NULL_STREAMS: list[TextIO] = []
+
+
+def _ensure_stdio() -> None:
+    """Provide sink streams when a PyInstaller windowed executable has none.
+
+    PyInstaller's Windows ``--windowed`` mode may set ``sys.stdout`` and
+    ``sys.stderr`` to ``None``. ORION intentionally keeps headless Core and
+    diagnostics modes in the same executable, and both Python ``print`` and
+    Uvicorn logging expect writable streams. Attach devnull sinks only when a
+    stream is missing; console/source launches keep their original streams.
+    """
+
+    for name in ("stdout", "stderr"):
+        if getattr(sys, name) is not None:
+            continue
+        stream = open(os.devnull, "w", encoding="utf-8")  # noqa: SIM115
+        _NULL_STREAMS.append(stream)
+        setattr(sys, name, stream)
 
 
 def _runtime_root() -> Path:
@@ -27,6 +48,8 @@ def _configure_runtime() -> Path:
 
 
 def main(argv: list[str] | None = None) -> int:
+    _ensure_stdio()
+
     parser = argparse.ArgumentParser(description="ORION DCS Alpha launcher")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
