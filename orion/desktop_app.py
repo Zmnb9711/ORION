@@ -404,7 +404,13 @@ class OrionDesktopLauncher:
         except OSError as exc:
             messagebox.showwarning("ORION", str(exc))
         messagebox.showinfo("ORION", self.t("settings.saved"))
-        self.root.destroy()
+        self._rebuild_shell()
+
+    def _rebuild_shell(self) -> None:
+        for child in self.root.winfo_children():
+            child.destroy()
+        self._build_shell()
+        self.show_page(self.current_page)
 
     def _maybe_first_run(self) -> None:
         if self.health is None:
@@ -428,21 +434,30 @@ class OrionDesktopLauncher:
             for child in results.winfo_children():
                 child.destroy()
             found = detect_installations()
-            valid = [item for item in (found.discovery.candidates if found.discovery else []) if item.exists]
-            status.set(found.message)
-            for item in valid:
-                card = ttk.Frame(results, padding=10)
-                card.pack(fill=X, pady=4)
-                ttk.Label(card, text=f"{item.name}: {item.executable_path}").pack(anchor="w")
-                ttk.Button(card, text="Select", command=lambda candidate=item: select(candidate)).pack(anchor="w", pady=(6, 0))
+            if not found.candidates:
+                status.set("DCS World not found")
+                return
+            status.set(f"Found {len(found.candidates)} DCS installation(s)")
+            for candidate in found.candidates:
+                frame = ttk.Frame(results, padding=8)
+                frame.pack(fill=X, pady=3)
+                ttk.Label(frame, text=f"{candidate.name} — {candidate.executable_path}").pack(side=LEFT)
+                ttk.Button(frame, text=self.t("setup.select"), command=lambda item=candidate: select(item)).pack(side=RIGHT)
 
         def select(candidate) -> None:
-            saved = candidate.saved_games_candidates[0] if candidate.saved_games_candidates else None
-            result = select_active_installation(SelectActiveRequest(installation_type=candidate.installation_type, executable_path=candidate.executable_path, install_root=candidate.install_root, saved_games_path=saved, display_name=candidate.name))
+            request = SelectActiveRequest(
+                installation_type=candidate.installation_type,
+                install_root=candidate.install_root,
+                executable_path=candidate.executable_path,
+                saved_games_path=(candidate.saved_games_candidates[0] if candidate.saved_games_candidates else None),
+            )
+            result = select_active_installation(request)
             status.set(result.message)
+            self._refresh_health_async()
 
         def install() -> None:
-            status.set(install_active_integration().message)
+            result = install_active_integration()
+            status.set(result.message)
             self._refresh_health_async()
 
         def test() -> None:
@@ -465,7 +480,13 @@ class OrionDesktopLauncher:
 def run_desktop_launcher(runtime_dir: Path, host: str = "127.0.0.1", port: int = 8000) -> int:
     core = CoreServer(host, port)
     core.start()
-    root = Tk()
-    OrionDesktopLauncher(root, runtime_dir, core)
-    root.mainloop()
+    try:
+        root = Tk()
+        OrionDesktopLauncher(root, runtime_dir, core)
+        root.mainloop()
+    finally:
+        # Tk creation can fail before the launcher object exists (for example
+        # in a headless environment). Never leave the Core/UDP bridge running
+        # after a GUI startup failure or normal desktop exit.
+        core.stop()
     return 0
