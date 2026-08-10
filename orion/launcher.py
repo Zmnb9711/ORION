@@ -51,7 +51,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.desktop:
-        from orion.desktop_launcher import run_desktop_launcher
+        from orion.desktop_launcher_v2 import run_desktop_launcher
 
         return run_desktop_launcher(runtime, host=args.host, port=args.port)
 
