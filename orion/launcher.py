@@ -18,11 +18,12 @@ def _runtime_root() -> Path:
     return Path.cwd()
 
 
-def _configure_runtime() -> None:
+def _configure_runtime() -> Path:
     root = _runtime_root()
     runtime = root / "runtime"
     runtime.mkdir(parents=True, exist_ok=True)
     os.environ.setdefault("ORION_RUNTIME_DIR", str(runtime))
+    return runtime
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -31,18 +32,28 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--no-browser", action="store_true")
     parser.add_argument(
+        "--desktop",
+        action="store_true",
+        help="Launch the native ORION desktop shell",
+    )
+    parser.add_argument(
         "--diagnostics",
         action="store_true",
         help="Run one-shot Alpha smoke diagnostics, write a ZIP bundle, and exit",
     )
     args = parser.parse_args(argv)
 
-    _configure_runtime()
+    runtime = _configure_runtime()
     if args.diagnostics:
         bundle = write_alpha_diagnostics_bundle()
         print(f"ORION Alpha {__version__} diagnostics")
         print(f"Bundle: {bundle}")
         return 0
+
+    if args.desktop:
+        from orion.desktop_launcher import run_desktop_launcher
+
+        return run_desktop_launcher(runtime, host=args.host, port=args.port)
 
     url = f"http://{args.host}:{args.port}"
     print(f"ORION Alpha {__version__}")
