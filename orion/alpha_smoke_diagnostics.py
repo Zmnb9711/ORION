@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import os
 import platform
 import socket
@@ -42,6 +41,14 @@ class AlphaSmokeReport(BaseModel):
     @property
     def passed(self) -> bool:
         return not any(check.state is SmokeCheckState.FAIL for check in self.checks)
+
+    @property
+    def overall_state(self) -> SmokeCheckState:
+        if any(check.state is SmokeCheckState.FAIL for check in self.checks):
+            return SmokeCheckState.FAIL
+        if any(check.state is SmokeCheckState.WARN for check in self.checks):
+            return SmokeCheckState.WARN
+        return SmokeCheckState.PASS
 
 
 def collect_alpha_smoke_report() -> AlphaSmokeReport:
@@ -93,13 +100,12 @@ def write_alpha_diagnostics_bundle(output_dir: Path | None = None) -> Path:
     root = output_dir or _diagnostics_root()
     root.mkdir(parents=True, exist_ok=True)
     stamp = report.generated_at.strftime("%Y%m%d-%H%M%S")
-    json_path = root / f"orion-alpha-smoke-{stamp}.json"
+    json_name = f"orion-alpha-smoke-{stamp}.json"
     zip_path = root / f"orion-alpha-smoke-{stamp}.zip"
-    json_path.write_text(report.model_dump_json(indent=2), encoding="utf-8")
 
     summary = _text_summary(report)
     with ZipFile(zip_path, "w", compression=ZIP_DEFLATED) as archive:
-        archive.write(json_path, arcname=json_path.name)
+        archive.writestr(json_name, report.model_dump_json(indent=2))
         archive.writestr("summary.txt", summary)
     return zip_path
 
@@ -107,6 +113,7 @@ def write_alpha_diagnostics_bundle(output_dir: Path | None = None) -> Path:
 def _text_summary(report: AlphaSmokeReport) -> str:
     lines = [
         f"ORION Alpha smoke diagnostics {report.orion_version}",
+        f"Overall: {report.overall_state.value.upper()}",
         f"Generated: {report.generated_at.isoformat()}",
         f"Host: {report.hostname}",
         f"Platform: {report.platform}",
