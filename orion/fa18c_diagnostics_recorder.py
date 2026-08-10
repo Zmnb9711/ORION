@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 
 class DiagnosticChange(BaseModel):
@@ -78,7 +78,7 @@ class HornetDiagnosticsRecorder:
             return 0
         try:
             packet = DiagnosticPacket.model_validate(payload)
-        except Exception:
+        except ValidationError:
             return 0
         if packet.aircraft_id != "fa-18c" or packet.mode != "cockpit_argument_changes":
             return 0
