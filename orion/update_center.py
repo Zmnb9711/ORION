@@ -8,13 +8,20 @@ import tempfile
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from orion import __version__
 
-GITHUB_LATEST_RELEASE_URL = "https://api.github.com/repos/Zmnb9711/ORION/releases/latest"
+GITHUB_RELEASES_URL = "https://api.github.com/repos/Zmnb9711/ORION/releases?per_page=20"
 INSTALLER_ASSET_SUFFIX = "Setup.exe"
+
+
+class UpdateChannel(StrEnum):
+    STABLE = "stable"
+    BETA = "beta"
+    ALPHA = "alpha"
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,6 +40,9 @@ class ReleaseInfo:
     installer_url: str | None
     installer_name: str | None
     sha256: str | None = None
+    prerelease: bool = False
+    draft: bool = False
+    size_bytes: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +52,7 @@ class UpdateCheckResult:
     update_available: bool
     status: str
     message: str
+    channel: UpdateChannel = UpdateChannel.STABLE
 
 
 def current_feature_status() -> tuple[FeatureStatus, ...]:
@@ -54,6 +65,7 @@ def current_feature_status() -> tuple[FeatureStatus, ...]:
         FeatureStatus("JTAC / laser / smoke", "available", "JTAC assignment, laser/smoke designation and laser code handling."),
         FeatureStatus("AAR / tanker", "available", "Tanker discovery, rendezvous and AAR workflow support."),
         FeatureStatus("Diagnostics", "available", "One-shot Windows/DCS diagnostic ZIP bundle."),
+        FeatureStatus("Native Windows launcher", "available", "Desktop shell, DCS launch, diagnostics and update center."),
         FeatureStatus("Mission Studio", "planned", "Launcher entry approved; .miz compiler/editor backend tracked separately."),
         FeatureStatus("Multi-provider AI", "planned", "OpenAI, Yandex Cloud, GigaChat and Local adapters are approved but not all implemented yet."),
     )
@@ -86,11 +98,7 @@ def _extract_sha256(notes: str, asset_name: str | None) -> str | None:
 def _release_from_payload(payload: dict[str, Any]) -> ReleaseInfo:
     assets = payload.get("assets") or []
     installer = next(
-        (
-            asset
-            for asset in assets
-            if str(asset.get("name", "")).lower().endswith(INSTALLER_ASSET_SUFFIX.lower())
-        ),
+        (asset for asset in assets if str(asset.get("name", "")).lower().endswith(INSTALLER_ASSET_SUFFIX.lower())),
         None,
     )
     notes = str(payload.get("body") or "")
@@ -103,12 +111,35 @@ def _release_from_payload(payload: dict[str, Any]) -> ReleaseInfo:
         installer_url=(str(installer.get("browser_download_url")) if installer else None),
         installer_name=installer_name,
         sha256=_extract_sha256(notes, installer_name),
+        prerelease=bool(payload.get("prerelease", False)),
+        draft=bool(payload.get("draft", False)),
+        size_bytes=(int(installer.get("size")) if installer and installer.get("size") is not None else None),
     )
 
 
-def check_for_updates(timeout: float = 5.0) -> UpdateCheckResult:
+def _release_allowed(release: ReleaseInfo, channel: UpdateChannel) -> bool:
+    if release.draft:
+        return False
+    tag = release.version.lower()
+    if channel == UpdateChannel.STABLE:
+        return not release.prerelease and all(token not in tag for token in ("alpha", "beta", "rc", "nightly"))
+    if channel == UpdateChannel.BETA:
+        return "alpha" not in tag and "nightly" not in tag
+    return True
+
+
+def _select_release(payload: list[dict[str, Any]], channel: UpdateChannel) -> ReleaseInfo | None:
+    releases = [_release_from_payload(item) for item in payload]
+    allowed = [release for release in releases if _release_allowed(release, channel)]
+    if not allowed:
+        return None
+    return max(allowed, key=lambda release: _normalize_version(release.version))
+
+
+def check_for_updates(channel: UpdateChannel | str = UpdateChannel.STABLE, timeout: float = 5.0) -> UpdateCheckResult:
+    selected_channel = UpdateChannel(channel)
     request = urllib.request.Request(
-        GITHUB_LATEST_RELEASE_URL,
+        GITHUB_RELEASES_URL,
         headers={"Accept": "application/vnd.github+json", "User-Agent": f"ORION/{__version__}"},
     )
     try:
@@ -116,35 +147,51 @@ def check_for_updates(timeout: float = 5.0) -> UpdateCheckResult:
             payload = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
-            return UpdateCheckResult(__version__, None, False, "no_release", "No public ORION release has been published yet.")
-        return UpdateCheckResult(__version__, None, False, "error", f"Update check failed: HTTP {exc.code}")
+            return UpdateCheckResult(__version__, None, False, "no_release", "No public ORION release has been published yet.", selected_channel)
+        return UpdateCheckResult(__version__, None, False, "error", f"Update check failed: HTTP {exc.code}", selected_channel)
     except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
-        return UpdateCheckResult(__version__, None, False, "error", f"Update check failed: {exc}")
+        return UpdateCheckResult(__version__, None, False, "error", f"Update check failed: {exc}", selected_channel)
 
-    latest = _release_from_payload(payload)
+    if not isinstance(payload, list):
+        return UpdateCheckResult(__version__, None, False, "error", "Update service returned an invalid release list.", selected_channel)
+    latest = _select_release(payload, selected_channel)
+    if latest is None:
+        return UpdateCheckResult(__version__, None, False, "no_release", f"No ORION release is available on the {selected_channel.value} channel.", selected_channel)
     available = _normalize_version(latest.version) > _normalize_version(__version__)
     return UpdateCheckResult(
         current_version=__version__,
         latest=latest,
         update_available=available,
         status="update_available" if available else "current",
-        message=(f"ORION {latest.version} is available." if available else f"ORION {__version__} is up to date."),
+        message=(f"ORION {latest.version} is available on {selected_channel.value}." if available else f"ORION {__version__} is up to date on {selected_channel.value}."),
+        channel=selected_channel,
     )
 
 
-def download_update(release: ReleaseInfo, destination_dir: Path | None = None, timeout: float = 60.0) -> Path:
+def download_update(
+    release: ReleaseInfo,
+    destination_dir: Path | None = None,
+    timeout: float = 60.0,
+    progress: Callable[[int, int | None], None] | None = None,
+) -> Path:
     if not release.installer_url or not release.installer_name:
         raise ValueError("Release does not contain an ORION installer asset")
     target_dir = destination_dir or Path(tempfile.gettempdir()) / "ORION" / "updates"
     target_dir.mkdir(parents=True, exist_ok=True)
     target = target_dir / release.installer_name
     request = urllib.request.Request(release.installer_url, headers={"User-Agent": f"ORION/{__version__}"})
+    downloaded = 0
     with urllib.request.urlopen(request, timeout=timeout) as response, target.open("wb") as handle:
+        total_header = response.headers.get("Content-Length") if hasattr(response, "headers") else None
+        total = int(total_header) if total_header and str(total_header).isdigit() else release.size_bytes
         while True:
             chunk = response.read(1024 * 1024)
             if not chunk:
                 break
             handle.write(chunk)
+            downloaded += len(chunk)
+            if progress is not None:
+                progress(downloaded, total)
     if release.sha256:
         digest = hashlib.sha256(target.read_bytes()).hexdigest()
         if digest.lower() != release.sha256.lower():
