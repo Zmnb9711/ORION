@@ -3,7 +3,7 @@ from __future__ import annotations
 from enum import StrEnum
 from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from orion.aerodrome_information import AerodromePressureObservation
 from orion.airport_arrival_information import AirportArrivalInformationController
@@ -26,7 +26,7 @@ class ArrivalRequestAction(StrEnum):
 class ArrivalRequestResult(BaseModel):
     intent: ArrivalRequestIntent
     action: ArrivalRequestAction
-    details: dict[str, str | int | float] = {}
+    details: dict[str, str | int | float] = Field(default_factory=dict)
 
 
 class AirportArrivalRequestController:
@@ -55,6 +55,8 @@ class AirportArrivalRequestController:
         if intent is ArrivalRequestIntent.RETURN_TO_BASE:
             if session.state is AirportArrivalState.ARRIVAL_CONTACT:
                 self.runtime.assume_arrival_control(session_id, reason=request.raw_text)
+            elif session.state is not AirportArrivalState.ARRIVAL_CONTROL:
+                raise ValueError("Return-to-base request is only valid when establishing arrival control")
             return ArrivalRequestResult(intent=intent, action=ArrivalRequestAction.ARRIVAL_CONTROL)
 
         approach_by_intent = {
@@ -66,7 +68,7 @@ class AirportArrivalRequestController:
         if approach_type is not None:
             if session.state is AirportArrivalState.APPROACH_POSITIONING:
                 self.runtime.clear_approach(session_id, approach_type=approach_type, reason=request.raw_text)
-            elif session.state in {AirportArrivalState.APPROACH, AirportArrivalState.FINAL}:
+            elif session.state is AirportArrivalState.APPROACH:
                 self.runtime.amend_approach_clearance(session_id, approach_type=approach_type, reason=request.raw_text)
             else:
                 raise ValueError("Approach type request is not valid from current arrival state")
