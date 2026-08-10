@@ -9,6 +9,7 @@ from pathlib import Path
 import uvicorn
 
 from orion import __version__
+from orion.alpha_smoke_diagnostics import write_alpha_diagnostics_bundle
 
 
 def _runtime_root() -> Path:
@@ -29,9 +30,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--no-browser", action="store_true")
+    parser.add_argument(
+        "--diagnostics",
+        action="store_true",
+        help="Run one-shot Alpha smoke diagnostics, write a ZIP bundle, and exit",
+    )
     args = parser.parse_args(argv)
 
     _configure_runtime()
+    if args.diagnostics:
+        bundle = write_alpha_diagnostics_bundle()
+        print(f"ORION Alpha {__version__} diagnostics")
+        print(f"Bundle: {bundle}")
+        return 0
+
     url = f"http://{args.host}:{args.port}"
     print(f"ORION Alpha {__version__}")
     print(f"Core API: {url}")
