@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import urlparse
 
 from orion import __version__
 
@@ -177,6 +178,18 @@ def check_for_updates(channel: UpdateChannel | str = UpdateChannel.STABLE, timeo
     )
 
 
+def _validated_installer_name(name: str) -> str:
+    if name != Path(name).name or not name.lower().endswith(INSTALLER_ASSET_SUFFIX.lower()):
+        raise ValueError("Release contains an invalid ORION installer asset name")
+    return name
+
+
+def _validate_download_url(url: str) -> None:
+    parsed = urlparse(url)
+    if parsed.scheme.lower() != "https" or not parsed.netloc:
+        raise ValueError("ORION update installer URL must use HTTPS")
+
+
 def download_update(
     release: ReleaseInfo,
     destination_dir: Path | None = None,
@@ -185,27 +198,40 @@ def download_update(
 ) -> Path:
     if not release.installer_url or not release.installer_name:
         raise ValueError("Release does not contain an ORION installer asset")
+    if not release.sha256:
+        raise ValueError("Release installer is missing the required SHA-256 checksum")
+
+    installer_name = _validated_installer_name(release.installer_name)
+    _validate_download_url(release.installer_url)
     target_dir = destination_dir or Path(tempfile.gettempdir()) / "ORION" / "updates"
     target_dir.mkdir(parents=True, exist_ok=True)
-    target = target_dir / release.installer_name
+    target = target_dir / installer_name
     request = urllib.request.Request(release.installer_url, headers={"User-Agent": f"ORION/{__version__}"})
     downloaded = 0
-    with urllib.request.urlopen(request, timeout=timeout) as response, target.open("wb") as handle:
-        total_header = response.headers.get("Content-Length") if hasattr(response, "headers") else None
-        total = int(total_header) if total_header and str(total_header).isdigit() else release.size_bytes
-        while True:
-            chunk = response.read(1024 * 1024)
-            if not chunk:
-                break
-            handle.write(chunk)
-            downloaded += len(chunk)
-            if progress is not None:
-                progress(downloaded, total)
-    if release.sha256:
-        digest = hashlib.sha256(target.read_bytes()).hexdigest()
-        if digest.lower() != release.sha256.lower():
-            target.unlink(missing_ok=True)
-            raise ValueError("Downloaded installer SHA-256 does not match the release manifest")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response, target.open("wb") as handle:
+            total_header = response.headers.get("Content-Length") if hasattr(response, "headers") else None
+            total = int(total_header) if total_header and str(total_header).isdigit() else release.size_bytes
+            while True:
+                chunk = response.read(1024 * 1024)
+                if not chunk:
+                    break
+                handle.write(chunk)
+                downloaded += len(chunk)
+                if progress is not None:
+                    progress(downloaded, total)
+    except Exception:
+        target.unlink(missing_ok=True)
+        raise
+
+    if release.size_bytes is not None and downloaded != release.size_bytes:
+        target.unlink(missing_ok=True)
+        raise ValueError("Downloaded installer size does not match the release manifest")
+
+    digest = hashlib.sha256(target.read_bytes()).hexdigest()
+    if digest.lower() != release.sha256.lower():
+        target.unlink(missing_ok=True)
+        raise ValueError("Downloaded installer SHA-256 does not match the release manifest")
     return target
 
 
