@@ -92,8 +92,8 @@ jobs:
       - name: Frozen diagnostics smoke test
         shell: pwsh
         run: |
-          & "dist/ORION/ORION.exe" --diagnostics
-          if ($LASTEXITCODE -ne 0) { throw "Frozen ORION diagnostics mode failed" }
+          $process = Start-Process -FilePath "dist/ORION/ORION.exe" -ArgumentList "--diagnostics" -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Frozen ORION diagnostics mode failed with exit code $($process.ExitCode)" }
           $bundle = Get-ChildItem "dist/ORION/runtime/diagnostics/orion-alpha-smoke-*.zip" | Select-Object -First 1
           if (-not $bundle) { throw "Frozen ORION diagnostics bundle was not created" }
           Add-Type -AssemblyName System.IO.Compression.FileSystem
