@@ -205,6 +205,62 @@ class AirportArrivalRuntime:
         self._record(session, reason)
         return instruction
 
+    def amend_approach_clearance(
+        self,
+        session_id: UUID,
+        *,
+        approach_type: ApproachType | None = None,
+        heading_deg: int | None = None,
+        altitude_ft: int | None = None,
+        speed_kt: int | None = None,
+        direct_to: str | None = None,
+        frequency: str | None = None,
+        pressure_setting: str | None = None,
+        reason: str,
+    ) -> OperationalInstruction:
+        session = self._require(session_id)
+        if session.state not in {AirportArrivalState.APPROACH, AirportArrivalState.FINAL}:
+            raise ValueError("Approach clearance amendment requires APPROACH or FINAL state")
+        if session.clearance is None:
+            raise ValueError("Approach clearance is not available to amend")
+
+        changes = {
+            "approach_type": approach_type,
+            "heading_deg": heading_deg,
+            "altitude_ft": altitude_ft,
+            "speed_kt": speed_kt,
+            "direct_to": direct_to,
+            "frequency": frequency,
+            "pressure_setting": pressure_setting,
+        }
+        updates = {key: value for key, value in changes.items() if value is not None}
+        if not updates:
+            raise ValueError("At least one approach clearance amendment is required")
+
+        amended = session.clearance.model_copy(update=updates, deep=True)
+        instruction = self.core.issue_instruction(
+            OperationalInstruction(
+                session_id=session_id,
+                issuing_agency=ControllerAgency.AIRPORT_APPROACH,
+                authority_scope=ControllerAuthorityScope.FLIGHT_TRAFFIC,
+                semantic_action="approach_clearance_amendment",
+                parameters=amended.model_dump(mode="json", exclude_none=True),
+                acknowledgement_required=True,
+                voice_priority=VoicePriority.PROCEDURAL,
+            )
+        )
+        session.clearance = amended
+        self._sessions[session_id] = session
+        self.core.history.record(
+            session_id=session_id,
+            event_type="airport_arrival_clearance_amended",
+            reason=reason,
+            source_agency=ControllerAgency.AIRPORT_APPROACH,
+            related_id=instruction.instruction_id,
+            details={"state": session.state.value, "runway_id": session.runway_id},
+        )
+        return instruction
+
     def confirm_final(
         self,
         session_id: UUID,
