@@ -36,7 +36,6 @@ class WindowsOrionDesktopLauncher(OrionDesktopLauncher):
         try:
             window.iconbitmap(default=str(icon))
         except TclError:
-            # Branding must never prevent the launcher from starting.
             return
 
     def _request_restore(self) -> None:
@@ -114,25 +113,14 @@ class WindowsOrionDesktopLauncher(OrionDesktopLauncher):
         window.title(self.t("diagnostics.title"))
         window.geometry("760x260")
         window.transient(self.root)
-
         body = ttk.Frame(window, padding=18)
         body.pack(fill=BOTH, expand=True)
         ttk.Label(body, text=self.t("diagnostics.created"), style="Section.TLabel").pack(anchor="w")
         ttk.Label(body, text=str(bundle), wraplength=700, justify="left").pack(anchor="w", pady=(10, 18))
-
         buttons = ttk.Frame(body)
         buttons.pack(fill=X)
-        ttk.Button(
-            buttons,
-            text=self.t("diagnostics.open_folder"),
-            style="Primary.TButton",
-            command=lambda: self._open_diagnostics_folder(bundle),
-        ).pack(side=LEFT, padx=(0, 8))
-        ttk.Button(
-            buttons,
-            text=self.t("diagnostics.save_as"),
-            command=lambda: self._save_diagnostics_as(bundle),
-        ).pack(side=LEFT, padx=(0, 8))
+        ttk.Button(buttons, text=self.t("diagnostics.open_folder"), style="Primary.TButton", command=lambda: self._open_diagnostics_folder(bundle)).pack(side=LEFT, padx=(0, 8))
+        ttk.Button(buttons, text=self.t("diagnostics.save_as"), command=lambda: self._save_diagnostics_as(bundle)).pack(side=LEFT, padx=(0, 8))
         ttk.Button(buttons, text=self.t("diagnostics.close"), command=window.destroy).pack(side=RIGHT)
 
     def _open_diagnostics_folder(self, bundle: Path) -> None:
@@ -142,13 +130,7 @@ class WindowsOrionDesktopLauncher(OrionDesktopLauncher):
             messagebox.showerror(self.t("diagnostics.title"), str(exc))
 
     def _save_diagnostics_as(self, bundle: Path) -> None:
-        destination = filedialog.asksaveasfilename(
-            parent=self.root,
-            title=self.t("diagnostics.save_as"),
-            defaultextension=".zip",
-            initialfile=bundle.name,
-            filetypes=(("ZIP", "*.zip"), (self.t("diagnostics.all_files"), "*.*")),
-        )
+        destination = filedialog.asksaveasfilename(parent=self.root, title=self.t("diagnostics.save_as"), defaultextension=".zip", initialfile=bundle.name, filetypes=(("ZIP", "*.zip"), (self.t("diagnostics.all_files"), "*.*")))
         if not destination:
             return
         try:
@@ -156,11 +138,9 @@ class WindowsOrionDesktopLauncher(OrionDesktopLauncher):
         except OSError as exc:
             messagebox.showerror(self.t("diagnostics.title"), str(exc))
             return
-        messagebox.showinfo(self.t("diagnostics.title"), self.t("diagnostics.saved", values={"path": saved}))
+        messagebox.showinfo(self.t("diagnostics.title"), self.t("diagnostics.saved").format(path=saved))
 
     def _open_setup(self) -> None:
-        """Open the Windows first-run/repair flow without blocking Tk's UI thread."""
-
         window = Toplevel(self.root)
         self._apply_window_icon(window)
         window.title(self.t("setup.title"))
@@ -229,23 +209,14 @@ class WindowsOrionDesktopLauncher(OrionDesktopLauncher):
                 frame = ttk.Frame(results, padding=8)
                 frame.pack(fill=X, pady=3)
                 ttk.Label(frame, text=f"{candidate.name} — {candidate.executable_path}").pack(side=LEFT)
-                ttk.Button(
-                    frame,
-                    text=self.t("setup.select"),
-                    command=lambda item=candidate: select(item),
-                ).pack(side=RIGHT)
+                ttk.Button(frame, text=self.t("setup.select"), command=lambda item=candidate: select(item)).pack(side=RIGHT)
 
         def detect() -> None:
             set_busy(self.t("setup.detect"))
             run_worker("orion-setup-detect", detect_installations, render_candidates)
 
         def select(candidate) -> None:  # noqa: ANN001
-            request = SelectActiveRequest(
-                installation_type=candidate.installation_type,
-                install_root=candidate.install_root,
-                executable_path=candidate.executable_path,
-                saved_games_path=(candidate.saved_games_candidates[0] if candidate.saved_games_candidates else None),
-            )
+            request = SelectActiveRequest(installation_type=candidate.installation_type, install_root=candidate.install_root, executable_path=candidate.executable_path, saved_games_path=(candidate.saved_games_candidates[0] if candidate.saved_games_candidates else None))
 
             def apply(result) -> None:  # noqa: ANN001
                 status.set(result.message)
@@ -258,7 +229,6 @@ class WindowsOrionDesktopLauncher(OrionDesktopLauncher):
             def apply(result) -> None:  # noqa: ANN001
                 status.set(result.message)
                 self._refresh_health_async()
-
             set_busy(self.t("setup.install"))
             run_worker("orion-setup-install", install_active_integration, apply)
 
@@ -266,7 +236,6 @@ class WindowsOrionDesktopLauncher(OrionDesktopLauncher):
             def apply(result) -> None:  # noqa: ANN001
                 status.set(result.message if not result.ok else self.t("setup.ready"))
                 self._refresh_health_async()
-
             set_busy(self.t("setup.test"))
             run_worker("orion-setup-test", test_live_connection, apply)
 
@@ -290,7 +259,5 @@ def run_desktop_launcher(runtime_dir: Path, host: str = "127.0.0.1", port: int =
         WindowsOrionDesktopLauncher(root, runtime_dir=runtime_dir, core=core)
         root.mainloop()
     finally:
-        # Tk creation or the main loop can fail before the normal Exit path.
-        # Always release Core/UDP resources on every Windows launcher exit.
         core.stop()
     return 0
