@@ -13,9 +13,13 @@ dependencies = [
   "uvicorn[standard]>=0.30,<1.0",
 ]
 
+[project.scripts]
+orion = "orion.launcher:main"
+
 [project.optional-dependencies]
 dev = [
   "httpx>=0.27,<1.0",
+  "pyinstaller>=6.10,<7.0",
   "pyright>=1.1.400,<2.0",
   "pytest>=8.3,<9.0",
   "pytest-cov>=6.0,<7.0",
