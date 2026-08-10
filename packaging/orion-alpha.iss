@@ -25,11 +25,11 @@ UninstallDisplayIcon={app}\{#MyAppExeName}
 Source: "..\dist\ORION\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{autoprograms}\ORION Alpha"; Filename: "{app}\{#MyAppExeName}"
-Name: "{autodesktop}\ORION Alpha"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+Name: "{autoprograms}\ORION Alpha"; Filename: "{app}\{#MyAppExeName}"; Parameters: "--desktop"
+Name: "{autodesktop}\ORION Alpha"; Filename: "{app}\{#MyAppExeName}"; Parameters: "--desktop"; Tasks: desktopicon
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional icons:"; Flags: unchecked
 
 [Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "Launch ORION Alpha"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#MyAppExeName}"; Parameters: "--desktop"; Description: "Launch ORION Alpha"; Flags: nowait postinstall skipifsilent
