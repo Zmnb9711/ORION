@@ -25,9 +25,7 @@ def test_powershell_sapi_script_escapes_text_and_voice() -> None:
 
 
 def test_non_windows_native_backend_reports_unavailable(monkeypatch, tmp_path) -> None:
-    import orion.windows_sapi_backend as module
-
-    monkeypatch.setattr(module.os, "name", "posix")
+    monkeypatch.setattr(WindowsSapiBackend, "available", property(lambda self: False))
     backend = WindowsSapiBackend(str(tmp_path))
     request = AudioRenderRequest(
         command_id="00000000-0000-0000-0000-000000000001",

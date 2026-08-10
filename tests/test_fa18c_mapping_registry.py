@@ -1,4 +1,5 @@
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -38,6 +39,23 @@ def test_registry_persists_and_loads_validated_mapping(tmp_path: Path) -> None:
     assert loaded.load() is not None
     assert loaded.current() is not None
     assert loaded.current().arguments["comm1_selector"] == 133
+
+
+def test_registry_returns_none_for_invalid_json(tmp_path: Path) -> None:
+    path = tmp_path / "mapping.json"
+    path.write_text("{not-json", encoding="utf-8")
+    registry = HornetMappingRegistry(path)
+    assert registry.load() is None
+    assert registry.current() is None
+
+
+def test_registry_does_not_hide_unexpected_programming_errors(tmp_path: Path) -> None:
+    path = tmp_path / "mapping.json"
+    path.write_text("{}", encoding="utf-8")
+    registry = HornetMappingRegistry(path)
+    with patch("orion.fa18c_mapping_registry.HornetArgumentMapping.model_validate", side_effect=RuntimeError("boom")):
+        with pytest.raises(RuntimeError, match="boom"):
+            registry.load()
 
 
 def test_registry_rejects_incomplete_mapping(tmp_path: Path) -> None:

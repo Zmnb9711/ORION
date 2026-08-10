@@ -28,12 +28,14 @@ class NativeWasapiPlayer:
         try:
             self._sounddevice()
             return True
-        except Exception:
+        except (ImportError, OSError):
             return False
 
     def play(self, path: Path, endpoint: WasapiEndpoint, volume: float = 1.0) -> None:
         if not path.exists():
             raise FileNotFoundError(path)
+        if not 0.0 <= volume <= 1.0:
+            raise ValueError("volume must be between 0.0 and 1.0")
         sd = self._sounddevice()
         device_index = self._resolve_device(sd, endpoint)
         self._stop_event.clear()
@@ -62,6 +64,8 @@ class NativeWasapiPlayer:
                         data = wav.readframes(self._chunk_frames)
                         if not data:
                             break
+                        if volume != 1.0:
+                            data = self._scale_pcm(data, sample_width=sample_width, volume=volume)
                         stream.write(data)
                 finally:
                     with self._lock:
@@ -74,13 +78,30 @@ class NativeWasapiPlayer:
         if stream is not None:
             try:
                 stream.abort()
-            except Exception:
+            except (OSError, RuntimeError):
                 pass
 
     def _sounddevice(self):
         if self._sd is None:
             self._sd = importlib.import_module("sounddevice")
         return self._sd
+
+    @staticmethod
+    def _scale_pcm(data: bytes, *, sample_width: int, volume: float) -> bytes:
+        if volume == 1.0 or not data:
+            return data
+        if sample_width == 1:
+            return bytes(max(0, min(255, round((sample - 128) * volume + 128))) for sample in data)
+
+        bits = sample_width * 8
+        minimum = -(1 << (bits - 1))
+        maximum = (1 << (bits - 1)) - 1
+        output = bytearray(len(data))
+        for offset in range(0, len(data), sample_width):
+            sample = int.from_bytes(data[offset : offset + sample_width], "little", signed=True)
+            scaled = max(minimum, min(maximum, round(sample * volume)))
+            output[offset : offset + sample_width] = scaled.to_bytes(sample_width, "little", signed=True)
+        return bytes(output)
 
     @staticmethod
     def _resolve_device(sd, endpoint: WasapiEndpoint) -> int:

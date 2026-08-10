@@ -5,7 +5,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 
 SemanticValue = int | str | bool
@@ -60,7 +60,7 @@ class HornetValueProfileRegistry:
             return None
         try:
             self._profiles = HornetValueProfileSet.model_validate_json(self.path.read_text(encoding="utf-8"))
-        except Exception:
+        except (OSError, UnicodeError, ValidationError, json.JSONDecodeError):
             self._profiles = None
         return self._profiles
 

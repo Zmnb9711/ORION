@@ -1,6 +1,8 @@
 import json
 
-from orion.fa18c_diagnostics_recorder import HornetDiagnosticsRecorder, hornet_diagnostics_recorder
+import pytest
+
+from orion.fa18c_diagnostics_recorder import DiagnosticPacket, HornetDiagnosticsRecorder, hornet_diagnostics_recorder
 from orion.udp_bridge import TelemetryProtocol
 
 
@@ -36,6 +38,18 @@ def test_recorder_ignores_non_hornet_or_invalid_packets():
     assert recorder.ingest({"mode": "cockpit_argument_changes", "aircraft_id": "f-5e", "changes": []}) == 0
     assert recorder.ingest({"bad": "payload"}) == 0
     assert recorder.report().event_count == 0
+
+
+def test_recorder_does_not_hide_unexpected_programming_errors(monkeypatch):
+    recorder = HornetDiagnosticsRecorder()
+    recorder.start()
+
+    def explode(cls, payload):
+        raise RuntimeError("unexpected diagnostics failure")
+
+    monkeypatch.setattr(DiagnosticPacket, "model_validate", classmethod(explode))
+    with pytest.raises(RuntimeError, match="unexpected diagnostics failure"):
+        recorder.ingest(packet())
 
 
 def test_udp_bridge_feeds_active_diagnostics_session():

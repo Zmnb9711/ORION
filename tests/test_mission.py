@@ -73,6 +73,21 @@ def test_snapshot_is_stored_before_proactive_and_coordination_observers_run() ->
     assert observed == [snapshot, snapshot]
 
 
+def test_observer_failure_does_not_block_other_observers_or_snapshot_storage(caplog) -> None:
+    store = MissionStore()
+    snapshot = MissionSnapshot(mission_id="mission-observer-isolation")
+    with patch.object(store, "_notify_jtac_target_changes", side_effect=RuntimeError("jtac failure")), patch.object(
+        store, "_notify_proactive_mission_control"
+    ) as proactive, patch.object(store, "_notify_coordination_mission_control") as coordination:
+        returned = store.replace(snapshot)
+
+    assert returned is snapshot
+    assert store.get() is snapshot
+    proactive.assert_called_once_with(snapshot)
+    coordination.assert_called_once_with(snapshot)
+    assert "Mission snapshot observer failed: jtac_retask" in caplog.text
+
+
 def test_each_snapshot_replacement_emits_one_proactive_and_coordination_event() -> None:
     store = MissionStore()
     first = MissionSnapshot(mission_id="mission-1", mission_time_s=10)

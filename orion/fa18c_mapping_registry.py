@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 
 REQUIRED_KEYS = (
@@ -61,7 +61,7 @@ class HornetMappingRegistry:
         try:
             raw = json.loads(self.path.read_text(encoding="utf-8"))
             self._mapping = HornetArgumentMapping.model_validate(raw)
-        except Exception:
+        except (OSError, UnicodeError, json.JSONDecodeError, ValidationError):
             self._mapping = None
         return self._mapping
 
