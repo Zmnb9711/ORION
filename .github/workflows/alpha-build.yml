@@ -44,7 +44,7 @@ jobs:
             --noconfirm `
             --clean `
             --onedir `
-            --console `
+            --windowed `
             --name ORION `
             --collect-submodules orion `
             --collect-submodules uvicorn `
@@ -52,7 +52,7 @@ jobs:
             orion/launcher.py
           if (-not (Test-Path "dist/ORION/ORION.exe")) { throw "ORION.exe was not created" }
 
-      - name: Frozen launcher smoke test
+      - name: Frozen headless core smoke test
         shell: pwsh
         run: |
           $process = Start-Process -FilePath "dist/ORION/ORION.exe" -ArgumentList "--no-browser","--port","8123" -PassThru
@@ -66,6 +66,25 @@ jobs:
               } catch {}
             }
             if (-not $ready) { throw "Frozen ORION health endpoint did not become ready" }
+          } finally {
+            if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force }
+          }
+
+      - name: Frozen desktop launcher smoke test
+        shell: pwsh
+        run: |
+          $process = Start-Process -FilePath "dist/ORION/ORION.exe" -ArgumentList "--desktop","--port","8124" -PassThru
+          try {
+            $ready = $false
+            for ($i = 0; $i -lt 30; $i++) {
+              Start-Sleep -Milliseconds 500
+              if ($process.HasExited) { throw "Desktop launcher exited before Core API became ready" }
+              try {
+                $response = Invoke-RestMethod -Uri "http://127.0.0.1:8124/health" -TimeoutSec 2
+                if ($response.status -eq "ok") { $ready = $true; break }
+              } catch {}
+            }
+            if (-not $ready) { throw "Desktop launcher did not start its Core API" }
           } finally {
             if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force }
           }
