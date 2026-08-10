@@ -24,6 +24,10 @@ class UpdateChannel(StrEnum):
     ALPHA = "alpha"
 
 
+# Public UI-facing name. Keep UpdateChannel as a backwards-compatible alias target.
+ReleaseChannel = UpdateChannel
+
+
 @dataclass(frozen=True, slots=True)
 class FeatureStatus:
     name: str
@@ -43,6 +47,11 @@ class ReleaseInfo:
     prerelease: bool = False
     draft: bool = False
     size_bytes: int | None = None
+
+    @property
+    def installer_size(self) -> int | None:
+        """UI-compatible readable name for the installer asset size."""
+        return self.size_bytes
 
 
 @dataclass(frozen=True, slots=True)
