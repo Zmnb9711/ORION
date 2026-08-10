@@ -4,6 +4,8 @@ import os
 import threading
 from collections.abc import Callable
 
+from orion.branding import packaged_icon_path
+
 
 class TrayUnavailable(RuntimeError):
     pass
@@ -31,10 +33,14 @@ class WindowsTrayController:
         except ImportError as exc:
             raise TrayUnavailable("Windows tray backend is not installed") from exc
 
-        image = Image.new("RGBA", (64, 64), (11, 18, 32, 255))
-        draw = ImageDraw.Draw(image)
-        draw.ellipse((10, 10, 54, 54), outline=(40, 120, 255, 255), width=6)
-        draw.line((22, 42, 42, 22), fill=(238, 245, 255, 255), width=6)
+        icon_path = packaged_icon_path()
+        if icon_path is not None:
+            image = Image.open(icon_path).convert("RGBA")
+        else:
+            image = Image.new("RGBA", (64, 64), (11, 18, 32, 255))
+            draw = ImageDraw.Draw(image)
+            draw.ellipse((10, 10, 54, 54), outline=(40, 120, 255, 255), width=6)
+            draw.line((22, 42, 42, 22), fill=(238, 245, 255, 255), width=6)
 
         def open_action(icon, item) -> None:  # noqa: ANN001
             self.on_open()
