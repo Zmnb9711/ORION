@@ -33,6 +33,17 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev,windows-audio]"
 
+      - name: Verify approved ORION Alpha icon
+        shell: pwsh
+        run: |
+          $icon = "branding/orion.ico"
+          $expected = "e5197c2de9ed7b3a3f2bcf505627222253e39f2317028f72117c073396c76b6c"
+          if (-not (Test-Path $icon)) { throw "Approved ORION icon is missing: $icon" }
+          $actual = (Get-FileHash $icon -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $expected) {
+            throw "Approved ORION icon SHA-256 mismatch. Expected $expected, got $actual"
+          }
+
       - name: Run packaging smoke tests
         shell: pwsh
         run: |
@@ -49,13 +60,11 @@ jobs:
             "--name", "ORION",
             "--collect-submodules", "orion",
             "--collect-submodules", "uvicorn",
-            "--add-data", "dcs-export;dcs-export"
+            "--add-data", "dcs-export;dcs-export",
+            "--icon", "branding/orion.ico",
+            "--add-data", "branding/orion.ico;branding",
+            "orion/launcher.py"
           )
-          if (Test-Path "branding/orion.ico") {
-            $pyinstallerArgs += @("--icon", "branding/orion.ico")
-            $pyinstallerArgs += @("--add-data", "branding/orion.ico;branding")
-          }
-          $pyinstallerArgs += "orion/launcher.py"
           python -m PyInstaller @pyinstallerArgs
           if (-not (Test-Path "dist/ORION/ORION.exe")) { throw "ORION.exe was not created" }
 
