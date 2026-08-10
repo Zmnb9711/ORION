@@ -45,7 +45,7 @@ class AirportArrivalReportController:
             else RunwaySightAction.CONTINUE
         )
         report = RunwaySightReport(runway_in_sight=True, action=action, reason=reason)
-        self._record(session_id, report)
+        self._record(session_id, report, source_agency=self._source_agency(session.state))
         return report
 
     def report_runway_not_in_sight(
@@ -55,7 +55,12 @@ class AirportArrivalReportController:
         reason: str = "pilot reports runway not in sight",
     ) -> RunwaySightReport:
         session = self._require_reportable(session_id)
-        if session.state is AirportArrivalState.LANDING_CLEARED:
+        source_agency = self._source_agency(session.state)
+        if session.state is AirportArrivalState.LANDING_CLEARED or (
+            session.state is AirportArrivalState.TOWER
+            and session.clearance is not None
+            and session.clearance.approach_type is ApproachType.VISUAL
+        ):
             action = RunwaySightAction.GO_AROUND
             self.runtime.go_around(session_id, reason=reason)
         elif session.clearance is not None and session.clearance.approach_type is ApproachType.VISUAL:
@@ -63,7 +68,7 @@ class AirportArrivalReportController:
         else:
             action = RunwaySightAction.CONTINUE
         report = RunwaySightReport(runway_in_sight=False, action=action, reason=reason)
-        self._record(session_id, report)
+        self._record(session_id, report, source_agency=source_agency)
         return report
 
     def _require_reportable(self, session_id: UUID):
@@ -74,12 +79,24 @@ class AirportArrivalReportController:
             raise ValueError("Runway sight report is not valid from current arrival state")
         return session
 
-    def _record(self, session_id: UUID, report: RunwaySightReport) -> None:
+    @staticmethod
+    def _source_agency(state: AirportArrivalState) -> ControllerAgency:
+        if state in {AirportArrivalState.TOWER, AirportArrivalState.LANDING_CLEARED}:
+            return ControllerAgency.AIRPORT_TOWER
+        return ControllerAgency.AIRPORT_APPROACH
+
+    def _record(
+        self,
+        session_id: UUID,
+        report: RunwaySightReport,
+        *,
+        source_agency: ControllerAgency,
+    ) -> None:
         self.runtime.core.history.record(
             session_id=session_id,
             event_type="airport_arrival_runway_sight_report",
             reason=report.reason,
-            source_agency=ControllerAgency.AIRPORT_APPROACH,
+            source_agency=source_agency,
             details={
                 "runway_in_sight": report.runway_in_sight,
                 "action": report.action.value,
