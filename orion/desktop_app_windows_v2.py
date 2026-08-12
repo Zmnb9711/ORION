@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from tkinter import BOTH, END, LEFT, RIGHT, X, Y, BooleanVar, StringVar, Tk
+from tkinter import BOTH, END, LEFT, RIGHT, X, Y, BooleanVar, StringVar, TclError, Tk
 from tkinter import ttk
 
 from orion import __version__
@@ -21,7 +21,7 @@ class WindowsOrionDesktopLauncherV2(WindowsOrionDesktopLauncher):
         style = ttk.Style(self.root)
         try:
             style.theme_use("clam")
-        except Exception:
+        except TclError:
             pass
 
         bg = "#070b10"
@@ -314,15 +314,3 @@ class WindowsOrionDesktopLauncherV2(WindowsOrionDesktopLauncher):
         self._render_status_strip()
         if self.current_page in {"home", "fly", "diagnostics", "logs"}:
             self.show_page(self.current_page)
-
-
-def run_desktop_launcher(runtime_dir: Path, host: str = "127.0.0.1", port: int = 8000) -> int:
-    core = CoreServer(host, port)
-    core.start()
-    try:
-        root = Tk()
-        WindowsOrionDesktopLauncherV2(root, runtime_dir=runtime_dir, core=core)
-        root.mainloop()
-    finally:
-        core.stop()
-    return 0
