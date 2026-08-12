@@ -1,0 +1,119 @@
+name: ORION Windows Installer Smoke
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - "orion/**"
+      - "dcs-export/**"
+      - "dcs-mission-pack/**"
+      - "dcs-mission-template/**"
+      - "branding/**"
+      - "packaging/**"
+      - "pyproject.toml"
+      - ".github/workflows/installer-smoke.yml"
+  push:
+    branches: [main]
+
+jobs:
+  installer-lifecycle:
+    runs-on: windows-latest
+    timeout-minutes: 35
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install build dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev,windows-audio]"
+
+      - name: Build Core and Launcher
+        shell: pwsh
+        run: |
+          python -m PyInstaller --noconfirm --clean --onedir --windowed --name ORION-Core --collect-submodules orion --collect-submodules uvicorn --add-data "dcs-export;dcs-export" --add-data "dcs-mission-pack;dcs-mission-pack" --add-data "dcs-mission-template;dcs-mission-template" --icon branding/orion.ico orion/core_main.py
+          python -m PyInstaller --noconfirm --clean --onedir --windowed --name ORION-Launcher --collect-submodules orion --collect-submodules uvicorn --add-data "dcs-export;dcs-export" --icon branding/orion.ico --add-data "branding/orion.ico;branding" orion/launcher_main.py
+
+      - name: Assemble installer payload
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force "dist-product/Core" | Out-Null
+          New-Item -ItemType Directory -Force "dist-product/Launcher" | Out-Null
+          New-Item -ItemType Directory -Force "dist-product/Integration/DCS/Export" | Out-Null
+          New-Item -ItemType Directory -Force "dist-product/Integration/DCS/MissionPack" | Out-Null
+          New-Item -ItemType Directory -Force "dist-product/Integration/DCS/MissionTemplate" | Out-Null
+          Copy-Item "dist/ORION-Core/*" "dist-product/Core" -Recurse -Force
+          Copy-Item "dist/ORION-Launcher/*" "dist-product/Launcher" -Recurse -Force
+          Copy-Item "dcs-export/*" "dist-product/Integration/DCS/Export" -Recurse -Force
+          Copy-Item "dcs-mission-pack/*" "dist-product/Integration/DCS/MissionPack" -Recurse -Force
+          Copy-Item "dcs-mission-template/*" "dist-product/Integration/DCS/MissionTemplate" -Recurse -Force
+
+      - name: Locate Inno Setup
+        id: inno
+        shell: pwsh
+        run: |
+          $candidates = @("C:\Program Files (x86)\Inno Setup 6\ISCC.exe", "C:\Program Files\Inno Setup 6\ISCC.exe")
+          $iscc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) {
+            choco install innosetup --yes --no-progress
+            $iscc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          }
+          if (-not $iscc) { throw "Inno Setup compiler not found" }
+          "iscc=$iscc" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          & "${{ steps.inno.outputs.iscc }}" "packaging/orion-alpha.iss"
+          if (-not (Test-Path "dist-installer/ORION-Alpha-0.2-Setup.exe")) { throw "Installer was not created" }
+
+      - name: Silent install, repair install, and uninstall
+        shell: pwsh
+        run: |
+          $setup = (Resolve-Path "dist-installer/ORION-Alpha-0.2-Setup.exe").Path
+          $installDir = Join-Path $env:ProgramFiles "ORION"
+          $launcher = Join-Path $installDir "Launcher\ORION-Launcher.exe"
+          $core = Join-Path $installDir "Core\ORION-Core.exe"
+          $export = Join-Path $installDir "Integration\DCS\Export\Export.lua"
+          $uninstaller = Join-Path $installDir "unins000.exe"
+
+          function Invoke-Setup([string]$arguments) {
+            $process = Start-Process -FilePath $setup -ArgumentList $arguments -PassThru -Wait
+            if ($process.ExitCode -ne 0) { throw "Installer exited with code $($process.ExitCode): $arguments" }
+          }
+
+          # Clean install to the normal x64 Program Files location.
+          Invoke-Setup "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-"
+          foreach ($path in @($launcher, $core, $export, $uninstaller)) {
+            if (-not (Test-Path $path)) { throw "Installed payload missing: $path" }
+          }
+
+          # Same-version install exercises the repair/upgrade path that users will
+          # hit when replacing an Alpha build without manually uninstalling first.
+          Invoke-Setup "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-"
+          foreach ($path in @($launcher, $core, $export, $uninstaller)) {
+            if (-not (Test-Path $path)) { throw "Payload missing after repair install: $path" }
+          }
+
+          $uninstallProcess = Start-Process -FilePath $uninstaller -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART" -PassThru -Wait
+          if ($uninstallProcess.ExitCode -ne 0) { throw "Uninstaller exited with code $($uninstallProcess.ExitCode)" }
+          Start-Sleep -Seconds 1
+          if (Test-Path $launcher) { throw "Launcher remained installed after uninstall" }
+          if (Test-Path $core) { throw "Core remained installed after uninstall" }
+
+      - name: Upload installer smoke artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ORION-Alpha-0.2-installer-smoke
+          path: dist-installer/ORION-Alpha-0.2-Setup.exe
+          if-no-files-found: ignore
