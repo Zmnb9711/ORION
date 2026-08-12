@@ -9,6 +9,7 @@ on:
       - "dcs-export/**"
       - "branding/**"
       - "packaging/**"
+      - "tests/**"
       - "pyproject.toml"
       - ".github/workflows/alpha-build.yml"
   push:
@@ -50,10 +51,20 @@ jobs:
             throw "Approved ORION icon SHA-256 mismatch. Expected $expected, got $actual"
           }
 
-      - name: Run packaging smoke tests
+      - name: Run Windows launcher and DCS setup regression tests
         shell: pwsh
         run: |
-          python -m pytest -q tests/test_dcs_readiness.py tests/test_launcher.py tests/test_alpha_smoke_diagnostics.py
+          python -m pytest -q `
+            tests/test_dcs_installation_discovery.py `
+            tests/test_setup_wizard_model.py `
+            tests/test_dcs_readiness.py `
+            tests/test_launcher.py `
+            tests/test_alpha_smoke_diagnostics.py
+
+      - name: Import production Windows launcher
+        shell: pwsh
+        run: |
+          python -c "from orion.desktop_app_windows import WindowsOrionDesktopLauncher; from orion.setup_wizard_model import SetupWizardState; assert WindowsOrionDesktopLauncher is not None; assert SetupWizardState is not None"
 
       - name: Build ORION application bundle
         shell: pwsh
