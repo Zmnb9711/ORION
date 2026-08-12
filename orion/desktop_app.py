@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 import threading
 import urllib.error
 import urllib.request
@@ -9,8 +12,6 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from tkinter import BOTH, END, LEFT, RIGHT, X, Y, BooleanVar, StringVar, Tk, Toplevel, messagebox
 from tkinter import ttk
-
-import uvicorn
 
 from orion import __version__
 from orion.alpha_smoke_diagnostics import write_alpha_diagnostics_bundle
@@ -67,29 +68,86 @@ class LauncherConfigStore:
 
 
 class CoreServer:
-    def __init__(self, host: str, port: int) -> None:
+    """Launcher-side lifecycle client for the independent ORION Core process.
+
+    The launcher never hosts ``orion.app`` in-process. In a frozen deployment it
+    starts the sibling ``ORION-Core.exe``. During source development it starts
+    ``python -m orion.core_main``. If a healthy Core already exists at the
+    configured endpoint, the launcher attaches to it and does not own/terminate
+    that process.
+    """
+
+    def __init__(self, host: str, port: int, runtime_dir: Path | None = None) -> None:
         self.host = host
         self.port = port
-        self._server: uvicorn.Server | None = None
-        self._thread: threading.Thread | None = None
+        self.runtime_dir = runtime_dir
+        self._process: subprocess.Popen[bytes] | None = None
+        self._owns_process = False
 
     @property
     def base_url(self) -> str:
         return f"http://{self.host}:{self.port}"
 
+    @property
+    def owns_process(self) -> bool:
+        return self._owns_process
+
+    def _command(self) -> list[str]:
+        override = os.environ.get("ORION_CORE_EXECUTABLE")
+        if override:
+            return [override, "--host", self.host, "--port", str(self.port)]
+
+        if getattr(sys, "frozen", False):
+            sibling = Path(sys.executable).resolve().with_name("ORION-Core.exe")
+            if not sibling.is_file():
+                raise FileNotFoundError(
+                    f"ORION Core is not installed: expected {sibling}. "
+                    "Repair or reinstall ORION."
+                )
+            return [str(sibling), "--host", self.host, "--port", str(self.port)]
+
+        return [sys.executable, "-m", "orion.core_main", "--host", self.host, "--port", str(self.port)]
+
     def start(self) -> None:
-        if self._thread is not None and self._thread.is_alive():
+        if self.healthy():
+            self._owns_process = False
             return
-        cfg = uvicorn.Config("orion.app:app", host=self.host, port=self.port, log_level="warning", access_log=False)
-        self._server = uvicorn.Server(cfg)
-        self._thread = threading.Thread(target=self._server.run, name="orion-core", daemon=True)
-        self._thread.start()
+        if self._process is not None and self._process.poll() is None:
+            return
+
+        env = os.environ.copy()
+        if self.runtime_dir is not None:
+            self.runtime_dir.mkdir(parents=True, exist_ok=True)
+            env["ORION_RUNTIME_DIR"] = str(self.runtime_dir)
+
+        creationflags = 0
+        if os.name == "nt":
+            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+        self._process = subprocess.Popen(  # noqa: S603
+            self._command(),
+            cwd=str(self.runtime_dir.parent if self.runtime_dir is not None else Path.cwd()),
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=creationflags,
+        )
+        self._owns_process = True
 
     def stop(self) -> None:
-        if self._server is not None:
-            self._server.should_exit = True
-        if self._thread is not None:
-            self._thread.join(timeout=2.0)
+        process = self._process
+        if not self._owns_process or process is None:
+            return
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=5.0)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=2.0)
+        self._process = None
+        self._owns_process = False
 
     def healthy(self, timeout: float = 0.5) -> bool:
         try:
@@ -219,179 +277,148 @@ class OrionDesktopLauncher:
         ttk.Button(updates, text=self.t("action.check_updates"), command=lambda: self.show_page("updates")).pack(anchor="w", pady=(14, 0))
 
     def _page_fly(self) -> None:
-        card = self._card(self.content, self.nav_label("fly"), self._health_text("active_dcs"), 820)
-        card.pack(fill=X)
-        ttk.Button(card, text=self.t("action.launch_dcs"), style="Primary.TButton", command=self._launch_dcs_async).pack(anchor="w", pady=(14, 0))
-        ttk.Button(card, text=self.t("action.run_setup"), command=self._open_setup).pack(anchor="w", pady=(8, 0))
+        self._card(self.content, self.nav_label("fly"), "Start DCS and keep ORION attached to live telemetry.", 680).pack(fill=X)
+        ttk.Button(self.content, text=self.t("action.launch_dcs"), style="Primary.TButton", command=self._launch_dcs_async).pack(anchor="w", pady=(16, 0))
 
     def _page_mission(self) -> None:
-        self._card(self.content, "Mission Studio #70", ".miz analyzer/editor/compiler backend is tracked separately; launcher entry is reserved.", 820).pack(fill=X)
+        self._card(self.content, self.nav_label("mission"), "Mission Studio foundation is installed. Mission editor screens remain gated until their backend is complete.", 700).pack(fill=X)
 
     def _page_diagnostics(self) -> None:
-        box = ttk.Frame(self.content, style="Card.TFrame", padding=16)
-        box.pack(fill=X)
-        if self.health is not None:
-            for check in self.health.checks:
-                ttk.Label(box, text=f"{'PASS' if check.passed else 'WARN'}  {check.message}", style="CardText.TLabel").pack(anchor="w", pady=3)
-        ttk.Button(self.content, text=self.nav_label("diagnostics"), style="Primary.TButton", command=self._diagnostics_async).pack(anchor="w", pady=14)
-        ttk.Button(self.content, text=self.t("action.run_setup"), command=self._open_setup).pack(anchor="w")
+        self._card(self.content, self.nav_label("diagnostics"), "Generate the Alpha diagnostics ZIP with startup, DCS, Export.lua, telemetry and audio readiness.", 700).pack(fill=X)
+        ttk.Button(self.content, text=self.t("action.generate_diagnostics"), style="Primary.TButton", command=self._diagnostics_async).pack(anchor="w", pady=(16, 0))
 
     def _page_providers(self) -> None:
-        choice = StringVar(value=self.config.ai_provider)
-        for label, value in (("Auto", "auto"), ("OpenAI", "openai"), ("Yandex Cloud", "yandex"), ("GigaChat", "gigachat"), ("Local AI", "local")):
-            row = ttk.Frame(self.content, style="Card.TFrame", padding=14)
-            row.pack(fill=X, pady=4)
-            ttk.Radiobutton(row, text=label, value=value, variable=choice).pack(side=LEFT)
-        ttk.Button(self.content, text="Save", command=lambda: self._save_provider(choice.get())).pack(anchor="w", pady=12)
+        self._card(self.content, self.nav_label("providers"), "Provider selection configures the desired backend. A provider is not reported connected unless its adapter is available.", 700).pack(fill=X)
+        provider = StringVar(value=self.config.ai_provider)
+        for key in ("auto", "openai", "yandex", "gigachat", "local"):
+            ttk.Radiobutton(self.content, text=key, value=key, variable=provider).pack(anchor="w", pady=3)
+        ttk.Button(self.content, text=self.t("action.save"), command=lambda: self._save_provider(provider.get())).pack(anchor="w", pady=(12, 0))
 
     def _page_updates(self) -> None:
-        ttk.Label(self.content, text=f"{self.t('updates.installed')}: ORION {__version__}", style="Section.TLabel").pack(anchor="w")
-        channel = StringVar(value=self.config.update_channel)
-        ttk.Combobox(self.content, values=("stable", "beta", "alpha"), state="readonly", textvariable=channel, width=16).pack(anchor="w", pady=8)
-        ttk.Button(self.content, text=self.t("action.check_updates"), style="Primary.TButton", command=lambda: self._set_channel_and_check(channel.get())).pack(anchor="w")
+        feature = current_feature_status()
+        text = f"Installed: {feature.version}\nChannel: {self.config.update_channel}\n{self.update_result.message if self.update_result else self.t('status.checking')}"
+        self._card(self.content, self.nav_label("updates"), text, 760).pack(fill=X)
+        controls = ttk.Frame(self.content, style="Orion.TFrame")
+        controls.pack(fill=X, pady=(16, 0))
+        ttk.Button(controls, text=self.t("action.check_updates"), command=lambda: self._check_updates_async(silent=False)).pack(side=LEFT)
+        if self.update_result and self.update_result.update_available and self.update_result.asset:
+            ttk.Button(controls, text=self.t("action.install_update"), style="Primary.TButton", command=self._download_update_async).pack(side=LEFT, padx=(8, 0))
         if self.update_progress_text.get():
-            ttk.Label(self.content, textvariable=self.update_progress_text, style="Muted.TLabel").pack(anchor="w", pady=(8, 0))
-            ttk.Progressbar(self.content, maximum=100, value=self.update_progress).pack(fill=X, pady=4)
-        result = self.update_result
-        if result and result.latest:
-            release = result.latest
-            card = self._card(self.content, f"ORION {release.version} — {release.title}", release.notes.strip() or "No release notes supplied.", 850)
-            card.pack(fill=X, pady=(14, 8))
-            if result.update_available:
-                ttk.Button(card, text=f"{self.t('action.install_update')} {release.version}", style="Primary.TButton", command=self._install_update_async).pack(anchor="w", pady=(12, 0))
-        ttk.Label(self.content, text=self.t("updates.current"), style="Section.TLabel").pack(anchor="w", pady=(18, 8))
-        for feature in current_feature_status():
-            self._card(self.content, f"{'✓' if feature.state == 'available' else '○'} {feature.name}", feature.description, 820).pack(fill=X, pady=3)
+            ttk.Label(self.content, textvariable=self.update_progress_text, style="Muted.TLabel").pack(anchor="w", pady=(12, 0))
 
     def _page_settings(self) -> None:
         language = StringVar(value=self.config.language)
         channel = StringVar(value=self.config.update_channel)
         autostart = BooleanVar(value=self.config.start_with_windows)
         minimize = BooleanVar(value=self.config.minimize_to_tray)
-        form = ttk.Frame(self.content, style="Card.TFrame", padding=18)
-        form.pack(fill=X)
-        ttk.Label(form, text=self.t("settings.language"), style="CardText.TLabel").grid(row=0, column=0, sticky="w", pady=6)
-        ttk.Combobox(form, values=("en", "ru"), state="readonly", textvariable=language, width=18).grid(row=0, column=1, padx=16)
-        ttk.Label(form, text=self.t("settings.update_channel"), style="CardText.TLabel").grid(row=1, column=0, sticky="w", pady=6)
-        ttk.Combobox(form, values=("stable", "beta", "alpha"), state="readonly", textvariable=channel, width=18).grid(row=1, column=1, padx=16)
-        ttk.Checkbutton(form, text=self.t("settings.start_windows"), variable=autostart).grid(row=2, column=0, columnspan=2, sticky="w", pady=6)
-        ttk.Checkbutton(form, text=self.t("settings.minimize_tray"), variable=minimize).grid(row=3, column=0, columnspan=2, sticky="w", pady=6)
-        ttk.Button(form, text="Save", style="Primary.TButton", command=lambda: self._save_settings(language.get(), channel.get(), autostart.get(), minimize.get())).grid(row=4, column=0, sticky="w", pady=(12, 0))
+        frame = ttk.Frame(self.content, style="Orion.TFrame")
+        frame.pack(fill=X)
+        ttk.Label(frame, text=self.t("settings.language"), style="Section.TLabel").pack(anchor="w")
+        ttk.Combobox(frame, textvariable=language, values=("en", "ru"), state="readonly", width=12).pack(anchor="w", pady=(6, 14))
+        ttk.Label(frame, text=self.t("settings.channel"), style="Section.TLabel").pack(anchor="w")
+        ttk.Combobox(frame, textvariable=channel, values=("stable", "beta", "alpha"), state="readonly", width=12).pack(anchor="w", pady=(6, 14))
+        ttk.Checkbutton(frame, text=self.t("settings.autostart"), variable=autostart).pack(anchor="w", pady=4)
+        ttk.Checkbutton(frame, text=self.t("settings.tray"), variable=minimize).pack(anchor="w", pady=4)
+        ttk.Button(frame, text=self.t("action.save"), style="Primary.TButton", command=lambda: self._save_settings(language.get(), channel.get(), autostart.get(), minimize.get())).pack(anchor="w", pady=(16, 0))
 
     def _page_logs(self) -> None:
-        text = __import__("tkinter").Text(self.content, bg="#111b2b", fg="#c8d5e8", relief="flat")
+        text = ttk.Treeview(self.content, columns=("value",), show="tree headings")
+        text.heading("#0", text="Path")
+        text.heading("value", text="Value")
+        text.column("#0", width=260)
+        text.column("value", width=600)
+        text.insert("", END, text="Runtime", values=(str(self.runtime_dir),))
         text.pack(fill=BOTH, expand=True)
-        text.insert(END, f"ORION {__version__}\nCore API: {self.core.base_url}\nRuntime: {self.runtime_dir}\n")
-        if self.health:
-            for check in self.health.checks:
-                text.insert(END, f"{'PASS' if check.passed else 'WARN'} {check.key}: {check.message}\n")
-        text.configure(state="disabled")
 
     def _page_about(self) -> None:
-        self._card(self.content, f"ORION {__version__}", "AI Mission Control and Virtual ATC for DCS World", 820).pack(fill=X)
+        self._card(self.content, "ORION", f"AI mission control and virtual ATC for DCS World\nVersion {__version__}", 700).pack(fill=X)
 
     def _refresh_page(self) -> None:
+        self._refresh_health_async()
         if self.current_page == "updates":
-            self._check_updates_async(silent=False)
-        else:
-            self._refresh_health_async()
+            self._check_updates_async(silent=True)
+        self.show_page(self.current_page)
 
     def _poll_core(self) -> None:
-        state = f"{self.t('status.core_running')}\n{self.core.base_url}" if self.core.healthy() else self.t("status.core_starting")
-        self.status_var.set(state)
-        self.root.after(1500, self._poll_core)
+        self.status_var.set(self.t("status.core_ready") if self.core.healthy() else self.t("status.core_starting"))
+        self.root.after(1000, self._poll_core)
 
     def _refresh_health_async(self) -> None:
         def worker() -> None:
-            try:
-                report = inspect_startup_health()
-            except Exception as exc:
-                error = str(exc)
-                self.root.after(0, lambda message=error: self.status_var.set(f"Health check failed: {message}"))
-                return
-            self.root.after(0, lambda value=report: self._apply_health(value))
+            health = inspect_startup_health()
+            self.root.after(0, lambda: self._set_health(health))
+
         threading.Thread(target=worker, name="orion-health", daemon=True).start()
 
-    def _apply_health(self, report: StartupHealthReport) -> None:
-        self.health = report
-        if self.current_page in {"home", "fly", "diagnostics", "logs"}:
+    def _set_health(self, health: StartupHealthReport) -> None:
+        self.health = health
+        if self.current_page in {"home", "diagnostics"}:
             self.show_page(self.current_page)
 
     def _launch_dcs_async(self) -> None:
         def worker() -> None:
-            status = start_dcs_for_recovery()
-            self.root.after(0, lambda message=status.message: messagebox.showinfo("ORION", message))
-            self.root.after(0, self._refresh_health_async)
+            result = start_dcs_for_recovery()
+            self.root.after(0, lambda: messagebox.showinfo("ORION", result.message))
+
         threading.Thread(target=worker, name="orion-launch-dcs", daemon=True).start()
 
     def _diagnostics_async(self) -> None:
         def worker() -> None:
             try:
                 bundle = write_alpha_diagnostics_bundle()
+                self.root.after(0, lambda: messagebox.showinfo(self.t("diagnostics.title"), str(bundle)))
             except Exception as exc:
                 error = str(exc)
-                self.root.after(0, lambda message=error: messagebox.showerror("Diagnostics", message))
-                return
-            self.root.after(0, lambda path=str(bundle): messagebox.showinfo("Diagnostics", f"Bundle created:\n{path}"))
-        threading.Thread(target=worker, name="orion-diagnostics", daemon=True).start()
+                self.root.after(0, lambda error=error: messagebox.showerror(self.t("diagnostics.title"), error))
 
-    def _channel(self) -> ReleaseChannel:
-        try:
-            return ReleaseChannel(self.config.update_channel)
-        except ValueError:
-            return ReleaseChannel.ALPHA
+        threading.Thread(target=worker, name="orion-diagnostics", daemon=True).start()
 
     def _check_updates_async(self, silent: bool) -> None:
         def worker() -> None:
-            result = check_for_updates(channel=self._channel())
-            self.root.after(0, lambda value=result: self._apply_update(value, silent))
-        threading.Thread(target=worker, name="orion-update-check", daemon=True).start()
+            try:
+                result = check_for_updates(ReleaseChannel(self.config.update_channel))
+            except Exception as exc:
+                result = UpdateCheckResult(update_available=False, message=str(exc), release=None, asset=None)
+            self.root.after(0, lambda: self._set_update(result, silent))
 
-    def _apply_update(self, result: UpdateCheckResult, silent: bool) -> None:
+        threading.Thread(target=worker, name="orion-updates", daemon=True).start()
+
+    def _set_update(self, result: UpdateCheckResult, silent: bool) -> None:
         self.update_result = result
-        if self.current_page in {"home", "updates"}:
-            self.show_page(self.current_page)
-        if result.update_available and not silent:
-            messagebox.showinfo("ORION Update", result.message)
+        if self.current_page == "updates":
+            self.show_page("updates")
+        if not silent and not result.update_available:
+            messagebox.showinfo(self.nav_label("updates"), result.message)
 
-    def _set_channel_and_check(self, channel: str) -> None:
-        self.config.update_channel = channel
-        self.config_store.save(self.config)
-        self._check_updates_async(silent=False)
-
-    def _install_update_async(self) -> None:
-        result = self.update_result
-        if not result or not result.latest:
+    def _download_update_async(self) -> None:
+        if not self.update_result or not self.update_result.asset:
             return
-        release = result.latest
-        if not messagebox.askyesno("ORION Update", f"Install ORION {release.version}?\n\n{release.title}"):
-            return
-        self.update_progress = 0.0
-        self.update_progress_text.set("Downloading update…")
-        self.show_page("updates")
+        self.update_progress_text.set(self.t("updates.downloading"))
+        asset = self.update_result.asset
 
-        def progress(done: int, total: int | None) -> None:
-            percent = min(100.0, done * 100.0 / total) if total else 0.0
-            self.root.after(0, lambda value=percent: self._apply_progress(value))
+        def progress(done: int, total: int) -> None:
+            pct = 0 if total <= 0 else done * 100 / total
+            self.root.after(0, lambda: self.update_progress_text.set(f"{pct:.0f}%"))
 
         def worker() -> None:
             try:
-                installer = download_update(release, progress=progress)
-                launch_installer(installer)
+                path = download_update(asset, self.runtime_dir / "updates", progress=progress)
             except Exception as exc:
                 error = str(exc)
-                self.root.after(0, lambda message=error: messagebox.showerror("ORION Update", message))
+                self.root.after(0, lambda error=error: messagebox.showerror(self.nav_label("updates"), error))
+                return
+            self.root.after(0, lambda: self._confirm_install(path))
+
         threading.Thread(target=worker, name="orion-update-download", daemon=True).start()
 
-    def _apply_progress(self, percent: float) -> None:
-        self.update_progress = percent
-        self.update_progress_text.set(f"Downloading… {percent:.0f}%")
-        if self.current_page == "updates":
-            self.show_page("updates")
+    def _confirm_install(self, path: Path) -> None:
+        if messagebox.askyesno(self.nav_label("updates"), self.t("updates.confirm_install")):
+            launch_installer(path)
 
     def _save_provider(self, provider: str) -> None:
         self.config.ai_provider = provider
         self.config_store.save(self.config)
+        messagebox.showinfo("ORION", self.t("settings.saved"))
 
     def _save_settings(self, language: str, channel: str, autostart: bool, minimize: bool) -> None:
         self.config.language = normalize_language(language)
@@ -404,56 +431,40 @@ class OrionDesktopLauncher:
         except OSError as exc:
             messagebox.showwarning("ORION", str(exc))
         messagebox.showinfo("ORION", self.t("settings.saved"))
-        self._rebuild_shell()
-
-    def _rebuild_shell(self) -> None:
-        for child in self.root.winfo_children():
-            child.destroy()
-        self._build_shell()
         self.show_page(self.current_page)
-
-    def _maybe_first_run(self) -> None:
-        if self.health is None:
-            self.root.after(600, self._maybe_first_run)
-            return
-        if self.health.active_dcs is None and messagebox.askyesno("ORION", "DCS World is not configured. Run setup now?"):
-            self._open_setup()
 
     def _open_setup(self) -> None:
         window = Toplevel(self.root)
         window.title(self.t("setup.title"))
-        window.geometry("760x520")
+        window.geometry("720x420")
         body = ttk.Frame(window, padding=18)
         body.pack(fill=BOTH, expand=True)
-        status = StringVar(value=self.t("setup.detect"))
-        ttk.Label(body, textvariable=status, style="Section.TLabel").pack(anchor="w", pady=(0, 10))
-        results = ttk.Frame(body)
-        results.pack(fill=BOTH, expand=True)
+        status = StringVar(value=self.t("setup.detecting"))
+        ttk.Label(body, textvariable=status, wraplength=650, justify="left").pack(anchor="w", pady=(0, 12))
 
         def detect() -> None:
-            for child in results.winfo_children():
-                child.destroy()
             found = detect_installations()
-            if not found.candidates:
-                status.set("DCS World not found")
-                return
-            status.set(f"Found {len(found.candidates)} DCS installation(s)")
-            for candidate in found.candidates:
-                frame = ttk.Frame(results, padding=8)
-                frame.pack(fill=X, pady=3)
-                ttk.Label(frame, text=f"{candidate.name} — {candidate.executable_path}").pack(side=LEFT)
-                ttk.Button(frame, text=self.t("setup.select"), command=lambda item=candidate: select(item)).pack(side=RIGHT)
+            if found.discovery and found.discovery.candidates:
+                candidate = found.discovery.candidates[0]
+                status.set(f"{found.message}\n{candidate.name}: {candidate.executable_path}")
+            else:
+                status.set(found.message)
 
-        def select(candidate) -> None:
-            request = SelectActiveRequest(
-                installation_type=candidate.installation_type,
-                install_root=candidate.install_root,
-                executable_path=candidate.executable_path,
-                saved_games_path=(candidate.saved_games_candidates[0] if candidate.saved_games_candidates else None),
+        def select() -> None:
+            found = detect_installations()
+            if not found.discovery or not found.discovery.candidates:
+                status.set(found.message)
+                return
+            candidate = found.discovery.candidates[0]
+            selected = select_active_installation(
+                SelectActiveRequest(
+                    installation_type=candidate.installation_type,
+                    install_root=candidate.install_root,
+                    executable_path=candidate.executable_path,
+                    saved_games_path=candidate.saved_games_candidates[0] if candidate.saved_games_candidates else None,
+                )
             )
-            result = select_active_installation(request)
-            status.set(result.message)
-            self._refresh_health_async()
+            status.set(selected.message)
 
         def install() -> None:
             result = install_active_integration()
@@ -462,31 +473,20 @@ class OrionDesktopLauncher:
 
         def test() -> None:
             result = test_live_connection()
-            status.set(result.message if not result.ok else self.t("setup.ready"))
+            status.set(result.message)
             self._refresh_health_async()
 
         buttons = ttk.Frame(body)
-        buttons.pack(fill=X, pady=(12, 0))
-        ttk.Button(buttons, text=self.t("setup.detect"), command=detect).pack(side=LEFT, padx=(0, 8))
-        ttk.Button(buttons, text=self.t("setup.install"), command=install).pack(side=LEFT, padx=(0, 8))
-        ttk.Button(buttons, text=self.t("setup.test"), command=test).pack(side=LEFT)
+        buttons.pack(fill=X, pady=(8, 0))
+        for label, command in ((self.t("setup.detect"), detect), (self.t("setup.select"), select), (self.t("setup.install"), install), (self.t("setup.test"), test)):
+            ttk.Button(buttons, text=label, command=command).pack(side=LEFT, padx=(0, 8))
+        ttk.Button(buttons, text=self.t("action.close"), command=window.destroy).pack(side=RIGHT)
         detect()
+
+    def _maybe_first_run(self) -> None:
+        if self.health is not None and not self.health.ready:
+            self._open_setup()
 
     def close(self) -> None:
         self.core.stop()
         self.root.destroy()
-
-
-def run_desktop_launcher(runtime_dir: Path, host: str = "127.0.0.1", port: int = 8000) -> int:
-    core = CoreServer(host, port)
-    core.start()
-    try:
-        root = Tk()
-        OrionDesktopLauncher(root, runtime_dir, core)
-        root.mainloop()
-    finally:
-        # Tk creation can fail before the launcher object exists (for example
-        # in a headless environment). Never leave the Core/UDP bridge running
-        # after a GUI startup failure or normal desktop exit.
-        core.stop()
-    return 0

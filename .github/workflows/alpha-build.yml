@@ -7,6 +7,8 @@ on:
     paths:
       - "orion/**"
       - "dcs-export/**"
+      - "dcs-mission-pack/**"
+      - "dcs-mission-template/**"
       - "branding/**"
       - "packaging/**"
       - "tests/**"
@@ -23,7 +25,7 @@ permissions:
 jobs:
   build-alpha:
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 35
 
     steps:
       - name: Check out repository
@@ -48,11 +50,9 @@ jobs:
           $expected = "e5197c2de9ed7b3a3f2bcf505627222253e39f2317028f72117c073396c76b6c"
           if (-not (Test-Path $icon)) { throw "Approved ORION icon is missing: $icon" }
           $actual = (Get-FileHash $icon -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($actual -ne $expected) {
-            throw "Approved ORION icon SHA-256 mismatch. Expected $expected, got $actual"
-          }
+          if ($actual -ne $expected) { throw "Approved ORION icon SHA-256 mismatch. Expected $expected, got $actual" }
 
-      - name: Run Windows launcher and DCS setup regression tests
+      - name: Run Windows deployment and DCS regression tests
         shell: pwsh
         run: |
           python -m pytest -q `
@@ -62,101 +62,136 @@ jobs:
             tests/test_launcher.py `
             tests/test_alpha_smoke_diagnostics.py
 
-      - name: Import production Windows launcher
+      - name: Import canonical production entry points
         shell: pwsh
         run: |
-          python -c "from orion.desktop_product_launcher import WindowsOrionProductLauncher; from orion.desktop_launcher import run_desktop_launcher; from orion.setup_wizard_model import SetupWizardState; assert WindowsOrionProductLauncher is not None; assert run_desktop_launcher is not None; assert SetupWizardState is not None"
+          python -c "from orion.core_main import main as core_main; from orion.launcher_main import main as launcher_main; from orion.core_process import CoreProcessManager; from orion.desktop_product_launcher import WindowsOrionProductLauncher; assert all((core_main, launcher_main, CoreProcessManager, WindowsOrionProductLauncher))"
 
-      - name: Build ORION application bundle
+      - name: Build ORION Core
         shell: pwsh
         run: |
-          $pyinstallerArgs = @(
-            "--noconfirm",
-            "--clean",
-            "--onedir",
-            "--windowed",
-            "--name", "ORION",
+          $args = @(
+            "--noconfirm", "--clean", "--onedir", "--windowed",
+            "--name", "ORION-Core",
+            "--collect-submodules", "orion",
+            "--collect-submodules", "uvicorn",
+            "--add-data", "dcs-export;dcs-export",
+            "--add-data", "dcs-mission-pack;dcs-mission-pack",
+            "--add-data", "dcs-mission-template;dcs-mission-template",
+            "--icon", "branding/orion.ico",
+            "orion/core_main.py"
+          )
+          python -m PyInstaller @args
+          if (-not (Test-Path "dist/ORION-Core/ORION-Core.exe")) { throw "ORION-Core.exe was not created" }
+
+      - name: Build ORION Launcher
+        shell: pwsh
+        run: |
+          $args = @(
+            "--noconfirm", "--clean", "--onedir", "--windowed",
+            "--name", "ORION-Launcher",
             "--collect-submodules", "orion",
             "--collect-submodules", "uvicorn",
             "--add-data", "dcs-export;dcs-export",
             "--icon", "branding/orion.ico",
             "--add-data", "branding/orion.ico;branding",
-            "orion/launcher.py"
+            "orion/launcher_main.py"
           )
-          python -m PyInstaller @pyinstallerArgs
-          if (-not (Test-Path "dist/ORION/ORION.exe")) { throw "ORION.exe was not created" }
+          python -m PyInstaller @args
+          if (-not (Test-Path "dist/ORION-Launcher/ORION-Launcher.exe")) { throw "ORION-Launcher.exe was not created" }
 
-      - name: Frozen headless core smoke test
+      - name: Assemble canonical product layout
         shell: pwsh
         run: |
-          $process = Start-Process -FilePath "dist/ORION/ORION.exe" -ArgumentList "--no-browser","--port","8123" -PassThru
+          New-Item -ItemType Directory -Force "dist-product/Core" | Out-Null
+          New-Item -ItemType Directory -Force "dist-product/Launcher" | Out-Null
+          New-Item -ItemType Directory -Force "dist-product/Integration/DCS/Export" | Out-Null
+          New-Item -ItemType Directory -Force "dist-product/Integration/DCS/MissionPack" | Out-Null
+          New-Item -ItemType Directory -Force "dist-product/Integration/DCS/MissionTemplate" | Out-Null
+          Copy-Item "dist/ORION-Core/*" "dist-product/Core" -Recurse -Force
+          Copy-Item "dist/ORION-Launcher/*" "dist-product/Launcher" -Recurse -Force
+          Copy-Item "dcs-export/*" "dist-product/Integration/DCS/Export" -Recurse -Force
+          Copy-Item "dcs-mission-pack/*" "dist-product/Integration/DCS/MissionPack" -Recurse -Force
+          Copy-Item "dcs-mission-template/*" "dist-product/Integration/DCS/MissionTemplate" -Recurse -Force
+          if (-not (Test-Path "dist-product/Core/ORION-Core.exe")) { throw "Canonical Core layout missing" }
+          if (-not (Test-Path "dist-product/Launcher/ORION-Launcher.exe")) { throw "Canonical Launcher layout missing" }
+          if (-not (Test-Path "dist-product/Integration/DCS/Export/Export.lua")) { throw "DCS Export integration missing" }
+
+      - name: Frozen standalone Core smoke test
+        shell: pwsh
+        run: |
+          $runtime = Join-Path $env:RUNNER_TEMP "orion-core-runtime"
+          Remove-Item $runtime -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force $runtime | Out-Null
+          $env:ORION_RUNTIME_DIR = $runtime
+          $process = Start-Process -FilePath "dist-product/Core/ORION-Core.exe" -ArgumentList "--port","8123" -PassThru
           try {
             $ready = $false
             for ($i = 0; $i -lt 60; $i++) {
               Start-Sleep -Milliseconds 500
-              if ($process.HasExited) { throw "Frozen ORION exited before health endpoint became ready (exit $($process.ExitCode))" }
+              if ($process.HasExited) { throw "ORION Core exited before becoming ready (exit code $($process.ExitCode))" }
               try {
-                $response = Invoke-RestMethod -Uri "http://127.0.0.1:8123/health" -TimeoutSec 2
+                $response = Invoke-RestMethod -Uri "http://127.0.0.1:8123/health" -TimeoutSec 1
                 if ($response.status -eq "ok") { $ready = $true; break }
               } catch {}
             }
-            if (-not $ready) { throw "Frozen ORION health endpoint did not become ready" }
+            if (-not $ready) { throw "Standalone ORION Core health endpoint did not become ready" }
           } finally {
-            $startupLog = "dist/ORION/runtime/core-startup.log"
+            $startupLog = Join-Path $runtime "core-startup.log"
             if (Test-Path $startupLog) {
-              Write-Host "===== ORION frozen startup log ====="
+              Write-Host "===== ORION Core startup log ====="
               Get-Content $startupLog
               Write-Host "===== end startup log ====="
             } else {
-              Write-Warning "Frozen ORION did not create runtime/core-startup.log"
+              Write-Warning "ORION Core did not create core-startup.log"
             }
             if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force }
           }
 
-      - name: Frozen desktop launcher smoke test
+      - name: Launcher starts external Core and Core survives UI exit
         shell: pwsh
         run: |
-          $process = Start-Process -FilePath "dist/ORION/ORION.exe" -ArgumentList "--desktop","--port","8124" -PassThru
+          $runtime = Join-Path $env:RUNNER_TEMP "orion-launcher-runtime"
+          New-Item -ItemType Directory -Force $runtime | Out-Null
+          $env:ORION_RUNTIME_DIR = $runtime
+          $launcher = Start-Process -FilePath "dist-product/Launcher/ORION-Launcher.exe" -ArgumentList "--port","8124" -PassThru
+          $ready = $false
           try {
-            $ready = $false
-            for ($i = 0; $i -lt 30; $i++) {
+            for ($i = 0; $i -lt 40; $i++) {
               Start-Sleep -Milliseconds 500
-              if ($process.HasExited) { throw "Desktop launcher exited before Core API became ready" }
+              if ($launcher.HasExited) { throw "ORION Launcher exited before external Core became ready" }
               try {
                 $response = Invoke-RestMethod -Uri "http://127.0.0.1:8124/health" -TimeoutSec 2
                 if ($response.status -eq "ok") { $ready = $true; break }
               } catch {}
             }
-            if (-not $ready) { throw "Desktop launcher did not start its Core API" }
+            if (-not $ready) { throw "Launcher did not start the external ORION Core" }
+            Stop-Process -Id $launcher.Id -Force
+            Start-Sleep -Seconds 1
+            $response = Invoke-RestMethod -Uri "http://127.0.0.1:8124/health" -TimeoutSec 2
+            if ($response.status -ne "ok") { throw "ORION Core did not survive Launcher exit" }
           } finally {
-            if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force }
+            if (-not $launcher.HasExited) { Stop-Process -Id $launcher.Id -Force }
+            Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.EndsWith("ORION-Core.exe") } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
           }
 
-      - name: Frozen diagnostics smoke test
+      - name: Verify installed product payload
         shell: pwsh
         run: |
-          $process = Start-Process -FilePath "dist/ORION/ORION.exe" -ArgumentList "--diagnostics" -Wait -PassThru
-          if ($process.ExitCode -ne 0) { throw "Frozen ORION diagnostics mode failed with exit code $($process.ExitCode)" }
-          $bundle = Get-ChildItem "dist/ORION/runtime/diagnostics/orion-alpha-smoke-*.zip" | Select-Object -First 1
-          if (-not $bundle) { throw "Frozen ORION diagnostics bundle was not created" }
-          Add-Type -AssemblyName System.IO.Compression.FileSystem
-          $zip = [System.IO.Compression.ZipFile]::OpenRead($bundle.FullName)
-          try {
-            $names = $zip.Entries | ForEach-Object { $_.FullName }
-            if ($names -notcontains "summary.txt") { throw "Diagnostics bundle missing summary.txt" }
-            if (-not ($names | Where-Object { $_ -like "orion-alpha-smoke-*.json" })) { throw "Diagnostics bundle missing JSON report" }
-          } finally {
-            $zip.Dispose()
-          }
+          $required = @(
+            "dist-product/Core/ORION-Core.exe",
+            "dist-product/Launcher/ORION-Launcher.exe",
+            "dist-product/Integration/DCS/Export/Export.lua",
+            "dist-product/Integration/DCS/MissionPack/ORION_MissionPack.lua",
+            "dist-product/Integration/DCS/MissionTemplate/ORION_SafeSlot.lua"
+          )
+          foreach ($path in $required) { if (-not (Test-Path $path)) { throw "Missing product payload: $path" } }
 
       - name: Locate Inno Setup
         id: inno
         shell: pwsh
         run: |
-          $candidates = @(
-            "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
-            "C:\Program Files\Inno Setup 6\ISCC.exe"
-          )
+          $candidates = @("C:\Program Files (x86)\Inno Setup 6\ISCC.exe", "C:\Program Files\Inno Setup 6\ISCC.exe")
           $iscc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
           if (-not $iscc) {
             choco install innosetup --yes --no-progress
@@ -169,26 +204,26 @@ jobs:
         shell: pwsh
         run: |
           & "${{ steps.inno.outputs.iscc }}" "packaging/orion-alpha.iss"
-          if (-not (Test-Path "dist-installer/ORION-Alpha-0.1-Setup.exe")) { throw "Installer was not created" }
+          if (-not (Test-Path "dist-installer/ORION-Alpha-0.2-Setup.exe")) { throw "Installer was not created" }
 
-      - name: Package portable ZIP
+      - name: Package portable product
         if: startsWith(github.ref, 'refs/tags/')
         shell: pwsh
         run: |
-          Compress-Archive -Path "dist/ORION/*" -DestinationPath "dist-installer/ORION-Alpha-0.1-portable.zip" -Force
+          Compress-Archive -Path "dist-product/*" -DestinationPath "dist-installer/ORION-Alpha-0.2-portable.zip" -Force
 
-      - name: Upload portable bundle
+      - name: Upload canonical product bundle
         uses: actions/upload-artifact@v4
         with:
-          name: ORION-Alpha-0.1-portable
-          path: dist/ORION
+          name: ORION-Alpha-0.2-product
+          path: dist-product
           if-no-files-found: error
 
       - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
-          name: ORION-Alpha-0.1-Setup
-          path: dist-installer/ORION-Alpha-0.1-Setup.exe
+          name: ORION-Alpha-0.2-Setup
+          path: dist-installer/ORION-Alpha-0.2-Setup.exe
           if-no-files-found: error
 
       - name: Publish GitHub Release
@@ -199,5 +234,5 @@ jobs:
           generate_release_notes: true
           prerelease: true
           files: |
-            dist-installer/ORION-Alpha-0.1-Setup.exe
-            dist-installer/ORION-Alpha-0.1-portable.zip
+            dist-installer/ORION-Alpha-0.2-Setup.exe
+            dist-installer/ORION-Alpha-0.2-portable.zip
