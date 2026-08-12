@@ -75,7 +75,10 @@ def main(argv: list[str] | None = None) -> int:
         uvicorn.run(app, host=args.host, port=args.port, log_level="info")
         _startup_log(runtime, "uvicorn_exit")
         return 0
-    except BaseException as exc:
+    except Exception as exc:
+        # Fatal runtime boundary: log ordinary startup/runtime failures with a
+        # traceback, but do not swallow control-flow exceptions such as
+        # KeyboardInterrupt or SystemExit.
         _startup_log(runtime, "fatal", f"{type(exc).__name__}: {exc}")
         with (runtime / "core-startup.log").open("a", encoding="utf-8") as handle:
             traceback.print_exc(file=handle)
