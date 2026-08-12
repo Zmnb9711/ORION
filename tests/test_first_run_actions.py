@@ -3,7 +3,9 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from orion.app import app
-from orion.first_run_actions import FirstRunAction
+from orion.dcs_installation_discovery import DcsDiscoveryCandidate, DcsDiscoveryResult
+from orion.dcs_installations import DcsInstallationType
+from orion.first_run_actions import FirstRunAction, FirstRunActionResult
 
 
 def test_first_run_action_routes_registered():
@@ -11,6 +13,32 @@ def test_first_run_action_routes_registered():
     response = client.post("/v1/first-run/actions/detect?mode=manual")
     assert response.status_code == 200
     assert response.json()["action"] == "detect"
+
+
+def test_detect_result_exposes_candidates_to_desktop_ui():
+    candidate = DcsDiscoveryCandidate(
+        installation_type=DcsInstallationType.STEAM,
+        name="DCS Steam",
+        install_root=r"D:\SteamLibrary\steamapps\common\DCSWorld",
+        executable_path=r"D:\SteamLibrary\steamapps\common\DCSWorld\bin\DCS.exe",
+        exists=True,
+        source_detail=r"D:\SteamLibrary",
+    )
+    result = FirstRunActionResult(
+        action=FirstRunAction.DETECT,
+        ok=True,
+        message="Found 1 DCS installation(s)",
+        discovery=DcsDiscoveryResult(mode=DcsInstallationType.AUTO, candidates=[candidate]),
+        next_actions=[FirstRunAction.SELECT_ACTIVE],
+    )
+
+    assert result.candidates == [candidate]
+    assert result.candidates[0].install_root.endswith("DCSWorld")
+
+
+def test_detect_result_without_discovery_exposes_empty_candidates():
+    result = FirstRunActionResult(action=FirstRunAction.DETECT, ok=False, message="No DCS installations found")
+    assert result.candidates == []
 
 
 def test_select_active_action_returns_next_steps(tmp_path: Path, monkeypatch):
