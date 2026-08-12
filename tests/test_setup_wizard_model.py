@@ -1,5 +1,7 @@
 from pathlib import Path
 
+from orion.dcs_installation_discovery import DcsDiscoveryCandidate
+from orion.dcs_installations import DcsInstallationType
 from orion.setup_wizard_model import SetupStep, SetupWizardState
 
 
@@ -49,6 +51,49 @@ def test_manual_dcs_and_saved_games_advance_deterministically(tmp_path: Path):
     state.mark_telemetry(True)
     assert state.step == SetupStep.READY
     assert state.ready
+
+
+def test_detected_candidate_auto_selects_existing_saved_games(tmp_path: Path):
+    dcs = _make_dcs(tmp_path / "DCSWorld")
+    saved = tmp_path / "Saved Games" / "DCS"
+    saved.mkdir(parents=True)
+    candidate = DcsDiscoveryCandidate(
+        installation_type=DcsInstallationType.STEAM,
+        name="DCS Steam",
+        install_root=str(dcs),
+        executable_path=str(dcs / "bin-mt" / "DCS.exe"),
+        saved_games_candidates=[str(saved)],
+        exists=True,
+        source_detail=str(tmp_path / "SteamLibrary"),
+    )
+    state = SetupWizardState()
+
+    state.select_candidate(candidate)
+
+    assert state.saved_games_path == str(saved)
+    assert state.step == SetupStep.INTEGRATION
+    assert state.can_install
+    assert not state.integration_ready
+
+
+def test_detected_candidate_keeps_manual_saved_games_step_when_none_exist(tmp_path: Path):
+    dcs = _make_dcs(tmp_path / "DCSWorld")
+    missing = tmp_path / "Saved Games" / "DCS"
+    candidate = DcsDiscoveryCandidate(
+        installation_type=DcsInstallationType.STEAM,
+        name="DCS Steam",
+        install_root=str(dcs),
+        executable_path=str(dcs / "bin-mt" / "DCS.exe"),
+        saved_games_candidates=[str(missing)],
+        exists=True,
+    )
+    state = SetupWizardState()
+
+    state.select_candidate(candidate)
+
+    assert state.saved_games_path is None
+    assert state.step == SetupStep.SAVED_GAMES
+    assert not state.can_install
 
 
 def test_failed_telemetry_stays_on_telemetry_step(tmp_path: Path):

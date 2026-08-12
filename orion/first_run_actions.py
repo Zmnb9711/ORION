@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import json
+import os
+import urllib.error
+import urllib.request
 from enum import StrEnum
 
 from pydantic import BaseModel, Field
@@ -36,6 +40,19 @@ class FirstRunActionResult(BaseModel):
     telemetry_connected: bool | None = None
     aircraft_type: str | None = None
     next_actions: list[FirstRunAction] = Field(default_factory=list)
+
+    @property
+    def candidates(self) -> list[DcsDiscoveryCandidate]:
+        """Stable UI-facing view of detected installations.
+
+        The canonical discovery payload lives under ``discovery`` for API
+        serialization, while desktop first-run flows need direct candidate
+        access. Keeping this adapter on the action result prevents the UI and
+        API contracts from drifting apart again.
+        """
+        if self.discovery is None:
+            return []
+        return self.discovery.candidates
 
 
 def detect_installations(mode: DcsInstallationType = DcsInstallationType.AUTO) -> FirstRunActionResult:
@@ -89,6 +106,15 @@ def install_active_integration(saved_games_path: str | None = None) -> FirstRunA
 
 
 def test_live_connection() -> FirstRunActionResult:
+    # Launcher and Core are intentionally separate processes. The live telemetry
+    # handshake is in-memory Core state, so a Launcher-side test must ask Core
+    # rather than inspect the Launcher's own empty telemetry_handshake instance.
+    if os.environ.get("ORION_PROCESS_ROLE") == "launcher":
+        return _test_live_connection_via_core()
+    return _test_live_connection_local()
+
+
+def _test_live_connection_local() -> FirstRunActionResult:
     live = telemetry_handshake.snapshot()
     return FirstRunActionResult(
         action=FirstRunAction.TEST_CONNECTION,
@@ -99,3 +125,24 @@ def test_live_connection() -> FirstRunActionResult:
         aircraft_type=live.aircraft_type,
         next_actions=[] if live.connected else [FirstRunAction.TEST_CONNECTION],
     )
+
+
+def _test_live_connection_via_core() -> FirstRunActionResult:
+    base_url = os.environ.get("ORION_CORE_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
+    request = urllib.request.Request(
+        f"{base_url}/v1/first-run/actions/test-connection",
+        data=b"",
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=2.0) as response:  # noqa: S310
+            payload = json.loads(response.read().decode("utf-8"))
+    except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
+        return FirstRunActionResult(
+            action=FirstRunAction.TEST_CONNECTION,
+            ok=False,
+            message=f"Unable to query ORION Core telemetry status: {exc}",
+            telemetry_connected=False,
+            next_actions=[FirstRunAction.TEST_CONNECTION],
+        )
+    return FirstRunActionResult.model_validate(payload)

@@ -49,6 +49,19 @@ class SetupWizardState:
         self.saved_games_path = None
         self._invalidate_integration()
         self.error = None
+
+        # Discovery already carries the conventional Saved Games profiles for
+        # this Windows account. If exactly one of those suggested paths exists,
+        # or if multiple exist, prefer the first deterministic candidate and
+        # avoid forcing a redundant folder-picker step. Manual selection remains
+        # available for custom/redirected profiles that discovery did not find.
+        for saved_games in candidate.saved_games_candidates:
+            root = Path(saved_games).expanduser()
+            if root.is_dir():
+                self.saved_games_path = str(root)
+                self.step = SetupStep.INTEGRATION
+                return
+
         self.step = SetupStep.SAVED_GAMES
 
     def select_dcs(self, path: str, installation_type: DcsInstallationType = DcsInstallationType.STANDALONE) -> bool:
