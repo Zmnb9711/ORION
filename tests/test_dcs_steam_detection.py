@@ -45,12 +45,34 @@ def test_default_detection_probes_conventional_secondary_library(tmp_path: Path,
     (install / "bin-mt" / "DCS.exe").write_bytes(b"")
     monkeypatch.delenv("PROGRAMFILES(X86)", raising=False)
     monkeypatch.delenv("PROGRAMFILES", raising=False)
+    monkeypatch.setattr(detection, "_registry_steam_roots", lambda: [])
     monkeypatch.setattr(detection, "_windows_drive_roots", lambda: [drive])
 
     found = discover_steam_dcs()
     assert len(found) == 1
     assert Path(found[0].steam_library) == library
     assert Path(found[0].executable_path) == install / "bin-mt" / "DCS.exe"
+
+
+def test_windows_drive_roots_use_logical_drive_bitmask(monkeypatch) -> None:
+    import ctypes
+    import orion.dcs_steam_detection as detection
+
+    class Kernel32:
+        @staticmethod
+        def GetLogicalDrives() -> int:
+            # C: and D:
+            return (1 << 2) | (1 << 3)
+
+    class Windll:
+        kernel32 = Kernel32()
+
+    monkeypatch.setattr(detection.os, "name", "nt")
+    monkeypatch.setattr(ctypes, "windll", Windll(), raising=False)
+
+    roots = detection._windows_drive_roots()
+
+    assert [str(item) for item in roots] == ["C:\\", "D:\\"]
 
 
 def test_detection_deduplicates_manifest_and_default_dcsworld_path(tmp_path: Path) -> None:
