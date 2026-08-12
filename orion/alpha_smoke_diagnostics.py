@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 from orion import __version__
 from orion.dcs_connection_diagnostics import DcsConnectionReport, diagnose_dcs_connection
 from orion.startup_health import StartupHealthReport, inspect_startup_health
+from orion.telemetry_history import TelemetryHistoryReport, collect_telemetry_history
 
 
 class SmokeCheckState(StrEnum):
@@ -28,6 +29,18 @@ class SmokeCheck(BaseModel):
     action: str | None = None
 
 
+class TelemetryHistorySummary(BaseModel):
+    capacity: int
+    retained_packet_count: int
+    total_packet_count: int
+    session_started_at: datetime | None = None
+    last_packet_at: datetime | None = None
+    last_seen_aircraft_type: str | None = None
+    last_source: str | None = None
+    last_protocol_version: str | None = None
+    average_packet_rate_hz: float = 0.0
+
+
 class AlphaSmokeReport(BaseModel):
     generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     orion_version: str = __version__
@@ -37,6 +50,7 @@ class AlphaSmokeReport(BaseModel):
     checks: list[SmokeCheck] = Field(default_factory=list)
     startup: StartupHealthReport
     dcs_connection: DcsConnectionReport
+    telemetry_history: TelemetryHistorySummary
 
     @property
     def passed(self) -> bool:
@@ -51,9 +65,10 @@ class AlphaSmokeReport(BaseModel):
         return SmokeCheckState.PASS
 
 
-def collect_alpha_smoke_report() -> AlphaSmokeReport:
+def collect_alpha_smoke_report(history: TelemetryHistoryReport | None = None) -> AlphaSmokeReport:
     startup = inspect_startup_health()
     connection = diagnose_dcs_connection()
+    telemetry_history = history or collect_telemetry_history()
     checks: list[SmokeCheck] = []
 
     for item in startup.checks:
@@ -92,11 +107,20 @@ def collect_alpha_smoke_report() -> AlphaSmokeReport:
             action="Run one spoken command during the live DCS smoke test",
         )
     )
-    return AlphaSmokeReport(startup=startup, dcs_connection=connection, checks=checks)
+    history_summary = TelemetryHistorySummary.model_validate(
+        telemetry_history.model_dump(exclude={"samples"})
+    )
+    return AlphaSmokeReport(
+        startup=startup,
+        dcs_connection=connection,
+        telemetry_history=history_summary,
+        checks=checks,
+    )
 
 
 def write_alpha_diagnostics_bundle(output_dir: Path | None = None) -> Path:
-    report = collect_alpha_smoke_report()
+    history = collect_telemetry_history()
+    report = collect_alpha_smoke_report(history)
     root = output_dir or _diagnostics_root()
     root.mkdir(parents=True, exist_ok=True)
     stamp = report.generated_at.strftime("%Y%m%d-%H%M%S")
@@ -104,9 +128,13 @@ def write_alpha_diagnostics_bundle(output_dir: Path | None = None) -> Path:
     zip_path = root / f"orion-alpha-smoke-{stamp}.zip"
 
     summary = _text_summary(report)
+    session_json = history.model_dump_json(indent=2, exclude={"samples"})
+    telemetry_jsonl = "".join(sample.model_dump_json() + "\n" for sample in history.samples)
     with ZipFile(zip_path, "w", compression=ZIP_DEFLATED) as archive:
         archive.writestr(json_name, report.model_dump_json(indent=2))
         archive.writestr("summary.txt", summary)
+        archive.writestr("telemetry-session.json", session_json)
+        archive.writestr("telemetry-history.jsonl", telemetry_jsonl)
     return zip_path
 
 
@@ -117,6 +145,14 @@ def _text_summary(report: AlphaSmokeReport) -> str:
         f"Generated: {report.generated_at.isoformat()}",
         f"Host: {report.hostname}",
         f"Platform: {report.platform}",
+        "",
+        "Telemetry history:",
+        f"  Total packets: {report.telemetry_history.total_packet_count}",
+        f"  Retained packets: {report.telemetry_history.retained_packet_count}",
+        f"  Last aircraft: {report.telemetry_history.last_seen_aircraft_type or 'unknown'}",
+        f"  Last source: {report.telemetry_history.last_source or 'unknown'}",
+        f"  Last protocol: {report.telemetry_history.last_protocol_version or 'unknown'}",
+        f"  Average rate: {report.telemetry_history.average_packet_rate_hz:.2f} Hz",
         "",
     ]
     for check in report.checks:
