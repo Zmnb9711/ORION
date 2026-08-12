@@ -31,20 +31,32 @@ class SetupWizardState:
 
     @property
     def can_test(self) -> bool:
-        return self.integration_ready
+        return self.can_install and self.integration_ready
 
     @property
     def ready(self) -> bool:
-        return self.integration_ready and self.telemetry_ready
+        return self.can_test and self.telemetry_ready
+
+    def _invalidate_integration(self) -> None:
+        self.integration_ready = False
+        self.telemetry_ready = False
+
+    def select_candidate(self, candidate: DcsDiscoveryCandidate) -> None:
+        self.candidate = candidate
+        # Saved Games and integration state belong to the selected DCS setup.
+        # Changing or re-detecting DCS must never preserve a READY result from an
+        # older configuration.
+        self.saved_games_path = None
+        self._invalidate_integration()
+        self.error = None
+        self.step = SetupStep.SAVED_GAMES
 
     def select_dcs(self, path: str, installation_type: DcsInstallationType = DcsInstallationType.STANDALONE) -> bool:
         candidate = candidate_from_install_root(Path(path), installation_type)
         if candidate is None:
             self.error = "Selected folder is not a valid DCS World installation"
             return False
-        self.candidate = candidate
-        self.error = None
-        self.step = SetupStep.SAVED_GAMES
+        self.select_candidate(candidate)
         return True
 
     def select_saved_games(self, path: str) -> bool:
@@ -55,16 +67,21 @@ class SetupWizardState:
         # Accept DCS and DCS.openbeta profiles, including custom profile names,
         # but require the directory itself rather than silently guessing it.
         self.saved_games_path = str(root)
+        # Integration and telemetry were validated for the previous profile and
+        # are no longer authoritative after the path changes.
+        self._invalidate_integration()
         self.error = None
         self.step = SetupStep.INTEGRATION
         return True
 
     def mark_integration(self, ok: bool) -> None:
         self.integration_ready = ok
+        if not ok:
+            self.telemetry_ready = False
         self.error = None if ok else "ORION DCS integration is not ready"
         self.step = SetupStep.TELEMETRY if ok else SetupStep.INTEGRATION
 
     def mark_telemetry(self, ok: bool) -> None:
-        self.telemetry_ready = ok
-        self.error = None if ok else "Waiting for live telemetry from DCS"
-        self.step = SetupStep.READY if ok else SetupStep.TELEMETRY
+        self.telemetry_ready = bool(ok and self.can_test)
+        self.error = None if self.telemetry_ready else "Waiting for live telemetry from DCS"
+        self.step = SetupStep.READY if self.telemetry_ready else SetupStep.TELEMETRY

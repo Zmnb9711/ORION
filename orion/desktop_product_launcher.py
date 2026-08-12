@@ -132,7 +132,7 @@ class WindowsOrionProductLauncher(WindowsProductVisualMixin, WindowsOrionDesktop
             elif state.error:
                 status.set(state.error)
 
-        def run_worker(name: str, operation, on_success) -> None:  # noqa: ANN001
+        def run_worker(name: str, operation, on_success, on_error=None) -> None:  # noqa: ANN001
             def worker() -> None:
                 try:
                     value = operation()
@@ -141,7 +141,15 @@ class WindowsOrionProductLauncher(WindowsProductVisualMixin, WindowsOrionDesktop
                     # DCS integration adapters with different exception contracts. A
                     # failed operation must surface in the wizard without killing the UI.
                     error = str(exc)
-                    on_ui(lambda: (status.set(error), render()))
+
+                    def apply_error() -> None:
+                        if on_error is not None:
+                            on_error(error)
+                        else:
+                            state.error = error
+                            render()
+
+                    on_ui(apply_error)
                     return
                 on_ui(lambda: on_success(value))
 
@@ -152,6 +160,7 @@ class WindowsOrionProductLauncher(WindowsProductVisualMixin, WindowsOrionDesktop
                 render()
                 return False
             candidate = state.candidate
+            saved_games_path.set("Not selected")
             if candidate and candidate.saved_games_candidates:
                 status.set(f"DCS detected. Select the Saved Games profile. Suggested: {candidate.saved_games_candidates[0]}")
             else:
@@ -168,7 +177,9 @@ class WindowsOrionProductLauncher(WindowsProductVisualMixin, WindowsOrionDesktop
             selected = filedialog.askdirectory(parent=window, title="Select DCS Saved Games profile")
             if not selected:
                 return
-            state.select_saved_games(selected)
+            if not state.select_saved_games(selected):
+                render()
+                return
             status.set("Saved Games profile selected. ORION integration is ready to install or repair.")
             render()
 
@@ -180,14 +191,14 @@ class WindowsOrionProductLauncher(WindowsProductVisualMixin, WindowsOrionDesktop
                 detect_button.configure(state="normal")
                 if not found.candidates:
                     state.error = "DCS World was not found automatically. Use SELECT DCS FOLDER to choose it manually."
-                    state.step = SetupStep.DCS
+                    if state.candidate is None:
+                        state.step = SetupStep.DCS
                     render()
                     return
                 candidate = found.candidates[0]
-                state.candidate = candidate
-                state.error = None
-                state.step = SetupStep.SAVED_GAMES
+                state.select_candidate(candidate)
                 dcs_path.set(str(candidate.install_root))
+                saved_games_path.set("Not selected")
                 if len(found.candidates) > 1:
                     status.set(f"Found {len(found.candidates)} DCS installations. Using {candidate.name}; choose another folder manually if needed.")
                 elif candidate.saved_games_candidates:
@@ -196,7 +207,12 @@ class WindowsOrionProductLauncher(WindowsProductVisualMixin, WindowsOrionDesktop
                     status.set("DCS detected. Select its Saved Games profile.")
                 render()
 
-            run_worker("orion-setup-detect", detect_installations, apply)
+            def fail(error: str) -> None:
+                detect_button.configure(state="normal")
+                state.error = f"Automatic DCS detection failed: {error}"
+                render()
+
+            run_worker("orion-setup-detect", detect_installations, apply, fail)
 
         def install() -> None:
             if state.candidate is None or state.saved_games_path is None:
@@ -225,7 +241,12 @@ class WindowsOrionProductLauncher(WindowsProductVisualMixin, WindowsOrionDesktop
                 self._refresh_health_async()
                 render()
 
-            run_worker("orion-setup-install", operation, apply)
+            def fail(error: str) -> None:
+                state.mark_integration(False)
+                state.error = f"Integration operation failed: {error}"
+                render()
+
+            run_worker("orion-setup-install", operation, apply, fail)
 
         def test() -> None:
             status.set("Waiting for live telemetry. Start DCS and enter the cockpit if necessary…")
@@ -237,7 +258,12 @@ class WindowsOrionProductLauncher(WindowsProductVisualMixin, WindowsOrionDesktop
                 self._refresh_health_async()
                 render()
 
-            run_worker("orion-setup-test", test_live_connection, apply)
+            def fail(error: str) -> None:
+                state.mark_telemetry(False)
+                state.error = f"Telemetry test failed: {error}"
+                render()
+
+            run_worker("orion-setup-test", test_live_connection, apply, fail)
 
         detect_button = ttk.Button(dcs_row, text="AUTO DETECT", style="Secondary.TButton", command=detect)
         detect_button.pack(side=RIGHT, padx=(8, 0))

@@ -148,15 +148,18 @@ jobs:
             if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force }
           }
 
-      - name: Launcher starts external Core and Core survives UI exit
+      - name: Launcher restarts and reuses external Core
         shell: pwsh
         run: |
           $runtime = Join-Path $env:RUNNER_TEMP "orion-launcher-runtime"
+          Remove-Item $runtime -Recurse -Force -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Force $runtime | Out-Null
           $env:ORION_RUNTIME_DIR = $runtime
-          $launcher = Start-Process -FilePath "dist-product/Launcher/ORION-Launcher.exe" -ArgumentList "--port","8124" -PassThru
-          $ready = $false
+          $launcher = $null
+          $launcher2 = $null
           try {
+            $launcher = Start-Process -FilePath "dist-product/Launcher/ORION-Launcher.exe" -ArgumentList "--port","8124" -PassThru
+            $ready = $false
             for ($i = 0; $i -lt 40; $i++) {
               Start-Sleep -Milliseconds 500
               if ($launcher.HasExited) { throw "ORION Launcher exited before external Core became ready" }
@@ -166,12 +169,29 @@ jobs:
               } catch {}
             }
             if (-not $ready) { throw "Launcher did not start the external ORION Core" }
+
+            $coreBefore = @(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.EndsWith("ORION-Core.exe") })
+            if ($coreBefore.Count -ne 1) { throw "Expected exactly one ORION Core before Launcher restart, found $($coreBefore.Count)" }
+            $corePid = $coreBefore[0].ProcessId
+
             Stop-Process -Id $launcher.Id -Force
+            $launcher.WaitForExit()
             Start-Sleep -Seconds 1
             $response = Invoke-RestMethod -Uri "http://127.0.0.1:8124/health" -TimeoutSec 2
             if ($response.status -ne "ok") { throw "ORION Core did not survive Launcher exit" }
+
+            $launcher2 = Start-Process -FilePath "dist-product/Launcher/ORION-Launcher.exe" -ArgumentList "--port","8124" -PassThru
+            Start-Sleep -Seconds 2
+            if ($launcher2.HasExited) { throw "Restarted ORION Launcher exited unexpectedly" }
+            $response = Invoke-RestMethod -Uri "http://127.0.0.1:8124/health" -TimeoutSec 2
+            if ($response.status -ne "ok") { throw "Restarted Launcher did not reconnect to existing ORION Core" }
+
+            $coreAfter = @(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.EndsWith("ORION-Core.exe") })
+            if ($coreAfter.Count -ne 1) { throw "Launcher restart spawned a duplicate ORION Core; found $($coreAfter.Count) processes" }
+            if ($coreAfter[0].ProcessId -ne $corePid) { throw "Launcher restart replaced the existing ORION Core instead of attaching to it" }
           } finally {
-            if (-not $launcher.HasExited) { Stop-Process -Id $launcher.Id -Force }
+            if ($launcher -and -not $launcher.HasExited) { Stop-Process -Id $launcher.Id -Force -ErrorAction SilentlyContinue }
+            if ($launcher2 -and -not $launcher2.HasExited) { Stop-Process -Id $launcher2.Id -Force -ErrorAction SilentlyContinue }
             Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.EndsWith("ORION-Core.exe") } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
           }
 
@@ -207,10 +227,10 @@ jobs:
           if (-not (Test-Path "dist-installer/ORION-Alpha-0.2-Setup.exe")) { throw "Installer was not created" }
 
       - name: Package portable product
-        if: startsWith(github.ref, 'refs/tags/')
         shell: pwsh
         run: |
           Compress-Archive -Path "dist-product/*" -DestinationPath "dist-installer/ORION-Alpha-0.2-portable.zip" -Force
+          if (-not (Test-Path "dist-installer/ORION-Alpha-0.2-portable.zip")) { throw "Portable package was not created" }
 
       - name: Upload canonical product bundle
         uses: actions/upload-artifact@v4
@@ -224,6 +244,13 @@ jobs:
         with:
           name: ORION-Alpha-0.2-Setup
           path: dist-installer/ORION-Alpha-0.2-Setup.exe
+          if-no-files-found: error
+
+      - name: Upload portable package
+        uses: actions/upload-artifact@v4
+        with:
+          name: ORION-Alpha-0.2-portable
+          path: dist-installer/ORION-Alpha-0.2-portable.zip
           if-no-files-found: error
 
       - name: Publish GitHub Release
