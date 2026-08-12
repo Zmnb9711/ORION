@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from threading import RLock
 
 from orion.models import TelemetryEnvelope
-from orion.telemetry_history import telemetry_history_recorder
+from orion.telemetry_history import TelemetryHistoryRecorder, telemetry_history_recorder
 
 
 @dataclass(frozen=True)
@@ -22,7 +22,12 @@ class TelemetryHandshakeSnapshot:
 
 
 class TelemetryHandshake:
-    def __init__(self, stale_after_seconds: float = 5.0, rate_window_seconds: float = 5.0) -> None:
+    def __init__(
+        self,
+        stale_after_seconds: float = 5.0,
+        rate_window_seconds: float = 5.0,
+        history_recorder: TelemetryHistoryRecorder | None = None,
+    ) -> None:
         self._stale_after = timedelta(seconds=stale_after_seconds)
         self._rate_window = timedelta(seconds=rate_window_seconds)
         self._last_received_at: datetime | None = None
@@ -31,6 +36,7 @@ class TelemetryHandshake:
         self._protocol_version: str | None = None
         self._packet_count = 0
         self._received_times: deque[datetime] = deque()
+        self._history_recorder = history_recorder
         self._lock = RLock()
 
     def observe(self, payload: TelemetryEnvelope, *, received_at: datetime | None = None) -> None:
@@ -43,7 +49,8 @@ class TelemetryHandshake:
             self._packet_count += 1
             self._received_times.append(timestamp)
             self._prune(timestamp)
-        telemetry_history_recorder.observe(payload, received_at=timestamp)
+        if self._history_recorder is not None:
+            self._history_recorder.observe(payload, received_at=timestamp)
 
     def observe_heartbeat(
         self,
@@ -87,8 +94,8 @@ class TelemetryHandshake:
             self._protocol_version = None
             self._packet_count = 0
             self._received_times.clear()
-        if self is telemetry_handshake:
-            telemetry_history_recorder.reset()
+        if self._history_recorder is not None:
+            self._history_recorder.reset()
 
     @staticmethod
     def _normalize_timestamp(value: datetime | None) -> datetime:
@@ -111,4 +118,4 @@ class TelemetryHandshake:
         return round((len(self._received_times) - 1) / span, 2)
 
 
-telemetry_handshake = TelemetryHandshake()
+telemetry_handshake = TelemetryHandshake(history_recorder=telemetry_history_recorder)
