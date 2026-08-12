@@ -44,6 +44,34 @@ def test_reports_healthy_rate_and_protocol() -> None:
     assert report.aircraft_type == "FA-18C_hornet"
 
 
+def test_reports_healthy_export_heartbeat_without_aircraft() -> None:
+    handshake = TelemetryHandshake(stale_after_seconds=5, rate_window_seconds=5)
+    handshake.observe(telemetry())
+    handshake.observe_heartbeat(source="dcs-export", protocol_version="0.2")
+
+    report = diagnose_dcs_connection(handshake=handshake, process_detector=lambda: True)
+
+    assert report.state == ConnectionState.HEALTHY
+    assert report.connected is True
+    assert report.aircraft_type is None
+    assert report.protocol_version == "0.2"
+    assert report.packet_count == 1
+    assert "waiting for aircraft telemetry" in report.message
+
+
+def test_telemetry_recovers_after_heartbeat_only_period() -> None:
+    handshake = TelemetryHandshake(stale_after_seconds=5, rate_window_seconds=5)
+    handshake.observe_heartbeat(source="dcs-export", protocol_version="0.2")
+    handshake.observe(telemetry())
+
+    report = diagnose_dcs_connection(handshake=handshake, process_detector=lambda: True)
+
+    assert report.state == ConnectionState.HEALTHY
+    assert report.connected is True
+    assert report.aircraft_type == "FA-18C_hornet"
+    assert report.packet_count == 1
+
+
 def test_reports_stale_after_stream_stops() -> None:
     handshake = TelemetryHandshake(stale_after_seconds=0.001)
     handshake.observe(telemetry(), received_at=datetime.now(timezone.utc) - timedelta(seconds=1))

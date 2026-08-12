@@ -33,9 +33,7 @@ class TelemetryHandshake:
         self._lock = RLock()
 
     def observe(self, payload: TelemetryEnvelope, *, received_at: datetime | None = None) -> None:
-        timestamp = received_at or datetime.now(timezone.utc)
-        if timestamp.tzinfo is None:
-            timestamp = timestamp.replace(tzinfo=timezone.utc)
+        timestamp = self._normalize_timestamp(received_at)
         with self._lock:
             self._last_received_at = timestamp
             self._aircraft_type = payload.state.aircraft_type
@@ -45,10 +43,24 @@ class TelemetryHandshake:
             self._received_times.append(timestamp)
             self._prune(timestamp)
 
+    def observe_heartbeat(
+        self,
+        *,
+        source: str = "dcs-export",
+        protocol_version: str = "0.2",
+        received_at: datetime | None = None,
+    ) -> None:
+        """Record that the DCS Export bridge is alive even when no aircraft state is available."""
+        timestamp = self._normalize_timestamp(received_at)
+        with self._lock:
+            self._last_received_at = timestamp
+            self._aircraft_type = None
+            self._source = source
+            self._protocol_version = protocol_version
+            self._prune(timestamp)
+
     def snapshot(self, *, now: datetime | None = None) -> TelemetryHandshakeSnapshot:
-        current = now or datetime.now(timezone.utc)
-        if current.tzinfo is None:
-            current = current.replace(tzinfo=timezone.utc)
+        current = self._normalize_timestamp(now)
         with self._lock:
             self._prune(current)
             last = self._last_received_at
@@ -73,6 +85,13 @@ class TelemetryHandshake:
             self._protocol_version = None
             self._packet_count = 0
             self._received_times.clear()
+
+    @staticmethod
+    def _normalize_timestamp(value: datetime | None) -> datetime:
+        timestamp = value or datetime.now(timezone.utc)
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=timezone.utc)
+        return timestamp
 
     def _prune(self, now: datetime) -> None:
         threshold = now - self._rate_window

@@ -193,6 +193,14 @@ local function handleCommand(payload)
     end
 end
 
+local function sendHeartbeat()
+    telemetryUdp:sendto(
+        '{"kind":"heartbeat","protocol_version":"0.2","source":"dcs-export","aircraft_available":false}',
+        ORION_HOST,
+        ORION_TELEMETRY_PORT
+    )
+end
+
 function LuaExportAfterNextFrame()
     if previousLuaExportAfterNextFrame then
         previousLuaExportAfterNextFrame()
@@ -202,7 +210,10 @@ function LuaExportAfterNextFrame()
     if commandPayload then handleCommand(commandPayload) end
 
     local selfData = LoGetSelfData()
-    if not selfData then return end
+    if not selfData then
+        sendHeartbeat()
+        return
+    end
 
     local velocity = LoGetVectorVelocity() or {x = 0, y = 0, z = 0}
     local speed = math.sqrt(velocity.x ^ 2 + velocity.y ^ 2 + velocity.z ^ 2)

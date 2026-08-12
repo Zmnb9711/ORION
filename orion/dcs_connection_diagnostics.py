@@ -99,6 +99,13 @@ def _diagnose_dcs_connection_local(
     )
 
     if snapshot.connected:
+        if snapshot.aircraft_type is None:
+            return DcsConnectionReport(
+                state=ConnectionState.HEALTHY,
+                message="DCS Export connection is healthy; waiting for aircraft telemetry",
+                action="Enter or resume an aircraft slot to restore live flight telemetry",
+                **common,
+            )
         if snapshot.packet_rate_hz and snapshot.packet_rate_hz < minimum_healthy_rate_hz:
             return DcsConnectionReport(
                 state=ConnectionState.DEGRADED,
