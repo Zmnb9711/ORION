@@ -42,12 +42,14 @@ def test_product_launcher_must_not_depend_on_v2_visual_layer() -> None:
     assert "WindowsOrionDesktopLauncher" in bases
 
 
+def test_legacy_v2_launcher_module_is_removed() -> None:
+    assert not LEGACY_V2.exists()
+
+
 def test_product_launcher_is_the_only_production_desktop_runner() -> None:
     product_source = PRODUCT_LAUNCHER.read_text(encoding="utf-8")
-    legacy_source = LEGACY_V2.read_text(encoding="utf-8")
 
     assert "def run_desktop_launcher" in product_source
-    assert "def run_desktop_launcher" not in legacy_source
 
 
 def test_product_runner_keeps_core_alive_when_ui_exits() -> None:
