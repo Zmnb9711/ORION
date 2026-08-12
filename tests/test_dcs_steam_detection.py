@@ -35,6 +35,24 @@ def test_discovers_dcs_in_secondary_steam_library(tmp_path: Path) -> None:
     assert found[0].manifest_path and found[0].manifest_path.endswith("appmanifest_223750.acf")
 
 
+def test_default_detection_probes_conventional_secondary_library(tmp_path: Path, monkeypatch) -> None:
+    import orion.dcs_steam_detection as detection
+
+    drive = tmp_path / "D"
+    library = drive / "SteamLibrary"
+    install = library / "steamapps" / "common" / "DCSWorld"
+    (install / "bin-mt").mkdir(parents=True)
+    (install / "bin-mt" / "DCS.exe").write_bytes(b"")
+    monkeypatch.delenv("PROGRAMFILES(X86)", raising=False)
+    monkeypatch.delenv("PROGRAMFILES", raising=False)
+    monkeypatch.setattr(detection, "_windows_drive_roots", lambda: [drive])
+
+    found = discover_steam_dcs()
+    assert len(found) == 1
+    assert Path(found[0].steam_library) == library
+    assert Path(found[0].executable_path) == install / "bin-mt" / "DCS.exe"
+
+
 def test_detection_deduplicates_manifest_and_default_dcsworld_path(tmp_path: Path) -> None:
     steam = tmp_path / "Steam"
     install = steam / "steamapps" / "common" / "DCSWorld"
