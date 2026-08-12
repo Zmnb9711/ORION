@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
@@ -67,7 +68,7 @@ def test_windows_drive_roots_use_logical_drive_bitmask(monkeypatch) -> None:
     class Windll:
         kernel32 = Kernel32()
 
-    monkeypatch.setattr(detection.os, "name", "nt")
+    monkeypatch.setattr(detection, "os", SimpleNamespace(name="nt"))
     monkeypatch.setattr(ctypes, "windll", Windll(), raising=False)
 
     roots = detection._windows_drive_roots()
