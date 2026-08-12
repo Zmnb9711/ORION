@@ -41,19 +41,22 @@ class SetupWizardState:
         self.integration_ready = False
         self.telemetry_ready = False
 
+    def select_candidate(self, candidate: DcsDiscoveryCandidate) -> None:
+        self.candidate = candidate
+        # Saved Games and integration state belong to the selected DCS setup.
+        # Changing or re-detecting DCS must never preserve a READY result from an
+        # older configuration.
+        self.saved_games_path = None
+        self._invalidate_integration()
+        self.error = None
+        self.step = SetupStep.SAVED_GAMES
+
     def select_dcs(self, path: str, installation_type: DcsInstallationType = DcsInstallationType.STANDALONE) -> bool:
         candidate = candidate_from_install_root(Path(path), installation_type)
         if candidate is None:
             self.error = "Selected folder is not a valid DCS World installation"
             return False
-        self.candidate = candidate
-        # Saved Games and integration state belong to the selected DCS setup.
-        # Re-selecting DCS must never preserve a READY result from an older
-        # configuration.
-        self.saved_games_path = None
-        self._invalidate_integration()
-        self.error = None
-        self.step = SetupStep.SAVED_GAMES
+        self.select_candidate(candidate)
         return True
 
     def select_saved_games(self, path: str) -> bool:
