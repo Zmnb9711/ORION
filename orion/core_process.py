@@ -10,7 +10,13 @@ from pathlib import Path
 
 
 class CoreProcessManager:
-    """Manage ORION Core as a process separate from the desktop launcher."""
+    """Manage ORION Core as a process separate from the desktop launcher.
+
+    ``start`` ensures a Core process exists. ``stop`` intentionally only
+    detaches the launcher from a Core that it started, preserving the product
+    rule that closing the UI must not implicitly stop ORION. ``shutdown`` is
+    the explicit lifecycle operation that terminates the owned Core process.
+    """
 
     def __init__(self, host: str, port: int, runtime_dir: Path) -> None:
         self.host = host
@@ -36,6 +42,7 @@ class CoreProcessManager:
         if self._process is not None and self._process.poll() is None:
             return
 
+        self.runtime_dir.mkdir(parents=True, exist_ok=True)
         env = os.environ.copy()
         env["ORION_RUNTIME_DIR"] = str(self.runtime_dir)
         command = self._command()
@@ -53,6 +60,12 @@ class CoreProcessManager:
         )
 
     def stop(self) -> None:
+        """Detach the launcher without shutting down ORION Core."""
+        if self._process is not None and self._process.poll() is not None:
+            self._process = None
+
+    def shutdown(self) -> None:
+        """Explicitly stop the Core process started by this launcher instance."""
         process = self._process
         if process is None:
             return
