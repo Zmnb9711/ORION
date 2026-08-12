@@ -9,6 +9,20 @@ from tkinter import Tk, messagebox
 from orion.core_process import CoreProcessManager
 from orion.desktop_app import LauncherConfig, LauncherConfigStore, OrionDesktopLauncher
 from orion.desktop_product_launcher import WindowsOrionProductLauncher
+from orion.startup_health import StartupHealthState
+
+
+class RuntimeSynchronizedWindowsOrionProductLauncher(WindowsOrionProductLauncher):
+    """Production launcher shell synchronized continuously with ORION Core."""
+
+    def _poll_core(self) -> None:
+        self.status_var.set(self.t("status.core_ready") if self.core.healthy() else self.t("status.core_starting"))
+        self._refresh_health_async()
+        self.root.after(1500, self._poll_core)
+
+    def _maybe_first_run(self) -> None:
+        if self.health is not None and self.health.state is StartupHealthState.ACTION_REQUIRED:
+            self._open_setup()
 
 
 def _install_tk_exception_boundary(root: Tk, runtime_dir: Path) -> None:
@@ -40,7 +54,7 @@ def run_desktop_launcher(runtime_dir: Path, host: str = "127.0.0.1", port: int =
     try:
         root = Tk()
         _install_tk_exception_boundary(root, runtime_dir)
-        WindowsOrionProductLauncher(root, runtime_dir=runtime_dir, core=core)  # type: ignore[arg-type]
+        RuntimeSynchronizedWindowsOrionProductLauncher(root, runtime_dir=runtime_dir, core=core)  # type: ignore[arg-type]
         root.mainloop()
     finally:
         core.stop()
@@ -52,5 +66,6 @@ __all__ = [
     "LauncherConfig",
     "LauncherConfigStore",
     "OrionDesktopLauncher",
+    "RuntimeSynchronizedWindowsOrionProductLauncher",
     "run_desktop_launcher",
 ]
