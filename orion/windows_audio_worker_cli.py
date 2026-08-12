@@ -115,6 +115,9 @@ class WindowsAudioWorkerProcess:
             self._backend.play(playback_path, status.output_device_id, request.volume)
             return self._worker.complete(request.command_id).model_dump(mode="json")
         except Exception:
+            # Boundary isolation: platform/audio backends can fail with backend-specific
+            # exception types. Whatever the backend raises, the canonical worker state
+            # must be stopped before the original failure is propagated to the caller.
             self._worker.stop(request.command_id)
             raise
 
@@ -141,6 +144,8 @@ def run_stdio(process: WindowsAudioWorkerProcess, poll_interval_s: float = 0.05)
                 raise ValueError("Worker command must be a JSON object")
             result = {"ok": True, "result": process.handle(payload)}
         except Exception as exc:
+            # Protocol boundary: one malformed command or backend failure must produce
+            # an error response without terminating the long-lived stdio worker.
             result = {"ok": False, "error": str(exc)}
         sys.stdout.write(json.dumps(result, ensure_ascii=False) + "\n")
         sys.stdout.flush()
