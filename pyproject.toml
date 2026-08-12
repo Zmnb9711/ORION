@@ -16,6 +16,8 @@ dependencies = [
 
 [project.scripts]
 orion = "orion.launcher:main"
+orion-core = "orion.core_main:main"
+orion-launcher = "orion.launcher:main"
 
 [project.optional-dependencies]
 dev = [
