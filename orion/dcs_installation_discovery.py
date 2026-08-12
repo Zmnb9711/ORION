@@ -48,48 +48,80 @@ def discover_dcs_installations(
             )
 
     if mode in {DcsInstallationType.AUTO, DcsInstallationType.STANDALONE}:
-        for root in standalone_roots or _default_standalone_roots():
-            executable = _find_dcs_executable(root)
-            if not root.exists():
-                continue
-            candidates.append(
-                DcsDiscoveryCandidate(
-                    installation_type=DcsInstallationType.STANDALONE,
-                    name="DCS Standalone",
-                    install_root=str(root),
-                    executable_path=str(executable),
-                    saved_games_candidates=[item.path for item in discover_saved_games()],
-                    exists=executable.is_file(),
-                    source_detail="Eagle Dynamics",
-                )
-            )
+        roots = standalone_roots if standalone_roots is not None else _default_standalone_roots()
+        for root in roots:
+            candidate = candidate_from_install_root(root, DcsInstallationType.STANDALONE, source_detail="Eagle Dynamics")
+            if candidate is not None:
+                candidates.append(candidate)
 
     return DcsDiscoveryResult(mode=mode, candidates=_dedupe(candidates))
 
 
+def candidate_from_install_root(
+    root: Path,
+    installation_type: DcsInstallationType = DcsInstallationType.STANDALONE,
+    *,
+    source_detail: str = "Manual selection",
+) -> DcsDiscoveryCandidate | None:
+    """Validate a user-selected DCS root (or bin/bin-mt folder) without guessing success."""
+    root = root.expanduser()
+    if root.name.casefold() in {"bin", "bin-mt"} and (root / "DCS.exe").is_file():
+        root = root.parent
+    executable = _find_dcs_executable(root)
+    if not root.is_dir() or not executable.is_file():
+        return None
+    return DcsDiscoveryCandidate(
+        installation_type=installation_type,
+        name="DCS Steam" if installation_type == DcsInstallationType.STEAM else "DCS Standalone",
+        install_root=str(root),
+        executable_path=str(executable),
+        saved_games_candidates=[item.path for item in discover_saved_games()],
+        exists=True,
+        source_detail=source_detail,
+    )
+
+
 def _find_dcs_executable(root: Path) -> Path:
-    preferred = root / "bin" / "DCS.exe"
-    if preferred.is_file():
-        return preferred
+    # Modern DCS may expose either launcher layout. Accept both and prefer bin-mt.
     mt = root / "bin-mt" / "DCS.exe"
     if mt.is_file():
         return mt
-    return preferred
+    classic = root / "bin" / "DCS.exe"
+    if classic.is_file():
+        return classic
+    return mt
 
 
 def _default_standalone_roots() -> list[Path]:
     roots: list[Path] = []
+    seen: set[str] = set()
+
+    def add(path: Path) -> None:
+        key = str(path).casefold()
+        if key not in seen:
+            seen.add(key)
+            roots.append(path)
+
+    # Standard ED locations.
     for env_name in ("PROGRAMFILES", "PROGRAMFILES(X86)"):
         base = os.environ.get(env_name)
-        if not base:
-            continue
-        eagle = Path(base) / "Eagle Dynamics"
-        roots.extend(
-            [
-                eagle / "DCS World",
-                eagle / "DCS World OpenBeta",
-            ]
-        )
+        if base:
+            eagle = Path(base) / "Eagle Dynamics"
+            add(eagle / "DCS World")
+            add(eagle / "DCS World OpenBeta")
+
+    # DCS is commonly installed on a dedicated Windows drive. Probe only the
+    # conventional ED roots; never recursively scan user disks.
+    if os.name == "nt":
+        for letter in "CDEFGHIJKLMNOPQRSTUVWXYZ":
+            drive = Path(f"{letter}:\\")
+            if not drive.exists():
+                continue
+            for prefix in (drive, drive / "Games", drive / "Program Files"):
+                eagle = prefix / "Eagle Dynamics"
+                add(eagle / "DCS World")
+                add(eagle / "DCS World OpenBeta")
+
     return roots
 
 
