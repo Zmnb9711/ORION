@@ -368,7 +368,8 @@ class OrionDesktopLauncher:
                 bundle = write_alpha_diagnostics_bundle()
                 self.root.after(0, lambda: messagebox.showinfo(self.t("diagnostics.title"), str(bundle)))
             except Exception as exc:
-                self.root.after(0, lambda: messagebox.showerror(self.t("diagnostics.title"), str(exc)))
+                error = str(exc)
+                self.root.after(0, lambda error=error: messagebox.showerror(self.t("diagnostics.title"), error))
 
         threading.Thread(target=worker, name="orion-diagnostics", daemon=True).start()
 
@@ -403,7 +404,8 @@ class OrionDesktopLauncher:
             try:
                 path = download_update(asset, self.runtime_dir / "updates", progress=progress)
             except Exception as exc:
-                self.root.after(0, lambda: messagebox.showerror(self.nav_label("updates"), str(exc)))
+                error = str(exc)
+                self.root.after(0, lambda error=error: messagebox.showerror(self.nav_label("updates"), error))
                 return
             self.root.after(0, lambda: self._confirm_install(path))
 
