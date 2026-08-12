@@ -43,16 +43,16 @@ class FirstRunActionResult(BaseModel):
 
     @property
     def candidates(self) -> list[DcsDiscoveryCandidate]:
-        """Stable UI-facing view of detected installations.
+        """Stable UI-facing view of usable detected installations.
 
-        The canonical discovery payload lives under ``discovery`` for API
-        serialization, while desktop first-run flows need direct candidate
-        access. Keeping this adapter on the action result prevents the UI and
-        API contracts from drifting apart again.
+        Raw discovery may intentionally retain stale/incomplete paths for
+        diagnostics, but the desktop selector must never choose a candidate
+        whose DCS executable does not exist. This keeps an obsolete C: folder
+        from shadowing a valid D:\\SteamLibrary installation.
         """
         if self.discovery is None:
             return []
-        return self.discovery.candidates
+        return [item for item in self.discovery.candidates if item.exists]
 
 
 def detect_installations(mode: DcsInstallationType = DcsInstallationType.AUTO) -> FirstRunActionResult:
