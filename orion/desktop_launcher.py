@@ -9,7 +9,7 @@ from tkinter import Tk, messagebox
 from orion.core_process import CoreProcessManager
 from orion.desktop_app import LauncherConfig, LauncherConfigStore, OrionDesktopLauncher
 from orion.desktop_product_launcher import WindowsOrionProductLauncher
-from orion.startup_health import StartupHealthState
+from orion.startup_health import StartupHealthReport, StartupHealthState
 
 
 class RuntimeSynchronizedWindowsOrionProductLauncher(WindowsOrionProductLauncher):
@@ -19,6 +19,9 @@ class RuntimeSynchronizedWindowsOrionProductLauncher(WindowsOrionProductLauncher
         self.status_var.set(self.t("status.core_ready") if self.core.healthy() else self.t("status.core_starting"))
         self._refresh_health_async()
         self.root.after(1500, self._poll_core)
+
+    def _set_health(self, health: StartupHealthReport) -> None:
+        self._apply_health(health)
 
     def _maybe_first_run(self) -> None:
         if self.health is not None and self.health.state is StartupHealthState.ACTION_REQUIRED:
