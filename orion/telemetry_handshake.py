@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from threading import RLock
 
 from orion.models import TelemetryEnvelope
+from orion.telemetry_history import telemetry_history_recorder
 
 
 @dataclass(frozen=True)
@@ -42,6 +43,7 @@ class TelemetryHandshake:
             self._packet_count += 1
             self._received_times.append(timestamp)
             self._prune(timestamp)
+        telemetry_history_recorder.observe(payload, received_at=timestamp)
 
     def observe_heartbeat(
         self,
@@ -85,6 +87,8 @@ class TelemetryHandshake:
             self._protocol_version = None
             self._packet_count = 0
             self._received_times.clear()
+        if self is telemetry_handshake:
+            telemetry_history_recorder.reset()
 
     @staticmethod
     def _normalize_timestamp(value: datetime | None) -> datetime:
