@@ -6,7 +6,12 @@ from uuid import UUID
 from pydantic import BaseModel
 
 from orion.dcs_process import DcsProcessRecord, dcs_processes
-from orion.launch_profiles import DcsLaunchProfile, build_launch_plan, launch_profiles
+from orion.launch_profiles import (
+    DcsLaunchProfile,
+    DcsLaunchProfileCreate,
+    build_launch_plan,
+    launch_profiles,
+)
 from orion.orion_settings import orion_settings
 from orion.telemetry_handshake import telemetry_handshake
 
@@ -44,7 +49,20 @@ def _resolve_recovery_profile() -> DcsLaunchProfile | None:
     profiles = launch_profiles.list()
     if len(profiles) == 1:
         return profiles[0]
-    return None
+    if profiles:
+        return None
+
+    # First-run setup persists the active DCS installation independently from
+    # launch profiles. A user must be able to press LAUNCH DCS immediately
+    # after setup without creating a separate profile first. Create a transient
+    # default profile in the Core process; LaunchProfileStore validates that a
+    # persisted active installation is actually available.
+    try:
+        return launch_profiles.create(
+            DcsLaunchProfileCreate(name="Active DCS", use_active_installation=True)
+        )
+    except KeyError:
+        return None
 
 
 def start_dcs_for_recovery() -> RecoveryLaunchStatus:
@@ -54,7 +72,7 @@ def start_dcs_for_recovery() -> RecoveryLaunchStatus:
         if not profiles:
             return RecoveryLaunchStatus(
                 state=RecoveryLaunchState.SELECTION_REQUIRED,
-                message="No launch profile exists; create or select a DCS launch profile first",
+                message="No active DCS installation is configured; complete DCS Setup first",
             )
         return RecoveryLaunchStatus(
             state=RecoveryLaunchState.SELECTION_REQUIRED,
