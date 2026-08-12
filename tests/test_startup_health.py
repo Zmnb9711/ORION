@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -49,6 +50,56 @@ def test_startup_health_detects_export_repair_and_missing_audio(tmp_path: Path, 
     assert RecoveryAction.REPAIR_INTEGRATION in report.recovery_actions
     assert RecoveryAction.RESELECT_AUDIO in report.recovery_actions
     assert report.state == StartupHealthState.ACTION_REQUIRED
+
+
+def test_launcher_startup_health_queries_core(monkeypatch):
+    monkeypatch.setenv("ORION_PROCESS_ROLE", "launcher")
+    monkeypatch.setenv("ORION_CORE_BASE_URL", "http://127.0.0.1:8123")
+    seen: dict[str, object] = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self) -> bytes:
+            return json.dumps(
+                {
+                    "state": "degraded",
+                    "checks": [
+                        {
+                            "key": "telemetry",
+                            "passed": True,
+                            "blocking": False,
+                            "message": "Live DCS telemetry is connected",
+                            "recovery_action": None,
+                        }
+                    ],
+                    "telemetry_connected": True,
+                    "recovery_actions": [],
+                }
+            ).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        seen["url"] = request.full_url
+        seen["method"] = request.get_method()
+        seen["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setattr("orion.startup_health.urllib.request.urlopen", fake_urlopen)
+
+    report = inspect_startup_health()
+
+    assert seen == {
+        "url": "http://127.0.0.1:8123/v1/startup-health",
+        "method": "GET",
+        "timeout": 2.0,
+    }
+    assert report.telemetry_connected is True
+    assert report.checks[0].key == "telemetry"
+    assert report.checks[0].passed is True
 
 
 def test_startup_health_api_registered():
