@@ -91,11 +91,30 @@ def _steam_libraries(root: Path) -> list[Path]:
 
 def _default_steam_roots() -> list[Path]:
     roots: list[Path] = []
+    seen: set[str] = set()
+
+    def add(candidate: Path) -> None:
+        key = str(candidate).casefold()
+        if key not in seen:
+            seen.add(key)
+            roots.append(candidate)
+
     program_files_x86 = os.environ.get("PROGRAMFILES(X86)")
     program_files = os.environ.get("PROGRAMFILES")
     for base in (program_files_x86, program_files):
         if base:
-            candidate = Path(base) / "Steam"
-            if candidate not in roots:
-                roots.append(candidate)
+            add(Path(base) / "Steam")
+
+    # A Steam library may live on a secondary drive even when Steam itself is
+    # installed elsewhere. Real-world Alpha machines commonly use paths such
+    # as D:\\SteamLibrary; probe only conventional roots and never recurse.
+    if os.name == "nt":
+        for letter in "CDEFGHIJKLMNOPQRSTUVWXYZ":
+            drive = Path(f"{letter}:\\")
+            if not drive.exists():
+                continue
+            add(drive / "SteamLibrary")
+            add(drive / "Steam")
+            add(drive / "Games" / "SteamLibrary")
+
     return roots
