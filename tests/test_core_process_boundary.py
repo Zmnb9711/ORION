@@ -14,7 +14,7 @@ def test_source_launcher_uses_core_module_entry_point(monkeypatch, tmp_path: Pat
     command = core._command()
 
     assert command[0] == desktop_app.sys.executable
-    assert command[1:4] == ["-m", "orion.core_main"]
+    assert command[1:3] == ["-m", "orion.core_main"]
     assert command[-2:] == ["--port", "8123"]
 
 
