@@ -52,7 +52,7 @@ class WindowsOrionDesktopLauncher(OrionDesktopLauncher):
         self.root.lift()
         try:
             self.root.focus_force()
-        except Exception:
+        except TclError:
             pass
 
     def close(self) -> None:
@@ -102,6 +102,8 @@ class WindowsOrionDesktopLauncher(OrionDesktopLauncher):
             try:
                 bundle = write_alpha_diagnostics_bundle()
             except Exception as exc:
+                # Diagnostics are an optional UI boundary. Export failures may come from
+                # multiple collectors; surface the failure without terminating Launcher.
                 error = str(exc)
                 self.root.after(0, lambda message=error: messagebox.showerror(self.t("diagnostics.title"), message))
                 return
@@ -180,7 +182,7 @@ class WindowsOrionDesktopLauncher(OrionDesktopLauncher):
         def alive() -> bool:
             try:
                 return bool(window.winfo_exists())
-            except Exception:
+            except TclError:
                 return False
 
         def on_ui(callback) -> None:  # noqa: ANN001
@@ -212,6 +214,8 @@ class WindowsOrionDesktopLauncher(OrionDesktopLauncher):
                 try:
                     value = operation()
                 except Exception as exc:
+                    # Setup is a UI/process/filesystem boundary. Preserve the Launcher
+                    # session and report an adapter failure instead of crashing Tk.
                     error = str(exc)
                     on_ui(lambda: (status.set(error), render()))
                     return
@@ -322,15 +326,3 @@ class WindowsOrionDesktopLauncher(OrionDesktopLauncher):
 
         render()
         detect()
-
-
-def run_desktop_launcher(runtime_dir: Path, host: str = "127.0.0.1", port: int = 8000) -> int:
-    core = CoreServer(host, port)
-    core.start()
-    try:
-        root = Tk()
-        WindowsOrionDesktopLauncher(root, runtime_dir=runtime_dir, core=core)
-        root.mainloop()
-    finally:
-        core.stop()
-    return 0
