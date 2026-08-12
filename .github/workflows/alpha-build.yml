@@ -92,8 +92,9 @@ jobs:
           $process = Start-Process -FilePath "dist/ORION/ORION.exe" -ArgumentList "--no-browser","--port","8123" -PassThru
           try {
             $ready = $false
-            for ($i = 0; $i -lt 30; $i++) {
+            for ($i = 0; $i -lt 60; $i++) {
               Start-Sleep -Milliseconds 500
+              if ($process.HasExited) { throw "Frozen ORION exited before health endpoint became ready (exit $($process.ExitCode))" }
               try {
                 $response = Invoke-RestMethod -Uri "http://127.0.0.1:8123/health" -TimeoutSec 2
                 if ($response.status -eq "ok") { $ready = $true; break }
@@ -101,6 +102,14 @@ jobs:
             }
             if (-not $ready) { throw "Frozen ORION health endpoint did not become ready" }
           } finally {
+            $startupLog = "dist/ORION/runtime/core-startup.log"
+            if (Test-Path $startupLog) {
+              Write-Host "===== ORION frozen startup log ====="
+              Get-Content $startupLog
+              Write-Host "===== end startup log ====="
+            } else {
+              Write-Warning "Frozen ORION did not create runtime/core-startup.log"
+            }
             if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force }
           }
 
