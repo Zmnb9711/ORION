@@ -1,3 +1,4 @@
+import json
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
@@ -71,6 +72,54 @@ def test_recovery_launch_uses_only_profile(monkeypatch, tmp_path):
     assert result.state == RecoveryLaunchState.WAITING_FOR_TELEMETRY
     assert result.profile_id == profile.profile_id
     assert result.pid == 4242
+
+
+def test_launcher_recovery_launch_queries_core(monkeypatch):
+    monkeypatch.setenv("ORION_PROCESS_ROLE", "launcher")
+    monkeypatch.setenv("ORION_CORE_BASE_URL", "http://127.0.0.1:8123")
+    launch_id = uuid4()
+    profile_id = uuid4()
+    seen: dict[str, object] = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self) -> bytes:
+            return json.dumps(
+                {
+                    "state": "waiting_for_telemetry",
+                    "message": "DCS launched; waiting for live telemetry",
+                    "profile_id": str(profile_id),
+                    "launch_id": str(launch_id),
+                    "pid": 4242,
+                    "telemetry_connected": False,
+                    "aircraft_type": None,
+                }
+            ).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        seen["url"] = request.full_url
+        seen["method"] = request.get_method()
+        seen["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setattr("orion.recovery_launch.urllib.request.urlopen", fake_urlopen)
+
+    result = start_dcs_for_recovery()
+
+    assert seen == {
+        "url": "http://127.0.0.1:8123/v1/recovery-launch/start",
+        "method": "POST",
+        "timeout": 3.0,
+    }
+    assert result.state == RecoveryLaunchState.WAITING_FOR_TELEMETRY
+    assert result.pid == 4242
+    assert result.launch_id == launch_id
+    assert result.profile_id == profile_id
 
 
 def test_recovery_launch_api_registered():
