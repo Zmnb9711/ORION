@@ -31,11 +31,9 @@ def test_product_launcher_is_the_only_production_desktop_runner() -> None:
     legacy_source = LEGACY_V2.read_text(encoding="utf-8")
 
     assert "def run_desktop_launcher" in product_source
-    # The old V2 runner still exists temporarily while its visual shell is being
-    # consolidated. This assertion deliberately records the debt instead of
-    # pretending V2 is already dead; remove the legacy runner and invert this
-    # assertion in the consolidation commit.
-    assert "def run_desktop_launcher" in legacy_source
+    # V2 may still provide visual behavior while consolidation is in progress,
+    # but it must never expose an alternative production entry point.
+    assert "def run_desktop_launcher" not in legacy_source
 
 
 def test_product_runner_keeps_core_alive_when_ui_exits() -> None:
