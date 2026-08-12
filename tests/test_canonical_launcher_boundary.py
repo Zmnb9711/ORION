@@ -19,6 +19,12 @@ def _imports(path: Path) -> set[tuple[str, str]]:
     return found
 
 
+def _class_bases(path: Path, class_name: str) -> set[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    klass = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == class_name)
+    return {base.id for base in klass.bases if isinstance(base, ast.Name)}
+
+
 def test_product_launcher_uses_canonical_core_process_manager() -> None:
     imports = _imports(PRODUCT_LAUNCHER)
 
@@ -26,13 +32,21 @@ def test_product_launcher_uses_canonical_core_process_manager() -> None:
     assert ("orion.desktop_app", "CoreServer") not in imports
 
 
+def test_product_launcher_must_not_depend_on_v2_visual_layer() -> None:
+    imports = _imports(PRODUCT_LAUNCHER)
+    bases = _class_bases(PRODUCT_LAUNCHER, "WindowsOrionProductLauncher")
+
+    assert ("orion.desktop_app_windows_v2", "WindowsOrionDesktopLauncherV2") not in imports
+    assert ("orion.desktop_app_windows", "WindowsOrionDesktopLauncher") in imports
+    assert "WindowsOrionDesktopLauncherV2" not in bases
+    assert "WindowsOrionDesktopLauncher" in bases
+
+
 def test_product_launcher_is_the_only_production_desktop_runner() -> None:
     product_source = PRODUCT_LAUNCHER.read_text(encoding="utf-8")
     legacy_source = LEGACY_V2.read_text(encoding="utf-8")
 
     assert "def run_desktop_launcher" in product_source
-    # V2 may still provide visual behavior while consolidation is in progress,
-    # but it must never expose an alternative production entry point.
     assert "def run_desktop_launcher" not in legacy_source
 
 
