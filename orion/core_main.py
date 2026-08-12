@@ -32,7 +32,14 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     _runtime_root()
-    uvicorn.run("orion.app:app", host=args.host, port=args.port, log_level="info")
+
+    # Import the ASGI application explicitly. Passing "orion.app:app" makes
+    # Uvicorn resolve the module dynamically, which is fragile once Core is
+    # frozen by PyInstaller because the import is no longer visible to static
+    # module analysis.
+    from orion.app import app
+
+    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
     return 0
 
 
