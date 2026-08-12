@@ -207,10 +207,10 @@ jobs:
           if (-not (Test-Path "dist-installer/ORION-Alpha-0.2-Setup.exe")) { throw "Installer was not created" }
 
       - name: Package portable product
-        if: startsWith(github.ref, 'refs/tags/')
         shell: pwsh
         run: |
           Compress-Archive -Path "dist-product/*" -DestinationPath "dist-installer/ORION-Alpha-0.2-portable.zip" -Force
+          if (-not (Test-Path "dist-installer/ORION-Alpha-0.2-portable.zip")) { throw "Portable package was not created" }
 
       - name: Upload canonical product bundle
         uses: actions/upload-artifact@v4
@@ -224,6 +224,13 @@ jobs:
         with:
           name: ORION-Alpha-0.2-Setup
           path: dist-installer/ORION-Alpha-0.2-Setup.exe
+          if-no-files-found: error
+
+      - name: Upload portable package
+        uses: actions/upload-artifact@v4
+        with:
+          name: ORION-Alpha-0.2-portable
+          path: dist-installer/ORION-Alpha-0.2-portable.zip
           if-no-files-found: error
 
       - name: Publish GitHub Release
