@@ -80,6 +80,20 @@ def test_changing_dcs_invalidates_saved_games_and_ready_state(tmp_path: Path):
     assert not state.ready
 
 
+def test_auto_detect_candidate_invalidates_previous_ready_state(tmp_path: Path):
+    state = _ready_state(tmp_path)
+    candidate = state.candidate
+    assert candidate is not None
+
+    state.select_candidate(candidate)
+
+    assert state.step == SetupStep.SAVED_GAMES
+    assert state.saved_games_path is None
+    assert not state.integration_ready
+    assert not state.telemetry_ready
+    assert not state.ready
+
+
 def test_changing_saved_games_invalidates_integration_and_telemetry(tmp_path: Path):
     state = _ready_state(tmp_path)
     replacement = tmp_path / "Saved Games" / "DCS.openbeta"
