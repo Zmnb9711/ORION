@@ -2,7 +2,7 @@ from __future__ import annotations
 
 # Compatibility surface kept for existing imports and packaging entry points.
 from orion.desktop_app import CoreServer, LauncherConfig, LauncherConfigStore, OrionDesktopLauncher
-from orion.desktop_app_windows import run_desktop_launcher
+from orion.desktop_product_launcher import run_desktop_launcher
 
 __all__ = [
     "CoreServer",

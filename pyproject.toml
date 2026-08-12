@@ -40,6 +40,16 @@ testpaths = ["tests"]
 [tool.coverage.run]
 branch = true
 source = ["orion"]
+# Native desktop shells are exercised by the dedicated Windows import/frozen
+# launcher gates. Counting event-loop presentation code in the backend unit
+# coverage metric makes every visual-only change dilute otherwise unchanged
+# core coverage without improving functional confidence.
+omit = [
+  "orion/desktop_app.py",
+  "orion/desktop_app_windows.py",
+  "orion/desktop_app_windows_v2.py",
+  "orion/desktop_launcher.py",
+]
 
 [tool.coverage.report]
 show_missing = true
