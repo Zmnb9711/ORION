@@ -58,6 +58,7 @@ def main(argv: list[str] | None = None) -> int:
 
     _ensure_stdio()
     runtime = _runtime_root()
+    os.environ["ORION_PROCESS_ROLE"] = "core"
     _startup_log(runtime, "boot", f"frozen={bool(getattr(sys, 'frozen', False))}")
 
     try:
