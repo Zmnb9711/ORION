@@ -64,7 +64,7 @@ jobs:
       - name: Import production Windows launcher
         shell: pwsh
         run: |
-          python -c "from orion.desktop_app_windows import WindowsOrionDesktopLauncher; from orion.setup_wizard_model import SetupWizardState; assert WindowsOrionDesktopLauncher is not None; assert SetupWizardState is not None"
+          python -c "from orion.desktop_product_launcher import WindowsOrionProductLauncher; from orion.desktop_launcher import run_desktop_launcher; from orion.setup_wizard_model import SetupWizardState; assert WindowsOrionProductLauncher is not None; assert run_desktop_launcher is not None; assert SetupWizardState is not None"
 
       - name: Build ORION application bundle
         shell: pwsh
