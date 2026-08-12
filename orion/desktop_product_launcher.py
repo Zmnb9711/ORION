@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import threading
 from pathlib import Path
-from tkinter import BOTH, LEFT, RIGHT, X, StringVar, Tk, Toplevel, filedialog
+from tkinter import BOTH, LEFT, RIGHT, X, StringVar, TclError, Tk, Toplevel, filedialog
 from tkinter import ttk
 
 from orion.core_process import CoreProcessManager
@@ -97,7 +97,7 @@ class WindowsOrionProductLauncher(WindowsOrionDesktopLauncherV2):
         def alive() -> bool:
             try:
                 return bool(window.winfo_exists())
-            except Exception:
+            except TclError:
                 return False
 
         def on_ui(callback) -> None:  # noqa: ANN001
@@ -136,6 +136,9 @@ class WindowsOrionProductLauncher(WindowsOrionDesktopLauncherV2):
                 try:
                     value = operation()
                 except Exception as exc:
+                    # Worker boundary: setup operations span filesystem, process and
+                    # DCS integration adapters with different exception contracts. A
+                    # failed operation must surface in the wizard without killing the UI.
                     error = str(exc)
                     on_ui(lambda: (status.set(error), render()))
                     return
