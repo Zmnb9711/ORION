@@ -6,7 +6,8 @@ from tkinter import BOTH, LEFT, RIGHT, X, StringVar, TclError, Tk, Toplevel, fil
 from tkinter import ttk
 
 from orion.core_process import CoreProcessManager
-from orion.desktop_app_windows_v2 import WindowsOrionDesktopLauncherV2
+from orion.desktop_app_windows import WindowsOrionDesktopLauncher
+from orion.desktop_product_visual import WindowsProductVisualMixin
 from orion.dcs_installations import DcsInstallationType
 from orion.first_run_actions import (
     SelectActiveRequest,
@@ -18,8 +19,8 @@ from orion.first_run_actions import (
 from orion.setup_wizard_model import SetupStep, SetupWizardState
 
 
-class WindowsOrionProductLauncher(WindowsOrionDesktopLauncherV2):
-    """Production visual shell with the polished five-step DCS setup flow."""
+class WindowsOrionProductLauncher(WindowsProductVisualMixin, WindowsOrionDesktopLauncher):
+    """Canonical production Windows shell with the polished five-step DCS setup flow."""
 
     def _open_setup(self) -> None:
         window = Toplevel(self.root)
