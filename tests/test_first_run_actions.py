@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -39,6 +40,52 @@ def test_detect_result_exposes_candidates_to_desktop_ui():
 def test_detect_result_without_discovery_exposes_empty_candidates():
     result = FirstRunActionResult(action=FirstRunAction.DETECT, ok=False, message="No DCS installations found")
     assert result.candidates == []
+
+
+def test_launcher_telemetry_check_queries_core(monkeypatch):
+    from orion.first_run_actions import test_live_connection
+
+    monkeypatch.setenv("ORION_PROCESS_ROLE", "launcher")
+    monkeypatch.setenv("ORION_CORE_BASE_URL", "http://127.0.0.1:8123")
+    seen: dict[str, object] = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self) -> bytes:
+            return json.dumps(
+                {
+                    "action": "test_connection",
+                    "ok": True,
+                    "message": "Live DCS telemetry received",
+                    "telemetry_connected": True,
+                    "aircraft_type": "FA-18C_hornet",
+                    "next_actions": [],
+                }
+            ).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        seen["url"] = request.full_url
+        seen["method"] = request.get_method()
+        seen["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setattr("orion.first_run_actions.urllib.request.urlopen", fake_urlopen)
+
+    result = test_live_connection()
+
+    assert seen == {
+        "url": "http://127.0.0.1:8123/v1/first-run/actions/test-connection",
+        "method": "POST",
+        "timeout": 2.0,
+    }
+    assert result.ok is True
+    assert result.telemetry_connected is True
+    assert result.aircraft_type == "FA-18C_hornet"
 
 
 def test_select_active_action_returns_next_steps(tmp_path: Path, monkeypatch):
