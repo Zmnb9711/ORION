@@ -23,10 +23,15 @@ class CoreProcessManager:
         self.port = port
         self.runtime_dir = runtime_dir
         self._process: subprocess.Popen[bytes] | None = None
+        self._owns_process = False
 
     @property
     def base_url(self) -> str:
         return f"http://{self.host}:{self.port}"
+
+    @property
+    def owns_process(self) -> bool:
+        return self._owns_process
 
     def healthy(self, timeout: float = 0.5) -> bool:
         try:
@@ -38,6 +43,7 @@ class CoreProcessManager:
     def start(self) -> None:
         # Reuse an already-running Core instead of spawning a duplicate.
         if self.healthy():
+            self._owns_process = False
             return
         if self._process is not None and self._process.poll() is None:
             return
@@ -58,19 +64,21 @@ class CoreProcessManager:
             stderr=subprocess.DEVNULL,
             creationflags=creationflags,
         )
+        self._owns_process = True
 
     def stop(self) -> None:
         """Detach the launcher without shutting down ORION Core."""
-        if self._process is not None and self._process.poll() is not None:
-            self._process = None
+        self._process = None
+        self._owns_process = False
 
     def shutdown(self) -> None:
         """Explicitly stop the Core process started by this launcher instance."""
         process = self._process
-        if process is None:
+        if process is None or not self._owns_process:
             return
         if process.poll() is not None:
             self._process = None
+            self._owns_process = False
             return
         process.terminate()
         try:
@@ -80,8 +88,13 @@ class CoreProcessManager:
             process.wait(timeout=2.0)
         finally:
             self._process = None
+            self._owns_process = False
 
     def _command(self) -> list[str]:
+        override = os.environ.get("ORION_CORE_EXECUTABLE")
+        if override:
+            return [override, "--host", self.host, "--port", str(self.port)]
+
         if getattr(sys, "frozen", False):
             launcher_dir = Path(sys.executable).resolve().parent
             candidates = (

@@ -5,7 +5,7 @@ import json
 import sys
 import time
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable, cast
 from uuid import UUID
 
 from orion.tts_audio import AudioRenderRequest, VoiceProfile
@@ -44,6 +44,23 @@ class AudioBackend:
         return self._prepare_radio(path)
 
 
+def _profile_from_payload(payload: dict[str, object]) -> VoiceProfile:
+    raw_profile = payload.get("profile")
+    if not isinstance(raw_profile, dict):
+        raise ValueError("profile must be a JSON object")
+    profile_data = cast(dict[str, Any], raw_profile)
+    return VoiceProfile.model_validate(profile_data)
+
+
+def _float_from_payload(value: object, field_name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise ValueError(f"{field_name} must be numeric")
+    try:
+        return float(value)
+    except ValueError as exc:
+        raise ValueError(f"{field_name} must be numeric") from exc
+
+
 class WindowsAudioWorkerProcess:
     def __init__(self, worker: WindowsAudioWorker, backend: AudioBackend) -> None:
         self._worker = worker
@@ -60,8 +77,7 @@ class WindowsAudioWorkerProcess:
             return self._worker.select_device(device).model_dump(mode="json")
 
         if action == "synthesize_play":
-            profile_data = payload.get("profile") if isinstance(payload.get("profile"), dict) else {}
-            profile = VoiceProfile(**profile_data)
+            profile = _profile_from_payload(payload)
             request = AudioRenderRequest(
                 command_id=str(payload["command_id"]),
                 text=str(payload["text"]),
@@ -87,7 +103,7 @@ class WindowsAudioWorkerProcess:
                     command_id=UUID(str(payload["command_id"])),
                     audio_path=str(payload["audio_path"]),
                     output_device_id=str(payload.get("output_device_id", "default")),
-                    volume=float(payload.get("volume", 1.0)),
+                    volume=_float_from_payload(payload.get("volume", 1.0), "volume"),
                     ducking_policy=AudioDuckingPolicy(str(payload.get("ducking_policy", "none"))),
                     radio_effect=bool(payload.get("radio_effect", False)),
                 )
@@ -115,6 +131,9 @@ class WindowsAudioWorkerProcess:
             self._backend.play(playback_path, status.output_device_id, request.volume)
             return self._worker.complete(request.command_id).model_dump(mode="json")
         except Exception:
+            # Boundary isolation: platform/audio backends can fail with backend-specific
+            # exception types. Whatever the backend raises, the canonical worker state
+            # must be stopped before the original failure is propagated to the caller.
             self._worker.stop(request.command_id)
             raise
 
@@ -141,6 +160,8 @@ def run_stdio(process: WindowsAudioWorkerProcess, poll_interval_s: float = 0.05)
                 raise ValueError("Worker command must be a JSON object")
             result = {"ok": True, "result": process.handle(payload)}
         except Exception as exc:
+            # Protocol boundary: one malformed command or backend failure must produce
+            # an error response without terminating the long-lived stdio worker.
             result = {"ok": False, "error": str(exc)}
         sys.stdout.write(json.dumps(result, ensure_ascii=False) + "\n")
         sys.stdout.flush()

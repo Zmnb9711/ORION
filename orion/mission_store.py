@@ -26,6 +26,10 @@ class MissionStore:
             try:
                 observer(snapshot)
             except Exception:
+                # Deliberate boundary isolation: the canonical mission snapshot is already
+                # committed before optional post-store observers run. A defect in one
+                # observer must be logged with traceback but must not roll back storage or
+                # prevent the remaining observers from seeing the same snapshot.
                 logger.exception("Mission snapshot observer failed: %s", name)
         return snapshot
 

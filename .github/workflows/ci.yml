@@ -55,8 +55,11 @@ jobs:
       - name: Pyright core hardening gate
         run: >-
           python -m pyright
+          orion/core_main.py
+          orion/core_process.py
           orion/mission_store.py
           orion/native_wasapi_player.py
+          orion/windows_audio_worker_cli.py
           orion/windows_sapi_backend.py
           orion/airport_departure_runtime.py
           orion/airport_departure_control.py

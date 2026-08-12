@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import io
+import json
 from pathlib import Path
+from unittest.mock import patch
 from uuid import uuid4
 
 import pytest
 
 from orion.windows_audio_worker import AudioDuckingPolicy, AudioWorkerState, WindowsAudioWorker
-from orion.windows_audio_worker_cli import AudioBackend, WindowsAudioWorkerProcess
+from orion.windows_audio_worker_cli import AudioBackend, WindowsAudioWorkerProcess, run_stdio
 
 
 def test_worker_process_selects_device_and_plays_existing_wav(tmp_path: Path) -> None:
@@ -88,6 +91,43 @@ def test_worker_process_rejects_missing_audio_file(tmp_path: Path) -> None:
         })
 
     assert worker.status().state is AudioWorkerState.STOPPED
+
+
+def test_backend_failure_stops_worker_and_preserves_original_exception(tmp_path: Path) -> None:
+    wav = tmp_path / "failure.wav"
+    wav.write_bytes(b"RIFF0000WAVE")
+
+    def fail_playback(path: Path, device: str, volume: float) -> None:
+        raise OSError("audio endpoint disappeared")
+
+    worker = WindowsAudioWorker()
+    process = WindowsAudioWorkerProcess(worker, AudioBackend(fail_playback, lambda: None))
+
+    with pytest.raises(OSError, match="audio endpoint disappeared"):
+        process.handle({
+            "action": "play",
+            "command_id": str(uuid4()),
+            "audio_path": str(wav),
+        })
+
+    assert worker.status().state is AudioWorkerState.STOPPED
+
+
+def test_stdio_protocol_reports_bad_command_and_continues() -> None:
+    process = WindowsAudioWorkerProcess(
+        WindowsAudioWorker(),
+        AudioBackend(lambda path, device, volume: None, lambda: None),
+    )
+    stdin = io.StringIO('{bad json}\n{"action":"status"}\n')
+    stdout = io.StringIO()
+
+    with patch("sys.stdin", stdin), patch("sys.stdout", stdout):
+        assert run_stdio(process, poll_interval_s=0) == 0
+
+    responses = [json.loads(line) for line in stdout.getvalue().splitlines()]
+    assert responses[0]["ok"] is False
+    assert responses[1]["ok"] is True
+    assert responses[1]["result"]["state"] == AudioWorkerState.IDLE.value
 
 
 def test_stop_delegates_to_backend_and_worker() -> None:

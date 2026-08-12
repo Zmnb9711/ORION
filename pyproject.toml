@@ -49,7 +49,6 @@ source = ["orion"]
 omit = [
   "orion/desktop_app.py",
   "orion/desktop_app_windows.py",
-  "orion/desktop_app_windows_v2.py",
   "orion/desktop_launcher.py",
 ]
 

@@ -1,17 +1,21 @@
 from __future__ import annotations
 
 from pathlib import Path
-from tkinter import BOTH, END, LEFT, RIGHT, X, Y, BooleanVar, StringVar, Tk
+from tkinter import BOTH, END, LEFT, RIGHT, X, Y, BooleanVar, StringVar, TclError, Tk
 from tkinter import ttk
 
 from orion import __version__
 from orion.desktop_app import CoreServer
-from orion.desktop_app_windows import WindowsOrionDesktopLauncher
 from orion.update_center import current_feature_status
 
 
-class WindowsOrionDesktopLauncherV2(WindowsOrionDesktopLauncher):
-    """Visual V2 shell layered over the proven Windows launcher backend."""
+class WindowsProductVisualMixin:
+    """Shared visual behavior for the canonical Windows product launcher.
+
+    This mixin deliberately does not define a production entry point or own Core
+    lifecycle. It exists only to keep the visual shell separate from the Windows
+    behavior base while the product launcher remains the canonical concrete class.
+    """
 
     def __init__(self, root: Tk, runtime_dir: Path, core: CoreServer) -> None:
         self.nav_buttons: dict[str, ttk.Button] = {}
@@ -21,7 +25,7 @@ class WindowsOrionDesktopLauncherV2(WindowsOrionDesktopLauncher):
         style = ttk.Style(self.root)
         try:
             style.theme_use("clam")
-        except Exception:
+        except TclError:
             pass
 
         bg = "#070b10"
@@ -314,15 +318,3 @@ class WindowsOrionDesktopLauncherV2(WindowsOrionDesktopLauncher):
         self._render_status_strip()
         if self.current_page in {"home", "fly", "diagnostics", "logs"}:
             self.show_page(self.current_page)
-
-
-def run_desktop_launcher(runtime_dir: Path, host: str = "127.0.0.1", port: int = 8000) -> int:
-    core = CoreServer(host, port)
-    core.start()
-    try:
-        root = Tk()
-        WindowsOrionDesktopLauncherV2(root, runtime_dir=runtime_dir, core=core)
-        root.mainloop()
-    finally:
-        core.stop()
-    return 0
