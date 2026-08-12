@@ -22,7 +22,7 @@ ArchitecturesInstallIn64BitMode=x64compatible
 PrivilegesRequired=admin
 UninstallDisplayIcon={app}\{#MyLauncherExe}
 #if FileExists("..\branding\orion.ico")
-SetupIconFile=..\branding/orion.ico
+SetupIconFile=..\branding\orion.ico
 #endif
 
 [Files]
