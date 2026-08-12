@@ -129,7 +129,10 @@ def _windows_saved_games_root() -> Path | None:
     shell32 = ctypes.windll.shell32
     ole32 = ctypes.windll.ole32
     shell32.SHGetKnownFolderPath.argtypes = [ctypes.POINTER(GUID), wintypes.DWORD, wintypes.HANDLE, ctypes.POINTER(ctypes.c_wchar_p)]
-    shell32.SHGetKnownFolderPath.restype = wintypes.HRESULT
+    # HRESULT is a signed 32-bit LONG. ctypes.wintypes does not expose HRESULT
+    # consistently across supported Python versions, so use the ABI-compatible
+    # ctypes type directly.
+    shell32.SHGetKnownFolderPath.restype = ctypes.c_long
     hr = shell32.SHGetKnownFolderPath(ctypes.byref(guid), 0, None, ctypes.byref(result))
     if hr != 0 or not result.value:
         return None
