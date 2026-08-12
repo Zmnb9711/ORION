@@ -13,6 +13,7 @@ on:
       - "pyproject.toml"
       - ".github/workflows/alpha-build.yml"
   push:
+    branches: [main]
     tags:
       - "v*"
 
