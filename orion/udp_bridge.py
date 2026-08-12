@@ -9,6 +9,7 @@ from orion.fa18c_diagnostics_recorder import hornet_diagnostics_recorder
 from orion.fa18c_mapping_auto_progress import hornet_mapping_auto_progress
 from orion.fa18c_mapping_sync import hornet_mapping_synchronizer
 from orion.models import TelemetryEnvelope
+from orion.telemetry_handshake import telemetry_handshake
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +19,7 @@ HeartbeatHandler = Callable[..., None]
 class TelemetryProtocol(asyncio.DatagramProtocol):
     def __init__(self, on_telemetry, on_heartbeat: HeartbeatHandler | None = None):
         self.on_telemetry = on_telemetry
-        self.on_heartbeat = on_heartbeat
+        self.on_heartbeat = on_heartbeat or telemetry_handshake.observe_heartbeat
 
     def datagram_received(self, data: bytes, addr) -> None:
         try:
@@ -44,8 +45,6 @@ class TelemetryProtocol(asyncio.DatagramProtocol):
         self.on_telemetry(payload)
 
     def _handle_heartbeat(self, payload: dict[str, object], addr) -> None:
-        if self.on_heartbeat is None:
-            return
         source = payload.get("source")
         protocol_version = payload.get("protocol_version")
         if not isinstance(source, str) or not source or not isinstance(protocol_version, str) or not protocol_version:
