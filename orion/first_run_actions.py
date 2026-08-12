@@ -37,6 +37,19 @@ class FirstRunActionResult(BaseModel):
     aircraft_type: str | None = None
     next_actions: list[FirstRunAction] = Field(default_factory=list)
 
+    @property
+    def candidates(self) -> list[DcsDiscoveryCandidate]:
+        """Stable UI-facing view of detected installations.
+
+        The canonical discovery payload lives under ``discovery`` for API
+        serialization, while desktop first-run flows need direct candidate
+        access. Keeping this adapter on the action result prevents the UI and
+        API contracts from drifting apart again.
+        """
+        if self.discovery is None:
+            return []
+        return self.discovery.candidates
+
 
 def detect_installations(mode: DcsInstallationType = DcsInstallationType.AUTO) -> FirstRunActionResult:
     discovery = discover_dcs_installations(mode=mode)
