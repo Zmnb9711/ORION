@@ -48,6 +48,17 @@ def test_poll_core_refreshes_health_and_reschedules() -> None:
     assert launcher.root.after_calls[0][0] == 1500
 
 
+def test_polled_health_uses_product_renderer() -> None:
+    launcher = _launcher()
+    applied: list[StartupHealthReport] = []
+    launcher._apply_health = lambda report: applied.append(report)  # type: ignore[method-assign]
+    report = StartupHealthReport(state=StartupHealthState.HEALTHY, telemetry_connected=True)
+
+    launcher._set_health(report)
+
+    assert applied == [report]
+
+
 def test_first_run_opens_only_for_action_required_health() -> None:
     launcher = _launcher()
     opened: list[bool] = []
