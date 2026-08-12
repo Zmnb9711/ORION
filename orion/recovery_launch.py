@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import json
+import os
+import urllib.error
+import urllib.parse
+import urllib.request
 from enum import StrEnum
 from uuid import UUID
 
@@ -66,6 +71,15 @@ def _resolve_recovery_profile() -> DcsLaunchProfile | None:
 
 
 def start_dcs_for_recovery() -> RecoveryLaunchStatus:
+    # Launch profiles, DCS process records and telemetry handshake are Core-owned
+    # in-memory state. A Launcher-side button must delegate the operation to the
+    # Core API rather than create a parallel Launcher-local state universe.
+    if os.environ.get("ORION_PROCESS_ROLE") == "launcher":
+        return _start_dcs_via_core()
+    return _start_dcs_local()
+
+
+def _start_dcs_local() -> RecoveryLaunchStatus:
     profile = _resolve_recovery_profile()
     profiles = launch_profiles.list()
     if profile is None:
@@ -102,6 +116,12 @@ def start_dcs_for_recovery() -> RecoveryLaunchStatus:
 
 
 def recovery_launch_status(launch_id: UUID | None = None) -> RecoveryLaunchStatus:
+    if os.environ.get("ORION_PROCESS_ROLE") == "launcher":
+        return _recovery_launch_status_via_core(launch_id)
+    return _recovery_launch_status_local(launch_id)
+
+
+def _recovery_launch_status_local(launch_id: UUID | None = None) -> RecoveryLaunchStatus:
     live = telemetry_handshake.snapshot()
     if live.connected:
         return RecoveryLaunchStatus(
@@ -140,3 +160,36 @@ def recovery_launch_status(launch_id: UUID | None = None) -> RecoveryLaunchStatu
         launch_id=record.launch_id,
         pid=record.pid,
     )
+
+
+def _core_base_url() -> str:
+    return os.environ.get("ORION_CORE_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
+
+
+def _start_dcs_via_core() -> RecoveryLaunchStatus:
+    request = urllib.request.Request(
+        f"{_core_base_url()}/v1/recovery-launch/start",
+        data=b"",
+        method="POST",
+    )
+    return _request_core_status(request)
+
+
+def _recovery_launch_status_via_core(launch_id: UUID | None) -> RecoveryLaunchStatus:
+    query = ""
+    if launch_id is not None:
+        query = "?" + urllib.parse.urlencode({"launch_id": str(launch_id)})
+    request = urllib.request.Request(f"{_core_base_url()}/v1/recovery-launch/status{query}", method="GET")
+    return _request_core_status(request)
+
+
+def _request_core_status(request: urllib.request.Request) -> RecoveryLaunchStatus:
+    try:
+        with urllib.request.urlopen(request, timeout=3.0) as response:  # noqa: S310
+            payload = json.loads(response.read().decode("utf-8"))
+    except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
+        return RecoveryLaunchStatus(
+            state=RecoveryLaunchState.FAILED,
+            message=f"Unable to query ORION Core launch service: {exc}",
+        )
+    return RecoveryLaunchStatus.model_validate(payload)
