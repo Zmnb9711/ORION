@@ -37,6 +37,35 @@ def test_detect_result_exposes_candidates_to_desktop_ui():
     assert result.candidates[0].install_root.endswith("DCSWorld")
 
 
+def test_ui_candidates_skip_stale_c_path_before_valid_d_drive():
+    stale_c = DcsDiscoveryCandidate(
+        installation_type=DcsInstallationType.STEAM,
+        name="DCS Steam",
+        install_root=r"C:\Program Files (x86)\Steam\steamapps\common\DCSWorld",
+        executable_path=r"C:\Program Files (x86)\Steam\steamapps\common\DCSWorld\bin\DCS.exe",
+        exists=False,
+        source_detail=r"C:\Program Files (x86)\Steam",
+    )
+    valid_d = DcsDiscoveryCandidate(
+        installation_type=DcsInstallationType.STEAM,
+        name="DCS Steam",
+        install_root=r"D:\SteamLibrary\steamapps\common\DCSWorld",
+        executable_path=r"D:\SteamLibrary\steamapps\common\DCSWorld\bin-mt\DCS.exe",
+        exists=True,
+        source_detail=r"D:\SteamLibrary",
+    )
+    result = FirstRunActionResult(
+        action=FirstRunAction.DETECT,
+        ok=True,
+        message="Found 1 DCS installation(s)",
+        discovery=DcsDiscoveryResult(mode=DcsInstallationType.AUTO, candidates=[stale_c, valid_d]),
+        next_actions=[FirstRunAction.SELECT_ACTIVE],
+    )
+
+    assert result.candidates == [valid_d]
+    assert result.candidates[0].install_root.startswith("D:\\")
+
+
 def test_detect_result_without_discovery_exposes_empty_candidates():
     result = FirstRunActionResult(action=FirstRunAction.DETECT, ok=False, message="No DCS installations found")
     assert result.candidates == []

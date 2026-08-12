@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, timedelta, timezone
 
 from orion.dcs_connection_diagnostics import ConnectionState, diagnose_dcs_connection
@@ -49,3 +50,41 @@ def test_reports_stale_after_stream_stops() -> None:
     report = diagnose_dcs_connection(handshake=handshake, process_detector=lambda: True)
     assert report.state == ConnectionState.STALE
     assert report.age_seconds is not None and report.age_seconds >= 1
+
+
+def test_launcher_diagnostics_use_core_snapshot(monkeypatch) -> None:
+    import orion.dcs_connection_diagnostics as diagnostics
+
+    payload = {
+        "state": "healthy",
+        "connected": True,
+        "dcs_process_running": True,
+        "aircraft_type": "FA-18C_hornet",
+        "source": "dcs-export",
+        "protocol_version": "0.1",
+        "packet_count": 42,
+        "packet_rate_hz": 10.0,
+        "age_seconds": 0.1,
+        "message": "DCS telemetry connection is healthy",
+        "action": None,
+    }
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):  # noqa: ANN001
+            return False
+
+        def read(self) -> bytes:
+            return json.dumps(payload).encode("utf-8")
+
+    monkeypatch.setenv("ORION_PROCESS_ROLE", "launcher")
+    monkeypatch.setenv("ORION_CORE_BASE_URL", "http://127.0.0.1:8000")
+    monkeypatch.setattr(diagnostics.urllib.request, "urlopen", lambda *args, **kwargs: Response())
+
+    report = diagnose_dcs_connection()
+
+    assert report.connected is True
+    assert report.packet_count == 42
+    assert report.state == ConnectionState.HEALTHY

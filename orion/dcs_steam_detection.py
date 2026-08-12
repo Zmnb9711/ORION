@@ -99,6 +99,9 @@ def _default_steam_roots() -> list[Path]:
             seen.add(key)
             roots.append(candidate)
 
+    for candidate in _registry_steam_roots():
+        add(candidate)
+
     program_files_x86 = os.environ.get("PROGRAMFILES(X86)")
     program_files = os.environ.get("PROGRAMFILES")
     for base in (program_files_x86, program_files):
@@ -115,9 +118,54 @@ def _default_steam_roots() -> list[Path]:
     return roots
 
 
+def _registry_steam_roots() -> list[Path]:
+    if os.name != "nt":
+        return []
+    try:
+        import winreg
+    except ImportError:
+        return []
+
+    locations = (
+        (winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam", "SteamPath"),
+        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Valve\Steam", "InstallPath"),
+        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Valve\Steam", "InstallPath"),
+    )
+    roots: list[Path] = []
+    for hive, key_name, value_name in locations:
+        try:
+            with winreg.OpenKey(hive, key_name) as key:
+                raw, _ = winreg.QueryValueEx(key, value_name)
+        except OSError:
+            continue
+        if isinstance(raw, str) and raw.strip():
+            path = Path(raw.strip())
+            if path not in roots:
+                roots.append(path)
+    return roots
+
+
 def _windows_drive_roots() -> list[Path]:
     if os.name != "nt":
         return []
+
+    # In a frozen GUI process pathlib drive probing can be less reliable than
+    # the Win32 logical-drive bitmask. Prefer the OS API and keep pathlib only
+    # as a defensive fallback for unusual runtimes.
+    try:
+        import ctypes
+
+        mask = int(ctypes.windll.kernel32.GetLogicalDrives())  # type: ignore[attr-defined]
+    except (AttributeError, OSError, ValueError):
+        mask = 0
+
+    if mask:
+        return [
+            Path(f"{chr(ord('A') + index)}:\\")
+            for index in range(26)
+            if mask & (1 << index)
+        ]
+
     roots: list[Path] = []
     for letter in "CDEFGHIJKLMNOPQRSTUVWXYZ":
         drive = Path(f"{letter}:\\")

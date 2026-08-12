@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
+import urllib.error
+import urllib.request
 from enum import StrEnum
 from typing import Callable
 
@@ -62,6 +65,25 @@ def diagnose_dcs_connection(
     process_detector: ProcessDetector = detect_dcs_process,
     minimum_healthy_rate_hz: float = 5.0,
 ) -> DcsConnectionReport:
+    if (
+        os.environ.get("ORION_PROCESS_ROLE") == "launcher"
+        and handshake is telemetry_handshake
+        and process_detector is detect_dcs_process
+    ):
+        return _diagnose_dcs_connection_via_core()
+    return _diagnose_dcs_connection_local(
+        handshake=handshake,
+        process_detector=process_detector,
+        minimum_healthy_rate_hz=minimum_healthy_rate_hz,
+    )
+
+
+def _diagnose_dcs_connection_local(
+    *,
+    handshake: TelemetryHandshake,
+    process_detector: ProcessDetector,
+    minimum_healthy_rate_hz: float,
+) -> DcsConnectionReport:
     snapshot = handshake.snapshot()
     process_running = process_detector()
 
@@ -118,3 +140,19 @@ def diagnose_dcs_connection(
         action="Start DCS and enter an aircraft; if already running, check Export.lua",
         **common,
     )
+
+
+def _diagnose_dcs_connection_via_core() -> DcsConnectionReport:
+    base_url = os.environ.get("ORION_CORE_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
+    request = urllib.request.Request(f"{base_url}/v1/dcs-connection/diagnostics", method="GET")
+    try:
+        with urllib.request.urlopen(request, timeout=2.0) as response:  # noqa: S310
+            payload = json.loads(response.read().decode("utf-8"))
+    except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
+        return DcsConnectionReport(
+            state=ConnectionState.NO_TELEMETRY,
+            connected=False,
+            message=f"Unable to query ORION Core DCS diagnostics: {exc}",
+            action="Check ORION Core status and retry",
+        )
+    return DcsConnectionReport.model_validate(payload)
