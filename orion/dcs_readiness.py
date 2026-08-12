@@ -1,15 +1,19 @@
 from __future__ import annotations
 
+import ctypes
 import os
 import sys
+from ctypes import wintypes
 from enum import StrEnum
 from pathlib import Path
+from uuid import UUID
 
 from pydantic import BaseModel, Field
 
 
 ORION_EXPORT_MARKER = "-- ORION DCS integration"
 ORION_EXPORT_LINE = 'dofile(lfs.writedir() .. "Scripts/ORION/Export.lua")'
+FOLDERID_SAVED_GAMES = UUID("4c5c32ff-bb9d-43b0-b5b4-2d72e54eaaa4")
 
 
 class ReadinessState(StrEnum):
@@ -98,10 +102,44 @@ def _packaged_export_source() -> Path:
 
 
 def _saved_games_root() -> Path:
+    known = _windows_saved_games_root()
+    if known is not None:
+        return known
     userprofile = os.environ.get("USERPROFILE")
     if userprofile:
         return Path(userprofile) / "Saved Games"
     return Path.home() / "Saved Games"
+
+
+def _windows_saved_games_root() -> Path | None:
+    if os.name != "nt":
+        return None
+
+    class GUID(ctypes.Structure):
+        _fields_ = [
+            ("Data1", wintypes.DWORD),
+            ("Data2", wintypes.WORD),
+            ("Data3", wintypes.WORD),
+            ("Data4", ctypes.c_ubyte * 8),
+        ]
+
+    raw = FOLDERID_SAVED_GAMES.bytes_le
+    guid = GUID.from_buffer_copy(raw)
+    result = ctypes.c_wchar_p()
+    shell32 = ctypes.windll.shell32
+    ole32 = ctypes.windll.ole32
+    shell32.SHGetKnownFolderPath.argtypes = [ctypes.POINTER(GUID), wintypes.DWORD, wintypes.HANDLE, ctypes.POINTER(ctypes.c_wchar_p)]
+    # HRESULT is a signed 32-bit LONG. ctypes.wintypes does not expose HRESULT
+    # consistently across supported Python versions, so use the ABI-compatible
+    # ctypes type directly.
+    shell32.SHGetKnownFolderPath.restype = ctypes.c_long
+    hr = shell32.SHGetKnownFolderPath(ctypes.byref(guid), 0, None, ctypes.byref(result))
+    if hr != 0 or not result.value:
+        return None
+    try:
+        return Path(result.value)
+    finally:
+        ole32.CoTaskMemFree(result)
 
 
 def _first_existing(candidates: list[DcsSavedGamesCandidate]) -> Path | None:

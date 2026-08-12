@@ -76,15 +76,19 @@ jobs:
           & "${{ steps.inno.outputs.iscc }}" "packaging/orion-alpha.iss"
           if (-not (Test-Path "dist-installer/ORION-Alpha-0.2-Setup.exe")) { throw "Installer was not created" }
 
-      - name: Silent install, repair install, and uninstall
+      - name: Silent install, repair install, and complete uninstall
         shell: pwsh
         run: |
           $setup = (Resolve-Path "dist-installer/ORION-Alpha-0.2-Setup.exe").Path
           $installDir = Join-Path $env:ProgramFiles "ORION"
-          $launcher = Join-Path $installDir "Launcher\ORION-Launcher.exe"
-          $core = Join-Path $installDir "Core\ORION-Core.exe"
-          $export = Join-Path $installDir "Integration\DCS\Export\Export.lua"
+          $launcherDir = Join-Path $installDir "Launcher"
+          $coreDir = Join-Path $installDir "Core"
+          $integrationDir = Join-Path $installDir "Integration"
+          $launcher = Join-Path $launcherDir "ORION-Launcher.exe"
+          $core = Join-Path $coreDir "ORION-Core.exe"
+          $export = Join-Path $integrationDir "DCS\Export\Export.lua"
           $uninstaller = Join-Path $installDir "unins000.exe"
+          $runtimeDir = Join-Path $env:LOCALAPPDATA "ORION\runtime"
 
           function Invoke-Setup([string]$arguments) {
             $process = Start-Process -FilePath $setup -ArgumentList $arguments -PassThru -Wait
@@ -93,22 +97,32 @@ jobs:
 
           # Clean install to the normal x64 Program Files location.
           Invoke-Setup "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-"
-          foreach ($path in @($launcher, $core, $export, $uninstaller)) {
+          foreach ($path in @($launcher, $core, $export, $uninstaller, $runtimeDir)) {
             if (-not (Test-Path $path)) { throw "Installed payload missing: $path" }
           }
 
-          # Same-version install exercises the repair/upgrade path that users will
-          # hit when replacing an Alpha build without manually uninstalling first.
+          # Same-version install exercises repair/upgrade behavior.
           Invoke-Setup "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-"
           foreach ($path in @($launcher, $core, $export, $uninstaller)) {
             if (-not (Test-Path $path)) { throw "Payload missing after repair install: $path" }
           }
 
+          # Reproduce the real Alpha lifecycle: Core is allowed to outlive the
+          # Launcher. Uninstall must still terminate it and remove all payload.
+          $coreProcess = Start-Process -FilePath $core -PassThru
+          Start-Sleep -Seconds 2
+          if ($coreProcess.HasExited) { throw "Core did not stay running for uninstall lock test" }
+
           $uninstallProcess = Start-Process -FilePath $uninstaller -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART" -PassThru -Wait
           if ($uninstallProcess.ExitCode -ne 0) { throw "Uninstaller exited with code $($uninstallProcess.ExitCode)" }
-          Start-Sleep -Seconds 1
-          if (Test-Path $launcher) { throw "Launcher remained installed after uninstall" }
-          if (Test-Path $core) { throw "Core remained installed after uninstall" }
+          Start-Sleep -Seconds 2
+
+          $remainingCore = Get-Process -Name "ORION-Core" -ErrorAction SilentlyContinue
+          if ($remainingCore) { throw "ORION-Core process remained running after uninstall" }
+
+          foreach ($path in @($launcherDir, $coreDir, $integrationDir, $launcher, $core, $export, $uninstaller, $runtimeDir, $installDir)) {
+            if (Test-Path $path) { throw "ORION content remained after uninstall: $path" }
+          }
 
       - name: Upload installer smoke artifact
         if: always()

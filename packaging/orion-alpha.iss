@@ -46,3 +46,16 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription:
 
 [Run]
 Filename: "{app}\{#MyLauncherExe}"; WorkingDir: "{app}\Launcher"; Description: "Launch ORION"; Flags: nowait postinstall skipifsilent
+
+[UninstallRun]
+; Launcher intentionally leaves Core running when its window closes. Stop both
+; product processes before Inno removes their files so uninstall cannot leave a
+; locked Core/Launcher payload behind on a real Windows machine.
+Filename: "{cmd}"; Parameters: "/C taskkill /F /IM ORION-Launcher.exe >nul 2>&1 || exit /B 0"; Flags: runhidden waituntilterminated
+Filename: "{cmd}"; Parameters: "/C taskkill /F /IM ORION-Core.exe >nul 2>&1 || exit /B 0"; Flags: runhidden waituntilterminated
+
+[UninstallDelete]
+; Runtime content is transient Alpha state (logs, diagnostics, downloaded
+; updates). A product uninstall removes it deliberately so the next Alpha test
+; starts clean. DCS Saved Games content is not touched here.
+Type: filesandordirs; Name: "{localappdata}\ORION\runtime"
