@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import json
+import os
+import urllib.error
+import urllib.request
 from enum import StrEnum
 from pathlib import Path
 
@@ -45,6 +49,16 @@ class StartupHealthReport(BaseModel):
 
 
 def inspect_startup_health() -> StartupHealthReport:
+    # The production Launcher and Core are separate processes. Telemetry and
+    # other runtime state are authoritative in Core, so Launcher status pages
+    # must consume Core's health report rather than calculate a parallel local
+    # snapshot with an empty in-memory telemetry handshake.
+    if os.environ.get("ORION_PROCESS_ROLE") == "launcher":
+        return _inspect_startup_health_via_core()
+    return _inspect_startup_health_local()
+
+
+def _inspect_startup_health_local() -> StartupHealthReport:
     active = active_dcs_installation.get()
     config = onboarding_config.get()
     live = telemetry_handshake.snapshot()
@@ -127,6 +141,27 @@ def inspect_startup_health() -> StartupHealthReport:
         telemetry_connected=live.connected,
         recovery_actions=actions,
     )
+
+
+def _inspect_startup_health_via_core() -> StartupHealthReport:
+    base_url = os.environ.get("ORION_CORE_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
+    request = urllib.request.Request(f"{base_url}/v1/startup-health", method="GET")
+    try:
+        with urllib.request.urlopen(request, timeout=2.0) as response:  # noqa: S310
+            payload = json.loads(response.read().decode("utf-8"))
+    except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
+        return StartupHealthReport(
+            state=StartupHealthState.ACTION_REQUIRED,
+            checks=[
+                StartupHealthCheck(
+                    key="core_health",
+                    passed=False,
+                    blocking=True,
+                    message=f"Unable to query ORION Core startup health: {exc}",
+                )
+            ],
+        )
+    return StartupHealthReport.model_validate(payload)
 
 
 def _resolve_audio_endpoint(config: OnboardingConfig) -> WasapiEndpoint | None:
