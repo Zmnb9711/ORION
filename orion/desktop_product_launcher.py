@@ -5,7 +5,7 @@ from pathlib import Path
 from tkinter import BOTH, LEFT, RIGHT, X, StringVar, Tk, Toplevel, filedialog
 from tkinter import ttk
 
-from orion.desktop_app import CoreServer
+from orion.core_process import CoreProcessManager
 from orion.desktop_app_windows_v2 import WindowsOrionDesktopLauncherV2
 from orion.dcs_installations import DcsInstallationType
 from orion.first_run_actions import (
@@ -251,12 +251,14 @@ class WindowsOrionProductLauncher(WindowsOrionDesktopLauncherV2):
 
 
 def run_desktop_launcher(runtime_dir: Path, host: str = "127.0.0.1", port: int = 8000) -> int:
-    core = CoreServer(host, port)
+    core = CoreProcessManager(host, port, runtime_dir)
     core.start()
     try:
         root = Tk()
         WindowsOrionProductLauncher(root, runtime_dir=runtime_dir, core=core)
         root.mainloop()
     finally:
+        # Closing the launcher detaches the UI; ORION Core intentionally keeps
+        # running until an explicit product-level shutdown is requested.
         core.stop()
     return 0
