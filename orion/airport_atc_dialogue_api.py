@@ -9,7 +9,8 @@ from orion.airport_arrival_orchestration import AirportArrivalOrchestrator
 from orion.airport_arrival_runtime import AirportArrivalRuntime
 from orion.airport_atc_dialogue import AtcDialogueRequest, AtcDialogueResult, AirportAtcDialogueGateway
 from orion.airport_surface_runtime import AirportSurfaceCoordinator
-from orion.atc_service import virtual_atc
+from orion.atc_service import AtcStatusSnapshot, virtual_atc
+from orion.atc_simulator_sync import AtcIntegrationMode
 
 
 router = APIRouter(prefix="/v1/atc", tags=["Virtual ATC"])
@@ -17,11 +18,20 @@ router = APIRouter(prefix="/v1/atc", tags=["Virtual ATC"])
 _surface = AirportSurfaceCoordinator(virtual_atc.core)
 _arrival = AirportArrivalRuntime(_surface)
 _arrival_orchestration = AirportArrivalOrchestrator(service=virtual_atc, arrival=_arrival)
-atc_dialogue = AirportAtcDialogueGateway(
-    service=virtual_atc,
-    arrival=_arrival,
-    arrival_orchestrator=_arrival_orchestration,
-)
+atc_dialogue = AirportAtcDialogueGateway(service=virtual_atc, arrival=_arrival, arrival_orchestrator=_arrival_orchestration)
+
+
+class AtcSessionBootstrapRequest(BaseModel):
+    mission_id: str = Field(min_length=1, max_length=160)
+    aircraft_id: str = Field(min_length=1, max_length=160)
+    facility_id: str | None = Field(default=None, max_length=160)
+    procedural_state: str = Field(default="atc_contact", min_length=1, max_length=160)
+    integration_mode: AtcIntegrationMode = AtcIntegrationMode.ORION_PRIMARY
+
+
+class AtcSessionBootstrapResult(BaseModel):
+    created: bool
+    status: AtcStatusSnapshot
 
 
 class ArrivalStartRequest(BaseModel):
@@ -29,29 +39,28 @@ class ArrivalStartRequest(BaseModel):
     reason: str = Field(default="arrival contact established", min_length=1, max_length=500)
 
 
+@router.post("/sessions/bootstrap", response_model=AtcSessionBootstrapResult)
+def bootstrap_atc_session(payload: AtcSessionBootstrapRequest) -> AtcSessionBootstrapResult:
+    status, created = virtual_atc.get_or_open_session(
+        mission_id=payload.mission_id,
+        aircraft_id=payload.aircraft_id,
+        facility_id=payload.facility_id,
+        procedural_state=payload.procedural_state,
+        integration_mode=payload.integration_mode,
+    )
+    return AtcSessionBootstrapResult(created=created, status=status)
+
+
 @router.post("/sessions/{session_id}/arrival/start", response_model=AtcDialogueResult, status_code=201)
 def start_arrival_session(session_id: UUID, payload: ArrivalStartRequest) -> AtcDialogueResult:
     try:
         virtual_atc.status(session_id)
-        session = _arrival_orchestration.start_arrival(
-            session_id=session_id,
-            runway_id=payload.runway_id,
-            reason=payload.reason,
-        )
+        session = _arrival_orchestration.start_arrival(session_id=session_id, runway_id=payload.runway_id, reason=payload.reason)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="ATC session not found") from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return AtcDialogueResult(
-        session_id=session_id,
-        domain="arrival",
-        language="en",
-        intent="arrival_start",
-        action="arrival_started",
-        procedural_state=virtual_atc.status(session_id).procedural_state,
-        reply="Arrival session started.",
-        details={"arrival_state": session.state.value, "runway_id": session.runway_id},
-    )
+    return AtcDialogueResult(session_id=session_id, domain="arrival", language="en", intent="arrival_start", action="arrival_started", procedural_state=virtual_atc.status(session_id).procedural_state, reply="Arrival session started.", details={"arrival_state": session.state.value, "runway_id": session.runway_id})
 
 
 @router.post("/sessions/{session_id}/dialogue", response_model=AtcDialogueResult)
