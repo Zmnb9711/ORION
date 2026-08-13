@@ -4,7 +4,6 @@
 local socket = require("socket")
 local telemetryUdp = socket.udp()
 telemetryUdp:settimeout(0)
-
 local commandUdp = socket.udp()
 commandUdp:settimeout(0)
 commandUdp:setsockname("127.0.0.1", 45101)
@@ -92,6 +91,16 @@ local function safeArgument(device, argument)
     return nil
 end
 
+local function tableStatus(ok, value)
+    return ok and type(value) == "table" and "available" or "unavailable"
+end
+
+local function eitherTableStatus(ok1, value1, ok2, value2)
+    if ok1 and type(value1) == "table" then return "available" end
+    if ok2 and type(value2) == "table" then return "available" end
+    return "unavailable"
+end
+
 local function pairJson(value)
     if type(value) ~= "table" then return "null" end
     return string.format('{"left":%s,"right":%s}', jsonNumber(value.left), jsonNumber(value.right))
@@ -129,12 +138,12 @@ local function fuelJson(engine)
     )
 end
 
-local function weaponTypeJson(weapon)
-    if type(weapon) ~= "table" then return "null" end
+local function typeTupleJson(value)
+    if type(value) ~= "table" then return "null" end
     return string.format(
         '[%s,%s,%s,%s]',
-        jsonNumber(weapon.level1 or weapon[1]), jsonNumber(weapon.level2 or weapon[2]),
-        jsonNumber(weapon.level3 or weapon[3]), jsonNumber(weapon.level4 or weapon[4])
+        jsonNumber(value.level1 or value[1]), jsonNumber(value.level2 or value[2]),
+        jsonNumber(value.level3 or value[3]), jsonNumber(value.level4 or value[4])
     )
 end
 
@@ -152,30 +161,26 @@ local function payloadJson(payload, snares)
             if type(station) == "table" then
                 stations[#stations + 1] = string.format(
                     '{"station":%d,"container":%s,"weapon_type":%s,"count":%s}',
-                    index, jsonBoolean(station.container == true), weaponTypeJson(station.weapon), jsonNumber(station.count)
+                    index, jsonBoolean(station.container == true), typeTupleJson(station.weapon), jsonNumber(station.count)
                 )
             end
         end
     end
     local shells = nil
     if type(payload) == "table" and type(payload.Cannon) == "table" then shells = payload.Cannon.shells end
-    local chaff = type(snares) == "table" and snares.chaff or nil
-    local flare = type(snares) == "table" and snares.flare or nil
     return string.format(
         '{"current_station":%s,"cannon_shells":%s,"stations":[%s],"countermeasures":{"chaff":%s,"flare":%s}}',
-        jsonNumber(type(payload) == "table" and payload.CurrentStation or nil), jsonNumber(shells), table.concat(stations, ","),
-        jsonNumber(chaff), jsonNumber(flare)
+        jsonNumber(type(payload) == "table" and payload.CurrentStation or nil),
+        jsonNumber(shells),
+        table.concat(stations, ","),
+        jsonNumber(type(snares) == "table" and snares.chaff or nil),
+        jsonNumber(type(snares) == "table" and snares.flare or nil)
     )
 end
 
 local function navigationJson(nav, beacons)
     if type(nav) ~= "table" and type(beacons) ~= "table" then return "null" end
-    local master = nil
-    local submode = nil
-    local acsMode = nil
-    local reqRoll = nil
-    local reqPitch = nil
-    local reqSpeed = nil
+    local master, submode, acsMode, reqRoll, reqPitch, reqSpeed = nil, nil, nil, nil, nil, nil
     if type(nav) == "table" then
         if type(nav.SystemMode) == "table" then
             master = nav.SystemMode.master
@@ -209,8 +214,8 @@ local function ewJson(tws)
                 count = count + 1
                 emitters[#emitters + 1] = string.format(
                     '{"id":%s,"type":%s,"power":%s,"azimuth_rad":%s,"priority":%s,"signal_type":%s}',
-                    jsonNumber(emitter.ID), weaponTypeJson(emitter.Type), jsonNumber(emitter.Power), jsonNumber(emitter.Azimuth),
-                    jsonNumber(emitter.Priority), jsonString(emitter.SignalType)
+                    jsonNumber(emitter.ID), typeTupleJson(emitter.Type), jsonNumber(emitter.Power),
+                    jsonNumber(emitter.Azimuth), jsonNumber(emitter.Priority), jsonString(emitter.SignalType)
                 )
             end
         end
@@ -220,8 +225,7 @@ end
 
 local function sensorsJson(info)
     if type(info) ~= "table" then return "null" end
-    local prfCurrent = nil
-    local prfSelection = nil
+    local prfCurrent, prfSelection = nil, nil
     if type(info.PRF) == "table" then
         prfCurrent = info.PRF.current
         prfSelection = info.PRF.selection
@@ -237,10 +241,8 @@ end
 
 local function hornetCockpitState(selfData)
     if not selfData or selfData.Name ~= "FA-18C_hornet" then return nil end
-
     local ok, main = pcall(GetDevice, 0)
     if not ok then main = nil end
-
     local state = {
         comm1_selector = safeArgument(main, cockpitMapping.comm1_selector),
         comm2_selector = safeArgument(main, cockpitMapping.comm2_selector),
@@ -252,18 +254,14 @@ local function hornetCockpitState(selfData)
         right_ddi_brightness = safeArgument(main, cockpitMapping.right_ddi_brightness),
         mpcd_brightness = safeArgument(main, cockpitMapping.mpcd_brightness),
     }
-
     return string.format(
         '{"aircraft_id":"fa-18c","mapping_version":%s,"mapping_validated":%s,"raw_arguments":{' ..
-        '"comm1_selector":%s,"comm2_selector":%s,' ..
-        '"tacan_power":%s,"tacan_channel_tens":%s,"tacan_channel_ones":%s,"tacan_xy":%s,' ..
-        '"left_ddi_brightness":%s,"right_ddi_brightness":%s,"mpcd_brightness":%s}}',
+        '"comm1_selector":%s,"comm2_selector":%s,"tacan_power":%s,"tacan_channel_tens":%s,"tacan_channel_ones":%s,' ..
+        '"tacan_xy":%s,"left_ddi_brightness":%s,"right_ddi_brightness":%s,"mpcd_brightness":%s}}',
         jsonString(cockpitMapping.version), jsonBoolean(cockpitMapping.validated),
-        jsonNumber(state.comm1_selector), jsonNumber(state.comm2_selector),
-        jsonNumber(state.tacan_power), jsonNumber(state.tacan_channel_tens),
-        jsonNumber(state.tacan_channel_ones), jsonNumber(state.tacan_xy),
-        jsonNumber(state.left_ddi_brightness), jsonNumber(state.right_ddi_brightness),
-        jsonNumber(state.mpcd_brightness)
+        jsonNumber(state.comm1_selector), jsonNumber(state.comm2_selector), jsonNumber(state.tacan_power),
+        jsonNumber(state.tacan_channel_tens), jsonNumber(state.tacan_channel_ones), jsonNumber(state.tacan_xy),
+        jsonNumber(state.left_ddi_brightness), jsonNumber(state.right_ddi_brightness), jsonNumber(state.mpcd_brightness)
     )
 end
 
@@ -271,10 +269,8 @@ local function diagnosticsJson(selfData)
     if not diagnostics.enabled or not selfData or selfData.Name ~= "FA-18C_hornet" then return "null" end
     diagnostics.frame = diagnostics.frame + 1
     if diagnostics.frame % diagnostics.sample_every_frames ~= 0 then return "null" end
-
     local ok, main = pcall(GetDevice, 0)
     if not ok or not main then return "null" end
-
     local changes = {}
     for argument = diagnostics.min_argument, diagnostics.max_argument do
         local value = safeArgument(main, argument)
@@ -286,7 +282,6 @@ local function diagnosticsJson(selfData)
             end
         end
     end
-
     if #changes == 0 then return "null" end
     return string.format(
         '{"mode":"cockpit_argument_changes","aircraft_id":"fa-18c","range":{"min":%d,"max":%d},"changes":[%s]}',
@@ -305,13 +300,10 @@ local function applyCockpitMapping(payload)
         end
         nextMapping[key] = math.floor(value)
     end
-
-    local optional = {"left_ddi_brightness", "right_ddi_brightness", "mpcd_brightness"}
-    for _, key in ipairs(optional) do
+    for _, key in ipairs({"left_ddi_brightness", "right_ddi_brightness", "mpcd_brightness"}) do
         local value = extractJsonNumber(payload, key .. "_id")
         nextMapping[key] = value and math.floor(value) or cockpitMapping[key]
     end
-
     nextMapping.version = extractJsonString(payload, "mapping_version") or "fa18c-clickable-calibrated-v1"
     nextMapping.validated = true
     cockpitMapping = nextMapping
@@ -350,7 +342,8 @@ end
 local function sendHeartbeat()
     telemetryUdp:sendto(
         '{"kind":"heartbeat","protocol_version":"0.3","source":"dcs-export","aircraft_available":false}',
-        ORION_HOST, ORION_TELEMETRY_PORT
+        ORION_HOST,
+        ORION_TELEMETRY_PORT
     )
 end
 
@@ -373,9 +366,14 @@ function LuaExportAfterNextFrame()
     local vx = type(velocity.x) == "number" and velocity.x or 0
     local vy = type(velocity.y) == "number" and velocity.y or 0
     local vz = type(velocity.z) == "number" and velocity.z or 0
-    local speed = math.sqrt(vx ^ 2 + vy ^ 2 + vz ^ 2)
-    local heading = math.deg(selfData.Heading or 0) % 360
+    local groundVectorSpeed = math.sqrt(vx ^ 2 + vy ^ 2 + vz ^ 2)
 
+    local trueAirspeed, trueAirspeedOk = safeCall("LoGetTrueAirSpeed")
+    if not trueAirspeedOk or type(trueAirspeed) ~= "number" or trueAirspeed < 0 then trueAirspeed = groundVectorSpeed end
+    local verticalSpeed, verticalSpeedOk = safeCall("LoGetVerticalVelocity")
+    if not verticalSpeedOk or type(verticalSpeed) ~= "number" then verticalSpeed = vy end
+
+    local heading = math.deg(selfData.Heading or 0) % 360
     local agl = select(1, safeCall("LoGetAltitudeAboveGroundLevel"))
     if type(agl) == "number" and agl < 0 then agl = 0 end
     local modelTime = select(1, safeCall("LoGetModelTime"))
@@ -392,15 +390,12 @@ function LuaExportAfterNextFrame()
     local sensorPermission, sensorPermissionOk = safeCall("LoIsSensorExportAllowed")
     if sensorPermissionOk and sensorPermission == false then sensorAllowed = false end
 
-    local tws, twsOk = nil, false
-    local sighting, sightingOk = nil, false
+    local tws, twsOk, sighting, sightingOk = nil, false, nil, false
     if sensorAllowed then
         tws, twsOk = safeCall("LoGetTWSInfo")
         sighting, sightingOk = safeCall("LoGetSightingSystemInfo")
     end
 
-    local cockpitState = hornetCockpitState(selfData) or "null"
-    local diagnosticState = diagnosticsJson(selfData)
     local attitudeJson = "null"
     if attitudeOk then
         attitudeJson = string.format(
@@ -411,16 +406,18 @@ function LuaExportAfterNextFrame()
         )
     end
 
+    local ewStatus = sensorAllowed and tableStatus(twsOk, tws) or "restricted"
+    local sensorsStatus = sensorAllowed and tableStatus(sightingOk, sighting) or "restricted"
     local capabilities = string.format(
         '{"identity":"available","kinematics":"available","airframe":%s,"propulsion":%s,"fuel":%s,' ..
         '"navigation":%s,"radios":"not_yet_mapped","payload":%s,"ew":%s,"sensors":%s,"cockpit":%s,"mission_world":"separate"}',
-        jsonString(mechOk and type(mech) == "table" and "available" or "unavailable"),
-        jsonString(engineOk and type(engine) == "table" and "available" or "unavailable"),
-        jsonString(engineOk and type(engine) == "table" and "available" or "unavailable"),
-        jsonString((navOk and type(nav) == "table") or (beaconsOk and type(beacons) == "table") and "available" or "unavailable"),
-        jsonString((payloadOk and type(payloadInfo) == "table") or (snaresOk and type(snares) == "table") and "available" or "unavailable"),
-        jsonString(not sensorAllowed and "restricted" or (twsOk and type(tws) == "table" and "available" or "unavailable")),
-        jsonString(not sensorAllowed and "restricted" or (sightingOk and type(sighting) == "table" and "available" or "unavailable")),
+        jsonString(tableStatus(mechOk, mech)),
+        jsonString(tableStatus(engineOk, engine)),
+        jsonString(tableStatus(engineOk, engine)),
+        jsonString(eitherTableStatus(navOk, nav, beaconsOk, beacons)),
+        jsonString(eitherTableStatus(payloadOk, payloadInfo, snaresOk, snares)),
+        jsonString(ewStatus),
+        jsonString(sensorsStatus),
         jsonString(selfData.Name == "FA-18C_hornet" and "available" or "not_yet_mapped")
     )
 
@@ -431,11 +428,30 @@ function LuaExportAfterNextFrame()
         '"attitude":%s,"velocity_vector":{"x_mps":%.6f,"y_mps":%.6f,"z_mps":%.6f},' ..
         '"airframe":%s,"propulsion":%s,"fuel":%s,"navigation":%s,"payload":%s,"ew":%s,"sensors":%s,' ..
         '"capabilities":%s,"cockpit_state":%s,"diagnostics":%s}}',
-        telemetrySequence, jsonNumber(modelTime), jsonString(selfData.Name),
-        selfData.LatLongAlt.Lat, selfData.LatLongAlt.Long, selfData.LatLongAlt.Alt, jsonNumber(agl),
-        heading, speed, vy, attitudeJson, vx, vy, vz,
-        airframeJson(mech), propulsionJson(engine), fuelJson(engine), navigationJson(nav, beacons),
-        payloadJson(payloadInfo, snares), ewJson(tws), sensorsJson(sighting), capabilities, cockpitState, diagnosticState
+        telemetrySequence,
+        jsonNumber(modelTime),
+        jsonString(selfData.Name),
+        selfData.LatLongAlt.Lat,
+        selfData.LatLongAlt.Long,
+        selfData.LatLongAlt.Alt,
+        jsonNumber(agl),
+        heading,
+        trueAirspeed,
+        verticalSpeed,
+        attitudeJson,
+        vx,
+        vy,
+        vz,
+        airframeJson(mech),
+        propulsionJson(engine),
+        fuelJson(engine),
+        navigationJson(nav, beacons),
+        payloadJson(payloadInfo, snares),
+        ewJson(tws),
+        sensorsJson(sighting),
+        capabilities,
+        hornetCockpitState(selfData) or "null",
+        diagnosticsJson(selfData)
     )
 
     telemetryUdp:sendto(payload, ORION_HOST, ORION_TELEMETRY_PORT)
