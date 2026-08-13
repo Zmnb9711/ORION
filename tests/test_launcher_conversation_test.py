@@ -10,9 +10,9 @@ class Harness(subject.LauncherConversationTestMixin):
         self.core = SimpleNamespace(base_url="http://127.0.0.1:8000")
         self._responder = responder
 
-    def _core_json(self, path, method="GET"):
+    def _conversation_core_json(self):
         assert self._responder is not None
-        return self._responder(path, method)
+        return self._responder()
 
 
 def _single_log(tmp_path):
@@ -26,7 +26,7 @@ def test_conversation_result_success(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(subject.messagebox, "showinfo", lambda title, text, parent=None: shown.append((title, text)))
     launcher = Harness(
         tmp_path,
-        lambda path, method: {
+        lambda: {
             "ok": True,
             "recognized_text": "Привет, как дела?",
             "message": "Дела отлично. Связь установлена.",
@@ -47,6 +47,7 @@ def test_conversation_result_success(monkeypatch, tmp_path) -> None:
     _, text = _single_log(tmp_path)
     assert "START test=conversation" in text
     assert "REQUEST method=POST" in text
+    assert "timeout_s=20.0" in text
     assert "RECOGNIZED" in text
     assert "END status=PASS" in text
 
@@ -54,7 +55,7 @@ def test_conversation_result_success(monkeypatch, tmp_path) -> None:
 def test_conversation_result_warning_is_logged(monkeypatch, tmp_path) -> None:
     shown = []
     monkeypatch.setattr(subject.messagebox, "showwarning", lambda title, text, parent=None: shown.append(text))
-    launcher = Harness(tmp_path, lambda path, method: {"ok": False, "stages": {}, "message": "not ready"})
+    launcher = Harness(tmp_path, lambda: {"ok": False, "stages": {}, "message": "not ready"})
     launcher._run_conversational_audio_test()
     assert shown and "not ready" in shown[0]
     _, text = _single_log(tmp_path)
@@ -66,7 +67,7 @@ def test_conversation_result_core_error_is_logged(monkeypatch, tmp_path) -> None
     errors = []
     monkeypatch.setattr(subject.messagebox, "showerror", lambda title, text, parent=None: errors.append(text))
 
-    def fail(path, method):
+    def fail():
         raise RuntimeError("core down")
 
     launcher = Harness(tmp_path, fail)
