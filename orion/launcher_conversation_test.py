@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+import urllib.error
+import urllib.request
 from datetime import datetime
 from pathlib import Path
 from time import perf_counter
@@ -13,6 +16,8 @@ from orion.windows_wasapi_backend import WasapiEndpoint
 
 class LauncherConversationTestMixin:
     """Add the approved conversational Voice↔Core diagnostic to Test."""
+
+    CONVERSATION_TIMEOUT_SECONDS = 20.0
 
     def _page_test(self) -> None:
         super()._page_test()
@@ -80,12 +85,23 @@ class LauncherConversationTestMixin:
         else:
             messagebox.showwarning("ORION Test", text, parent=self.root)
 
+    def _conversation_core_json(self) -> Any:
+        request = urllib.request.Request(
+            f"{self.core.base_url}/v1/windows-audio/test/conversation",
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self.CONVERSATION_TIMEOUT_SECONDS) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"Core audio API unavailable: {exc}") from exc
+
     def _run_conversational_audio_test(self) -> None:
         log_path = self._new_test_log("conversation")
         started = perf_counter()
-        self._append_test_log(log_path, "REQUEST method=POST path=/v1/windows-audio/test/conversation")
+        self._append_test_log(log_path, "REQUEST method=POST path=/v1/windows-audio/test/conversation timeout_s=20.0")
         try:
-            result = self._core_json("/v1/windows-audio/test/conversation", method="POST")
+            result = self._conversation_core_json()
         except RuntimeError as exc:
             elapsed_ms = (perf_counter() - started) * 1000.0
             self._append_test_log(log_path, f"ERROR elapsed_ms={elapsed_ms:.1f} exception={type(exc).__name__}: {exc}")
