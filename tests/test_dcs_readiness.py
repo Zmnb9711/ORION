@@ -23,7 +23,8 @@ def test_export_install_preserves_existing_export_and_is_idempotent(tmp_path: Pa
     assert "-- existing integration" in content
     assert content.count(ORION_EXPORT_LINE) == 1
     assert integration.is_file()
-    assert "-- ORION DCS Export prototype" in integration_content
+    assert "-- ORION DCS Export telemetry bridge" in integration_content
+    assert '"protocol_version":"0.3"' in integration_content
     assert "ORION_TELEMETRY_PORT = 45100" in integration_content
     assert "Runtime telemetry exporter will be installed/updated" not in integration_content
 
