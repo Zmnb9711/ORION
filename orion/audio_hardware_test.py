@@ -14,6 +14,7 @@ class AudioHardwareTestResult:
     ok: bool
     message: str
     peak: float | None = None
+    samplerate: int | None = None
 
 
 class AudioHardwareTester:
@@ -48,28 +49,60 @@ class AudioHardwareTester:
             return partial
         raise RuntimeError(f"WASAPI {direction.value} device not found for endpoint: {endpoint.name}")
 
-    def test_input(self, endpoint: WasapiEndpoint, duration_seconds: float = 1.0) -> AudioHardwareTestResult:
+    def _native_samplerate(self, device: int, fallback: int = 48000) -> int:
+        sd = self._sounddevice()
+        info = sd.query_devices(device)
+        try:
+            samplerate = int(round(float(info.get("default_samplerate", fallback))))
+        except (TypeError, ValueError):
+            samplerate = fallback
+        return samplerate if samplerate > 0 else fallback
+
+    def test_input(self, endpoint: WasapiEndpoint, duration_seconds: float = 1.5) -> AudioHardwareTestResult:
         sd = self._sounddevice()
         device = self._resolve(endpoint, WasapiDirection.INPUT)
-        samplerate = 16000
+        samplerate = self._native_samplerate(device)
         frames = max(1, int(duration_seconds * samplerate))
-        with sd.RawInputStream(samplerate=samplerate, device=device, channels=1, dtype="int16") as stream:
-            data, _overflowed = stream.read(frames)
+        try:
+            with sd.RawInputStream(samplerate=samplerate, device=device, channels=1, dtype="int16") as stream:
+                data, _overflowed = stream.read(frames)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Microphone could not be opened at its Windows/WASAPI sample rate ({samplerate} Hz): {exc}"
+            ) from exc
         peak_sample = 0
         for (sample,) in struct.iter_unpack("<h", bytes(data)):
             peak_sample = max(peak_sample, abs(sample))
         peak = peak_sample / 32767.0
-        return AudioHardwareTestResult(ok=peak > 0.001, peak=peak, message=f"Microphone signal peak: {peak:.3f}")
+        if peak > 0.001:
+            message = f"Microphone PASS — signal detected (peak {peak:.3f}, {samplerate} Hz)"
+        else:
+            message = f"Microphone WARNING — no useful signal detected (peak {peak:.3f}, {samplerate} Hz)"
+        return AudioHardwareTestResult(ok=peak > 0.001, peak=peak, samplerate=samplerate, message=message)
 
-    def test_output(self, endpoint: WasapiEndpoint, duration_seconds: float = 0.6) -> AudioHardwareTestResult:
+    def test_output(self, endpoint: WasapiEndpoint, duration_seconds: float = 0.45) -> AudioHardwareTestResult:
         sd = self._sounddevice()
         device = self._resolve(endpoint, WasapiDirection.OUTPUT)
-        samplerate = 48000
+        samplerate = self._native_samplerate(device)
         frames = max(1, int(duration_seconds * samplerate))
         samples = bytearray()
+        # A short, lower-level two-frequency confirmation chime is less harsh than
+        # the previous single 660 Hz tone while still testing the physical path.
+        split = max(1, frames // 2)
         for n in range(frames):
-            value = int(7000 * math.sin(2.0 * math.pi * 660.0 * n / samplerate))
+            frequency = 523.25 if n < split else 659.25
+            envelope = min(1.0, n / max(1, int(0.02 * samplerate)), (frames - n) / max(1, int(0.03 * samplerate)))
+            value = int(3500 * envelope * math.sin(2.0 * math.pi * frequency * n / samplerate))
             samples.extend(struct.pack("<h", value))
-        with sd.RawOutputStream(samplerate=samplerate, device=device, channels=1, dtype="int16") as stream:
-            stream.write(bytes(samples))
-        return AudioHardwareTestResult(ok=True, message=f"Test tone played through {endpoint.name}")
+        try:
+            with sd.RawOutputStream(samplerate=samplerate, device=device, channels=1, dtype="int16") as stream:
+                stream.write(bytes(samples))
+        except Exception as exc:
+            raise RuntimeError(
+                f"Output device could not be opened at its Windows/WASAPI sample rate ({samplerate} Hz): {exc}"
+            ) from exc
+        return AudioHardwareTestResult(
+            ok=True,
+            samplerate=samplerate,
+            message=f"Output PASS — confirmation chime played through {endpoint.name} ({samplerate} Hz)",
+        )
