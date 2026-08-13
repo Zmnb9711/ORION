@@ -42,5 +42,9 @@ def test_windows_audio_routes_are_registered() -> None:
         paths = client.get("/openapi.json").json()["paths"]
 
     assert "/v1/windows-audio/devices" in paths
+    assert "/v1/windows-audio/wasapi/inputs" in paths
+    assert "/v1/windows-audio/wasapi/outputs" in paths
+    assert "/v1/windows-audio/selection" in paths
+    assert "/v1/windows-audio/selection/reset" in paths
     assert "/v1/windows-audio/play" in paths
     assert "/v1/windows-audio/stop" in paths
