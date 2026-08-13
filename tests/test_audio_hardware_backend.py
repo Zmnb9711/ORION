@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import struct
+from pathlib import Path
+from types import SimpleNamespace
 
-from orion.audio_hardware_test import AudioHardwareTester
+import orion.audio_hardware_test as subject
+from orion.audio_hardware_test import AudioHardwareTester, OUTPUT_TEST_PHRASE
 from orion.windows_wasapi_backend import WasapiDirection, WasapiEndpoint
 
 
@@ -27,9 +30,7 @@ class FakeStream:
 class FakeSoundDevice:
     def __init__(self) -> None:
         self.input_stream = FakeStream(struct.pack("<hhh", 0, 4000, -2000))
-        self.output_stream = FakeStream()
         self.input_kwargs = None
-        self.output_kwargs = None
         self.devices = [
             {
                 "name": "Test Microphone",
@@ -57,10 +58,6 @@ class FakeSoundDevice:
         self.input_kwargs = kwargs
         return self.input_stream
 
-    def RawOutputStream(self, **kwargs):
-        self.output_kwargs = kwargs
-        return self.output_stream
-
 
 def test_input_probe_uses_device_native_rate_and_reports_signal() -> None:
     sd = FakeSoundDevice()
@@ -73,12 +70,33 @@ def test_input_probe_uses_device_native_rate_and_reports_signal() -> None:
     assert sd.input_kwargs["samplerate"] == 48000
 
 
-def test_output_probe_uses_native_rate_and_writes_chime() -> None:
-    sd = FakeSoundDevice()
-    tester = AudioHardwareTester(sd)
+def test_output_probe_uses_spoken_phrase_and_selected_endpoint(monkeypatch) -> None:
     endpoint = WasapiEndpoint(device_id="out", name="Test Output", direction=WasapiDirection.OUTPUT)
-    result = tester.test_output(endpoint, duration_seconds=0.001)
+    captured: dict[str, object] = {}
+
+    class Backend:
+        def __init__(self, spool_dir: str) -> None:
+            self.spool_dir = Path(spool_dir)
+
+        def render(self, request):
+            captured["text"] = request.text
+            captured["output_device"] = request.output_device
+            target = self.spool_dir / "test.wav"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(b"RIFF")
+            return SimpleNamespace(accepted=True, output_path=str(target), message="ok")
+
+    class Player:
+        def play(self, path, selected_endpoint) -> None:
+            captured["played_path"] = Path(path)
+            captured["endpoint"] = selected_endpoint
+
+    monkeypatch.setattr(subject, "WindowsSapiBackend", Backend)
+    monkeypatch.setattr(subject, "NativeWasapiPlayer", Player)
+
+    result = AudioHardwareTester(FakeSoundDevice()).test_output(endpoint)
     assert result.ok
-    assert result.samplerate == 44100
-    assert sd.output_kwargs["samplerate"] == 44100
-    assert sd.output_stream.written
+    assert OUTPUT_TEST_PHRASE in str(captured["text"])
+    assert captured["output_device"] == "out"
+    assert captured["endpoint"] == endpoint
+    assert "spoken ORION test phrase" in result.message
