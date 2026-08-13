@@ -48,6 +48,7 @@ class AircraftState(BaseModel):
     true_airspeed_mps: float = Field(ge=0)
     vertical_speed_mps: float = 0
     fuel_fraction: float | None = Field(default=None, ge=0, le=1)
+    fuel: dict[str, object] | None = None
     attitude: Attitude | None = None
     velocity_vector: VelocityVector | None = None
     airframe: AirframeState | None = None
