@@ -1,12 +1,20 @@
 from __future__ import annotations
 
 import importlib
-import math
 import struct
+import tempfile
 from dataclasses import dataclass
+from pathlib import Path
 from types import ModuleType
+from uuid import uuid4
 
+from orion.native_wasapi_player import NativeWasapiPlayer
+from orion.tts_audio import AudioRenderRequest, TtsBackend, VoiceProfile
+from orion.voice_core import VoiceAgent
+from orion.windows_sapi_backend import WindowsSapiBackend
 from orion.windows_wasapi_backend import WasapiDirection, WasapiEndpoint
+
+OUTPUT_TEST_PHRASE = "Проверка звука ORION. Если вы слышите это сообщение нормально, устройство вывода работает."
 
 
 @dataclass(frozen=True)
@@ -18,7 +26,7 @@ class AudioHardwareTestResult:
 
 
 class AudioHardwareTester:
-    """Short physical endpoint tests. No audio is persisted and no STT/TTS is involved."""
+    """Short physical endpoint tests. No audio is persisted."""
 
     def __init__(self, sounddevice_module: ModuleType | None = None) -> None:
         self._sd = sounddevice_module
@@ -81,28 +89,31 @@ class AudioHardwareTester:
         return AudioHardwareTestResult(ok=peak > 0.001, peak=peak, samplerate=samplerate, message=message)
 
     def test_output(self, endpoint: WasapiEndpoint, duration_seconds: float = 0.45) -> AudioHardwareTestResult:
-        sd = self._sounddevice()
-        device = self._resolve(endpoint, WasapiDirection.OUTPUT)
-        samplerate = self._native_samplerate(device)
-        frames = max(1, int(duration_seconds * samplerate))
-        samples = bytearray()
-        # A short, lower-level two-frequency confirmation chime is less harsh than
-        # the previous single 660 Hz tone while still testing the physical path.
-        split = max(1, frames // 2)
-        for n in range(frames):
-            frequency = 523.25 if n < split else 659.25
-            envelope = min(1.0, n / max(1, int(0.02 * samplerate)), (frames - n) / max(1, int(0.03 * samplerate)))
-            value = int(3500 * envelope * math.sin(2.0 * math.pi * frequency * n / samplerate))
-            samples.extend(struct.pack("<h", value))
+        del duration_seconds
         try:
-            with sd.RawOutputStream(samplerate=samplerate, device=device, channels=1, dtype="int16") as stream:
-                stream.write(bytes(samples))
+            with tempfile.TemporaryDirectory(prefix="orion-output-test-") as tmp:
+                backend = WindowsSapiBackend(spool_dir=str(Path(tmp) / "tts"))
+                request = AudioRenderRequest(
+                    command_id=f"output-test-{uuid4()}",
+                    text=OUTPUT_TEST_PHRASE,
+                    agent=VoiceAgent.SYSTEM,
+                    profile=VoiceProfile(
+                        profile_id="output_test_ru",
+                        locale="ru-RU",
+                        persona="orion",
+                        rate=1.0,
+                        volume=1.0,
+                    ),
+                    backend=TtsBackend.WINDOWS_SAPI,
+                    output_device=endpoint.device_id,
+                )
+                rendered = backend.render(request)
+                if not rendered.accepted or not rendered.output_path:
+                    raise RuntimeError(rendered.message)
+                NativeWasapiPlayer().play(Path(rendered.output_path), endpoint)
         except Exception as exc:
-            raise RuntimeError(
-                f"Output device could not be opened at its Windows/WASAPI sample rate ({samplerate} Hz): {exc}"
-            ) from exc
+            raise RuntimeError(f"Spoken output test failed for {endpoint.name}: {exc}") from exc
         return AudioHardwareTestResult(
             ok=True,
-            samplerate=samplerate,
-            message=f"Output PASS — confirmation chime played through {endpoint.name} ({samplerate} Hz)",
+            message=f"Output PASS — spoken ORION test phrase played through {endpoint.name}",
         )
