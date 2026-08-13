@@ -63,8 +63,16 @@ class AudioDeviceConfigService:
         current = endpoints if endpoints is not None else wasapi_endpoint_catalog.endpoints()
         with self._lock:
             selection = self._selection.model_copy(deep=True)
-        input_endpoint = wasapi_endpoint_catalog.choose(selection.input_device_id, WasapiDirection.INPUT)
-        output_endpoint = wasapi_endpoint_catalog.choose(selection.output_device_id, WasapiDirection.OUTPUT)
+        input_endpoint = wasapi_endpoint_catalog.choose(
+            selection.input_device_id,
+            WasapiDirection.INPUT,
+            endpoints=current,
+        )
+        output_endpoint = wasapi_endpoint_catalog.choose(
+            selection.output_device_id,
+            WasapiDirection.OUTPUT,
+            endpoints=current,
+        )
         missing = []
         if selection.input_device_id != "default" and input_endpoint is None:
             missing.append("input")

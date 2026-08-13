@@ -1,12 +1,20 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
+import time
 from enum import StrEnum
 from pathlib import Path
+from threading import RLock
 from typing import Callable
 
 from pydantic import BaseModel
+
+try:
+    import sounddevice as sd
+except ImportError:  # pragma: no cover - optional outside Windows product builds
+    sd = None
 
 
 class WasapiDirection(StrEnum):
@@ -23,59 +31,132 @@ class WasapiEndpoint(BaseModel):
 
 
 class WasapiEndpointCatalog:
-    """Enumerates stable Windows MMDevice endpoints without Core COM ownership."""
+    """Enumerates Windows audio endpoints without blocking Core request threads."""
 
-    def __init__(self, provider: Callable[[], list[WasapiEndpoint]] | None = None) -> None:
+    def __init__(
+        self,
+        provider: Callable[[], list[WasapiEndpoint]] | None = None,
+        *,
+        cache_ttl_s: float = 5.0,
+    ) -> None:
         self._provider = provider
+        self._cache_ttl_s = cache_ttl_s
+        self._cache: list[WasapiEndpoint] = []
+        self._cache_at = 0.0
+        self._lock = RLock()
 
     @property
     def available(self) -> bool:
         return self._provider is not None or os.name == "nt"
 
+    def refresh(self) -> list[WasapiEndpoint]:
+        result = self._enumerate()
+        with self._lock:
+            self._cache = [item.model_copy(deep=True) for item in result]
+            self._cache_at = time.monotonic()
+        return [item.model_copy(deep=True) for item in result]
+
     def endpoints(self, direction: WasapiDirection | None = None) -> list[WasapiEndpoint]:
+        now = time.monotonic()
+        with self._lock:
+            valid = self._cache and now - self._cache_at < self._cache_ttl_s
+            cached = [item.model_copy(deep=True) for item in self._cache] if valid else None
+        result = cached if cached is not None else self.refresh()
+        if direction is None:
+            return result
+        return [item for item in result if item.direction is direction]
+
+    def _enumerate(self) -> list[WasapiEndpoint]:
         if self._provider is not None:
-            result = [item.model_copy(deep=True) for item in self._provider()]
-        elif os.name != "nt":
-            result = []
-        else:
-            script = (
-                "Get-PnpDevice -Class AudioEndpoint -PresentOnly | "
-                "Where-Object {$_.Status -eq 'OK'} | "
-                "Select-Object InstanceId,FriendlyName | ConvertTo-Json -Compress"
-            )
+            return [item.model_copy(deep=True) for item in self._provider()]
+        if os.name != "nt":
+            return []
+        fast = self._enumerate_sounddevice()
+        if fast:
+            return fast
+        return self._enumerate_pnp_bounded()
+
+    @staticmethod
+    def _enumerate_sounddevice() -> list[WasapiEndpoint]:
+        if sd is None:
+            return []
+        try:
+            hostapis = sd.query_hostapis()
+            devices = sd.query_devices()
+            default_input, default_output = sd.default.device
+        except Exception:
+            return []
+        wasapi_hosts = {
+            index
+            for index, item in enumerate(hostapis)
+            if "wasapi" in str(item.get("name", "")).casefold()
+        }
+        result: list[WasapiEndpoint] = []
+        for index, item in enumerate(devices):
+            if wasapi_hosts and int(item.get("hostapi", -1)) not in wasapi_hosts:
+                continue
+            name = str(item.get("name", "Audio endpoint"))
+            max_input = int(item.get("max_input_channels", 0))
+            max_output = int(item.get("max_output_channels", 0))
+            if max_input > 0:
+                result.append(
+                    WasapiEndpoint(
+                        device_id=f"sounddevice:wasapi:input:{index}",
+                        name=name,
+                        direction=WasapiDirection.INPUT,
+                        is_default=index == int(default_input),
+                    )
+                )
+            if max_output > 0:
+                result.append(
+                    WasapiEndpoint(
+                        device_id=f"sounddevice:wasapi:output:{index}",
+                        name=name,
+                        direction=WasapiDirection.OUTPUT,
+                        is_default=index == int(default_output),
+                    )
+                )
+        return result
+
+    @staticmethod
+    def _enumerate_pnp_bounded() -> list[WasapiEndpoint]:
+        script = (
+            "Get-PnpDevice -Class AudioEndpoint -PresentOnly | "
+            "Where-Object {$_.Status -eq 'OK'} | "
+            "Select-Object InstanceId,FriendlyName | ConvertTo-Json -Compress"
+        )
+        try:
             completed = subprocess.run(
                 ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
                 capture_output=True,
                 text=True,
                 check=False,
+                timeout=0.75,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
-            if completed.returncode != 0 or not completed.stdout.strip():
-                result = []
-            else:
-                import json
-
-                try:
-                    raw = json.loads(completed.stdout)
-                except json.JSONDecodeError:
-                    raw = []
-                rows = raw if isinstance(raw, list) else [raw]
-                result = []
-                for row in rows:
-                    device_id = str(row.get("InstanceId", ""))
-                    endpoint_direction = direction_from_device_id(device_id)
-                    if not device_id or endpoint_direction is None:
-                        continue
-                    result.append(
-                        WasapiEndpoint(
-                            device_id=device_id,
-                            name=str(row.get("FriendlyName", "Audio endpoint")),
-                            direction=endpoint_direction,
-                        )
-                    )
-        if direction is None:
-            return result
-        return [item for item in result if item.direction is direction]
+        except (OSError, subprocess.TimeoutExpired):
+            return []
+        if completed.returncode != 0 or not completed.stdout.strip():
+            return []
+        try:
+            raw = json.loads(completed.stdout)
+        except json.JSONDecodeError:
+            return []
+        rows = raw if isinstance(raw, list) else [raw]
+        result: list[WasapiEndpoint] = []
+        for row in rows:
+            device_id = str(row.get("InstanceId", ""))
+            endpoint_direction = direction_from_device_id(device_id)
+            if not device_id or endpoint_direction is None:
+                continue
+            result.append(
+                WasapiEndpoint(
+                    device_id=device_id,
+                    name=str(row.get("FriendlyName", "Audio endpoint")),
+                    direction=endpoint_direction,
+                )
+            )
+        return result
 
     def inputs(self) -> list[WasapiEndpoint]:
         return self.endpoints(WasapiDirection.INPUT)
@@ -83,17 +164,24 @@ class WasapiEndpointCatalog:
     def outputs(self) -> list[WasapiEndpoint]:
         return self.endpoints(WasapiDirection.OUTPUT)
 
-    def choose(self, selector: str | None, direction: WasapiDirection = WasapiDirection.OUTPUT) -> WasapiEndpoint | None:
-        endpoints = [item for item in self.endpoints(direction) if item.active]
-        if not endpoints:
+    def choose(
+        self,
+        selector: str | None,
+        direction: WasapiDirection = WasapiDirection.OUTPUT,
+        *,
+        endpoints: list[WasapiEndpoint] | None = None,
+    ) -> WasapiEndpoint | None:
+        source = endpoints if endpoints is not None else self.endpoints(direction)
+        candidates = [item for item in source if item.direction is direction and item.active]
+        if not candidates:
             return None
         if not selector or selector == "default":
-            return next((item for item in endpoints if item.is_default), endpoints[0])
+            return next((item for item in candidates if item.is_default), candidates[0])
         lowered = selector.casefold()
-        exact = next((item for item in endpoints if item.device_id.casefold() == lowered), None)
+        exact = next((item for item in candidates if item.device_id.casefold() == lowered), None)
         if exact is not None:
             return exact
-        by_name = [item for item in endpoints if lowered in item.name.casefold()]
+        by_name = [item for item in candidates if lowered in item.name.casefold()]
         return by_name[0] if by_name else None
 
     def vr_candidates(self) -> list[WasapiEndpoint]:
