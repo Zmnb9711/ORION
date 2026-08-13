@@ -9,6 +9,7 @@ from time import perf_counter
 from tkinter import X, messagebox
 from tkinter import ttk
 from typing import Any
+from uuid import uuid4
 
 from orion.audio_hardware_test import AudioHardwareTester
 from orion.windows_wasapi_backend import WasapiEndpoint
@@ -40,7 +41,7 @@ class LauncherConversationTestMixin:
         log_dir = self.runtime_dir / "test-logs"
         log_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
-        path = log_dir / f"orion-test-{timestamp}.log"
+        path = log_dir / f"orion-test-{timestamp}-{uuid4().hex[:8]}.log"
         self._append_test_log(path, f"START test={test_name}")
         self._append_test_log(path, f"core_base_url={self.core.base_url}")
         return path
