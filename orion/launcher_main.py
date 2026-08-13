@@ -35,9 +35,9 @@ def main(argv: list[str] | None = None) -> int:
     os.environ["ORION_PROCESS_ROLE"] = "launcher"
     os.environ["ORION_CORE_BASE_URL"] = f"http://{args.host}:{args.port}"
 
-    from orion.desktop_launcher_audio import run_audio_desktop_launcher
+    from orion.desktop_launcher_conversation import run_conversational_audio_launcher
 
-    return run_audio_desktop_launcher(_runtime_root(), host=args.host, port=args.port)
+    return run_conversational_audio_launcher(_runtime_root(), host=args.host, port=args.port)
 
 
 if __name__ == "__main__":
