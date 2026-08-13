@@ -7,25 +7,18 @@ from tkinter import BOTH, LEFT, X, StringVar, messagebox
 from tkinter import ttk
 from typing import Any
 
+from orion.audio_hardware_test import AudioHardwareTester
+from orion.windows_wasapi_backend import WasapiEndpoint
+
 
 class LauncherAudioSectionsMixin:
-    """Production Launcher sections for Core/audio foundation diagnostics.
-
-    This milestone intentionally stops at endpoint discovery, selection, Core
-    acknowledgement and reconnect-safe persistence. STT, TTS and ATC voice
-    routing remain separate follow-up milestones.
-    """
+    """Production Launcher sections for Core/audio foundation diagnostics."""
 
     NAV_KEYS = ("home", "modules", "test", "settings")
 
     def nav_label(self, key: str) -> str:
-        fixed = {
-            "home": "Overview",
-            "modules": "Modules",
-            "test": "Test",
-            "settings": "Settings",
-        }
-        return fixed.get(key, super().nav_label(key))
+        fixed = {"home": "Overview", "modules": "Modules", "test": "Test", "settings": "Settings"}
+        return fixed[key] if key in fixed else super().nav_label(key)
 
     def _core_json(self, path: str, *, method: str = "GET", payload: dict[str, Any] | None = None) -> Any:
         data = None if payload is None else json.dumps(payload).encode("utf-8")
@@ -59,7 +52,6 @@ class LauncherAudioSectionsMixin:
             wraplength=780,
             justify="left",
         ).pack(anchor="w")
-
         row = ttk.Frame(self.content, style="Orion.TFrame")
         row.pack(fill=X, pady=(20, 0))
         modules = (
@@ -78,7 +70,7 @@ class LauncherAudioSectionsMixin:
         ttk.Label(hero, text="TEST", style="Hero.TLabel").pack(anchor="w", pady=(8, 3))
         ttk.Label(
             hero,
-            text="Run focused checks without leaving Launcher. This page is the expandable diagnostics surface for Core, audio, DCS, Voice and ATC.",
+            text="Run focused checks without leaving Launcher. This is the expandable diagnostics surface for Core, audio, DCS, Voice and ATC.",
             style="HeroMuted.TLabel",
             wraplength=800,
             justify="left",
@@ -108,14 +100,25 @@ class LauncherAudioSectionsMixin:
 
         footer = ttk.Frame(self.content, style="Orion.TFrame")
         footer.pack(fill=X, pady=(8, 0))
-        ttk.Button(footer, text="RUN AGAIN", style="Primary.TButton", command=lambda: self.show_page("test")).pack(side=LEFT)
-        ttk.Label(
-            self.content,
-            text="Physical microphone capture and selected-output playback are the next audio tranche. They will appear here as real tests, not simulated PASS results.",
-            style="Muted.TLabel",
-            wraplength=800,
-            justify="left",
-        ).pack(anchor="w", pady=(12, 0))
+        ttk.Button(footer, text="RUN AGAIN", style="Primary.TButton", command=lambda: self.show_page("test")).pack(side=LEFT, padx=(0, 8))
+        mic_button = ttk.Button(
+            footer,
+            text="TEST MICROPHONE",
+            style="Secondary.TButton",
+            command=lambda: self._run_physical_audio_test("input", resolved_in),
+        )
+        mic_button.pack(side=LEFT, padx=(0, 8))
+        output_button = ttk.Button(
+            footer,
+            text="TEST OUTPUT",
+            style="Secondary.TButton",
+            command=lambda: self._run_physical_audio_test("output", resolved_out),
+        )
+        output_button.pack(side=LEFT)
+        if resolved_in is None:
+            mic_button.configure(state="disabled")
+        if resolved_out is None:
+            output_button.configure(state="disabled")
 
     @staticmethod
     def _selection_text(selected: str, resolved: dict[str, Any] | None) -> str:
@@ -124,6 +127,22 @@ class LauncherAudioSectionsMixin:
         if selected == "default":
             return "WARNING — Windows Default selected; no active endpoint resolved"
         return f"FAIL — selected endpoint unavailable: {selected}"
+
+    def _run_physical_audio_test(self, direction: str, endpoint_payload: dict[str, Any] | None) -> None:
+        if endpoint_payload is None:
+            messagebox.showwarning("ORION Test", f"No active {direction} endpoint is resolved by Core", parent=self.root)
+            return
+        endpoint = WasapiEndpoint.model_validate(endpoint_payload)
+        tester = AudioHardwareTester()
+        try:
+            result = tester.test_input(endpoint) if direction == "input" else tester.test_output(endpoint)
+        except (ImportError, OSError, RuntimeError) as exc:
+            messagebox.showerror("ORION Test", str(exc), parent=self.root)
+            return
+        if result.ok:
+            messagebox.showinfo("ORION Test", result.message, parent=self.root)
+        else:
+            messagebox.showwarning("ORION Test", result.message, parent=self.root)
 
     def _page_settings(self) -> None:
         super()._page_settings()
@@ -136,7 +155,6 @@ class LauncherAudioSectionsMixin:
             wraplength=800,
             justify="left",
         ).pack(anchor="w", pady=(4, 12))
-
         try:
             inputs, outputs, state = self._audio_snapshot()
         except RuntimeError as exc:
@@ -158,7 +176,6 @@ class LauncherAudioSectionsMixin:
         ttk.Label(box, text="HEADPHONES / OUTPUT", style="CardTitle.TLabel").pack(anchor="w")
         ttk.Combobox(box, textvariable=output_var, values=tuple(output_map), state="readonly", width=70).pack(anchor="w", fill=X, pady=(6, 14))
         ttk.Label(box, text=f"Core: {state.get('message', 'Unknown')}", style="CardText.TLabel").pack(anchor="w")
-
         buttons = ttk.Frame(box, style="Card.TFrame")
         buttons.pack(fill=X, pady=(14, 0))
         ttk.Button(
