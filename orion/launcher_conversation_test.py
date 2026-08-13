@@ -5,6 +5,10 @@ from pathlib import Path
 from time import perf_counter
 from tkinter import X, messagebox
 from tkinter import ttk
+from typing import Any
+
+from orion.audio_hardware_test import AudioHardwareTester
+from orion.windows_wasapi_backend import WasapiEndpoint
 
 
 class LauncherConversationTestMixin:
@@ -41,6 +45,40 @@ class LauncherConversationTestMixin:
         stamp = datetime.now().isoformat(timespec="milliseconds")
         with path.open("a", encoding="utf-8") as handle:
             handle.write(f"{stamp} {message}\n")
+
+    def _run_physical_audio_test(self, direction: str, endpoint_payload: dict[str, Any] | None) -> None:
+        log_path = self._new_test_log(f"physical-{direction}")
+        if endpoint_payload is None:
+            self._append_test_log(log_path, "ERROR endpoint=unresolved")
+            self._append_test_log(log_path, "END status=FAIL")
+            messagebox.showwarning(
+                "ORION Test",
+                f"No active {direction} endpoint is resolved by Core\n\nTest log:\n{log_path}",
+                parent=self.root,
+            )
+            return
+
+        endpoint = WasapiEndpoint.model_validate(endpoint_payload)
+        self._append_test_log(log_path, f"ENDPOINT id={endpoint.device_id!r} name={endpoint.name!r}")
+        tester = AudioHardwareTester()
+        started = perf_counter()
+        try:
+            result = tester.test_input(endpoint) if direction == "input" else tester.test_output(endpoint)
+        except (ImportError, OSError, RuntimeError) as exc:
+            elapsed_ms = (perf_counter() - started) * 1000.0
+            self._append_test_log(log_path, f"ERROR elapsed_ms={elapsed_ms:.1f} exception={type(exc).__name__}: {exc}")
+            self._append_test_log(log_path, "END status=FAIL")
+            messagebox.showerror("ORION Test", f"{exc}\n\nTest log:\n{log_path}", parent=self.root)
+            return
+
+        elapsed_ms = (perf_counter() - started) * 1000.0
+        self._append_test_log(log_path, f"RESULT elapsed_ms={elapsed_ms:.1f} ok={result.ok} message={result.message!r}")
+        self._append_test_log(log_path, f"END status={'PASS' if result.ok else 'FAIL'}")
+        text = f"{result.message}\n\nTest log:\n{log_path}"
+        if result.ok:
+            messagebox.showinfo("ORION Test", text, parent=self.root)
+        else:
+            messagebox.showwarning("ORION Test", text, parent=self.root)
 
     def _run_conversational_audio_test(self) -> None:
         log_path = self._new_test_log("conversation")
