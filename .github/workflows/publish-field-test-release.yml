@@ -1,0 +1,39 @@
+name: Publish ORION Field Test Release
+
+on:
+  push:
+    branches:
+      - fix/audio-ui-field-test
+    paths:
+      - ".github/workflows/publish-field-test-release.yml"
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download verified Build 190 installer artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p payload
+          gh api repos/${{ github.repository }}/actions/artifacts/9194521771/zip > setup.zip
+          unzip -j setup.zip -d payload
+          test -f payload/ORION-Alpha-0.2-Setup.exe
+          sha256sum payload/ORION-Alpha-0.2-Setup.exe
+
+      - name: Publish GitHub Release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete orion-alpha-field-test-190 --repo "${{ github.repository }}" --yes --cleanup-tag 2>/dev/null || true
+          gh release create orion-alpha-field-test-190 \
+            payload/ORION-Alpha-0.2-Setup.exe \
+            --repo "${{ github.repository }}" \
+            --target d2568c58fcae3ad9264f76c80051e5e5f60eafb8 \
+            --title "ORION Alpha 0.2 Field Test — Build #190" \
+            --notes "Verified field-test installer from Windows Build #190. CI #1014, Windows Build #190 and Installer Smoke #86 all succeeded. Includes Launcher anti-flicker and Audio UI/Test fixes." \
+            --prerelease
