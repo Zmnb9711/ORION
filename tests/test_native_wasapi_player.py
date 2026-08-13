@@ -34,21 +34,23 @@ class FakeStream:
 
 
 class FakeSoundDevice:
-    def __init__(self) -> None:
+    def __init__(self, native_rate: int = 16000) -> None:
         self.player = None
         self.last_stream = None
         self.stop_after_first_write = False
         self.kwargs = None
+        self.native_rate = native_rate
 
     def query_hostapis(self):
         return [{"name": "Windows WASAPI"}, {"name": "MME"}]
 
-    def query_devices(self):
-        return [
-            {"name": "Speakers (Realtek)", "max_output_channels": 2, "hostapi": 0},
-            {"name": "Pimax Dream Air Audio", "max_output_channels": 2, "hostapi": 0},
-            {"name": "Legacy Output", "max_output_channels": 2, "hostapi": 1},
+    def query_devices(self, device=None):
+        devices = [
+            {"name": "Speakers (Realtek)", "max_output_channels": 2, "hostapi": 0, "default_samplerate": self.native_rate},
+            {"name": "Pimax Dream Air Audio", "max_output_channels": 2, "hostapi": 0, "default_samplerate": self.native_rate},
+            {"name": "Legacy Output", "max_output_channels": 2, "hostapi": 1, "default_samplerate": self.native_rate},
         ]
+        return devices if device is None else devices[device]
 
     class WasapiSettings:
         def __init__(self, exclusive=False) -> None:
@@ -59,11 +61,11 @@ class FakeSoundDevice:
         return FakeStream(self)
 
 
-def _wav(path: Path, frames: int = 5000, sample: int = 0) -> None:
+def _wav(path: Path, frames: int = 5000, sample: int = 0, rate: int = 16000) -> None:
     with wave.open(str(path), "wb") as output:
         output.setnchannels(1)
         output.setsampwidth(2)
-        output.setframerate(16000)
+        output.setframerate(rate)
         output.writeframes(sample.to_bytes(2, "little", signed=True) * frames)
 
 
@@ -81,6 +83,22 @@ def test_resolves_vr_endpoint_to_wasapi_output_device(tmp_path: Path) -> None:
     assert sd.kwargs["samplerate"] == 16000
     assert sd.kwargs["extra_settings"].exclusive is False
     assert sd.last_stream.writes > 0
+
+
+def test_resamples_wav_to_native_output_samplerate(tmp_path: Path) -> None:
+    sd = FakeSoundDevice(native_rate=48000)
+    player = NativeWasapiPlayer(sd, chunk_frames=1024)
+    sd.player = player
+    path = tmp_path / "voice.wav"
+    _wav(path, frames=1600, sample=1000, rate=16000)
+
+    player.play(path, WasapiEndpoint(device_id="realtek", name="Speakers (Realtek)"))
+
+    assert sd.kwargs["samplerate"] == 48000
+    written = b"".join(sd.last_stream.payloads)
+    assert len(written) == 1600 * 3 * 2
+    first_sample = int.from_bytes(written[:2], "little", signed=True)
+    assert first_sample == 1000
 
 
 def test_stop_aborts_active_stream_and_ends_chunked_playback(tmp_path: Path) -> None:
