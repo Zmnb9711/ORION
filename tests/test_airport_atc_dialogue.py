@@ -30,7 +30,6 @@ def _advance_to_tower(service, arrival, orchestration, identity):
     arrival.confirm_final(identity.session_id)
     arrival.begin_tower_handoff(identity.session_id, frequency="250.000", reason="contact Tower")
     orchestration.complete_approach_to_tower(identity.session_id, reason="Tower contact established")
-    arrival.clear_landing(identity.session_id, reason="runway clear")
     assert service.status(identity.session_id).procedural_state == "tower_arrival"
 
 
