@@ -12,12 +12,29 @@ from orion.windows_wasapi_backend import WasapiEndpoint
 
 
 class LauncherAudioSectionsMixin:
-    """Production Launcher sections for Core/audio foundation diagnostics."""
+    """Production Launcher sections for Core/audio foundation diagnostics.
 
-    NAV_KEYS = ("home", "modules", "test", "settings")
+    New sections are additive only. Existing, already-validated Launcher pages
+    remain visible and reachable; Modules/Test and Audio settings extend the
+    canonical product shell rather than replacing any prior functionality.
+    """
+
+    NAV_KEYS = (
+        "home",
+        "fly",
+        "mission",
+        "modules",
+        "test",
+        "diagnostics",
+        "providers",
+        "updates",
+        "settings",
+        "logs",
+        "about",
+    )
 
     def nav_label(self, key: str) -> str:
-        fixed = {"home": "Overview", "modules": "Modules", "test": "Test", "settings": "Settings"}
+        fixed = {"modules": "Modules", "test": "Test"}
         return fixed[key] if key in fixed else super().nav_label(key)
 
     def _core_json(self, path: str, *, method: str = "GET", payload: dict[str, Any] | None = None) -> Any:
