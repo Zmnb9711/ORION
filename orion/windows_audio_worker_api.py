@@ -4,6 +4,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, HTTPException
 
+from orion.audio_conversation_test import ConversationalAudioTestResult, run_conversational_audio_test
 from orion.audio_device_config import AudioEndpointSelection, AudioEndpointState, audio_device_config
 from orion.windows_audio_worker import AudioDevice, AudioPlaybackRequest, AudioPlaybackStatus, windows_audio_worker
 from orion.windows_wasapi_backend import WasapiDirection, WasapiEndpoint, wasapi_endpoint_catalog
@@ -53,6 +54,11 @@ def set_audio_selection(selection: AudioEndpointSelection) -> AudioEndpointState
 @router.post("/selection/reset", response_model=AudioEndpointState)
 def reset_audio_selection() -> AudioEndpointState:
     return audio_device_config.reset()
+
+
+@router.post("/test/conversation", response_model=ConversationalAudioTestResult)
+def conversation_audio_test() -> ConversationalAudioTestResult:
+    return run_conversational_audio_test()
 
 
 @router.put("/device", response_model=AudioDevice)
