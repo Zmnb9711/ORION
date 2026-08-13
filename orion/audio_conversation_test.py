@@ -71,8 +71,8 @@ def _capture_wav(endpoint: WasapiEndpoint, target: Path, duration_seconds: float
     samplerate = _native_input_samplerate(device)
     frames = max(1, int(duration_seconds * samplerate))
     try:
-        audio = sd.rec(frames, samplerate=samplerate, channels=1, dtype="int16", device=device)
-        sd.wait()
+        with sd.RawInputStream(samplerate=samplerate, device=device, channels=1, dtype="int16") as stream:
+            audio, _overflowed = stream.read(frames)
     except Exception as exc:
         raise RuntimeError(
             f"Microphone capture failed at Windows/WASAPI native sample rate {samplerate} Hz: {exc}"
