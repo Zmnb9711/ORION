@@ -58,7 +58,23 @@ def reset_audio_selection() -> AudioEndpointState:
 
 @router.post("/test/conversation", response_model=ConversationalAudioTestResult)
 def conversation_audio_test() -> ConversationalAudioTestResult:
-    return run_conversational_audio_test()
+    try:
+        return run_conversational_audio_test()
+    except Exception as exc:
+        # A diagnostics endpoint must report a failed stage to Launcher rather
+        # than turn a device/driver problem into an opaque HTTP 500.
+        return ConversationalAudioTestResult(
+            ok=False,
+            stages={
+                "core_connected": True,
+                "input_resolved": False,
+                "audio_captured": False,
+                "phrase_recognized": False,
+                "output_resolved": False,
+                "response_played": False,
+            },
+            message=f"Audio test failed inside Core: {exc}",
+        )
 
 
 @router.put("/device", response_model=AudioDevice)
