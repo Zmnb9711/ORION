@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from threading import RLock
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -13,6 +14,7 @@ from orion.atc_core import (
 )
 from orion.atc_integration import AtcIntegratedRuntime
 from orion.atc_operations import OperationalOverlay
+from orion.atc_session_state import AtcRuntimeSession
 from orion.atc_simulator_sync import AtcIntegrationMode, NativeActionRequest
 
 
@@ -32,6 +34,45 @@ class AtcStatusSnapshot(BaseModel):
 
 class VirtualAtcService(AtcIntegratedRuntime):
     """Application-level Virtual ATC facade for carrier and fixed-airfield engines."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._session_index_lock = RLock()
+        self._session_index: dict[tuple[str, str, str | None], UUID] = {}
+
+    @staticmethod
+    def _session_key(mission_id: str, aircraft_id: str, facility_id: str | None) -> tuple[str, str, str | None]:
+        return (mission_id, aircraft_id, facility_id)
+
+    def open_session(
+        self,
+        identity: AtcSessionIdentity,
+        *,
+        procedural_state: str,
+        integration_mode: AtcIntegrationMode = AtcIntegrationMode.ORION_PRIMARY,
+    ) -> AtcRuntimeSession:
+        created = super().open_session(identity, procedural_state=procedural_state, integration_mode=integration_mode)
+        with self._session_index_lock:
+            self._session_index[self._session_key(identity.mission_id, identity.aircraft_id, identity.facility_id)] = identity.session_id
+        return created
+
+    def get_or_open_session(
+        self,
+        *,
+        mission_id: str,
+        aircraft_id: str,
+        facility_id: str | None = None,
+        procedural_state: str = "atc_contact",
+        integration_mode: AtcIntegrationMode = AtcIntegrationMode.ORION_PRIMARY,
+    ) -> tuple[AtcStatusSnapshot, bool]:
+        key = self._session_key(mission_id, aircraft_id, facility_id)
+        with self._session_index_lock:
+            existing_id = self._session_index.get(key)
+            if existing_id is not None and self.sessions.get(existing_id) is not None:
+                return self.status(existing_id), False
+            identity = AtcSessionIdentity(mission_id=mission_id, aircraft_id=aircraft_id, facility_id=facility_id)
+            self.open_session(identity, procedural_state=procedural_state, integration_mode=integration_mode)
+            return self.status(identity.session_id), True
 
     def begin_event_gated_handoff(
         self,
@@ -55,71 +96,33 @@ class VirtualAtcService(AtcIntegratedRuntime):
             frequency=frequency,
             channel=channel,
         )
-        self.core.history.record(
-            session_id=session_id,
-            event_type="handoff_started",
-            reason=reason,
-            source_agency=source,
-            related_id=handoff.handoff_id,
-            details={
-                "destination": destination.value,
-                "transfer_mode": handoff.transfer_mode.value,
-                "scopes": ",".join(scope.value for scope in handoff.scopes),
-                "procedural_state": runtime.procedural_state,
-            },
-        )
+        self.core.history.record(session_id=session_id, event_type="handoff_started", reason=reason, source_agency=source, related_id=handoff.handoff_id, details={"destination": destination.value, "transfer_mode": handoff.transfer_mode.value, "scopes": ",".join(scope.value for scope in handoff.scopes), "procedural_state": runtime.procedural_state})
         return handoff
 
-    def complete_event_gated_handoff(
-        self,
-        handoff_id: UUID,
-        *,
-        event_name: str,
-        reason: str,
-        contact_established: bool | None = None,
-    ) -> ControllerHandoffTransaction:
+    def complete_event_gated_handoff(self, handoff_id: UUID, *, event_name: str, reason: str, contact_established: bool | None = None) -> ControllerHandoffTransaction:
         handoff = self.core.authority.get_handoff(handoff_id)
         if handoff is None:
             raise KeyError("ATC handoff not found")
         self._require_session(handoff.session_id)
         if handoff.transfer_mode is not HandoffTransferMode.EVENT_GATED_IRREVERSIBLE:
             raise ValueError("Handoff is not event-gated irreversible")
-        completed = self.core.authority.complete_handoff(
-            handoff_id,
-            contact_established=contact_established,
-        )
-        self.core.history.record(
-            session_id=completed.session_id,
-            event_type="handoff_completed_on_event",
-            reason=reason,
-            source_agency=completed.destination_agency,
-            related_id=completed.handoff_id,
-            details={
-                "event_name": event_name,
-                "source": completed.source_agency.value,
-                "destination": completed.destination_agency.value,
-                "scopes": ",".join(scope.value for scope in completed.scopes),
-            },
-        )
+        completed = self.core.authority.complete_handoff(handoff_id, contact_established=contact_established)
+        self.core.history.record(session_id=completed.session_id, event_type="handoff_completed_on_event", reason=reason, source_agency=completed.destination_agency, related_id=completed.handoff_id, details={"event_name": event_name, "source": completed.source_agency.value, "destination": completed.destination_agency.value, "scopes": ",".join(scope.value for scope in completed.scopes)})
         return completed
 
     def close_session(self, session_id: UUID, *, reason: str) -> AtcSessionIdentity:
         runtime = self._require_session(session_id)
         identity = runtime.identity.model_copy(deep=True)
-        self.core.history.record(
-            session_id=session_id,
-            event_type="session_closed",
-            reason=reason,
-            details={
-                "procedural_state": runtime.procedural_state,
-                "integration_mode": self.get_integration_mode(session_id).value,
-            },
-        )
+        self.core.history.record(session_id=session_id, event_type="session_closed", reason=reason, details={"procedural_state": runtime.procedural_state, "integration_mode": self.get_integration_mode(session_id).value})
         self.core.authority.clear_session(session_id)
         self.core.instructions.clear_session(session_id)
         self.simulator_sync.clear_session(session_id)
         self.sessions.remove(session_id)
         self._integration_modes.pop(session_id, None)
+        key = self._session_key(identity.mission_id, identity.aircraft_id, identity.facility_id)
+        with self._session_index_lock:
+            if self._session_index.get(key) == session_id:
+                self._session_index.pop(key, None)
         return identity
 
     def status(self, session_id: UUID) -> AtcStatusSnapshot:
@@ -128,23 +131,7 @@ class VirtualAtcService(AtcIntegratedRuntime):
         instructions = self.core.instructions.list_session(session_id)
         native_sync = self.simulator_sync.list_session(session_id)
         events = self.core.history.list(session_id)
-        return AtcStatusSnapshot(
-            session_id=session_id,
-            mission_id=runtime.identity.mission_id,
-            aircraft_id=runtime.identity.aircraft_id,
-            facility_id=runtime.identity.facility_id,
-            procedural_state=runtime.procedural_state,
-            overlays=sorted(runtime.overlays, key=lambda value: value.value),
-            integration_mode=self.get_integration_mode(session_id),
-            authority={item.scope: item.agency for item in ownership},
-            pending_instruction_count=sum(
-                1
-                for item in instructions
-                if item.state.value in {"pending", "transmitted"}
-            ),
-            native_sync_requests=native_sync,
-            event_count=len(events),
-        )
+        return AtcStatusSnapshot(session_id=session_id, mission_id=runtime.identity.mission_id, aircraft_id=runtime.identity.aircraft_id, facility_id=runtime.identity.facility_id, procedural_state=runtime.procedural_state, overlays=sorted(runtime.overlays, key=lambda value: value.value), integration_mode=self.get_integration_mode(session_id), authority={item.scope: item.agency for item in ownership}, pending_instruction_count=sum(1 for item in instructions if item.state.value in {"pending", "transmitted"}), native_sync_requests=native_sync, event_count=len(events))
 
 
 virtual_atc = VirtualAtcService()
