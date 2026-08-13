@@ -71,6 +71,7 @@ for _router_module in (
     "orion.aircraft_knowledge_api",
     "orion.aar_events_api",
     "orion.atc_core_api",
+    "orion.airport_atc_dialogue_api",
     "orion.coalition_control_api",
     "orion.mission_bridge_api",
     "orion.mission_context_api",
