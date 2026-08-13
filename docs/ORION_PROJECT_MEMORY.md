@@ -118,6 +118,35 @@ Important invariants:
 
 These invariants are also reflected in the #65.5 hardening baseline.
 
+### DCS telemetry architecture — audit decision, 2026-08-13
+
+The DCS telemetry audit established that ORION must not treat DCS data as one homogeneous telemetry stream. Four distinct data layers are required:
+
+1. **Generic DCS telemetry** — simulator-level aircraft identity and kinematics that can be normalized across many aircraft: position, altitude, attitude, velocity and related flight state.
+2. **Module-dependent generic API** — engines, fuel, mechanical state, payload, RWR/EW, navigation and similar data exposed by DCS APIs but not necessarily with identical completeness/semantics for every full-fidelity module. Preserve raw values when normalization is uncertain and validate per module.
+3. **Aircraft-specific cockpit telemetry** — detailed clickable cockpit/device arguments and indications. This is the path to deep Aircraft Knowledge, but it requires a validated adapter/mapping for each aircraft.
+4. **Mission World layer** — units, groups, airbases, weapons, events, coalition state, tasks, threats and tactical context. This remains a separate lower-rate mission-state source and must not be mixed blindly into the high-rate player-aircraft telemetry packet.
+
+Approved architecture: **universal normalized telemetry core + specialized aircraft adapters**. F/A-18C is the first deep adapter/proof aircraft; later adapters should follow for other supported modules while generic telemetry continues to provide broad all-aircraft/helicopter coverage.
+
+The target normalized telemetry domains are:
+
+`Identity -> Kinematics -> Airframe -> Propulsion -> Fuel -> Navigation -> Radios -> Payload/Weapons -> Warnings -> EW/RWR -> Sensors -> Cockpit`, with Mission World alongside rather than inside the high-rate aircraft stream.
+
+Important rules from the audit:
+
+- Do not assume that a DCS API function has identical semantics or completeness on every module.
+- Do not guess aircraft-specific cockpit argument IDs; mappings must be validated.
+- Optional/restricted data must degrade to unavailable/restricted/null and must never break the telemetry loop.
+- Multiplayer/server export restrictions must be respected; ORION must not infer data the server denies.
+- Raw source values should be retained where normalized meaning is uncertain, allowing later correction without losing evidence.
+- Capability reporting should explicitly distinguish available, restricted, unsupported and not-yet-mapped data.
+- Generic telemetry and deep F/A-18C integration are complementary, not competing approaches.
+
+At the time of this audit the existing ORION Export.lua was using only a small subset of the available data surface: aircraft identity, latitude/longitude/altitude, heading, vector-derived speed, vertical speed and a small set of Hornet cockpit arguments (COMM selectors, TACAN raw arguments and display brightness). The Core model already had a `fuel_fraction` field, but the exporter was not populating it.
+
+The next telemetry generation is tracked as **Telemetry v0.3**: expand the schema and exporter so the 5,000-packet diagnostic recorder captures materially useful aircraft/system state before the next large F/A-18C smoke run.
+
 ## 4. Launcher / Windows product direction
 
 The Launcher is the user-facing control surface for the real ORION runtime, not a disconnected demo product.
@@ -192,6 +221,19 @@ By Alpha 0.2 Build #137, the deliberately narrow Windows smoke scope was:
 
 Explicit exclusion for this smoke pass: voice, microphone, TTS and voice commands. Those remain product requirements, but are deferred until Launcher/Core/DCS connectivity is stable.
 
+### DCS telemetry capability audit / Telemetry v0.3 — 2026-08-13
+
+After proving the live DCS transport path, the project explicitly audited what data DCS can provide versus what ORION was actually collecting. The audit showed a large gap: the transport was working, but the payload represented only a small fraction of the useful aircraft/system state available to ORION.
+
+Decision:
+
+1. Do not spend another substantial F/A-18C user flight merely collecting thousands of minimally informative packets.
+2. First expand the normalized telemetry schema and exporter.
+3. Combine a broad generic layer with validated aircraft-specific adapters rather than choosing one approach.
+4. Keep Mission World as a separate architecture/source.
+5. Use the 5,000-packet recorder to validate actual values and module behavior, not assumptions from documentation.
+6. Request the next large F/A-18C smoke only after the Telemetry v0.3 tranche has passed CI/Windows build gates.
+
 ## 6. Real Windows/DCS test evidence
 
 ### Earlier Alpha evidence
@@ -230,11 +272,11 @@ Add/preserve at least:
 - useful packet-rate statistics (current/last and, where practical, average/max for the session);
 - live-session start/end timestamps;
 - reason/state transition for disconnect/stale;
-- a small bounded/ring-buffer history of important connectivity/state transitions where practical.
+- a bounded history of important connectivity/state transitions;
+- up to **5,000 last validated telemetry packets** for post-session analysis;
+- a last-known-good state/session summary so diagnostics remain useful after DCS exits.
 
-Desired post-session diagnostic behavior: after a successful F/A-18C session and DCS shutdown, diagnostics should still be able to say that the last detected aircraft was F/A-18C, how much telemetry was received, when the last packet arrived, and why the connection is now stale/disconnected.
-
-This is the immediate engineering action before asking for another user DCS smoke run.
+Desired post-session diagnostic behavior: after a successful F/A-18C session and DCS shutdown, diagnostics should still be able to say that the last detected aircraft was F/A-18C, how much telemetry was received, when the last packet arrived, why the connection is now stale/disconnected, and expose a sufficiently large validated telemetry sample for detailed analysis.
 
 ## 8. Current product capability map
 
@@ -292,18 +334,25 @@ This follows the same durable principle as Architecture Decision Records: preser
 
 As of 2026-08-13:
 
-1. Improve telemetry diagnostics/history so a useful session record survives DCS shutdown.
-2. Build/test that change through the normal CI/Windows Alpha path.
-3. Ask for the next F/A-18C smoke run only after the improved diagnostic build is ready.
-4. In that smoke, verify live telemetry, aircraft identification/history, Core survival after Launcher closure and Launcher reconnection.
-5. Close the Launcher/Core/DCS-connectivity milestone only on real Windows/DCS evidence.
-6. Then resume deferred product layers in the agreed sequence rather than mixing them into the current smoke pass.
+1. Complete Telemetry v0.3 foundation and exporter population so the next DCS capture contains materially richer data.
+2. Preserve backward compatibility with v0.2 while adding sequence/capture metadata and normalized domains.
+3. Populate generic DCS data first using protected/validated calls; add F/A-18C-specific cockpit fields only through validated mappings.
+4. Keep Mission World separate from high-rate aircraft telemetry.
+5. Pass Python CI, Lua validation, Windows Installer Smoke and Alpha Windows Build.
+6. Only then ask for the next F/A-18C smoke run.
+7. Use the resulting up-to-5,000-packet capture to audit real values, availability, restrictions and module-specific semantics.
+8. Verify Core survival after Launcher closure and Launcher reconnection in the same real Windows/DCS evidence pass.
 
 ## 13. Items that must not be forgotten
 
 - ORION is larger than voice commands: ATC + Mission Control + tactical support are core identity.
 - All-aircraft/helicopter support remains a long-term requirement.
-- F/A-18C is the current proof aircraft, not the final scope.
+- F/A-18C is the current proof aircraft and first deep adapter, not the final scope.
+- The approved telemetry strategy is **universal normalized core + specialized aircraft adapters**.
+- DCS telemetry has distinct generic, module-dependent, aircraft-specific cockpit and Mission World layers; do not collapse them into one undifferentiated stream.
+- Mission World remains separate from high-rate player-aircraft telemetry.
+- Preserve raw values when DCS/module semantics are uncertain and validate before normalization.
+- Respect multiplayer/server export restrictions and represent unavailable/restricted capabilities explicitly.
 - Laser designation must include reporting/handling the laser code.
 - Smoke designation is required.
 - AAR must expose frequency, TACAN and tanker location, not merely say that a tanker exists.
@@ -312,5 +361,5 @@ As of 2026-08-13:
 - Casual/random conversation is approved.
 - Core must remain independent of Launcher.
 - Real Windows/DCS smoke evidence outranks optimistic progress estimates.
-- Voice/audio work is intentionally outside the current Alpha 0.2 connectivity smoke pass.
-- The next user flight should wait until telemetry history diagnostics are improved.
+- Voice/audio work is intentionally outside the current Alpha 0.2 connectivity/telemetry smoke pass.
+- The next user flight should wait until Telemetry v0.3 is built and validated through CI/Windows gates.
