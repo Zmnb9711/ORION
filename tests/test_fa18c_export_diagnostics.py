@@ -31,4 +31,4 @@ def test_diagnostics_only_targets_hornet() -> None:
 def test_regular_telemetry_still_carries_cockpit_state() -> None:
     assert '"cockpit_state":%s' in EXPORT
     assert '"diagnostics":%s' in EXPORT
-    assert '"protocol_version":"0.2"' in EXPORT
+    assert '"protocol_version":"0.3"' in EXPORT
