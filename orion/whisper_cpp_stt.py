@@ -28,6 +28,8 @@ WHISPER_MODEL_URL = (
 )
 DEFAULT_THREADS = 4
 TARGET_SAMPLE_RATE = 16000
+WINDOWS_ILLEGAL_INSTRUCTION = 0xC000001D
+PORTABLE_CPU_BACKEND = "ggml-cpu-x64.dll"
 ProgressCallback = Callable[[str, int, int | None], None]
 
 
@@ -206,6 +208,67 @@ def _prepare_input_wav(source: Path, target: Path) -> None:
         wav.writeframes(pcm)
 
 
+def _windows_status(returncode: int) -> int:
+    return returncode & 0xFFFFFFFF
+
+
+def _is_windows_illegal_instruction(returncode: int) -> bool:
+    return os.name == "nt" and _windows_status(returncode) == WINDOWS_ILLEGAL_INSTRUCTION
+
+
+def _portable_backend_available(root: Path) -> bool:
+    return (root / PORTABLE_CPU_BACKEND).is_file()
+
+
+def _force_portable_cpu_backend(root: Path) -> list[Path]:
+    """Disable optimized CPU DLLs so ggml falls back to the generic x64 backend.
+
+    Official whisper.cpp Windows releases are built with GGML_CPU_ALL_VARIANTS.
+    On a machine where the selected optimized backend terminates with Windows
+    STATUS_ILLEGAL_INSTRUCTION, preserving only ggml-cpu-x64.dll gives ORION a
+    conservative CPU path without touching the Whisper model.
+    """
+    portable = root / PORTABLE_CPU_BACKEND
+    if not portable.is_file():
+        return []
+    disabled: list[Path] = []
+    for candidate in sorted(root.glob("ggml-cpu-*.dll")):
+        if candidate.name.lower() == PORTABLE_CPU_BACKEND:
+            continue
+        destination = candidate.with_suffix(candidate.suffix + ".orion-disabled")
+        if destination.exists():
+            destination.unlink()
+        candidate.replace(destination)
+        disabled.append(destination)
+    marker = root / "ORION_PORTABLE_CPU_BACKEND.txt"
+    marker.write_text(
+        "ORION disabled optimized ggml CPU backends after STATUS_ILLEGAL_INSTRUCTION; "
+        "ggml-cpu-x64.dll is used for compatibility.\n",
+        encoding="utf-8",
+    )
+    return disabled
+
+
+def _run_whisper(command: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        check=False,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+
+
+def _failure_detail(completed: subprocess.CompletedProcess[str], *, recovered: bool = False) -> str:
+    stderr = completed.stderr.strip()
+    stdout = completed.stdout.strip()
+    detail = stderr or stdout or "no process output"
+    status = _windows_status(completed.returncode) if os.name == "nt" else completed.returncode
+    status_text = f"0x{status:08X}" if os.name == "nt" else str(status)
+    prefix = "portable CPU retry failed" if recovered else "process failed"
+    return f"{prefix}; exit={completed.returncode} status={status_text}; {detail}"
+
+
 def recognize_wav(path: Path, *, language: str = "auto") -> str:
     if not runtime_ready():
         raise RuntimeError("Whisper medium is not prepared. Install speech recognition from Launcher first.")
@@ -236,16 +299,21 @@ def recognize_wav(path: Path, *, language: str = "auto") -> str:
             "--language",
             language,
         ]
-        completed = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            check=False,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-        if completed.returncode != 0:
-            detail = completed.stderr.strip() or completed.stdout.strip() or f"exit code {completed.returncode}"
-            raise RuntimeError(f"Whisper STT failed: {detail}")
+        completed = _run_whisper(command)
+        if completed.returncode != 0 and _is_windows_illegal_instruction(completed.returncode):
+            root = cli.parent
+            if _portable_backend_available(root):
+                _force_portable_cpu_backend(root)
+                completed = _run_whisper(command)
+                if completed.returncode != 0:
+                    raise RuntimeError(f"Whisper STT failed: {_failure_detail(completed, recovered=True)}")
+            else:
+                raise RuntimeError(
+                    "Whisper STT failed with Windows STATUS_ILLEGAL_INSTRUCTION (0xC000001D), "
+                    "and the portable ggml-cpu-x64.dll backend is unavailable"
+                )
+        elif completed.returncode != 0:
+            raise RuntimeError(f"Whisper STT failed: {_failure_detail(completed)}")
 
         transcript_path = output_base.with_suffix(".txt")
         if transcript_path.is_file():
