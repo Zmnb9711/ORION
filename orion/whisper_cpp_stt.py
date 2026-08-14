@@ -56,8 +56,15 @@ def whisper_model_path() -> Path:
     return stt_root() / "models" / WHISPER_MODEL_FILENAME
 
 
+def _windows_runtime_complete(cli: Path) -> bool:
+    if os.name != "nt":
+        return True
+    return (cli.parent / PORTABLE_CPU_BACKEND).is_file()
+
+
 def runtime_ready() -> bool:
-    return whisper_cli_path().is_file() and whisper_model_path().is_file()
+    cli = whisper_cli_path()
+    return cli.is_file() and whisper_model_path().is_file() and _windows_runtime_complete(cli)
 
 
 def configured_threads() -> int:
@@ -98,10 +105,10 @@ def _download(url: str, target: Path, *, stage: str, progress: ProgressCallback 
 
 
 def ensure_runtime(progress: ProgressCallback | None = None) -> tuple[Path, Path]:
-    """Install pinned CPU-only whisper.cpp and multilingual medium model if absent."""
+    """Install or repair pinned CPU-only whisper.cpp and multilingual medium model."""
     cli = whisper_cli_path()
     model = whisper_model_path()
-    if cli.is_file() and model.is_file():
+    if cli.is_file() and model.is_file() and _windows_runtime_complete(cli):
         if progress is not None:
             progress("ready", 1, 1)
         return cli, model
@@ -112,7 +119,8 @@ def ensure_runtime(progress: ProgressCallback | None = None) -> tuple[Path, Path
     root.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="orion-whisper-install-") as tmp:
         tmp_dir = Path(tmp)
-        if not cli.is_file():
+        runtime_needs_repair = not cli.is_file() or not _windows_runtime_complete(cli)
+        if runtime_needs_repair:
             archive = tmp_dir / "whisper-bin-x64.zip"
             _download(WHISPER_WINDOWS_X64_URL, archive, stage="runtime", progress=progress)
             if progress is not None:
@@ -144,7 +152,7 @@ def ensure_runtime(progress: ProgressCallback | None = None) -> tuple[Path, Path
             model.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(temporary_model, model)
 
-    if not cli.is_file() or not model.is_file():
+    if not runtime_ready():
         raise RuntimeError("ORION Whisper runtime provisioning did not produce the required files")
     if progress is not None:
         progress("ready", 1, 1)
