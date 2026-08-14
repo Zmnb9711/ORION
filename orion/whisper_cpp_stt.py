@@ -1,17 +1,30 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
+import urllib.request
 import wave
+import zipfile
 from array import array
 from pathlib import Path
 
 WHISPER_MODEL_NAME = "medium"
 WHISPER_MODEL_FILENAME = "ggml-medium.bin"
 WHISPER_MODEL_SHA1 = "fd9727b6e1217c2f614f9b698455c4ffd82463b4"
+WHISPER_CPP_VERSION = "v1.9.2"
+WHISPER_WINDOWS_X64_SHA256 = "49dcc16de826f20bd53d44f947a1ae49dfa81f86cad67a64d80820cb192d674a"
+WHISPER_WINDOWS_X64_URL = (
+    "https://github.com/ggml-org/whisper.cpp/releases/download/"
+    f"{WHISPER_CPP_VERSION}/whisper-bin-x64.zip"
+)
+WHISPER_MODEL_URL = (
+    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/"
+    f"{WHISPER_MODEL_FILENAME}?download=true"
+)
 DEFAULT_THREADS = 4
 TARGET_SAMPLE_RATE = 16000
 
@@ -28,19 +41,26 @@ def _product_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
+def stt_root() -> Path:
+    override = os.environ.get("ORION_WHISPER_ROOT")
+    if override:
+        return Path(override).expanduser().resolve()
+    return _product_root() / "VoiceSTT"
+
+
 def whisper_cli_path() -> Path:
     override = os.environ.get("ORION_WHISPER_CLI")
     if override:
         return Path(override).expanduser().resolve()
     name = "whisper-cli.exe" if os.name == "nt" else "whisper-cli"
-    return _product_root() / "VoiceSTT" / name
+    return stt_root() / name
 
 
 def whisper_model_path() -> Path:
     override = os.environ.get("ORION_WHISPER_MODEL")
     if override:
         return Path(override).expanduser().resolve()
-    return _product_root() / "VoiceSTT" / "models" / WHISPER_MODEL_FILENAME
+    return stt_root() / "models" / WHISPER_MODEL_FILENAME
 
 
 def configured_threads() -> int:
@@ -50,6 +70,67 @@ def configured_threads() -> int:
     except ValueError:
         value = DEFAULT_THREADS
     return max(1, min(value, 16))
+
+
+def _hash(path: Path, algorithm: str) -> str:
+    digest = hashlib.new(algorithm)
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _download(url: str, target: Path) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    request = urllib.request.Request(url, headers={"User-Agent": "ORION-DCS/0.2"})
+    with urllib.request.urlopen(request, timeout=120) as response, target.open("wb") as output:
+        shutil.copyfileobj(response, output, length=1024 * 1024)
+
+
+def ensure_runtime() -> tuple[Path, Path]:
+    """Install the pinned CPU-only whisper.cpp runtime and multilingual medium model if absent."""
+    cli = whisper_cli_path()
+    model = whisper_model_path()
+    if cli.is_file() and model.is_file():
+        return cli, model
+    if os.name != "nt" and not cli.is_file():
+        raise RuntimeError("Automatic ORION Whisper provisioning currently supports Windows x64 only")
+
+    root = stt_root()
+    root.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="orion-whisper-install-") as tmp:
+        tmp_dir = Path(tmp)
+        if not cli.is_file():
+            archive = tmp_dir / "whisper-bin-x64.zip"
+            _download(WHISPER_WINDOWS_X64_URL, archive)
+            actual = _hash(archive, "sha256")
+            if actual != WHISPER_WINDOWS_X64_SHA256:
+                raise RuntimeError(f"Whisper runtime checksum mismatch: {actual}")
+            extracted = tmp_dir / "runtime"
+            with zipfile.ZipFile(archive) as package:
+                package.extractall(extracted)
+            found = next(extracted.rglob("whisper-cli.exe"), None)
+            if found is None:
+                raise RuntimeError("whisper-cli.exe was not found in the official whisper.cpp package")
+            for item in found.parent.iterdir():
+                destination = root / item.name
+                if item.is_dir():
+                    shutil.copytree(item, destination, dirs_exist_ok=True)
+                else:
+                    shutil.copy2(item, destination)
+
+        if not model.is_file():
+            temporary_model = tmp_dir / WHISPER_MODEL_FILENAME
+            _download(WHISPER_MODEL_URL, temporary_model)
+            actual = _hash(temporary_model, "sha1")
+            if actual != WHISPER_MODEL_SHA1:
+                raise RuntimeError(f"Whisper medium model checksum mismatch: {actual}")
+            model.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(temporary_model, model)
+
+    if not cli.is_file() or not model.is_file():
+        raise RuntimeError("ORION Whisper runtime provisioning did not produce the required files")
+    return cli, model
 
 
 def _read_pcm16_mono_16k(source: Path) -> bytes:
@@ -110,13 +191,7 @@ def _prepare_input_wav(source: Path, target: Path) -> None:
 
 
 def recognize_wav(path: Path, *, language: str = "auto") -> str:
-    cli = whisper_cli_path()
-    model = whisper_model_path()
-    if not cli.is_file():
-        raise RuntimeError(f"ORION Whisper CLI is missing: {cli}")
-    if not model.is_file():
-        raise RuntimeError(f"ORION Whisper {WHISPER_MODEL_NAME} model is missing: {model}")
-
+    cli, model = ensure_runtime()
     with tempfile.TemporaryDirectory(prefix="orion-whisper-") as tmp:
         tmp_dir = Path(tmp)
         prepared = tmp_dir / "input-16k.wav"
@@ -159,14 +234,3 @@ def recognize_wav(path: Path, *, language: str = "auto") -> str:
         else:
             text = completed.stdout.strip()
         return " ".join(text.split())
-
-
-def copy_runtime_payload(source_dir: Path, destination_dir: Path) -> None:
-    """Build/packaging helper for copying the CPU-only whisper.cpp runtime payload."""
-    destination_dir.mkdir(parents=True, exist_ok=True)
-    for item in source_dir.iterdir():
-        target = destination_dir / item.name
-        if item.is_dir():
-            shutil.copytree(item, target, dirs_exist_ok=True)
-        else:
-            shutil.copy2(item, target)
