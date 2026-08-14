@@ -7,7 +7,13 @@ import pytest
 from orion.pcm_dsp import _encode
 from orion.tts_audio import AudioRenderRequest, VoiceProfile
 from orion.voice_core import VoiceAgent
-from orion.windows_sapi_backend import WindowsSapiBackend, _powershell_sapi_script
+from orion.windows_sapi_backend import (
+    SAPI_OUTPUT_BITS,
+    SAPI_OUTPUT_CHANNELS,
+    SAPI_OUTPUT_SAMPLE_RATE,
+    WindowsSapiBackend,
+    _powershell_sapi_script,
+)
 
 
 def test_powershell_sapi_script_escapes_text_and_voice() -> None:
@@ -22,6 +28,23 @@ def test_powershell_sapi_script_escapes_text_and_voice() -> None:
     assert "Voice''s Name" in script
     assert "$s.Rate = 1" in script
     assert "$s.Volume = 80" in script
+
+
+def test_powershell_sapi_script_forces_pcm48_mono() -> None:
+    script = _powershell_sapi_script(
+        text="ORION audio test",
+        target="C:\\Temp\\orion.wav",
+        rate=0,
+        volume=100,
+        voice_name="",
+    )
+    assert SAPI_OUTPUT_SAMPLE_RATE == 48000
+    assert SAPI_OUTPUT_BITS == 16
+    assert SAPI_OUTPUT_CHANNELS == 1
+    assert "SpeechAudioFormatInfo(48000" in script
+    assert "AudioBitsPerSample]::Sixteen" in script
+    assert "AudioChannel]::Mono" in script
+    assert "SetOutputToWaveFile" in script
 
 
 def test_non_windows_native_backend_reports_unavailable(monkeypatch, tmp_path) -> None:
