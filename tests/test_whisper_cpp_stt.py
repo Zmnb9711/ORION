@@ -28,6 +28,11 @@ def _write_wav(
         wav.writeframes(payload)
 
 
+def _bind_runtime(monkeypatch: pytest.MonkeyPatch, cli: Path, model: Path) -> None:
+    monkeypatch.setattr(stt, "whisper_cli_path", lambda: cli)
+    monkeypatch.setattr(stt, "whisper_model_path", lambda: model)
+
+
 def test_medium_model_is_canonical_default() -> None:
     assert stt.WHISPER_MODEL_NAME == "medium"
     assert stt.WHISPER_MODEL_FILENAME == "ggml-medium.bin"
@@ -67,20 +72,32 @@ def test_runtime_paths_use_runtime_dir_and_overrides(monkeypatch: pytest.MonkeyP
     assert stt.whisper_model_path() == custom_model.resolve()
 
 
+def test_runtime_ready_requires_cli_and_model(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    cli = tmp_path / "whisper-cli.exe"
+    model = tmp_path / "ggml-medium.bin"
+    _bind_runtime(monkeypatch, cli, model)
+    assert stt.runtime_ready() is False
+    cli.write_bytes(b"cli")
+    assert stt.runtime_ready() is False
+    model.write_bytes(b"model")
+    assert stt.runtime_ready() is True
+
+
 def test_hash_reads_file(tmp_path: Path) -> None:
     target = tmp_path / "payload.bin"
     target.write_bytes(b"orion")
     assert stt._hash(target, "sha1") == "091e17a9b3e16e0ce475fc93693b3549fb1cc7e8"
 
 
-def test_ensure_runtime_returns_existing_payload(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_ensure_runtime_returns_existing_payload_and_reports_ready(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     cli = tmp_path / "whisper-cli.exe"
     model = tmp_path / "ggml-medium.bin"
     cli.write_bytes(b"cli")
     model.write_bytes(b"model")
-    monkeypatch.setattr(stt, "whisper_cli_path", lambda: cli)
-    monkeypatch.setattr(stt, "whisper_model_path", lambda: model)
-    assert stt.ensure_runtime() == (cli, model)
+    _bind_runtime(monkeypatch, cli, model)
+    events: list[tuple[str, int, int | None]] = []
+    assert stt.ensure_runtime(progress=lambda *args: events.append(args)) == (cli, model)
+    assert events == [("ready", 1, 1)]
 
 
 def test_ensure_runtime_rejects_automatic_non_windows_provisioning(
@@ -88,8 +105,7 @@ def test_ensure_runtime_rejects_automatic_non_windows_provisioning(
 ) -> None:
     cli = tmp_path / "whisper-cli"
     model = tmp_path / "ggml-medium.bin"
-    monkeypatch.setattr(stt, "whisper_cli_path", lambda: cli)
-    monkeypatch.setattr(stt, "whisper_model_path", lambda: model)
+    _bind_runtime(monkeypatch, cli, model)
     monkeypatch.setattr(stt, "os", SimpleNamespace(name="posix", environ=os.environ))
     with pytest.raises(RuntimeError, match="Windows x64 only"):
         stt.ensure_runtime()
@@ -102,27 +118,32 @@ def test_ensure_runtime_provisions_cpu_runtime_and_medium_model(
     cli = root / "whisper-cli.exe"
     model = root / "models" / "ggml-medium.bin"
     monkeypatch.setattr(stt, "stt_root", lambda: root)
-    monkeypatch.setattr(stt, "whisper_cli_path", lambda: cli)
-    monkeypatch.setattr(stt, "whisper_model_path", lambda: model)
+    _bind_runtime(monkeypatch, cli, model)
     monkeypatch.setattr(stt, "os", SimpleNamespace(name="nt", environ=os.environ))
 
-    def fake_download(url: str, target: Path) -> None:
+    def fake_download(url: str, target: Path, *, stage: str, progress=None) -> None:
         if target.suffix == ".zip":
             with zipfile.ZipFile(target, "w") as package:
                 package.writestr("bin/whisper-cli.exe", b"cli")
                 package.writestr("bin/whisper.dll", b"dll")
         else:
             target.write_bytes(b"model")
+        if progress is not None:
+            progress(stage, target.stat().st_size, target.stat().st_size)
 
     def fake_hash(path: Path, algorithm: str) -> str:
         return stt.WHISPER_WINDOWS_X64_SHA256 if algorithm == "sha256" else stt.WHISPER_MODEL_SHA1
 
+    events: list[tuple[str, int, int | None]] = []
     monkeypatch.setattr(stt, "_download", fake_download)
     monkeypatch.setattr(stt, "_hash", fake_hash)
-    assert stt.ensure_runtime() == (cli, model)
+    assert stt.ensure_runtime(progress=lambda *args: events.append(args)) == (cli, model)
     assert cli.read_bytes() == b"cli"
     assert (root / "whisper.dll").read_bytes() == b"dll"
     assert model.read_bytes() == b"model"
+    assert events[-1] == ("ready", 1, 1)
+    assert any(stage == "runtime" for stage, _, _ in events)
+    assert any(stage == "model" for stage, _, _ in events)
 
 
 def test_ensure_runtime_rejects_runtime_checksum_mismatch(
@@ -132,10 +153,9 @@ def test_ensure_runtime_rejects_runtime_checksum_mismatch(
     cli = root / "whisper-cli.exe"
     model = root / "models" / "ggml-medium.bin"
     monkeypatch.setattr(stt, "stt_root", lambda: root)
-    monkeypatch.setattr(stt, "whisper_cli_path", lambda: cli)
-    monkeypatch.setattr(stt, "whisper_model_path", lambda: model)
+    _bind_runtime(monkeypatch, cli, model)
     monkeypatch.setattr(stt, "os", SimpleNamespace(name="nt", environ=os.environ))
-    monkeypatch.setattr(stt, "_download", lambda url, target: target.write_bytes(b"bad"))
+    monkeypatch.setattr(stt, "_download", lambda url, target, **kwargs: target.write_bytes(b"bad"))
     monkeypatch.setattr(stt, "_hash", lambda path, algorithm: "bad-checksum")
     with pytest.raises(RuntimeError, match="runtime checksum mismatch"):
         stt.ensure_runtime()
@@ -148,11 +168,10 @@ def test_ensure_runtime_rejects_archive_without_cli(
     cli = root / "whisper-cli.exe"
     model = root / "models" / "ggml-medium.bin"
     monkeypatch.setattr(stt, "stt_root", lambda: root)
-    monkeypatch.setattr(stt, "whisper_cli_path", lambda: cli)
-    monkeypatch.setattr(stt, "whisper_model_path", lambda: model)
+    _bind_runtime(monkeypatch, cli, model)
     monkeypatch.setattr(stt, "os", SimpleNamespace(name="nt", environ=os.environ))
 
-    def fake_download(url: str, target: Path) -> None:
+    def fake_download(url: str, target: Path, **kwargs) -> None:
         with zipfile.ZipFile(target, "w") as package:
             package.writestr("bin/readme.txt", "missing cli")
 
@@ -171,9 +190,8 @@ def test_ensure_runtime_rejects_medium_model_checksum_mismatch(
     model = root / "models" / "ggml-medium.bin"
     cli.write_bytes(b"cli")
     monkeypatch.setattr(stt, "stt_root", lambda: root)
-    monkeypatch.setattr(stt, "whisper_cli_path", lambda: cli)
-    monkeypatch.setattr(stt, "whisper_model_path", lambda: model)
-    monkeypatch.setattr(stt, "_download", lambda url, target: target.write_bytes(b"bad-model"))
+    _bind_runtime(monkeypatch, cli, model)
+    monkeypatch.setattr(stt, "_download", lambda url, target, **kwargs: target.write_bytes(b"bad-model"))
     monkeypatch.setattr(stt, "_hash", lambda path, algorithm: "bad-model-checksum")
     with pytest.raises(RuntimeError, match="medium model checksum mismatch"):
         stt.ensure_runtime()
@@ -218,6 +236,14 @@ def test_prepare_input_rejects_non_pcm16(tmp_path: Path) -> None:
         stt._read_pcm16_mono_16k(source)
 
 
+def test_recognizer_refuses_to_download_implicitly(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    source = tmp_path / "source.wav"
+    _write_wav(source, sample_rate=16000)
+    monkeypatch.setattr(stt, "runtime_ready", lambda: False)
+    with pytest.raises(RuntimeError, match="not prepared"):
+        stt.recognize_wav(source)
+
+
 def test_recognizer_forces_cpu_only(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     source = tmp_path / "source.wav"
     cli = tmp_path / ("whisper-cli.exe" if os.name == "nt" else "whisper-cli")
@@ -225,7 +251,8 @@ def test_recognizer_forces_cpu_only(monkeypatch: pytest.MonkeyPatch, tmp_path: P
     _write_wav(source, sample_rate=16000)
     cli.write_bytes(b"cli")
     model.write_bytes(b"model")
-    monkeypatch.setattr(stt, "ensure_runtime", lambda: (cli, model))
+    _bind_runtime(monkeypatch, cli, model)
+    monkeypatch.setattr(stt, "runtime_ready", lambda: True)
 
     captured: dict[str, object] = {}
 
@@ -258,7 +285,8 @@ def test_recognizer_reads_generated_transcript_file(
     _write_wav(source, sample_rate=16000)
     cli.write_bytes(b"cli")
     model.write_bytes(b"model")
-    monkeypatch.setattr(stt, "ensure_runtime", lambda: (cli, model))
+    _bind_runtime(monkeypatch, cli, model)
+    monkeypatch.setattr(stt, "runtime_ready", lambda: True)
 
     def fake_run(command, **kwargs):
         output_base = Path(command[command.index("--output-file") + 1])
@@ -276,7 +304,8 @@ def test_recognizer_reports_cli_error(monkeypatch: pytest.MonkeyPatch, tmp_path:
     _write_wav(source, sample_rate=16000)
     cli.write_bytes(b"cli")
     model.write_bytes(b"model")
-    monkeypatch.setattr(stt, "ensure_runtime", lambda: (cli, model))
+    _bind_runtime(monkeypatch, cli, model)
+    monkeypatch.setattr(stt, "runtime_ready", lambda: True)
     monkeypatch.setattr(
         stt.subprocess,
         "run",
