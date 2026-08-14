@@ -8,13 +8,17 @@ from pathlib import Path
 from orion.pcm_dsp import pcm_peak, pcm_resample_mono, pcm_scale, pcm_to_mono
 from orion.tts_audio import AudioRenderRequest, AudioRenderResult, TtsBackend
 
+SAPI_OUTPUT_SAMPLE_RATE = 48000
+SAPI_OUTPUT_BITS = 16
+SAPI_OUTPUT_CHANNELS = 1
+
 
 class WindowsSapiBackend:
     """Native Windows implementation using PowerShell/System.Speech and winsound.
 
-    SAPI synthesis writes a WAV file. Playback uses Python's winsound module, which
-    targets the Windows default output endpoint. Exact endpoint selection is kept as
-    a future WASAPI backend rather than pretending winsound can route by device id.
+    SAPI synthesis writes a deterministic PCM WAV file (48 kHz, 16-bit, mono).
+    Playback uses Python's winsound module, which targets the Windows default output
+    endpoint. Exact endpoint selection is handled by NativeWasapiPlayer.
 
     Radio DSP is applied only to ORION-owned WAV copies. It never changes the DCS or
     Windows game-audio session volume.
@@ -59,8 +63,38 @@ class WindowsSapiBackend:
         )
         if completed.returncode != 0 or not target.exists():
             detail = completed.stderr.strip() or completed.stdout.strip() or "SAPI synthesis failed"
-            return AudioRenderResult(accepted=False, backend=TtsBackend.WINDOWS_SAPI, command_id=request.command_id, output_path=str(target), message=detail)
-        return AudioRenderResult(accepted=True, backend=TtsBackend.WINDOWS_SAPI, command_id=request.command_id, output_path=str(target), message="Windows SAPI synthesis completed")
+            return AudioRenderResult(
+                accepted=False,
+                backend=TtsBackend.WINDOWS_SAPI,
+                command_id=request.command_id,
+                output_path=str(target),
+                message=detail,
+            )
+        try:
+            with wave.open(str(target), "rb") as wav:
+                if wav.getframerate() != SAPI_OUTPUT_SAMPLE_RATE:
+                    raise RuntimeError(f"unexpected sample rate {wav.getframerate()} Hz")
+                if wav.getsampwidth() * 8 != SAPI_OUTPUT_BITS:
+                    raise RuntimeError(f"unexpected sample width {wav.getsampwidth() * 8} bit")
+                if wav.getnchannels() != SAPI_OUTPUT_CHANNELS:
+                    raise RuntimeError(f"unexpected channel count {wav.getnchannels()}")
+                if wav.getnframes() <= 0:
+                    raise RuntimeError("SAPI produced an empty WAV")
+        except (wave.Error, OSError, RuntimeError) as exc:
+            return AudioRenderResult(
+                accepted=False,
+                backend=TtsBackend.WINDOWS_SAPI,
+                command_id=request.command_id,
+                output_path=str(target),
+                message=f"Invalid SAPI WAV output: {exc}",
+            )
+        return AudioRenderResult(
+            accepted=True,
+            backend=TtsBackend.WINDOWS_SAPI,
+            command_id=request.command_id,
+            output_path=str(target),
+            message="Windows SAPI synthesis completed (48 kHz PCM16 mono)",
+        )
 
     def prepare_radio(self, path: Path) -> Path:
         """Create an ORION-only narrow-band radio rendition of a PCM WAV file."""
@@ -103,7 +137,9 @@ class WindowsSapiBackend:
         if not self.available:
             raise RuntimeError("Native Windows playback is only available on Windows")
         if device_id not in {"", "default"}:
-            raise RuntimeError("Native winsound backend supports the Windows default output only; use a WASAPI backend for explicit device routing")
+            raise RuntimeError(
+                "Native winsound backend supports the Windows default output only; use a WASAPI backend for explicit device routing"
+            )
         if not path.exists():
             raise FileNotFoundError(path)
         import winsound
@@ -140,9 +176,6 @@ def _powershell_sapi_script(
     if escaped_voice:
         select_voice = f"$s.SelectVoice('{escaped_voice}'); "
     else:
-        # Prefer a deterministic role-specific installed voice for the requested
-        # locale. If only one suitable voice exists, modulo selection gracefully
-        # falls back to it rather than breaking TTS.
         select_voice = (
             "$voices = @($s.GetInstalledVoices() | Where-Object { $_.Enabled -and $_.VoiceInfo.Culture.Name -eq '"
             + escaped_locale
@@ -155,7 +188,11 @@ def _powershell_sapi_script(
         "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
         f"{select_voice}"
         f"$s.Rate = {rate}; $s.Volume = {volume}; "
-        f"$s.SetOutputToWaveFile('{escaped_target}'); "
+        "$fmt = New-Object System.Speech.AudioFormat.SpeechAudioFormatInfo("
+        f"{SAPI_OUTPUT_SAMPLE_RATE}, "
+        "[System.Speech.AudioFormat.AudioBitsPerSample]::Sixteen, "
+        "[System.Speech.AudioFormat.AudioChannel]::Mono); "
+        f"$s.SetOutputToWaveFile('{escaped_target}', $fmt); "
         f"$s.Speak('{escaped_text}'); "
         "$s.Dispose();"
     )
