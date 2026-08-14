@@ -16,8 +16,8 @@ from pathlib import Path
 WHISPER_MODEL_NAME = "medium"
 WHISPER_MODEL_FILENAME = "ggml-medium.bin"
 WHISPER_MODEL_SHA1 = "fd9727b6e1217c2f614f9b698455c4ffd82463b4"
-WHISPER_CPP_VERSION = "v1.9.2"
-WHISPER_WINDOWS_X64_SHA256 = "49dcc16de826f20bd53d44f947a1ae49dfa81f86cad67a64d80820cb192d674a"
+WHISPER_CPP_VERSION = "v1.8.6"
+WHISPER_WINDOWS_X64_SHA256 = "b07ea0b1b4115a38e1a7b07debf581f0b77d999925f8acb8f39d322b0ba0a822"
 WHISPER_WINDOWS_X64_URL = (
     "https://github.com/ggml-org/whisper.cpp/releases/download/"
     f"{WHISPER_CPP_VERSION}/whisper-bin-x64.zip"
@@ -33,7 +33,8 @@ WINDOWS_FAIL_FAST_EXCEPTION = 0xC0000409
 WINDOWS_PORTABLE_RECOVERY_STATUSES = frozenset(
     {WINDOWS_ILLEGAL_INSTRUCTION, WINDOWS_FAIL_FAST_EXCEPTION}
 )
-PORTABLE_CPU_BACKEND = "ggml-cpu-x64.dll"
+PORTABLE_CPU_BACKEND = "ggml-cpu.dll"
+RUNTIME_VERSION_MARKER = "ORION_WHISPER_RUNTIME_VERSION.txt"
 ProgressCallback = Callable[[str, int, int | None], None]
 
 
@@ -63,7 +64,12 @@ def whisper_model_path() -> Path:
 def _windows_runtime_complete(cli: Path) -> bool:
     if os.name != "nt":
         return True
-    return (cli.parent / PORTABLE_CPU_BACKEND).is_file()
+    marker = cli.parent / RUNTIME_VERSION_MARKER
+    try:
+        installed_version = marker.read_text(encoding="utf-8").strip()
+    except OSError:
+        return False
+    return (cli.parent / PORTABLE_CPU_BACKEND).is_file() and installed_version == WHISPER_CPP_VERSION
 
 
 def runtime_ready() -> bool:
@@ -144,6 +150,7 @@ def ensure_runtime(progress: ProgressCallback | None = None) -> tuple[Path, Path
                     shutil.copytree(item, destination, dirs_exist_ok=True)
                 else:
                     shutil.copy2(item, destination)
+            (root / RUNTIME_VERSION_MARKER).write_text(WHISPER_CPP_VERSION + "\n", encoding="utf-8")
 
         if not model.is_file():
             temporary_model = tmp_dir / WHISPER_MODEL_FILENAME
@@ -233,14 +240,12 @@ def _portable_backend_available(root: Path) -> bool:
 
 
 def _force_portable_cpu_backend(root: Path, *, trigger_status: int | None = None) -> list[Path]:
-    """Disable optimized CPU DLLs so ggml falls back to the generic x64 backend."""
+    """Disable optimized CPU DLLs so ggml falls back to the pinned generic CPU backend."""
     portable = root / PORTABLE_CPU_BACKEND
     if not portable.is_file():
         return []
     disabled: list[Path] = []
     for candidate in sorted(root.glob("ggml-cpu-*.dll")):
-        if candidate.name.lower() == PORTABLE_CPU_BACKEND:
-            continue
         destination = candidate.with_suffix(candidate.suffix + ".orion-disabled")
         if destination.exists():
             destination.unlink()
@@ -249,8 +254,8 @@ def _force_portable_cpu_backend(root: Path, *, trigger_status: int | None = None
     marker = root / "ORION_PORTABLE_CPU_BACKEND.txt"
     status_text = f"0x{trigger_status:08X}" if trigger_status is not None else "unknown"
     marker.write_text(
-        "ORION disabled optimized ggml CPU backends after a Windows whisper.cpp backend crash "
-        f"({status_text}); ggml-cpu-x64.dll is used for compatibility.\n",
+        "ORION is using the pinned generic ggml-cpu.dll backend after a Windows whisper.cpp backend crash "
+        f"({status_text}).\n",
         encoding="utf-8",
     )
     return disabled
@@ -272,7 +277,7 @@ def _failure_detail(completed: subprocess.CompletedProcess[str], *, recovered: b
     detail = stderr or stdout or "no process output"
     status = _windows_status(completed.returncode) if os.name == "nt" else completed.returncode
     status_text = f"0x{status:08X}" if os.name == "nt" else str(status)
-    prefix = "portable CPU retry failed" if recovered else "process failed"
+    prefix = "generic CPU retry failed" if recovered else "process failed"
     return f"{prefix}; exit={completed.returncode} status={status_text}; {detail}"
 
 
@@ -318,7 +323,7 @@ def recognize_wav(path: Path, *, language: str = "auto") -> str:
             else:
                 raise RuntimeError(
                     f"Whisper STT failed with recoverable Windows backend status 0x{status:08X}, "
-                    "and the portable ggml-cpu-x64.dll backend is unavailable"
+                    "and the pinned ggml-cpu.dll backend is unavailable"
                 )
         elif completed.returncode != 0:
             raise RuntimeError(f"Whisper STT failed: {_failure_detail(completed)}")
