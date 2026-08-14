@@ -80,6 +80,9 @@ def test_runtime_ready_requires_cli_and_model(monkeypatch: pytest.MonkeyPatch, t
     cli.write_bytes(b"cli")
     assert stt.runtime_ready() is False
     model.write_bytes(b"model")
+    if os.name == "nt":
+        assert stt.runtime_ready() is False
+        (tmp_path / stt.PORTABLE_CPU_BACKEND).write_bytes(b"x64")
     assert stt.runtime_ready() is True
 
 
@@ -94,6 +97,8 @@ def test_ensure_runtime_returns_existing_payload_and_reports_ready(monkeypatch: 
     model = tmp_path / "ggml-medium.bin"
     cli.write_bytes(b"cli")
     model.write_bytes(b"model")
+    if os.name == "nt":
+        (tmp_path / stt.PORTABLE_CPU_BACKEND).write_bytes(b"x64")
     _bind_runtime(monkeypatch, cli, model)
     events: list[tuple[str, int, int | None]] = []
     assert stt.ensure_runtime(progress=lambda *args: events.append(args)) == (cli, model)
@@ -191,6 +196,8 @@ def test_ensure_runtime_rejects_medium_model_checksum_mismatch(
     cli = root / "whisper-cli.exe"
     model = root / "models" / "ggml-medium.bin"
     cli.write_bytes(b"cli")
+    if os.name == "nt":
+        (root / stt.PORTABLE_CPU_BACKEND).write_bytes(b"x64")
     monkeypatch.setattr(stt, "stt_root", lambda: root)
     _bind_runtime(monkeypatch, cli, model)
     monkeypatch.setattr(stt, "_download", lambda url, target, **kwargs: target.write_bytes(b"bad-model"))
