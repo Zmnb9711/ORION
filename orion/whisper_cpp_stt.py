@@ -29,6 +29,10 @@ WHISPER_MODEL_URL = (
 DEFAULT_THREADS = 4
 TARGET_SAMPLE_RATE = 16000
 WINDOWS_ILLEGAL_INSTRUCTION = 0xC000001D
+WINDOWS_FAIL_FAST_EXCEPTION = 0xC0000409
+WINDOWS_PORTABLE_RECOVERY_STATUSES = frozenset(
+    {WINDOWS_ILLEGAL_INSTRUCTION, WINDOWS_FAIL_FAST_EXCEPTION}
+)
 PORTABLE_CPU_BACKEND = "ggml-cpu-x64.dll"
 ProgressCallback = Callable[[str, int, int | None], None]
 
@@ -220,22 +224,16 @@ def _windows_status(returncode: int) -> int:
     return returncode & 0xFFFFFFFF
 
 
-def _is_windows_illegal_instruction(returncode: int) -> bool:
-    return os.name == "nt" and _windows_status(returncode) == WINDOWS_ILLEGAL_INSTRUCTION
+def _is_windows_portable_recovery_status(returncode: int) -> bool:
+    return os.name == "nt" and _windows_status(returncode) in WINDOWS_PORTABLE_RECOVERY_STATUSES
 
 
 def _portable_backend_available(root: Path) -> bool:
     return (root / PORTABLE_CPU_BACKEND).is_file()
 
 
-def _force_portable_cpu_backend(root: Path) -> list[Path]:
-    """Disable optimized CPU DLLs so ggml falls back to the generic x64 backend.
-
-    Official whisper.cpp Windows releases are built with GGML_CPU_ALL_VARIANTS.
-    On a machine where the selected optimized backend terminates with Windows
-    STATUS_ILLEGAL_INSTRUCTION, preserving only ggml-cpu-x64.dll gives ORION a
-    conservative CPU path without touching the Whisper model.
-    """
+def _force_portable_cpu_backend(root: Path, *, trigger_status: int | None = None) -> list[Path]:
+    """Disable optimized CPU DLLs so ggml falls back to the generic x64 backend."""
     portable = root / PORTABLE_CPU_BACKEND
     if not portable.is_file():
         return []
@@ -249,9 +247,10 @@ def _force_portable_cpu_backend(root: Path) -> list[Path]:
         candidate.replace(destination)
         disabled.append(destination)
     marker = root / "ORION_PORTABLE_CPU_BACKEND.txt"
+    status_text = f"0x{trigger_status:08X}" if trigger_status is not None else "unknown"
     marker.write_text(
-        "ORION disabled optimized ggml CPU backends after STATUS_ILLEGAL_INSTRUCTION; "
-        "ggml-cpu-x64.dll is used for compatibility.\n",
+        "ORION disabled optimized ggml CPU backends after a Windows whisper.cpp backend crash "
+        f"({status_text}); ggml-cpu-x64.dll is used for compatibility.\n",
         encoding="utf-8",
     )
     return disabled
@@ -308,16 +307,17 @@ def recognize_wav(path: Path, *, language: str = "auto") -> str:
             language,
         ]
         completed = _run_whisper(command)
-        if completed.returncode != 0 and _is_windows_illegal_instruction(completed.returncode):
+        if completed.returncode != 0 and _is_windows_portable_recovery_status(completed.returncode):
             root = cli.parent
+            status = _windows_status(completed.returncode)
             if _portable_backend_available(root):
-                _force_portable_cpu_backend(root)
+                _force_portable_cpu_backend(root, trigger_status=status)
                 completed = _run_whisper(command)
                 if completed.returncode != 0:
                     raise RuntimeError(f"Whisper STT failed: {_failure_detail(completed, recovered=True)}")
             else:
                 raise RuntimeError(
-                    "Whisper STT failed with Windows STATUS_ILLEGAL_INSTRUCTION (0xC000001D), "
+                    f"Whisper STT failed with recoverable Windows backend status 0x{status:08X}, "
                     "and the portable ggml-cpu-x64.dll backend is unavailable"
                 )
         elif completed.returncode != 0:
