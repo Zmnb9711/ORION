@@ -12,6 +12,22 @@ def test_windows_status_normalizes_signed_ntstatus():
     assert stt._windows_status(-1073741795) == stt.WINDOWS_ILLEGAL_INSTRUCTION
 
 
+def test_runtime_ready_requires_complete_cpu_runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    cli = tmp_path / "whisper-cli.exe"
+    model = tmp_path / "models" / stt.WHISPER_MODEL_FILENAME
+    model.parent.mkdir()
+    cli.write_bytes(b"cli")
+    model.write_bytes(b"model")
+
+    monkeypatch.setattr(stt, "whisper_cli_path", lambda: cli)
+    monkeypatch.setattr(stt, "whisper_model_path", lambda: model)
+    monkeypatch.setattr(stt, "_windows_runtime_complete", lambda candidate: False)
+    assert stt.runtime_ready() is False
+
+    monkeypatch.setattr(stt, "_windows_runtime_complete", lambda candidate: True)
+    assert stt.runtime_ready() is True
+
+
 def test_force_portable_cpu_backend_keeps_x64_and_disables_optimized(tmp_path: Path):
     generic = tmp_path / "ggml-cpu-x64.dll"
     haswell = tmp_path / "ggml-cpu-haswell.dll"
