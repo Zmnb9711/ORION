@@ -67,7 +67,7 @@ def test_recognize_wav_retries_with_portable_backend_after_illegal_instruction(
     monkeypatch.setattr(stt, "whisper_cli_path", lambda: cli)
     monkeypatch.setattr(stt, "whisper_model_path", lambda: model)
     monkeypatch.setattr(stt, "_prepare_input_wav", lambda source, target: target.write_bytes(b"wav"))
-    monkeypatch.setattr(stt, "_is_windows_illegal_instruction", lambda returncode: returncode == -1073741795)
+    monkeypatch.setattr(stt, "_is_windows_portable_recovery_status", lambda returncode: returncode == -1073741795)
 
     calls: list[list[str]] = []
 
