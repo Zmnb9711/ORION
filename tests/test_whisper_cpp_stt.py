@@ -31,6 +31,12 @@ def test_thread_budget_defaults_to_four(monkeypatch: pytest.MonkeyPatch) -> None
     assert stt.configured_threads() == 16
 
 
+def test_runtime_path_uses_orion_runtime_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("ORION_RUNTIME_DIR", str(tmp_path))
+    monkeypatch.delenv("ORION_WHISPER_ROOT", raising=False)
+    assert stt.stt_root() == tmp_path / "stt" / "whisper.cpp"
+
+
 def test_prepare_input_resamples_to_whisper_format(tmp_path: Path) -> None:
     source = tmp_path / "source.wav"
     target = tmp_path / "target.wav"
@@ -50,8 +56,7 @@ def test_recognizer_forces_cpu_only(monkeypatch: pytest.MonkeyPatch, tmp_path: P
     _write_wav(source, sample_rate=16000)
     cli.write_bytes(b"cli")
     model.write_bytes(b"model")
-    monkeypatch.setattr(stt, "whisper_cli_path", lambda: cli)
-    monkeypatch.setattr(stt, "whisper_model_path", lambda: model)
+    monkeypatch.setattr(stt, "ensure_runtime", lambda: (cli, model))
 
     captured: dict[str, object] = {}
 
