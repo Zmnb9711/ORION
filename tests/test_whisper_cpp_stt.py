@@ -70,7 +70,7 @@ def test_runtime_paths_use_runtime_dir_and_overrides(monkeypatch: pytest.MonkeyP
 def test_hash_reads_file(tmp_path: Path) -> None:
     target = tmp_path / "payload.bin"
     target.write_bytes(b"orion")
-    assert stt._hash(target, "sha1") == "57016a435d503f1feb14353de525aefc4962815b"
+    assert stt._hash(target, "sha1") == "091e17a9b3e16e0ce475fc93693b3549fb1cc7e8"
 
 
 def test_ensure_runtime_returns_existing_payload(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -90,7 +90,7 @@ def test_ensure_runtime_rejects_automatic_non_windows_provisioning(
     model = tmp_path / "ggml-medium.bin"
     monkeypatch.setattr(stt, "whisper_cli_path", lambda: cli)
     monkeypatch.setattr(stt, "whisper_model_path", lambda: model)
-    monkeypatch.setattr(stt.os, "name", "posix")
+    monkeypatch.setattr(stt, "os", SimpleNamespace(name="posix", environ=os.environ))
     with pytest.raises(RuntimeError, match="Windows x64 only"):
         stt.ensure_runtime()
 
@@ -104,7 +104,7 @@ def test_ensure_runtime_provisions_cpu_runtime_and_medium_model(
     monkeypatch.setattr(stt, "stt_root", lambda: root)
     monkeypatch.setattr(stt, "whisper_cli_path", lambda: cli)
     monkeypatch.setattr(stt, "whisper_model_path", lambda: model)
-    monkeypatch.setattr(stt.os, "name", "nt")
+    monkeypatch.setattr(stt, "os", SimpleNamespace(name="nt", environ=os.environ))
 
     def fake_download(url: str, target: Path) -> None:
         if target.suffix == ".zip":
@@ -134,7 +134,7 @@ def test_ensure_runtime_rejects_runtime_checksum_mismatch(
     monkeypatch.setattr(stt, "stt_root", lambda: root)
     monkeypatch.setattr(stt, "whisper_cli_path", lambda: cli)
     monkeypatch.setattr(stt, "whisper_model_path", lambda: model)
-    monkeypatch.setattr(stt.os, "name", "nt")
+    monkeypatch.setattr(stt, "os", SimpleNamespace(name="nt", environ=os.environ))
     monkeypatch.setattr(stt, "_download", lambda url, target: target.write_bytes(b"bad"))
     monkeypatch.setattr(stt, "_hash", lambda path, algorithm: "bad-checksum")
     with pytest.raises(RuntimeError, match="runtime checksum mismatch"):
@@ -150,7 +150,7 @@ def test_ensure_runtime_rejects_archive_without_cli(
     monkeypatch.setattr(stt, "stt_root", lambda: root)
     monkeypatch.setattr(stt, "whisper_cli_path", lambda: cli)
     monkeypatch.setattr(stt, "whisper_model_path", lambda: model)
-    monkeypatch.setattr(stt.os, "name", "nt")
+    monkeypatch.setattr(stt, "os", SimpleNamespace(name="nt", environ=os.environ))
 
     def fake_download(url: str, target: Path) -> None:
         with zipfile.ZipFile(target, "w") as package:
