@@ -10,6 +10,7 @@ import urllib.request
 import wave
 import zipfile
 from array import array
+from collections.abc import Callable
 from pathlib import Path
 
 WHISPER_MODEL_NAME = "medium"
@@ -27,6 +28,7 @@ WHISPER_MODEL_URL = (
 )
 DEFAULT_THREADS = 4
 TARGET_SAMPLE_RATE = 16000
+ProgressCallback = Callable[[str, int, int | None], None]
 
 
 def stt_root() -> Path:
@@ -52,6 +54,10 @@ def whisper_model_path() -> Path:
     return stt_root() / "models" / WHISPER_MODEL_FILENAME
 
 
+def runtime_ready() -> bool:
+    return whisper_cli_path().is_file() and whisper_model_path().is_file()
+
+
 def configured_threads() -> int:
     raw = os.environ.get("ORION_WHISPER_THREADS", str(DEFAULT_THREADS))
     try:
@@ -69,18 +75,33 @@ def _hash(path: Path, algorithm: str) -> str:
     return digest.hexdigest()
 
 
-def _download(url: str, target: Path) -> None:
+def _download(url: str, target: Path, *, stage: str, progress: ProgressCallback | None = None) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
     request = urllib.request.Request(url, headers={"User-Agent": "ORION-DCS/0.2"})
     with urllib.request.urlopen(request, timeout=120) as response, target.open("wb") as output:
-        shutil.copyfileobj(response, output, length=1024 * 1024)
+        raw_total = response.headers.get("Content-Length")
+        try:
+            total = int(raw_total) if raw_total else None
+        except ValueError:
+            total = None
+        downloaded = 0
+        while True:
+            chunk = response.read(1024 * 1024)
+            if not chunk:
+                break
+            output.write(chunk)
+            downloaded += len(chunk)
+            if progress is not None:
+                progress(stage, downloaded, total)
 
 
-def ensure_runtime() -> tuple[Path, Path]:
-    """Install the pinned CPU-only whisper.cpp runtime and multilingual medium model if absent."""
+def ensure_runtime(progress: ProgressCallback | None = None) -> tuple[Path, Path]:
+    """Install pinned CPU-only whisper.cpp and multilingual medium model if absent."""
     cli = whisper_cli_path()
     model = whisper_model_path()
     if cli.is_file() and model.is_file():
+        if progress is not None:
+            progress("ready", 1, 1)
         return cli, model
     if os.name != "nt" and not cli.is_file():
         raise RuntimeError("Automatic ORION Whisper provisioning currently supports Windows x64 only")
@@ -91,7 +112,9 @@ def ensure_runtime() -> tuple[Path, Path]:
         tmp_dir = Path(tmp)
         if not cli.is_file():
             archive = tmp_dir / "whisper-bin-x64.zip"
-            _download(WHISPER_WINDOWS_X64_URL, archive)
+            _download(WHISPER_WINDOWS_X64_URL, archive, stage="runtime", progress=progress)
+            if progress is not None:
+                progress("runtime_verify", 0, None)
             actual = _hash(archive, "sha256")
             if actual != WHISPER_WINDOWS_X64_SHA256:
                 raise RuntimeError(f"Whisper runtime checksum mismatch: {actual}")
@@ -110,7 +133,9 @@ def ensure_runtime() -> tuple[Path, Path]:
 
         if not model.is_file():
             temporary_model = tmp_dir / WHISPER_MODEL_FILENAME
-            _download(WHISPER_MODEL_URL, temporary_model)
+            _download(WHISPER_MODEL_URL, temporary_model, stage="model", progress=progress)
+            if progress is not None:
+                progress("model_verify", 0, None)
             actual = _hash(temporary_model, "sha1")
             if actual != WHISPER_MODEL_SHA1:
                 raise RuntimeError(f"Whisper medium model checksum mismatch: {actual}")
@@ -119,6 +144,8 @@ def ensure_runtime() -> tuple[Path, Path]:
 
     if not cli.is_file() or not model.is_file():
         raise RuntimeError("ORION Whisper runtime provisioning did not produce the required files")
+    if progress is not None:
+        progress("ready", 1, 1)
     return cli, model
 
 
@@ -180,7 +207,10 @@ def _prepare_input_wav(source: Path, target: Path) -> None:
 
 
 def recognize_wav(path: Path, *, language: str = "auto") -> str:
-    cli, model = ensure_runtime()
+    if not runtime_ready():
+        raise RuntimeError("Whisper medium is not prepared. Install speech recognition from Launcher first.")
+    cli = whisper_cli_path()
+    model = whisper_model_path()
     with tempfile.TemporaryDirectory(prefix="orion-whisper-") as tmp:
         tmp_dir = Path(tmp)
         prepared = tmp_dir / "input-16k.wav"
