@@ -29,23 +29,12 @@ DEFAULT_THREADS = 4
 TARGET_SAMPLE_RATE = 16000
 
 
-def _product_root() -> Path:
-    override = os.environ.get("ORION_PRODUCT_ROOT")
-    if override:
-        return Path(override).expanduser().resolve()
-    if getattr(sys, "frozen", False):
-        exe_dir = Path(sys.executable).resolve().parent
-        if exe_dir.name.casefold() in {"core", "launcher"}:
-            return exe_dir.parent
-        return exe_dir
-    return Path(__file__).resolve().parents[1]
-
-
 def stt_root() -> Path:
     override = os.environ.get("ORION_WHISPER_ROOT")
     if override:
         return Path(override).expanduser().resolve()
-    return _product_root() / "VoiceSTT"
+    runtime = Path(os.environ.get("ORION_RUNTIME_DIR", "runtime"))
+    return runtime / "stt" / "whisper.cpp"
 
 
 def whisper_cli_path() -> Path:
