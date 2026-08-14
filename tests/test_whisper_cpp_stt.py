@@ -126,6 +126,7 @@ def test_ensure_runtime_provisions_cpu_runtime_and_medium_model(
             with zipfile.ZipFile(target, "w") as package:
                 package.writestr("bin/whisper-cli.exe", b"cli")
                 package.writestr("bin/whisper.dll", b"dll")
+                package.writestr("bin/ggml-cpu-x64.dll", b"x64")
         else:
             target.write_bytes(b"model")
         if progress is not None:
@@ -140,6 +141,7 @@ def test_ensure_runtime_provisions_cpu_runtime_and_medium_model(
     assert stt.ensure_runtime(progress=lambda *args: events.append(args)) == (cli, model)
     assert cli.read_bytes() == b"cli"
     assert (root / "whisper.dll").read_bytes() == b"dll"
+    assert (root / "ggml-cpu-x64.dll").read_bytes() == b"x64"
     assert model.read_bytes() == b"model"
     assert events[-1] == ("ready", 1, 1)
     assert any(stage == "runtime" for stage, _, _ in events)
