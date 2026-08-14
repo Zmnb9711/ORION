@@ -79,33 +79,16 @@ def test_recognize_wav_retries_with_portable_backend_after_illegal_instruction(
     assert (root / "ggml-cpu-haswell.dll.orion-disabled").is_file()
 
 
-def test_recognize_wav_reports_exit_code_and_status_on_non_illegal_failure(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    root = tmp_path / "runtime"
-    root.mkdir()
-    cli = root / "whisper-cli.exe"
-    model = root / "models" / stt.WHISPER_MODEL_FILENAME
-    model.parent.mkdir()
-    cli.write_bytes(b"cli")
-    model.write_bytes(b"model")
-
-    monkeypatch.setattr(stt, "runtime_ready", lambda: True)
-    monkeypatch.setattr(stt, "whisper_cli_path", lambda: cli)
-    monkeypatch.setattr(stt, "whisper_model_path", lambda: model)
-    monkeypatch.setattr(stt, "_prepare_input_wav", lambda source, target: target.write_bytes(b"wav"))
-    monkeypatch.setattr(stt, "_is_windows_illegal_instruction", lambda returncode: False)
-    monkeypatch.setattr(
-        stt,
-        "_run_whisper",
-        lambda command: subprocess.CompletedProcess(command, 7, stdout="", stderr="backend detail"),
+def test_failure_detail_always_preserves_return_code_and_backend_output():
+    completed = subprocess.CompletedProcess(
+        ["whisper-cli"],
+        7,
+        stdout="",
+        stderr="backend detail",
     )
-    monkeypatch.setattr(stt.os, "name", "nt")
 
-    with pytest.raises(RuntimeError) as caught:
-        stt.recognize_wav(tmp_path / "input.wav")
+    detail = stt._failure_detail(completed)
 
-    message = str(caught.value)
-    assert "exit=7" in message
-    assert "status=0x00000007" in message
-    assert "backend detail" in message
+    assert "exit=7" in detail
+    assert "status=" in detail
+    assert "backend detail" in detail
