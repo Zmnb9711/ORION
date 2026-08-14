@@ -12,9 +12,6 @@ class LauncherFieldUiFixMixin:
     """
 
     def _apply_health(self, report) -> None:  # noqa: ANN001
-        # Background polling must never destroy/rebuild the active page. The old
-        # product visual layer called show_page() here, which recreated the whole
-        # content tree every ~1.5 s and caused visible Windows flicker.
         self.health = report
         self._render_status_strip()
 
@@ -66,8 +63,6 @@ class LauncherFieldUiFixMixin:
         return button
 
     def _page_settings(self) -> None:
-        # Preserve the existing Launcher settings and render Audio with explicit,
-        # high-contrast Windows controls instead of theme-dependent button text.
         language = StringVar(value=self.config.language)
         channel = StringVar(value=self.config.update_channel)
         autostart = BooleanVar(value=self.config.start_with_windows)
@@ -116,33 +111,14 @@ class LauncherFieldUiFixMixin:
         box = ttk.Frame(self.content, style="Card.TFrame", padding=16)
         box.pack(fill=X)
         ttk.Label(box, text="MICROPHONE / INPUT", style="CardTitle.TLabel").pack(anchor="w")
-        ttk.Combobox(
-            box,
-            textvariable=input_var,
-            values=tuple(input_map),
-            state="readonly",
-            style="Audio.TCombobox",
-            width=70,
-        ).pack(anchor="w", fill=X, pady=(6, 12))
+        ttk.Combobox(box, textvariable=input_var, values=tuple(input_map), state="readonly", style="Audio.TCombobox", width=70).pack(anchor="w", fill=X, pady=(6, 12))
         ttk.Label(box, text="HEADPHONES / OUTPUT", style="CardTitle.TLabel").pack(anchor="w")
-        ttk.Combobox(
-            box,
-            textvariable=output_var,
-            values=tuple(output_map),
-            state="readonly",
-            style="Audio.TCombobox",
-            width=70,
-        ).pack(anchor="w", fill=X, pady=(6, 12))
+        ttk.Combobox(box, textvariable=output_var, values=tuple(output_map), state="readonly", style="Audio.TCombobox", width=70).pack(anchor="w", fill=X, pady=(6, 12))
         ttk.Label(box, text=f"Core: {state.get('message', 'Unknown')}", style="CardText.TLabel").pack(anchor="w")
 
         buttons = tk.Frame(box, bg="#111923")
         buttons.pack(fill=X, pady=(12, 0))
-        self._action_button(
-            buttons,
-            "APPLY TO CORE",
-            lambda: self._apply_audio_selection(input_map[input_var.get()], output_map[output_var.get()]),
-            primary=True,
-        ).pack(side=LEFT, padx=(0, 8))
+        self._action_button(buttons, "APPLY TO CORE", lambda: self._apply_audio_selection(input_map[input_var.get()], output_map[output_var.get()]), primary=True).pack(side=LEFT, padx=(0, 8))
         self._action_button(buttons, "REFRESH DEVICES", lambda: self.show_page("settings")).pack(side=LEFT, padx=(0, 8))
         self._action_button(buttons, "OPEN TEST", lambda: self.show_page("test")).pack(side=LEFT)
 
@@ -151,11 +127,7 @@ class LauncherFieldUiFixMixin:
         hero.pack(fill=X)
         ttk.Label(hero, text="FUNCTIONAL VERIFICATION", style="CardAltTitle.TLabel").pack(anchor="w")
         ttk.Label(hero, text="TEST", style="Hero.TLabel").pack(anchor="w", pady=(5, 2))
-        ttk.Label(
-            hero,
-            text="Run focused checks without leaving Launcher.",
-            style="HeroMuted.TLabel",
-        ).pack(anchor="w")
+        ttk.Label(hero, text="Run focused checks without leaving Launcher.", style="HeroMuted.TLabel").pack(anchor="w")
 
         core_ok = self.core.healthy()
         try:
@@ -168,9 +140,33 @@ class LauncherFieldUiFixMixin:
             inputs, outputs, state, selection, resolved_in, resolved_out = [], [], {}, {}, None, None
             audio_api_ok = False
 
-        # Put the user action before diagnostics so it is always above the fold.
+        stt = ttk.Frame(self.content, style="Card.TFrame", padding=14)
+        stt.pack(fill=X, pady=(12, 10))
+        ttk.Label(stt, text="LOCAL SPEECH RECOGNITION", style="CardTitle.TLabel").pack(anchor="w")
+        ttk.Label(
+            stt,
+            text="Whisper medium runs locally on CPU. Download and install it once before the conversational audio test.",
+            style="CardText.TLabel",
+            wraplength=780,
+            justify="left",
+        ).pack(anchor="w", pady=(4, 7))
+        self._stt_status_label = ttk.Label(stt, text="Checking Whisper medium…", style="CardText.TLabel")
+        self._stt_status_label.pack(anchor="w", pady=(0, 5))
+        self._stt_progress = ttk.Progressbar(stt, orient="horizontal", mode="determinate", maximum=100.0, length=520)
+        self._stt_progress.pack(anchor="w", fill=X, pady=(0, 8))
+        stt_actions = tk.Frame(stt, bg="#111923")
+        stt_actions.pack(fill=X)
+        self._stt_prepare_button = self._action_button(
+            stt_actions,
+            "DOWNLOAD & INSTALL STT",
+            self._prepare_speech_recognition,
+            primary=True,
+            enabled=core_ok,
+        )
+        self._stt_prepare_button.pack(side=LEFT)
+
         audio = ttk.Frame(self.content, style="Card.TFrame", padding=14)
-        audio.pack(fill=X, pady=(12, 10))
+        audio.pack(fill=X, pady=(0, 10))
         ttk.Label(audio, text="CONVERSATIONAL AUDIO TEST", style="CardTitle.TLabel").pack(anchor="w")
         ttk.Label(
             audio,
@@ -181,25 +177,16 @@ class LauncherFieldUiFixMixin:
         ).pack(anchor="w", pady=(4, 9))
         action_row = tk.Frame(audio, bg="#111923")
         action_row.pack(fill=X)
-        self._action_button(
+        self._conversation_button = self._action_button(
             action_row,
             "START AUDIO TEST",
             self._run_conversational_audio_test,
             primary=True,
-            enabled=core_ok and resolved_in is not None and resolved_out is not None,
-        ).pack(side=LEFT, padx=(0, 8))
-        self._action_button(
-            action_row,
-            "TEST MICROPHONE",
-            lambda: self._run_physical_audio_test("input", resolved_in),
-            enabled=resolved_in is not None,
-        ).pack(side=LEFT, padx=(0, 8))
-        self._action_button(
-            action_row,
-            "TEST OUTPUT",
-            lambda: self._run_physical_audio_test("output", resolved_out),
-            enabled=resolved_out is not None,
-        ).pack(side=LEFT)
+            enabled=False,
+        )
+        self._conversation_button.pack(side=LEFT, padx=(0, 8))
+        self._action_button(action_row, "TEST MICROPHONE", lambda: self._run_physical_audio_test("input", resolved_in), enabled=resolved_in is not None).pack(side=LEFT, padx=(0, 8))
+        self._action_button(action_row, "TEST OUTPUT", lambda: self._run_physical_audio_test("output", resolved_out), enabled=resolved_out is not None).pack(side=LEFT)
 
         checks = (
             ("CORE", "PASS — connected" if core_ok else "FAIL — not reachable"),
@@ -213,3 +200,6 @@ class LauncherFieldUiFixMixin:
         for index, (title, text) in enumerate(checks):
             card = self._card(row, title, text, wrap=185)
             card.pack(side=LEFT, fill=BOTH, expand=True, padx=(0, 7 if index < len(checks) - 1 else 0))
+
+        if core_ok:
+            self.root.after(50, self._poll_stt_status)
