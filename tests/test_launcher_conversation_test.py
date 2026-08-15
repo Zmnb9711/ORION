@@ -6,9 +6,23 @@ import orion.launcher_conversation_test as subject
 class FakeWidget:
     def __init__(self) -> None:
         self.values = {}
+        self.manager = "pack"
+        self.pack_calls = []
+        self.pack_forget_calls = 0
 
     def configure(self, **kwargs) -> None:
         self.values.update(kwargs)
+
+    def winfo_manager(self) -> str:
+        return self.manager
+
+    def pack(self, **kwargs) -> None:
+        self.manager = "pack"
+        self.pack_calls.append(kwargs)
+
+    def pack_forget(self) -> None:
+        self.manager = ""
+        self.pack_forget_calls += 1
 
 
 class FakeRoot:
@@ -160,12 +174,35 @@ def test_apply_stt_status_enables_conversation_only_when_ready(tmp_path) -> None
 
     launcher._apply_stt_status({"ready": False, "running": True, "stage": "model", "percent": 48.0})
     assert launcher._stt_progress.values["value"] == 48.0
+    assert launcher._stt_progress.manager == "pack"
     assert launcher._stt_prepare_button.values["state"] == "disabled"
     assert launcher._conversation_button.values["state"] == "disabled"
 
     launcher._apply_stt_status({"ready": True, "running": False, "stage": "ready", "percent": 100.0})
     assert launcher._stt_prepare_button.values["state"] == "disabled"
     assert launcher._conversation_button.values["state"] == "normal"
+    assert launcher._stt_progress.manager == ""
+    assert launcher._stt_progress.pack_forget_calls == 1
+
+
+def test_stt_progress_reappears_for_later_repair_and_hides_on_failure(tmp_path) -> None:
+    launcher = Harness(tmp_path)
+    launcher._stt_status_label = FakeWidget()
+    launcher._stt_progress = FakeWidget()
+    launcher._stt_prepare_button = FakeWidget()
+    launcher._conversation_button = FakeWidget()
+
+    launcher._apply_stt_status({"ready": True, "running": False, "stage": "ready", "percent": 100.0})
+    assert launcher._stt_progress.manager == ""
+
+    launcher._apply_stt_status({"ready": False, "running": True, "stage": "runtime", "percent": 12.0})
+    assert launcher._stt_progress.manager == "pack"
+    assert launcher._stt_progress.pack_calls
+
+    launcher._apply_stt_status({"ready": False, "running": False, "stage": "failed", "error": "checksum"})
+    assert launcher._stt_progress.manager == ""
+    assert launcher._stt_prepare_button.values["state"] == "normal"
+    assert launcher._conversation_button.values["state"] == "disabled"
 
 
 def test_prepare_stt_starts_background_poll_and_logs(tmp_path) -> None:
