@@ -50,7 +50,7 @@ class Harness(subject.LauncherConversationTestMixin):
         assert self._responder is not None
         return self._responder()
 
-    def _core_json(self, method, path, *, timeout=5.0):
+    def _core_json(self, path, *, method="GET", payload=None, timeout=5.0):
         if path == "/v1/windows-audio/stt/status":
             return dict(self._test_stt_status)
         if path == "/v1/windows-audio/stt/prepare":
@@ -60,7 +60,7 @@ class Harness(subject.LauncherConversationTestMixin):
                 "stage": "starting",
                 "percent": 0.0,
             }
-        return super()._core_json(method, path, timeout=timeout)
+        return super()._core_json(path, method=method, payload=payload, timeout=timeout)
 
 
 def _single_log(tmp_path):
