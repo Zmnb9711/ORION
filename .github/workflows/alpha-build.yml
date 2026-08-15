@@ -54,7 +54,7 @@ jobs:
           $actual = (Get-FileHash $icon -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($actual -ne $expected) { throw "Approved ORION icon SHA-256 mismatch. Expected $expected, got $actual" }
 
-      - name: Run Windows deployment and DCS regression tests
+      - name: Run Windows deployment, Launcher and DCS regression tests
         shell: pwsh
         run: |
           python -m pytest -q `
@@ -62,12 +62,15 @@ jobs:
             tests/test_setup_wizard_model.py `
             tests/test_dcs_readiness.py `
             tests/test_launcher.py `
+            tests/test_launcher_conversation_test.py `
+            tests/test_launcher_core_client.py `
+            tests/test_component_uninstall.py `
             tests/test_alpha_smoke_diagnostics.py
 
       - name: Import canonical production entry points
         shell: pwsh
         run: |
-          python -c "from orion.core_main import main as core_main; from orion.launcher_main import main as launcher_main; from orion.core_process import CoreProcessManager; from orion.desktop_product_launcher import WindowsOrionProductLauncher; assert all((core_main, launcher_main, CoreProcessManager, WindowsOrionProductLauncher))"
+          python -c "from orion.core_main import main as core_main; from orion.launcher_main import main as launcher_main; from orion.uninstall_main import main as uninstall_main; from orion.core_process import CoreProcessManager; from orion.desktop_product_launcher import WindowsOrionProductLauncher; assert all((core_main, launcher_main, uninstall_main, CoreProcessManager, WindowsOrionProductLauncher))"
 
       - name: Build ORION Core
         shell: pwsh
@@ -102,21 +105,37 @@ jobs:
           python -m PyInstaller @args
           if (-not (Test-Path "dist/ORION-Launcher/ORION-Launcher.exe")) { throw "ORION-Launcher.exe was not created" }
 
+      - name: Build ORION Uninstaller helper
+        shell: pwsh
+        run: |
+          $args = @(
+            "--noconfirm", "--clean", "--onefile", "--windowed",
+            "--name", "ORION-Uninstall",
+            "--collect-submodules", "orion",
+            "--icon", "branding/orion.ico",
+            "orion/uninstall_main.py"
+          )
+          python -m PyInstaller @args
+          if (-not (Test-Path "dist/ORION-Uninstall.exe")) { throw "ORION-Uninstall.exe was not created" }
+
       - name: Assemble canonical product layout
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force "dist-product/Core" | Out-Null
           New-Item -ItemType Directory -Force "dist-product/Launcher" | Out-Null
+          New-Item -ItemType Directory -Force "dist-product/Uninstaller" | Out-Null
           New-Item -ItemType Directory -Force "dist-product/Integration/DCS/Export" | Out-Null
           New-Item -ItemType Directory -Force "dist-product/Integration/DCS/MissionPack" | Out-Null
           New-Item -ItemType Directory -Force "dist-product/Integration/DCS/MissionTemplate" | Out-Null
           Copy-Item "dist/ORION-Core/*" "dist-product/Core" -Recurse -Force
           Copy-Item "dist/ORION-Launcher/*" "dist-product/Launcher" -Recurse -Force
+          Copy-Item "dist/ORION-Uninstall.exe" "dist-product/Uninstaller/ORION-Uninstall.exe" -Force
           Copy-Item "dcs-export/*" "dist-product/Integration/DCS/Export" -Recurse -Force
           Copy-Item "dcs-mission-pack/*" "dist-product/Integration/DCS/MissionPack" -Recurse -Force
           Copy-Item "dcs-mission-template/*" "dist-product/Integration/DCS/MissionTemplate" -Recurse -Force
           if (-not (Test-Path "dist-product/Core/ORION-Core.exe")) { throw "Canonical Core layout missing" }
           if (-not (Test-Path "dist-product/Launcher/ORION-Launcher.exe")) { throw "Canonical Launcher layout missing" }
+          if (-not (Test-Path "dist-product/Uninstaller/ORION-Uninstall.exe")) { throw "Canonical Uninstaller layout missing" }
           if (-not (Test-Path "dist-product/Integration/DCS/Export/Export.lua")) { throw "DCS Export integration missing" }
 
       - name: Frozen standalone Core smoke test
@@ -203,6 +222,7 @@ jobs:
           $required = @(
             "dist-product/Core/ORION-Core.exe",
             "dist-product/Launcher/ORION-Launcher.exe",
+            "dist-product/Uninstaller/ORION-Uninstall.exe",
             "dist-product/Integration/DCS/Export/Export.lua",
             "dist-product/Integration/DCS/MissionPack/ORION_MissionPack.lua",
             "dist-product/Integration/DCS/MissionTemplate/ORION_SafeSlot.lua"
