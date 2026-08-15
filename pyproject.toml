@@ -19,9 +19,6 @@ orion = "orion.launcher:main"
 orion-core = "orion.core_main:main"
 orion-launcher = "orion.launcher_main:main"
 
-[project.entry-points.pyinstaller40]
-hook-dirs = "orion._pyinstaller:get_hook_dirs"
-
 [project.optional-dependencies]
 dev = [
   "httpx>=0.27,<1.0",
@@ -33,7 +30,6 @@ dev = [
 ]
 windows-audio = [
   "sounddevice>=0.5,<1.0",
-  "faster-whisper>=1.2.1,<2.0",
 ]
 
 [tool.setuptools.packages.find]
