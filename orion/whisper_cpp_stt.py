@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import ctypes
 import hashlib
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
+import threading
 import urllib.request
 import zipfile
 from collections.abc import Callable
+from contextlib import contextmanager
 from pathlib import Path
 
 WHISPER_MODEL_NAME = "medium"
@@ -27,6 +31,7 @@ DEFAULT_THREADS = 4
 PORTABLE_CPU_BACKEND = "ggml-cpu.dll"
 RUNTIME_VERSION_MARKER = "ORION_WHISPER_RUNTIME_VERSION.txt"
 ProgressCallback = Callable[[str, int, int | None], None]
+_DLL_SEARCH_LOCK = threading.Lock()
 
 
 def stt_root() -> Path:
@@ -170,13 +175,64 @@ def _hidden_startupinfo() -> subprocess.STARTUPINFO | None:
     return startupinfo
 
 
-def recognize_wav(path: Path, *, language: str = "auto") -> str:
-    """Recognize the original captured WAV using the single canonical Whisper path.
+def _sanitized_child_env() -> dict[str, str]:
+    """Return an environment safe for external native programs launched by frozen Core."""
+    env = os.environ.copy()
+    if os.name != "nt" or not getattr(sys, "frozen", False):
+        return env
 
-    ORION deliberately does not pre-resample audio, mutate whisper.cpp CPU DLLs,
-    use CREATE_NO_WINDOW, or capture native-process output through pipes. This
-    keeps runtime behavior aligned with the independently validated CLI launch.
+    bundle_dir_raw = getattr(sys, "_MEIPASS", None)
+    if not bundle_dir_raw:
+        return env
+    bundle_dir = Path(bundle_dir_raw).resolve()
+    cleaned: list[str] = []
+    for entry in env.get("PATH", "").split(os.pathsep):
+        if not entry:
+            continue
+        try:
+            resolved = Path(entry).resolve()
+            if resolved == bundle_dir or bundle_dir in resolved.parents:
+                continue
+        except OSError:
+            pass
+        cleaned.append(entry)
+    env["PATH"] = os.pathsep.join(cleaned)
+    return env
+
+
+@contextmanager
+def _external_program_dll_scope():
+    """Restore the normal Windows DLL search path while launching whisper-cli.
+
+    PyInstaller sets SetDllDirectoryW(sys._MEIPASS) in frozen applications and
+    Windows propagates that setting to child processes. External native programs
+    can then load incompatible DLLs from the PyInstaller bundle. Resetting the
+    directory to NULL before CreateProcess is the mitigation recommended by the
+    PyInstaller documentation. The original bundle directory is restored after
+    the child exits.
     """
+    if os.name != "nt" or not getattr(sys, "frozen", False):
+        yield
+        return
+
+    bundle_dir = getattr(sys, "_MEIPASS", None)
+    if not bundle_dir:
+        yield
+        return
+
+    kernel32 = ctypes.windll.kernel32
+    with _DLL_SEARCH_LOCK:
+        if not kernel32.SetDllDirectoryW(None):
+            raise OSError(ctypes.get_last_error(), "SetDllDirectoryW(NULL) failed before Whisper launch")
+        try:
+            yield
+        finally:
+            if not kernel32.SetDllDirectoryW(str(bundle_dir)):
+                raise OSError(ctypes.get_last_error(), "Failed to restore PyInstaller DLL search path")
+
+
+def recognize_wav(path: Path, *, language: str = "auto") -> str:
+    """Recognize the original captured WAV using the single canonical Whisper path."""
     if not runtime_ready():
         raise RuntimeError("Whisper medium is not prepared. Install speech recognition from Launcher first.")
 
@@ -213,14 +269,16 @@ def recognize_wav(path: Path, *, language: str = "auto") -> str:
         with stdout_path.open("w", encoding="utf-8", errors="replace") as stdout_handle, stderr_path.open(
             "w", encoding="utf-8", errors="replace"
         ) as stderr_handle:
-            completed = subprocess.run(
-                command,
-                cwd=str(cli.parent),
-                stdout=stdout_handle,
-                stderr=stderr_handle,
-                check=False,
-                startupinfo=_hidden_startupinfo(),
-            )
+            with _external_program_dll_scope():
+                completed = subprocess.run(
+                    command,
+                    cwd=str(cli.parent),
+                    env=_sanitized_child_env(),
+                    stdout=stdout_handle,
+                    stderr=stderr_handle,
+                    check=False,
+                    startupinfo=_hidden_startupinfo(),
+                )
 
         stdout_text = stdout_path.read_text(encoding="utf-8", errors="replace").strip()
         stderr_text = stderr_path.read_text(encoding="utf-8", errors="replace").strip()
