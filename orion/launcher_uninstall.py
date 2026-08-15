@@ -18,7 +18,7 @@ class LauncherUninstallMixin:
         ttk.Label(self.content, text="UNINSTALL", style="Section.TLabel").pack(anchor="w")
         ttk.Label(
             self.content,
-            text="Remove ORION components independently or remove the complete product. DCS integration is modified safely without deleting other Export.lua integrations.",
+            text="Remove ORION components independently or remove the complete product.",
             style="Muted.TLabel",
             wraplength=800,
             justify="left",
@@ -27,6 +27,33 @@ class LauncherUninstallMixin:
             self.content,
             text="UNINSTALL / REMOVE COMPONENTS",
             style="Secondary.TButton",
+            command=lambda: self.show_page("uninstall"),
+        ).pack(anchor="w")
+
+    def _page_uninstall(self) -> None:
+        ttk.Label(self.content, text="UNINSTALL ORION", style="Section.TLabel").pack(anchor="w", pady=(0, 8))
+        ttk.Label(
+            self.content,
+            text="Choose whether to remove the complete ORION installation or individual components. Components not selected are preserved.",
+            style="Muted.TLabel",
+            wraplength=800,
+            justify="left",
+        ).pack(anchor="w", pady=(0, 14))
+
+        card = ttk.Frame(self.content, style="Card.TFrame", padding=18)
+        card.pack(fill=X)
+        ttk.Label(card, text="REMOVE COMPONENTS", style="CardTitle.TLabel").pack(anchor="w")
+        ttk.Label(
+            card,
+            text="Available choices: Remove all, Launcher, Core, Whisper. DCS integration is offered when ORION knows the active Saved Games profile.",
+            style="CardText.TLabel",
+            wraplength=760,
+            justify="left",
+        ).pack(anchor="w", pady=(6, 12))
+        ttk.Button(
+            card,
+            text="UNINSTALL / REMOVE COMPONENTS",
+            style="Primary.TButton",
             command=self._open_uninstall_components,
         ).pack(anchor="w")
 
@@ -69,25 +96,20 @@ class LauncherUninstallMixin:
             if selected and not dcs_path:
                 dcs.set(False)
 
-        ttk.Checkbutton(
-            body,
-            text="Remove everything",
-            variable=remove_all,
-            command=apply_remove_all,
-        ).pack(anchor="w", pady=(0, 12))
+        ttk.Checkbutton(body, text="REMOVE ALL", variable=remove_all, command=apply_remove_all).pack(anchor="w", pady=(0, 12))
 
         box = ttk.Frame(body, style="Card.TFrame", padding=16)
         box.pack(fill=X)
         ttk.Checkbutton(box, text="Launcher", variable=launcher).pack(anchor="w", pady=4)
         ttk.Checkbutton(box, text="Core", variable=core).pack(anchor="w", pady=4)
-        ttk.Checkbutton(box, text="Whisper runtime + medium model", variable=whisper).pack(anchor="w", pady=4)
+        ttk.Checkbutton(box, text="Whisper", variable=whisper).pack(anchor="w", pady=4)
         dcs_button = ttk.Checkbutton(box, text="DCS Integration", variable=dcs)
         dcs_button.pack(anchor="w", pady=4)
         if not dcs_path:
             dcs_button.configure(state="disabled")
             ttk.Label(
                 box,
-                text="DCS Integration cannot be located safely because no active Saved Games profile is recorded. Remove everything will still remove the complete local ORION installation.",
+                text="DCS Integration cannot be located safely because no active Saved Games profile is recorded.",
                 style="CardText.TLabel",
                 wraplength=570,
                 justify="left",
@@ -95,7 +117,7 @@ class LauncherUninstallMixin:
 
         ttk.Label(
             body,
-            text="Removing Launcher closes this window and starts the standalone ORION uninstall helper. Removing Core stops ORION-Core.exe first.",
+            text="Removing Launcher closes ORION Launcher. Removing Core stops ORION-Core.exe before deleting it.",
             style="Muted.TLabel",
             wraplength=610,
             justify="left",
