@@ -8,7 +8,13 @@ import sys
 import time
 from pathlib import Path
 
-from orion.component_uninstall import UninstallComponent, UninstallRequest, installation_root, whisper_root
+from orion.component_uninstall import (
+    UninstallComponent,
+    UninstallRequest,
+    installation_root,
+    runtime_root,
+    whisper_root,
+)
 from orion.dcs_readiness import remove_export_integration
 
 
@@ -116,6 +122,11 @@ def execute_uninstall(request: UninstallRequest) -> None:
         uninstaller = _inno_uninstaller(root)
         if uninstaller is None:
             raise FileNotFoundError(f"ORION product uninstaller was not found under {root}")
+        # Runtime, downloaded Whisper and persisted Launcher/Core configuration
+        # are all local ORION state. Full uninstall removes the ORION local-data
+        # root after the Launcher has exited, while selective component removal
+        # deliberately preserves unrelated local state.
+        _remove_tree(runtime_root().parent)
         subprocess.Popen([str(uninstaller), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"], cwd=str(root))
         return
 
