@@ -7,13 +7,30 @@ from pathlib import Path
 from orion.whisper_cpp_stt import configured_threads, runtime_ready, whisper_cli_path, whisper_model_path
 
 
+def _hidden_startupinfo() -> subprocess.STARTUPINFO | None:
+    """Hide the console window without CREATE_NO_WINDOW.
+
+    The target Windows machine successfully runs whisper-cli.exe as a normal
+    console process. CREATE_NO_WINDOW is deliberately avoided here so process
+    creation semantics stay close to that validated manual launch while the
+    launcher remains visually silent.
+    """
+    startupinfo_type = getattr(subprocess, "STARTUPINFO", None)
+    if startupinfo_type is None:
+        return None
+    startupinfo = startupinfo_type()
+    startupinfo.dwFlags |= getattr(subprocess, "STARTF_USESHOWWINDOW", 0)
+    startupinfo.wShowWindow = getattr(subprocess, "SW_HIDE", 0)
+    return startupinfo
+
+
 def recognize_wav(path: Path, *, language: str = "auto") -> str:
     """Transcribe the original captured WAV exactly as validated on Windows.
 
     whisper.cpp already accepts the native WASAPI WAV produced by ORION and
     performs its own audio decoding/resampling. Keep the CLI working directory
-    at the runtime directory as well, matching the validated manual launch and
-    keeping native DLL discovery deterministic.
+    at the runtime directory and avoid pipe/CREATE_NO_WINDOW process semantics,
+    matching the successful manual launch as closely as possible.
     """
     if not runtime_ready():
         raise RuntimeError("Whisper medium is not prepared. Install speech recognition from Launcher first.")
@@ -25,7 +42,10 @@ def recognize_wav(path: Path, *, language: str = "auto") -> str:
         raise RuntimeError(f"Whisper input WAV does not exist: {source}")
 
     with tempfile.TemporaryDirectory(prefix="orion-whisper-result-") as tmp:
-        output_base = Path(tmp) / "transcript"
+        tmp_dir = Path(tmp)
+        output_base = tmp_dir / "transcript"
+        stdout_path = tmp_dir / "whisper-stdout.log"
+        stderr_path = tmp_dir / "whisper-stderr.log"
         command = [
             str(cli),
             "--model",
@@ -45,16 +65,22 @@ def recognize_wav(path: Path, *, language: str = "auto") -> str:
             "--language",
             language,
         ]
-        completed = subprocess.run(
-            command,
-            cwd=str(cli.parent),
-            capture_output=True,
-            text=True,
-            check=False,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
+        with stdout_path.open("w", encoding="utf-8", errors="replace") as stdout_handle, stderr_path.open(
+            "w", encoding="utf-8", errors="replace"
+        ) as stderr_handle:
+            completed = subprocess.run(
+                command,
+                cwd=str(cli.parent),
+                stdout=stdout_handle,
+                stderr=stderr_handle,
+                check=False,
+                startupinfo=_hidden_startupinfo(),
+            )
+
+        stdout_text = stdout_path.read_text(encoding="utf-8", errors="replace").strip()
+        stderr_text = stderr_path.read_text(encoding="utf-8", errors="replace").strip()
         if completed.returncode != 0:
-            detail = completed.stderr.strip() or completed.stdout.strip() or "no process output"
+            detail = stderr_text or stdout_text or "no process output"
             status = completed.returncode & 0xFFFFFFFF
             raise RuntimeError(
                 f"Whisper STT failed: exit={completed.returncode} status=0x{status:08X}; {detail}"
@@ -64,5 +90,5 @@ def recognize_wav(path: Path, *, language: str = "auto") -> str:
         if transcript_path.is_file():
             text = transcript_path.read_text(encoding="utf-8", errors="replace").strip()
         else:
-            text = completed.stdout.strip()
+            text = stdout_text
         return " ".join(text.split())
