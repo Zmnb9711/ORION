@@ -18,6 +18,19 @@ class OrionLauncher(
 ):
     """Single production ORION Launcher shell."""
 
+    NAV_KEYS = (
+        "home",
+        "fly",
+        "mission",
+        "diagnostics",
+        "providers",
+        "updates",
+        "settings",
+        "uninstall",
+        "logs",
+        "about",
+    )
+
     def close(self) -> None:
         """Use the Windows tray policy without giving UI code ownership of Core."""
         super().close()
