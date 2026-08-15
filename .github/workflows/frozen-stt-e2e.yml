@@ -1,0 +1,109 @@
+name: Frozen Core STT E2E
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - hardening/launcher-core
+    paths:
+      - "orion/core_main.py"
+      - "orion/whisper_cpp_stt.py"
+      - ".github/workflows/frozen-stt-e2e.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  frozen-stt-e2e:
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev,windows-audio]"
+
+      - name: Build frozen ORION Core
+        shell: pwsh
+        run: |
+          $args = @(
+            "--noconfirm", "--clean", "--onedir", "--console",
+            "--name", "ORION-Core",
+            "--collect-submodules", "orion",
+            "--collect-submodules", "uvicorn",
+            "--add-data", "dcs-export;dcs-export",
+            "--add-data", "dcs-mission-pack;dcs-mission-pack",
+            "--add-data", "dcs-mission-template;dcs-mission-template",
+            "--icon", "branding/orion.ico",
+            "orion/core_main.py"
+          )
+          python -m PyInstaller @args
+          if (-not (Test-Path "dist/ORION-Core/ORION-Core.exe")) { throw "ORION-Core.exe was not created" }
+
+      - name: Prepare official whisper.cpp runtime and real speech sample
+        shell: pwsh
+        run: |
+          $runtime = Join-Path $env:RUNNER_TEMP "orion-real-stt-runtime"
+          $stt = Join-Path $runtime "stt/whisper.cpp"
+          $downloads = Join-Path $env:RUNNER_TEMP "orion-real-stt-downloads"
+          Remove-Item $runtime -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item $downloads -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force $stt | Out-Null
+          New-Item -ItemType Directory -Force $downloads | Out-Null
+
+          $zip = Join-Path $downloads "whisper-bin-x64.zip"
+          Invoke-WebRequest -Uri "https://github.com/ggml-org/whisper.cpp/releases/download/v1.8.6/whisper-bin-x64.zip" -OutFile $zip
+          Expand-Archive -Path $zip -DestinationPath (Join-Path $downloads "whisper") -Force
+          $cli = Get-ChildItem (Join-Path $downloads "whisper") -Recurse -Filter "whisper-cli.exe" | Select-Object -First 1
+          if (-not $cli) { throw "Official whisper-cli.exe not found after extraction" }
+          Copy-Item (Join-Path $cli.Directory.FullName "*") $stt -Recurse -Force
+          if (-not (Test-Path (Join-Path $stt "ggml-cpu.dll"))) { throw "Official ggml-cpu.dll missing" }
+          Set-Content -Path (Join-Path $stt "ORION_WHISPER_RUNTIME_VERSION.txt") -Value "v1.8.6" -Encoding UTF8
+
+          $model = Join-Path $stt "ggml-tiny.en.bin"
+          Invoke-WebRequest -Uri "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin?download=true" -OutFile $model
+          if ((Get-Item $model).Length -lt 10000000) { throw "Whisper test model download is unexpectedly small" }
+
+          $wav = Join-Path $downloads "jfk.wav"
+          Invoke-WebRequest -Uri "https://raw.githubusercontent.com/ggml-org/whisper.cpp/master/samples/jfk.wav" -OutFile $wav
+          if ((Get-Item $wav).Length -lt 10000) { throw "Whisper speech sample download is unexpectedly small" }
+
+          "ORION_RUNTIME_DIR=$runtime" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "ORION_WHISPER_MODEL=$model" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "ORION_STT_SAMPLE=$wav" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Real STT through frozen ORION Core
+        shell: pwsh
+        run: |
+          $exe = (Resolve-Path "dist/ORION-Core/ORION-Core.exe").Path
+          $output = & $exe --stt-smoke $env:ORION_STT_SAMPLE --stt-language en 2>&1
+          $code = $LASTEXITCODE
+          $text = ($output | Out-String).Trim()
+          Write-Host "===== Frozen Core STT output ====="
+          Write-Host $text
+          Write-Host "===== end output ====="
+          if ($code -ne 0) { throw "Frozen ORION Core STT smoke failed with exit code $code" }
+          $normalized = $text.ToLowerInvariant()
+          if ($normalized -notmatch "country" -or $normalized -notmatch "you") {
+            throw "Frozen ORION Core ran Whisper but did not recognize expected speech: $text"
+          }
+
+      - name: Show Core startup log
+        if: always()
+        shell: pwsh
+        run: |
+          $log = Join-Path $env:ORION_RUNTIME_DIR "core-startup.log"
+          if (Test-Path $log) {
+            Write-Host "===== core-startup.log ====="
+            Get-Content $log
+          }
