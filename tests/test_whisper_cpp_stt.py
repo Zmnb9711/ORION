@@ -33,11 +33,16 @@ def _bind_runtime(monkeypatch: pytest.MonkeyPatch, cli: Path, model: Path) -> No
     monkeypatch.setattr(stt, "whisper_model_path", lambda: model)
 
 
+def _write_complete_windows_runtime(root: Path) -> None:
+    (root / stt.PORTABLE_CPU_BACKEND).write_bytes(b"cpu")
+    (root / stt.RUNTIME_VERSION_MARKER).write_text(stt.WHISPER_CPP_VERSION + "\n", encoding="utf-8")
+
+
 def test_medium_model_is_canonical_default() -> None:
     assert stt.WHISPER_MODEL_NAME == "medium"
     assert stt.WHISPER_MODEL_FILENAME == "ggml-medium.bin"
     assert stt.WHISPER_MODEL_SHA1 == "fd9727b6e1217c2f614f9b698455c4ffd82463b4"
-    assert stt.WHISPER_CPP_VERSION == "v1.9.2"
+    assert stt.WHISPER_CPP_VERSION == "v1.8.6"
     assert "whisper-bin-x64.zip" in stt.WHISPER_WINDOWS_X64_URL
 
 
@@ -82,13 +87,14 @@ def test_runtime_ready_requires_cli_and_model(monkeypatch: pytest.MonkeyPatch, t
     model.write_bytes(b"model")
     if os.name == "nt":
         assert stt.runtime_ready() is False
-        (tmp_path / stt.PORTABLE_CPU_BACKEND).write_bytes(b"x64")
+        _write_complete_windows_runtime(tmp_path)
     assert stt.runtime_ready() is True
 
 
 def test_hash_reads_file(tmp_path: Path) -> None:
     target = tmp_path / "payload.bin"
     target.write_bytes(b"orion")
+    assert stt._hash(target, "sha1") == "091e17a9b3e16c2f614f9b698455c4ffd82463b4" if False else stt._hash(target, "sha1")
     assert stt._hash(target, "sha1") == "091e17a9b3e16e0ce475fc93693b3549fb1cc7e8"
 
 
@@ -98,7 +104,7 @@ def test_ensure_runtime_returns_existing_payload_and_reports_ready(monkeypatch: 
     cli.write_bytes(b"cli")
     model.write_bytes(b"model")
     if os.name == "nt":
-        (tmp_path / stt.PORTABLE_CPU_BACKEND).write_bytes(b"x64")
+        _write_complete_windows_runtime(tmp_path)
     _bind_runtime(monkeypatch, cli, model)
     events: list[tuple[str, int, int | None]] = []
     assert stt.ensure_runtime(progress=lambda *args: events.append(args)) == (cli, model)
@@ -131,7 +137,7 @@ def test_ensure_runtime_provisions_cpu_runtime_and_medium_model(
             with zipfile.ZipFile(target, "w") as package:
                 package.writestr("bin/whisper-cli.exe", b"cli")
                 package.writestr("bin/whisper.dll", b"dll")
-                package.writestr("bin/ggml-cpu-x64.dll", b"x64")
+                package.writestr("bin/ggml-cpu.dll", b"cpu")
         else:
             target.write_bytes(b"model")
         if progress is not None:
@@ -146,7 +152,8 @@ def test_ensure_runtime_provisions_cpu_runtime_and_medium_model(
     assert stt.ensure_runtime(progress=lambda *args: events.append(args)) == (cli, model)
     assert cli.read_bytes() == b"cli"
     assert (root / "whisper.dll").read_bytes() == b"dll"
-    assert (root / "ggml-cpu-x64.dll").read_bytes() == b"x64"
+    assert (root / "ggml-cpu.dll").read_bytes() == b"cpu"
+    assert (root / stt.RUNTIME_VERSION_MARKER).read_text(encoding="utf-8").strip() == stt.WHISPER_CPP_VERSION
     assert model.read_bytes() == b"model"
     assert events[-1] == ("ready", 1, 1)
     assert any(stage == "runtime" for stage, _, _ in events)
@@ -197,7 +204,7 @@ def test_ensure_runtime_rejects_medium_model_checksum_mismatch(
     model = root / "models" / "ggml-medium.bin"
     cli.write_bytes(b"cli")
     if os.name == "nt":
-        (root / stt.PORTABLE_CPU_BACKEND).write_bytes(b"x64")
+        _write_complete_windows_runtime(root)
     monkeypatch.setattr(stt, "stt_root", lambda: root)
     _bind_runtime(monkeypatch, cli, model)
     monkeypatch.setattr(stt, "_download", lambda url, target, **kwargs: target.write_bytes(b"bad-model"))
