@@ -41,6 +41,7 @@ jobs:
           python -m pytest -q `
             tests/test_core_process_hardening.py `
             tests/test_canonical_launcher_boundary.py `
+            tests/test_launcher_shell_hardening.py `
             tests/test_launcher_conversation_test.py `
             tests/test_launcher_core_client.py `
             tests/test_component_uninstall.py `
