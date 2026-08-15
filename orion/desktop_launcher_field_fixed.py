@@ -8,9 +8,14 @@ from orion.core_process import CoreProcessManager
 from orion.desktop_launcher import _install_tk_exception_boundary
 from orion.desktop_launcher_conversation import ConversationalAudioRuntimeLauncher
 from orion.launcher_field_ui_fix import LauncherFieldUiFixMixin
+from orion.launcher_uninstall import LauncherUninstallMixin
 
 
-class FieldFixedConversationalAudioLauncher(LauncherFieldUiFixMixin, ConversationalAudioRuntimeLauncher):
+class FieldFixedConversationalAudioLauncher(
+    LauncherUninstallMixin,
+    LauncherFieldUiFixMixin,
+    ConversationalAudioRuntimeLauncher,
+):
     """Canonical Launcher with field-tested UI stability/readability fixes."""
 
     def _apply_stt_status(self, payload: dict[str, Any]) -> None:
@@ -18,7 +23,7 @@ class FieldFixedConversationalAudioLauncher(LauncherFieldUiFixMixin, Conversatio
 
         The generic conversational mixin correctly flips the Tk button state,
         but field UI buttons are created with explicit disabled background and
-        cursor values.  Restore the active visual state once Whisper is ready so
+        cursor values. Restore the active visual state once Whisper is ready so
         the control both behaves and looks enabled to the user.
         """
         super()._apply_stt_status(payload)
