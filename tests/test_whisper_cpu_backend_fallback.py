@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+# Regression coverage for the pinned Windows CPU runtime recovery path.
+
 import subprocess
 from pathlib import Path
 
