@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-# Regression coverage for the pinned Windows CPU runtime recovery path.
-
 import subprocess
 from pathlib import Path
 
@@ -10,6 +8,7 @@ import pytest
 import orion.whisper_cpp_stt as stt
 
 
+# Regression coverage for pinned generic CPU runtime recovery.
 def test_windows_status_normalizes_signed_ntstatus():
     assert stt._windows_status(-1073741795) == stt.WINDOWS_ILLEGAL_INSTRUCTION
     assert stt._windows_status(-1073740791) == stt.WINDOWS_FAIL_FAST_EXCEPTION
