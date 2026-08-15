@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -55,6 +56,7 @@ def test_recognizer_uses_original_wav_and_no_window_creation_flag(
     assert "capture_output" not in kwargs
     assert kwargs["stdout"] is not None
     assert kwargs["stderr"] is not None
+    assert isinstance(kwargs["env"], dict)
 
 
 def test_recognizer_reports_native_windows_status_without_retry(
@@ -80,3 +82,48 @@ def test_recognizer_never_installs_runtime_implicitly(monkeypatch: pytest.Monkey
     monkeypatch.setattr(stt, "runtime_ready", lambda: False)
     with pytest.raises(RuntimeError, match="not prepared"):
         stt.recognize_wav(source)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows PyInstaller DLL search behavior")
+def test_frozen_child_environment_removes_meipass_from_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    bundle = tmp_path / "Core" / "_internal"
+    nested = bundle / "some-hook"
+    normal = tmp_path / "normal-bin"
+    bundle.mkdir(parents=True)
+    nested.mkdir()
+    normal.mkdir()
+    monkeypatch.setattr(stt.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(stt.sys, "_MEIPASS", str(bundle), raising=False)
+    monkeypatch.setenv("PATH", os.pathsep.join((str(bundle), str(nested), str(normal))))
+
+    env = stt._sanitized_child_env()
+
+    assert str(bundle) not in env["PATH"]
+    assert str(nested) not in env["PATH"]
+    assert str(normal) in env["PATH"]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows PyInstaller DLL search behavior")
+def test_frozen_whisper_launch_resets_and_restores_dll_directory(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    bundle = tmp_path / "Core" / "_internal"
+    bundle.mkdir(parents=True)
+    monkeypatch.setattr(stt.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(stt.sys, "_MEIPASS", str(bundle), raising=False)
+    calls: list[object] = []
+
+    class Kernel32:
+        @staticmethod
+        def SetDllDirectoryW(value):
+            calls.append(value)
+            return 1
+
+    monkeypatch.setattr(stt.ctypes, "windll", SimpleNamespace(kernel32=Kernel32()), raising=False)
+
+    with stt._external_program_dll_scope():
+        calls.append("child-created")
+
+    assert calls == [None, "child-created", str(bundle)]
