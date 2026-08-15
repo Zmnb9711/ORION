@@ -44,7 +44,8 @@ jobs:
             tests/test_launcher_conversation_test.py `
             tests/test_launcher_core_client.py `
             tests/test_component_uninstall.py `
-            tests/test_dcs_readiness.py
+            tests/test_dcs_readiness.py `
+            tests/test_whisper_stt_hardening.py
 
       - name: Build headless console ORION Core
         shell: pwsh
