@@ -15,7 +15,9 @@ on:
       - "pyproject.toml"
       - ".github/workflows/alpha-build.yml"
   push:
-    branches: [main]
+    branches:
+      - main
+      - fix/whisper-direct-wav
     tags:
       - "v*"
 
