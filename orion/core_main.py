@@ -65,23 +65,8 @@ def main(argv: list[str] | None = None) -> int:
         parser = argparse.ArgumentParser(description="ORION Core")
         parser.add_argument("--host", default="127.0.0.1")
         parser.add_argument("--port", type=int, default=8000)
-        parser.add_argument(
-            "--stt-engine-check",
-            action="store_true",
-            help="Verify that the packaged faster-whisper/CTranslate2 CPU engine can be imported, then exit.",
-        )
         args = parser.parse_args(argv)
-        _startup_log(runtime, "args_ready", f"host={args.host} port={args.port} stt_engine_check={args.stt_engine_check}")
-
-        if args.stt_engine_check:
-            _startup_log(runtime, "stt_engine_check_start")
-            from orion.faster_whisper_stt import _import_engine
-
-            WhisperModel, download_model = _import_engine()
-            if WhisperModel is None or download_model is None:
-                raise RuntimeError("faster-whisper engine import returned incomplete symbols")
-            _startup_log(runtime, "stt_engine_check_pass")
-            return 0
+        _startup_log(runtime, "args_ready", f"host={args.host} port={args.port}")
 
         _startup_log(runtime, "app_import_start")
         from orion.app import app
