@@ -18,6 +18,14 @@ class OrionLauncher(
 ):
     """Single production ORION Launcher shell."""
 
+    def close(self) -> None:
+        """Close only the Launcher UI.
+
+        Core lifetime is owned by ``run_launcher`` / ``CoreProcessManager``.
+        Closing the GUI must never terminate the independent Core process.
+        """
+        self.root.destroy()
+
     def _apply_stt_status(self, payload: dict[str, Any]) -> None:
         super()._apply_stt_status(payload)
         conversation = getattr(self, "_conversation_button", None)
