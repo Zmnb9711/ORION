@@ -14,12 +14,7 @@ _NULL_STREAMS: list[TextIO] = []
 
 
 def _ensure_stdio() -> None:
-    """Keep logging safe for legacy/windowed builds during the hardening migration.
-
-    The canonical Core build is being moved to a headless console executable,
-    where stdout/stderr are present normally. This remains only as a defensive
-    compatibility boundary for older installed builds.
-    """
+    """Keep logging safe for legacy/windowed builds during the hardening migration."""
 
     for name in ("stdout", "stderr"):
         if getattr(sys, name) is not None:
@@ -62,13 +57,22 @@ def _runtime_context(runtime: Path) -> str:
     )
 
 
-def main(argv: list[str] | None = None) -> int:
-    """Run ORION Core only.
+def _run_stt_smoke(audio_path: Path, language: str) -> int:
+    """Run production Whisper recognition from the frozen Core process.
 
-    This entry point deliberately has no desktop/UI dispatch. Production
-    packaging freezes it as ``ORION-Core.exe`` while the launcher remains a
-    separate client/process-lifecycle application.
+    This mode exists for CI and diagnostics. It deliberately calls the same
+    ``recognize_wav`` function used by Audio Test, so PyInstaller DLL search
+    behavior and the native whisper-cli child-process boundary are exercised.
     """
+    from orion.whisper_cpp_stt import recognize_wav
+
+    text = recognize_wav(audio_path, language=language)
+    print(text, flush=True)
+    return 0 if text.strip() else 2
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Run ORION Core only."""
 
     _ensure_stdio()
     runtime = _runtime_root()
@@ -79,8 +83,16 @@ def main(argv: list[str] | None = None) -> int:
         parser = argparse.ArgumentParser(description="ORION Core")
         parser.add_argument("--host", default="127.0.0.1")
         parser.add_argument("--port", type=int, default=8000)
+        parser.add_argument("--stt-smoke", type=Path, default=None, metavar="WAV")
+        parser.add_argument("--stt-language", default="auto")
         args = parser.parse_args(argv)
         _startup_log(runtime, "args_ready", f"host={args.host} port={args.port}")
+
+        if args.stt_smoke is not None:
+            _startup_log(runtime, "stt_smoke_start", str(args.stt_smoke))
+            result = _run_stt_smoke(args.stt_smoke.resolve(), args.stt_language)
+            _startup_log(runtime, "stt_smoke_exit", f"code={result}")
+            return result
 
         _startup_log(runtime, "app_import_start")
         from orion.app import app
