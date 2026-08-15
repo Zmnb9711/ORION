@@ -26,6 +26,19 @@ UninstallDisplayIcon={app}\{#MyLauncherExe}
 SetupIconFile=..\branding\orion.ico
 #endif
 
+[InstallDelete]
+; An Alpha upgrade is a payload replacement, not a blind overwrite. Runtime/STT
+; under LocalAppData is intentionally preserved, but every shipped product file
+; is removed before the new payload is copied.
+Type: filesandordirs; Name: "{app}\Core"
+Type: filesandordirs; Name: "{app}\Launcher"
+Type: filesandordirs; Name: "{app}\Uninstaller"
+Type: filesandordirs; Name: "{app}\Integration"
+; Remove shortcuts created by earlier Alpha layouts.
+Type: files; Name: "{autoprograms}\ORION Core.lnk"
+Type: files; Name: "{autoprograms}\ORION.lnk"
+Type: files; Name: "{autodesktop}\ORION.lnk"
+
 [Files]
 Source: "..\dist-product\Core\*"; DestDir: "{app}\Core"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\dist-product\Launcher\*"; DestDir: "{app}\Launcher"; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -51,9 +64,6 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription:
 Filename: "{app}\{#MyLauncherExe}"; WorkingDir: "{app}\Launcher"; Description: "Launch ORION"; Flags: nowait postinstall skipifsilent
 
 [UninstallRun]
-; Launcher intentionally leaves Core running when its window closes. Stop both
-; product processes before Inno removes their files so uninstall cannot leave a
-; locked Core/Launcher payload behind on a real Windows machine.
 Filename: "{cmd}"; Parameters: "/C taskkill /F /IM ORION-Launcher.exe >nul 2>&1 || exit /B 0"; Flags: runhidden waituntilterminated
 Filename: "{cmd}"; Parameters: "/C taskkill /F /IM ORION-Core.exe >nul 2>&1 || exit /B 0"; Flags: runhidden waituntilterminated
 
@@ -61,3 +71,16 @@ Filename: "{cmd}"; Parameters: "/C taskkill /F /IM ORION-Core.exe >nul 2>&1 || e
 ; Full Inno uninstall removes all local ORION state. Selective component removal
 ; is handled by ORION-Uninstall.exe and does not invoke this section.
 Type: filesandordirs; Name: "{localappdata}\ORION"
+
+[Code]
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  ResultCode: Integer;
+begin
+  Result := '';
+  ; Stop every old ORION process before InstallDelete or file replacement. This
+  ; makes an upgrade deterministic and prevents a new Launcher from attaching
+  ; to an old in-memory Core.
+  Exec(ExpandConstant('{cmd}'), '/C taskkill /F /IM ORION-Launcher.exe >nul 2>&1', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Exec(ExpandConstant('{cmd}'), '/C taskkill /F /IM ORION-Core.exe >nul 2>&1', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+end;
