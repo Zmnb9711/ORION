@@ -202,15 +202,7 @@ def _sanitized_child_env() -> dict[str, str]:
 
 @contextmanager
 def _external_program_dll_scope():
-    """Restore the normal Windows DLL search path while launching whisper-cli.
-
-    PyInstaller sets SetDllDirectoryW(sys._MEIPASS) in frozen applications and
-    Windows propagates that setting to child processes. External native programs
-    can then load incompatible DLLs from the PyInstaller bundle. Resetting the
-    directory to NULL before CreateProcess is the mitigation recommended by the
-    PyInstaller documentation. The original bundle directory is restored after
-    the child exits.
-    """
+    """Use the normal Windows DLL search path only while creating an external process."""
     if os.name != "nt" or not getattr(sys, "frozen", False):
         yield
         return
@@ -229,6 +221,27 @@ def _external_program_dll_scope():
         finally:
             if not kernel32.SetDllDirectoryW(str(bundle_dir)):
                 raise OSError(ctypes.get_last_error(), "Failed to restore PyInstaller DLL search path")
+
+
+def _spawn_whisper(
+    command: list[str],
+    *,
+    cwd: Path,
+    stdout_handle,
+    stderr_handle,
+) -> int:
+    """Create whisper-cli under a sanitized DLL search path, then restore Core immediately."""
+    with _external_program_dll_scope():
+        process = subprocess.Popen(
+            command,
+            cwd=str(cwd),
+            env=_sanitized_child_env(),
+            stdout=stdout_handle,
+            stderr=stderr_handle,
+            stdin=subprocess.DEVNULL,
+            startupinfo=_hidden_startupinfo(),
+        )
+    return process.wait()
 
 
 def recognize_wav(path: Path, *, language: str = "auto") -> str:
@@ -269,23 +282,19 @@ def recognize_wav(path: Path, *, language: str = "auto") -> str:
         with stdout_path.open("w", encoding="utf-8", errors="replace") as stdout_handle, stderr_path.open(
             "w", encoding="utf-8", errors="replace"
         ) as stderr_handle:
-            with _external_program_dll_scope():
-                completed = subprocess.run(
-                    command,
-                    cwd=str(cli.parent),
-                    env=_sanitized_child_env(),
-                    stdout=stdout_handle,
-                    stderr=stderr_handle,
-                    check=False,
-                    startupinfo=_hidden_startupinfo(),
-                )
+            returncode = _spawn_whisper(
+                command,
+                cwd=cli.parent,
+                stdout_handle=stdout_handle,
+                stderr_handle=stderr_handle,
+            )
 
         stdout_text = stdout_path.read_text(encoding="utf-8", errors="replace").strip()
         stderr_text = stderr_path.read_text(encoding="utf-8", errors="replace").strip()
-        if completed.returncode != 0:
+        if returncode != 0:
             detail = stderr_text or stdout_text or "no process output"
-            status = completed.returncode & 0xFFFFFFFF
-            raise RuntimeError(f"Whisper STT failed: exit={completed.returncode} status=0x{status:08X}; {detail}")
+            status = returncode & 0xFFFFFFFF
+            raise RuntimeError(f"Whisper STT failed: exit={returncode} status=0x{status:08X}; {detail}")
 
         transcript_path = output_base.with_suffix(".txt")
         text = (
