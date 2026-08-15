@@ -4,12 +4,9 @@ import hashlib
 import os
 import shutil
 import subprocess
-import sys
 import tempfile
 import urllib.request
-import wave
 import zipfile
-from array import array
 from collections.abc import Callable
 from pathlib import Path
 
@@ -27,12 +24,6 @@ WHISPER_MODEL_URL = (
     f"{WHISPER_MODEL_FILENAME}?download=true"
 )
 DEFAULT_THREADS = 4
-TARGET_SAMPLE_RATE = 16000
-WINDOWS_ILLEGAL_INSTRUCTION = 0xC000001D
-WINDOWS_FAIL_FAST_EXCEPTION = 0xC0000409
-WINDOWS_PORTABLE_RECOVERY_STATUSES = frozenset(
-    {WINDOWS_ILLEGAL_INSTRUCTION, WINDOWS_FAIL_FAST_EXCEPTION}
-)
 PORTABLE_CPU_BACKEND = "ggml-cpu.dll"
 RUNTIME_VERSION_MARKER = "ORION_WHISPER_RUNTIME_VERSION.txt"
 ProgressCallback = Callable[[str, int, int | None], None]
@@ -115,7 +106,7 @@ def _download(url: str, target: Path, *, stage: str, progress: ProgressCallback 
 
 
 def ensure_runtime(progress: ProgressCallback | None = None) -> tuple[Path, Path]:
-    """Install or repair pinned CPU-only whisper.cpp and multilingual medium model."""
+    """Install or repair the pinned CPU-only whisper.cpp runtime and medium model."""
     cli = whisper_cli_path()
     model = whisper_model_path()
     if cli.is_file() and model.is_file() and _windows_runtime_complete(cli):
@@ -129,8 +120,7 @@ def ensure_runtime(progress: ProgressCallback | None = None) -> tuple[Path, Path
     root.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="orion-whisper-install-") as tmp:
         tmp_dir = Path(tmp)
-        runtime_needs_repair = not cli.is_file() or not _windows_runtime_complete(cli)
-        if runtime_needs_repair:
+        if not cli.is_file() or not _windows_runtime_complete(cli):
             archive = tmp_dir / "whisper-bin-x64.zip"
             _download(WHISPER_WINDOWS_X64_URL, archive, stage="runtime", progress=progress)
             if progress is not None:
@@ -170,134 +160,43 @@ def ensure_runtime(progress: ProgressCallback | None = None) -> tuple[Path, Path
     return cli, model
 
 
-def _read_pcm16_mono_16k(source: Path) -> bytes:
-    with wave.open(str(source), "rb") as wav:
-        channels = wav.getnchannels()
-        sample_width = wav.getsampwidth()
-        sample_rate = wav.getframerate()
-        frames = wav.readframes(wav.getnframes())
-
-    if sample_width != 2:
-        raise RuntimeError(f"Whisper input must be 16-bit PCM; got sample width {sample_width}")
-    if channels < 1:
-        raise RuntimeError("Whisper input WAV has no audio channels")
-
-    samples = array("h")
-    samples.frombytes(frames)
-    if sys.byteorder != "little":
-        samples.byteswap()
-
-    if channels > 1:
-        mono = array("h")
-        for index in range(0, len(samples), channels):
-            frame = samples[index : index + channels]
-            mono.append(int(sum(frame) / len(frame)))
-        samples = mono
-
-    if sample_rate != TARGET_SAMPLE_RATE:
-        if sample_rate <= 0:
-            raise RuntimeError(f"Invalid WAV sample rate: {sample_rate}")
-        target_count = max(1, int(round(len(samples) * TARGET_SAMPLE_RATE / sample_rate)))
-        resampled = array("h")
-        if len(samples) == 1:
-            resampled.extend([samples[0]] * target_count)
-        else:
-            scale = (len(samples) - 1) / max(1, target_count - 1)
-            for target_index in range(target_count):
-                source_pos = target_index * scale
-                left = int(source_pos)
-                right = min(left + 1, len(samples) - 1)
-                fraction = source_pos - left
-                value = round(samples[left] + (samples[right] - samples[left]) * fraction)
-                resampled.append(max(-32768, min(32767, int(value))))
-        samples = resampled
-
-    if sys.byteorder != "little":
-        samples.byteswap()
-    return samples.tobytes()
-
-
-def _prepare_input_wav(source: Path, target: Path) -> None:
-    pcm = _read_pcm16_mono_16k(source)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    with wave.open(str(target), "wb") as wav:
-        wav.setnchannels(1)
-        wav.setsampwidth(2)
-        wav.setframerate(TARGET_SAMPLE_RATE)
-        wav.writeframes(pcm)
-
-
-def _windows_status(returncode: int) -> int:
-    return returncode & 0xFFFFFFFF
-
-
-def _is_windows_portable_recovery_status(returncode: int) -> bool:
-    return os.name == "nt" and _windows_status(returncode) in WINDOWS_PORTABLE_RECOVERY_STATUSES
-
-
-def _portable_backend_available(root: Path) -> bool:
-    return (root / PORTABLE_CPU_BACKEND).is_file()
-
-
-def _force_portable_cpu_backend(root: Path, *, trigger_status: int | None = None) -> list[Path]:
-    """Disable optimized CPU DLLs so ggml falls back to the pinned generic CPU backend."""
-    portable = root / PORTABLE_CPU_BACKEND
-    if not portable.is_file():
-        return []
-    disabled: list[Path] = []
-    for candidate in sorted(root.glob("ggml-cpu-*.dll")):
-        destination = candidate.with_suffix(candidate.suffix + ".orion-disabled")
-        if destination.exists():
-            destination.unlink()
-        candidate.replace(destination)
-        disabled.append(destination)
-    marker = root / "ORION_PORTABLE_CPU_BACKEND.txt"
-    status_text = f"0x{trigger_status:08X}" if trigger_status is not None else "unknown"
-    marker.write_text(
-        "ORION is using the pinned generic ggml-cpu.dll backend after a Windows whisper.cpp backend crash "
-        f"({status_text}).\n",
-        encoding="utf-8",
-    )
-    return disabled
-
-
-def _run_whisper(command: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        command,
-        capture_output=True,
-        text=True,
-        check=False,
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-    )
-
-
-def _failure_detail(completed: subprocess.CompletedProcess[str], *, recovered: bool = False) -> str:
-    stderr = completed.stderr.strip()
-    stdout = completed.stdout.strip()
-    detail = stderr or stdout or "no process output"
-    status = _windows_status(completed.returncode) if os.name == "nt" else completed.returncode
-    status_text = f"0x{status:08X}" if os.name == "nt" else str(status)
-    prefix = "generic CPU retry failed" if recovered else "process failed"
-    return f"{prefix}; exit={completed.returncode} status={status_text}; {detail}"
+def _hidden_startupinfo() -> subprocess.STARTUPINFO | None:
+    startupinfo_type = getattr(subprocess, "STARTUPINFO", None)
+    if startupinfo_type is None:
+        return None
+    startupinfo = startupinfo_type()
+    startupinfo.dwFlags |= getattr(subprocess, "STARTF_USESHOWWINDOW", 0)
+    startupinfo.wShowWindow = getattr(subprocess, "SW_HIDE", 0)
+    return startupinfo
 
 
 def recognize_wav(path: Path, *, language: str = "auto") -> str:
+    """Recognize the original captured WAV using the single canonical Whisper path.
+
+    ORION deliberately does not pre-resample audio, mutate whisper.cpp CPU DLLs,
+    use CREATE_NO_WINDOW, or capture native-process output through pipes. This
+    keeps runtime behavior aligned with the independently validated CLI launch.
+    """
     if not runtime_ready():
         raise RuntimeError("Whisper medium is not prepared. Install speech recognition from Launcher first.")
+
     cli = whisper_cli_path()
     model = whisper_model_path()
-    with tempfile.TemporaryDirectory(prefix="orion-whisper-") as tmp:
-        tmp_dir = Path(tmp)
-        prepared = tmp_dir / "input-16k.wav"
-        output_base = tmp_dir / "transcript"
-        _prepare_input_wav(path, prepared)
+    source = Path(path).resolve()
+    if not source.is_file():
+        raise RuntimeError(f"Whisper input WAV does not exist: {source}")
 
+    with tempfile.TemporaryDirectory(prefix="orion-whisper-result-") as tmp:
+        tmp_dir = Path(tmp)
+        output_base = tmp_dir / "transcript"
+        stdout_path = tmp_dir / "whisper-stdout.log"
+        stderr_path = tmp_dir / "whisper-stderr.log"
         command = [
             str(cli),
             "--model",
             str(model),
             "--file",
-            str(prepared),
+            str(source),
             "--threads",
             str(configured_threads()),
             "--processors",
@@ -311,26 +210,29 @@ def recognize_wav(path: Path, *, language: str = "auto") -> str:
             "--language",
             language,
         ]
-        completed = _run_whisper(command)
-        if completed.returncode != 0 and _is_windows_portable_recovery_status(completed.returncode):
-            root = cli.parent
-            status = _windows_status(completed.returncode)
-            if _portable_backend_available(root):
-                _force_portable_cpu_backend(root, trigger_status=status)
-                completed = _run_whisper(command)
-                if completed.returncode != 0:
-                    raise RuntimeError(f"Whisper STT failed: {_failure_detail(completed, recovered=True)}")
-            else:
-                raise RuntimeError(
-                    f"Whisper STT failed with recoverable Windows backend status 0x{status:08X}, "
-                    "and the pinned ggml-cpu.dll backend is unavailable"
-                )
-        elif completed.returncode != 0:
-            raise RuntimeError(f"Whisper STT failed: {_failure_detail(completed)}")
+        with stdout_path.open("w", encoding="utf-8", errors="replace") as stdout_handle, stderr_path.open(
+            "w", encoding="utf-8", errors="replace"
+        ) as stderr_handle:
+            completed = subprocess.run(
+                command,
+                cwd=str(cli.parent),
+                stdout=stdout_handle,
+                stderr=stderr_handle,
+                check=False,
+                startupinfo=_hidden_startupinfo(),
+            )
+
+        stdout_text = stdout_path.read_text(encoding="utf-8", errors="replace").strip()
+        stderr_text = stderr_path.read_text(encoding="utf-8", errors="replace").strip()
+        if completed.returncode != 0:
+            detail = stderr_text or stdout_text or "no process output"
+            status = completed.returncode & 0xFFFFFFFF
+            raise RuntimeError(f"Whisper STT failed: exit={completed.returncode} status=0x{status:08X}; {detail}")
 
         transcript_path = output_base.with_suffix(".txt")
-        if transcript_path.is_file():
-            text = transcript_path.read_text(encoding="utf-8", errors="replace").strip()
-        else:
-            text = completed.stdout.strip()
+        text = (
+            transcript_path.read_text(encoding="utf-8", errors="replace").strip()
+            if transcript_path.is_file()
+            else stdout_text
+        )
         return " ".join(text.split())
