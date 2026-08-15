@@ -10,12 +10,12 @@ from pathlib import Path
 
 
 class CoreProcessManager:
-    """Manage ORION Core as a process separate from the desktop launcher.
+    """Manage the one canonical ORION Core process lifecycle.
 
-    ``start`` ensures a Core process exists. ``stop`` intentionally only
-    detaches the launcher from a Core that it started, preserving the product
-    rule that closing the UI must not implicitly stop ORION. ``shutdown`` is
-    the explicit lifecycle operation that terminates the owned Core process.
+    ``start`` attaches to an existing healthy Core or starts one. ``detach``
+    forgets Launcher ownership without terminating Core, which is the normal UI
+    exit behavior. ``shutdown`` explicitly terminates a Core process started by
+    this manager.
     """
 
     def __init__(self, host: str, port: int, runtime_dir: Path) -> None:
@@ -41,38 +41,44 @@ class CoreProcessManager:
             return False
 
     def start(self) -> None:
-        # Reuse an already-running Core instead of spawning a duplicate.
         if self.healthy():
+            self._process = None
             self._owns_process = False
             return
         if self._process is not None and self._process.poll() is None:
             return
 
         self.runtime_dir.mkdir(parents=True, exist_ok=True)
-        env = os.environ.copy()
-        env["ORION_RUNTIME_DIR"] = str(self.runtime_dir)
         command = self._command()
-        creationflags = 0
-        if os.name == "nt" and hasattr(subprocess, "CREATE_NO_WINDOW"):
-            creationflags = subprocess.CREATE_NO_WINDOW
+        executable = Path(command[0]).resolve()
+        cwd = executable.parent if executable.is_file() else self.runtime_dir.parent
+
         self._process = subprocess.Popen(  # noqa: S603
             command,
-            cwd=str(self.runtime_dir.parent),
-            env=env,
+            cwd=str(cwd),
+            env=self._core_environment(),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            creationflags=creationflags,
+            # Do not use CREATE_NO_WINDOW here. ORION Core is a headless console
+            # backend and may launch native child processes such as whisper.cpp.
+            # Preserve normal Windows process semantics and hide only user-facing
+            # UI at the Launcher layer.
+            creationflags=0,
         )
         self._owns_process = True
 
-    def stop(self) -> None:
-        """Detach the launcher without shutting down ORION Core."""
+    def detach(self) -> None:
+        """Detach Launcher without shutting down ORION Core."""
         self._process = None
         self._owns_process = False
 
+    def stop(self) -> None:
+        """Compatibility alias for the old Launcher detach contract."""
+        self.detach()
+
     def shutdown(self) -> None:
-        """Explicitly stop the Core process started by this launcher instance."""
+        """Explicitly stop the Core process started by this manager."""
         process = self._process
         if process is None or not self._owns_process:
             return
@@ -89,6 +95,15 @@ class CoreProcessManager:
         finally:
             self._process = None
             self._owns_process = False
+
+    def _core_environment(self) -> dict[str, str]:
+        """Build a predictable Core environment instead of blindly inheriting UI state."""
+        env = os.environ.copy()
+        env["ORION_RUNTIME_DIR"] = str(self.runtime_dir)
+        env["ORION_PROCESS_ROLE"] = "core"
+        # Launcher-only routing must never leak into the backend process.
+        env.pop("ORION_CORE_BASE_URL", None)
+        return env
 
     def _command(self) -> list[str]:
         override = os.environ.get("ORION_CORE_EXECUTABLE")
