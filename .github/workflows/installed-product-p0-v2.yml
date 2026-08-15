@@ -1,0 +1,281 @@
+name: Installed Product P0 Gate v2
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - hardening/launcher-core
+    paths:
+      - "orion/**"
+      - "packaging/**"
+      - "tests/**"
+      - ".github/workflows/installed-product-p0-v2.yml"
+      - "pyproject.toml"
+
+permissions:
+  contents: read
+
+jobs:
+  installed-product-p0-v2:
+    runs-on: windows-latest
+    timeout-minutes: 55
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install build dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev,windows-audio]"
+
+      - name: Build production executables
+        shell: pwsh
+        run: |
+          python -m PyInstaller --noconfirm --clean --onedir --console --name ORION-Core --collect-submodules orion --collect-submodules uvicorn --add-data "dcs-export;dcs-export" --add-data "dcs-mission-pack;dcs-mission-pack" --add-data "dcs-mission-template;dcs-mission-template" --icon branding/orion.ico orion/core_main.py
+          python -m PyInstaller --noconfirm --clean --onedir --windowed --name ORION-Launcher --collect-submodules orion --collect-submodules uvicorn --add-data "dcs-export;dcs-export" --icon branding/orion.ico --add-data "branding/orion.ico;branding" orion/launcher_main.py
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --name ORION-Uninstall --collect-submodules orion --icon branding/orion.ico orion/uninstall_main.py
+
+      - name: Assemble production payload
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force "dist-product/Core","dist-product/Launcher","dist-product/Uninstaller","dist-product/Integration/DCS/Export","dist-product/Integration/DCS/MissionPack","dist-product/Integration/DCS/MissionTemplate" | Out-Null
+          Copy-Item "dist/ORION-Core/*" "dist-product/Core" -Recurse -Force
+          Copy-Item "dist/ORION-Launcher/*" "dist-product/Launcher" -Recurse -Force
+          Copy-Item "dist/ORION-Uninstall.exe" "dist-product/Uninstaller/ORION-Uninstall.exe" -Force
+          Copy-Item "dcs-export/*" "dist-product/Integration/DCS/Export" -Recurse -Force
+          Copy-Item "dcs-mission-pack/*" "dist-product/Integration/DCS/MissionPack" -Recurse -Force
+          Copy-Item "dcs-mission-template/*" "dist-product/Integration/DCS/MissionTemplate" -Recurse -Force
+
+      - name: Build production installer
+        shell: pwsh
+        run: |
+          $candidates = @("C:\Program Files (x86)\Inno Setup 6\ISCC.exe", "C:\Program Files\Inno Setup 6\ISCC.exe")
+          $iscc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) {
+            choco install innosetup --yes --no-progress
+            $iscc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          }
+          if (-not $iscc) { throw "Inno Setup compiler not found" }
+          & $iscc "packaging/orion-alpha.iss"
+          if (-not (Test-Path "dist-installer/ORION-Alpha-0.2-Setup.exe")) { throw "Installer was not created" }
+
+      - name: Clean install actual production installer
+        shell: pwsh
+        run: |
+          Get-Process ORION-Launcher,ORION-Core -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          Remove-Item "C:\Program Files\ORION" -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item (Join-Path $env:LOCALAPPDATA "ORION") -Recurse -Force -ErrorAction SilentlyContinue
+          $setup = (Resolve-Path "dist-installer/ORION-Alpha-0.2-Setup.exe").Path
+          $p = Start-Process -FilePath $setup -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/SP-" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Installer failed with exit code $($p.ExitCode)" }
+          foreach ($path in @("C:\Program Files\ORION\Launcher\ORION-Launcher.exe","C:\Program Files\ORION\Core\ORION-Core.exe","C:\Program Files\ORION\Uninstaller\ORION-Uninstall.exe")) {
+            if (-not (Test-Path $path)) { throw "Installed payload missing: $path" }
+          }
+
+      - name: Verify installed hashes
+        shell: pwsh
+        run: |
+          $pairs = @(
+            @("dist-product/Core/ORION-Core.exe", "C:\Program Files\ORION\Core\ORION-Core.exe"),
+            @("dist-product/Launcher/ORION-Launcher.exe", "C:\Program Files\ORION\Launcher\ORION-Launcher.exe"),
+            @("dist-product/Uninstaller/ORION-Uninstall.exe", "C:\Program Files\ORION\Uninstaller\ORION-Uninstall.exe")
+          )
+          foreach ($pair in $pairs) {
+            if ((Get-FileHash $pair[0]).Hash -ne (Get-FileHash $pair[1]).Hash) { throw "Installed hash mismatch: $($pair[1])" }
+          }
+
+      - name: Browser-free installed Launcher startup
+        shell: pwsh
+        run: |
+          $browserNames = @("msedge","chrome","firefox","brave","opera")
+          $before = @{}
+          foreach ($name in $browserNames) { Get-Process $name -ErrorAction SilentlyContinue | ForEach-Object { $before[$_.Id] = $true } }
+          $env:ORION_RUNTIME_DIR = Join-Path $env:LOCALAPPDATA "ORION\runtime"
+          New-Item -ItemType Directory -Force $env:ORION_RUNTIME_DIR | Out-Null
+          $launcher = Start-Process -FilePath "C:\Program Files\ORION\Launcher\ORION-Launcher.exe" -WorkingDirectory "C:\Program Files\ORION\Launcher" -PassThru
+          try {
+            $ready = $false
+            for ($i=0; $i -lt 40; $i++) {
+              Start-Sleep -Milliseconds 500
+              if ($launcher.HasExited) { throw "Installed Launcher exited unexpectedly" }
+              try { if ((Invoke-RestMethod "http://127.0.0.1:8000/health" -TimeoutSec 1).status -eq "ok") { $ready=$true; break } } catch {}
+            }
+            if (-not $ready) { throw "Installed Launcher did not start Core" }
+            Start-Sleep -Seconds 3
+            $new = @()
+            foreach ($name in $browserNames) { Get-Process $name -ErrorAction SilentlyContinue | ForEach-Object { if (-not $before.ContainsKey($_.Id)) { $new += "$($_.ProcessName):$($_.Id)" } } }
+            if ($new.Count -gt 0) { throw "Launcher opened browser process(es): $($new -join ', ')" }
+            $cores = @(Get-CimInstance Win32_Process | Where-Object { $_.Name -eq "ORION-Core.exe" })
+            if ($cores.Count -ne 1) { throw "Expected one Core, found $($cores.Count)" }
+            if ($cores[0].ExecutablePath -ne "C:\Program Files\ORION\Core\ORION-Core.exe") { throw "Unexpected Core path: $($cores[0].ExecutablePath)" }
+          } finally {
+            if (-not $launcher.HasExited) { Stop-Process -Id $launcher.Id -Force -ErrorAction SilentlyContinue }
+            Get-Process ORION-Core -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Upgrade running product and prove new installed Core starts
+        shell: pwsh
+        run: |
+          $env:ORION_RUNTIME_DIR = Join-Path $env:LOCALAPPDATA "ORION\runtime"
+          $launcher = Start-Process -FilePath "C:\Program Files\ORION\Launcher\ORION-Launcher.exe" -PassThru
+          $oldPid = $null
+          for ($i=0; $i -lt 40; $i++) {
+            Start-Sleep -Milliseconds 500
+            $cores = @(Get-Process ORION-Core -ErrorAction SilentlyContinue)
+            if ($cores.Count -eq 1) { $oldPid=$cores[0].Id; break }
+          }
+          if (-not $oldPid) { throw "Could not establish old Core PID" }
+          $setup = (Resolve-Path "dist-installer/ORION-Alpha-0.2-Setup.exe").Path
+          $p = Start-Process -FilePath $setup -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/SP-" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Upgrade failed: $($p.ExitCode)" }
+          if (Get-Process -Id $oldPid -ErrorAction SilentlyContinue) { throw "Old Core PID survived upgrade" }
+          if (Get-Process -Id $launcher.Id -ErrorAction SilentlyContinue) { throw "Old Launcher PID survived upgrade" }
+          if ((Get-FileHash "dist-product/Core/ORION-Core.exe").Hash -ne (Get-FileHash "C:\Program Files\ORION\Core\ORION-Core.exe").Hash) { throw "Upgrade payload mismatch" }
+          $newLauncher = Start-Process -FilePath "C:\Program Files\ORION\Launcher\ORION-Launcher.exe" -PassThru
+          try {
+            $newPid = $null
+            for ($i=0; $i -lt 40; $i++) {
+              Start-Sleep -Milliseconds 500
+              try {
+                if ((Invoke-RestMethod "http://127.0.0.1:8000/health" -TimeoutSec 1).status -eq "ok") {
+                  $cores = @(Get-CimInstance Win32_Process | Where-Object { $_.Name -eq "ORION-Core.exe" })
+                  if ($cores.Count -eq 1) { $newPid = [int]$cores[0].ProcessId; $newPath=$cores[0].ExecutablePath; break }
+                }
+              } catch {}
+            }
+            if (-not $newPid) { throw "New installed Core did not become healthy after upgrade" }
+            if ($newPid -eq $oldPid) { throw "Core PID was not replaced" }
+            if ($newPath -ne "C:\Program Files\ORION\Core\ORION-Core.exe") { throw "New Core path is wrong: $newPath" }
+            Write-Host "UPGRADE PASS oldCore=$oldPid newCore=$newPid path=$newPath"
+          } finally {
+            if (-not $newLauncher.HasExited) { Stop-Process -Id $newLauncher.Id -Force -ErrorAction SilentlyContinue }
+            Get-Process ORION-Core -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Prepare official Whisper runtime and speech sample
+        shell: pwsh
+        run: |
+          $runtime = Join-Path $env:RUNNER_TEMP "orion-installed-p0-v2-runtime"
+          $stt = Join-Path $runtime "stt\whisper.cpp"
+          $downloads = Join-Path $env:RUNNER_TEMP "orion-installed-p0-v2-downloads"
+          Remove-Item $runtime,$downloads -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force $stt,$downloads | Out-Null
+          $zip = Join-Path $downloads "whisper-bin-x64.zip"
+          Invoke-WebRequest "https://github.com/ggml-org/whisper.cpp/releases/download/v1.8.6/whisper-bin-x64.zip" -OutFile $zip
+          Expand-Archive $zip (Join-Path $downloads "whisper") -Force
+          $cli = Get-ChildItem (Join-Path $downloads "whisper") -Recurse -Filter whisper-cli.exe | Select-Object -First 1
+          if (-not $cli) { throw "whisper-cli.exe missing" }
+          Copy-Item (Join-Path $cli.Directory.FullName "*") $stt -Recurse -Force
+          Set-Content (Join-Path $stt "ORION_WHISPER_RUNTIME_VERSION.txt") "v1.8.6" -Encoding UTF8
+          $model = Join-Path $stt "ggml-tiny.en.bin"
+          Invoke-WebRequest "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin?download=true" -OutFile $model
+          $wav = Join-Path $downloads "jfk.wav"
+          Invoke-WebRequest "https://raw.githubusercontent.com/ggml-org/whisper.cpp/master/samples/jfk.wav" -OutFile $wav
+          "ORION_RUNTIME_DIR=$runtime" | Out-File $env:GITHUB_ENV -Append
+          "ORION_WHISPER_ROOT=$stt" | Out-File $env:GITHUB_ENV -Append
+          "ORION_WHISPER_MODEL=$model" | Out-File $env:GITHUB_ENV -Append
+          "ORION_STT_SAMPLE=$wav" | Out-File $env:GITHUB_ENV -Append
+
+      - name: Installed Core real STT P0
+        shell: pwsh
+        run: |
+          $output = & "C:\Program Files\ORION\Core\ORION-Core.exe" --stt-smoke $env:ORION_STT_SAMPLE --stt-language en 2>&1
+          $code = $LASTEXITCODE
+          $text = ($output | Out-String).Trim()
+          Write-Host $text
+          if ($code -ne 0) { throw "Installed Core STT failed with exit code $code" }
+          $normalized = $text.ToLowerInvariant()
+          if ($normalized -notmatch "country" -or $normalized -notmatch "you") { throw "Unexpected STT transcript: $text" }
+
+      - name: Installed Core real TTS P0
+        shell: pwsh
+        run: |
+          $tts = Join-Path $env:RUNNER_TEMP "orion-installed-p0-v2-tts.wav"
+          Remove-Item $tts -Force -ErrorAction SilentlyContinue
+          & "C:\Program Files\ORION\Core\ORION-Core.exe" --tts-smoke $tts --tts-text "Всё хорошо. Связь установлена."
+          if ($LASTEXITCODE -ne 0) { throw "Installed Core TTS failed" }
+          if (-not (Test-Path $tts) -or (Get-Item $tts).Length -le 44) { throw "TTS WAV missing or empty" }
+          Write-Host "TTS PASS bytes=$((Get-Item $tts).Length)"
+
+      - name: Selective uninstall Core
+        shell: pwsh
+        run: |
+          & "C:\Program Files\ORION\Uninstaller\ORION-Uninstall.exe" --components core
+          if ($LASTEXITCODE -ne 0) { throw "Core uninstall helper failed" }
+          if (Test-Path "C:\Program Files\ORION\Core") { throw "Core directory survived selective uninstall" }
+          if (-not (Test-Path "C:\Program Files\ORION\Launcher\ORION-Launcher.exe")) { throw "Launcher was removed by Core-only uninstall" }
+          if (-not (Test-Path "C:\Program Files\ORION\Uninstaller\ORION-Uninstall.exe")) { throw "Uninstaller was removed by Core-only uninstall" }
+
+      - name: Reinstall for Launcher selective uninstall
+        shell: pwsh
+        run: |
+          $setup = (Resolve-Path "dist-installer/ORION-Alpha-0.2-Setup.exe").Path
+          $p = Start-Process $setup -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/SP-" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Reinstall failed" }
+
+      - name: Selective uninstall Launcher
+        shell: pwsh
+        run: |
+          & "C:\Program Files\ORION\Uninstaller\ORION-Uninstall.exe" --components launcher
+          if ($LASTEXITCODE -ne 0) { throw "Launcher uninstall helper failed" }
+          if (Test-Path "C:\Program Files\ORION\Launcher") { throw "Launcher directory survived selective uninstall" }
+          if (-not (Test-Path "C:\Program Files\ORION\Core\ORION-Core.exe")) { throw "Core was removed by Launcher-only uninstall" }
+
+      - name: Reinstall for Whisper selective uninstall
+        shell: pwsh
+        run: |
+          $setup = (Resolve-Path "dist-installer/ORION-Alpha-0.2-Setup.exe").Path
+          $p = Start-Process $setup -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/SP-" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Reinstall failed" }
+          $whisper = Join-Path $env:LOCALAPPDATA "ORION\runtime\stt\whisper.cpp"
+          New-Item -ItemType Directory -Force $whisper | Out-Null
+          Set-Content (Join-Path $whisper "probe.txt") "probe"
+
+      - name: Selective uninstall Whisper
+        shell: pwsh
+        run: |
+          & "C:\Program Files\ORION\Uninstaller\ORION-Uninstall.exe" --components whisper
+          if ($LASTEXITCODE -ne 0) { throw "Whisper uninstall helper failed" }
+          $whisper = Join-Path $env:LOCALAPPDATA "ORION\runtime\stt\whisper.cpp"
+          if (Test-Path $whisper) { throw "Whisper runtime survived selective uninstall" }
+          if (-not (Test-Path "C:\Program Files\ORION\Core\ORION-Core.exe")) { throw "Core was removed by Whisper-only uninstall" }
+          if (-not (Test-Path "C:\Program Files\ORION\Launcher\ORION-Launcher.exe")) { throw "Launcher was removed by Whisper-only uninstall" }
+
+      - name: Reinstall for full uninstall
+        shell: pwsh
+        run: |
+          $setup = (Resolve-Path "dist-installer/ORION-Alpha-0.2-Setup.exe").Path
+          $p = Start-Process $setup -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/SP-" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Reinstall failed" }
+
+      - name: Full uninstall removes installed product and local ORION state
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force (Join-Path $env:LOCALAPPDATA "ORION\runtime") | Out-Null
+          Set-Content (Join-Path $env:LOCALAPPDATA "ORION\runtime\probe.txt") "probe"
+          & "C:\Program Files\ORION\Uninstaller\ORION-Uninstall.exe" --components launcher,core,whisper,dcs_integration --remove-everything
+          if ($LASTEXITCODE -ne 0) { throw "Full uninstall helper failed" }
+          $gone = $false
+          for ($i=0; $i -lt 40; $i++) {
+            Start-Sleep -Milliseconds 500
+            if (-not (Test-Path "C:\Program Files\ORION") -and -not (Test-Path (Join-Path $env:LOCALAPPDATA "ORION"))) { $gone=$true; break }
+          }
+          if (-not $gone) { throw "Full uninstall did not remove product/local state" }
+
+      - name: P0 summary
+        shell: pwsh
+        run: |
+          Write-Host "BROWSER = PASS"
+          Write-Host "UPGRADE = PASS"
+          Write-Host "VOICE_STT = PASS"
+          Write-Host "VOICE_TTS = PASS"
+          Write-Host "UNINSTALL_CORE = PASS"
+          Write-Host "UNINSTALL_LAUNCHER = PASS"
+          Write-Host "UNINSTALL_WHISPER = PASS"
+          Write-Host "UNINSTALL_ALL = PASS"
