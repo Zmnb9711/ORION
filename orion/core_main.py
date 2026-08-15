@@ -14,11 +14,11 @@ _NULL_STREAMS: list[TextIO] = []
 
 
 def _ensure_stdio() -> None:
-    """Provide sink streams for a PyInstaller ``--windowed`` Core executable.
+    """Keep logging safe for legacy/windowed builds during the hardening migration.
 
-    Windows GUI-mode PyInstaller executables can expose ``sys.stdout`` and
-    ``sys.stderr`` as ``None``. Uvicorn/logging expects writable streams, so the
-    headless Core must restore safe sinks before any server startup work.
+    The canonical Core build is being moved to a headless console executable,
+    where stdout/stderr are present normally. This remains only as a defensive
+    compatibility boundary for older installed builds.
     """
 
     for name in ("stdout", "stderr"):
@@ -48,6 +48,20 @@ def _startup_log(runtime: Path, stage: str, detail: str | None = None) -> None:
         handle.write(line + "\n")
 
 
+def _runtime_context(runtime: Path) -> str:
+    executable = Path(sys.executable).resolve()
+    return " ".join(
+        (
+            f"frozen={bool(getattr(sys, 'frozen', False))}",
+            f"pid={os.getpid()}",
+            f"cwd={Path.cwd()}",
+            f"executable={executable}",
+            f"runtime_dir={runtime}",
+            f"process_role={os.environ.get('ORION_PROCESS_ROLE', '')}",
+        )
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run ORION Core only.
 
@@ -59,7 +73,7 @@ def main(argv: list[str] | None = None) -> int:
     _ensure_stdio()
     runtime = _runtime_root()
     os.environ["ORION_PROCESS_ROLE"] = "core"
-    _startup_log(runtime, "boot", f"frozen={bool(getattr(sys, 'frozen', False))}")
+    _startup_log(runtime, "boot", _runtime_context(runtime))
 
     try:
         parser = argparse.ArgumentParser(description="ORION Core")
@@ -77,9 +91,6 @@ def main(argv: list[str] | None = None) -> int:
         _startup_log(runtime, "uvicorn_exit")
         return 0
     except Exception as exc:
-        # Fatal runtime boundary: log ordinary startup/runtime failures with a
-        # traceback, but do not swallow control-flow exceptions such as
-        # KeyboardInterrupt or SystemExit.
         _startup_log(runtime, "fatal", f"{type(exc).__name__}: {exc}")
         with (runtime / "core-startup.log").open("a", encoding="utf-8") as handle:
             traceback.print_exc(file=handle)
