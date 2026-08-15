@@ -20,12 +20,7 @@ def _runtime_root() -> Path:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Run the ORION Launcher UI only.
-
-    The launcher is a client/lifecycle controller. It starts or attaches to the
-    independent ORION Core process through ``CoreProcessManager``; it never
-    embeds the FastAPI application in its own process.
-    """
+    """Run the single production ORION Launcher shell."""
 
     parser = argparse.ArgumentParser(description="ORION Launcher")
     parser.add_argument("--host", default="127.0.0.1")
@@ -35,9 +30,9 @@ def main(argv: list[str] | None = None) -> int:
     os.environ["ORION_PROCESS_ROLE"] = "launcher"
     os.environ["ORION_CORE_BASE_URL"] = f"http://{args.host}:{args.port}"
 
-    from orion.desktop_launcher_field_fixed import run_field_fixed_launcher
+    from orion.launcher_shell import run_launcher
 
-    return run_field_fixed_launcher(_runtime_root(), host=args.host, port=args.port)
+    return run_launcher(_runtime_root(), host=args.host, port=args.port)
 
 
 if __name__ == "__main__":
