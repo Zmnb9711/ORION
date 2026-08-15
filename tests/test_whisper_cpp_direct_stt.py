@@ -23,6 +23,7 @@ def test_recognize_passes_original_wav_and_runtime_cwd(tmp_path: Path, monkeypat
     monkeypatch.setattr(stt, "whisper_cli_path", lambda: cli)
     monkeypatch.setattr(stt, "whisper_model_path", lambda: model)
     monkeypatch.setattr(stt, "configured_threads", lambda: 4)
+    monkeypatch.setattr(stt, "_hidden_startupinfo", lambda: None)
 
     seen: dict[str, object] = {}
 
@@ -31,7 +32,7 @@ def test_recognize_passes_original_wav_and_runtime_cwd(tmp_path: Path, monkeypat
         seen.update(kwargs)
         output_base = Path(command[command.index("--output-file") + 1])
         output_base.with_suffix(".txt").write_text("Привет, как дела?\n", encoding="utf-8")
-        return SimpleNamespace(returncode=0, stdout="", stderr="")
+        return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(stt.subprocess, "run", fake_run)
 
@@ -45,3 +46,7 @@ def test_recognize_passes_original_wav_and_runtime_cwd(tmp_path: Path, monkeypat
     assert command[command.index("--processors") + 1] == "1"
     assert "--no-gpu" in command
     assert seen["cwd"] == str(runtime)
+    assert "capture_output" not in seen
+    assert "creationflags" not in seen
+    assert seen["stdout"] is not None
+    assert seen["stderr"] is not None
