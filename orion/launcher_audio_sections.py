@@ -1,23 +1,16 @@
 from __future__ import annotations
 
-import json
-import urllib.error
-import urllib.request
 from tkinter import BOTH, LEFT, X, StringVar, messagebox
 from tkinter import ttk
 from typing import Any
 
 from orion.audio_hardware_test import AudioHardwareTester
+from orion.launcher_core_client import LauncherCoreClient
 from orion.windows_wasapi_backend import WasapiEndpoint
 
 
 class LauncherAudioSectionsMixin:
-    """Production Launcher sections for Core/audio foundation diagnostics.
-
-    New sections are additive only. Existing, already-validated Launcher pages
-    remain visible and reachable; Modules/Test and Audio settings extend the
-    canonical product shell rather than replacing any prior functionality.
-    """
+    """Production Launcher sections for Core/audio foundation diagnostics."""
 
     NAV_KEYS = (
         "home",
@@ -37,19 +30,20 @@ class LauncherAudioSectionsMixin:
         fixed = {"modules": "Modules", "test": "Test"}
         return fixed[key] if key in fixed else super().nav_label(key)
 
-    def _core_json(self, path: str, *, method: str = "GET", payload: dict[str, Any] | None = None) -> Any:
-        data = None if payload is None else json.dumps(payload).encode("utf-8")
-        request = urllib.request.Request(
-            f"{self.core.base_url}{path}",
-            data=data,
+    def _core_json(
+        self,
+        path: str,
+        *,
+        method: str = "GET",
+        payload: dict[str, Any] | None = None,
+        timeout: float = 5.0,
+    ) -> Any:
+        return LauncherCoreClient(self.core.base_url).request(
+            path,
             method=method,
-            headers={"Content-Type": "application/json"} if data is not None else {},
+            payload=payload,
+            timeout=timeout,
         )
-        try:
-            with urllib.request.urlopen(request, timeout=1.5) as response:
-                return json.loads(response.read().decode("utf-8"))
-        except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
-            raise RuntimeError(f"Core audio API unavailable: {exc}") from exc
 
     def _audio_snapshot(self) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
         inputs = self._core_json("/v1/windows-audio/wasapi/inputs")
