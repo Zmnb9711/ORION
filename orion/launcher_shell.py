@@ -19,11 +19,17 @@ class OrionLauncher(
     """Single production ORION Launcher shell."""
 
     def close(self) -> None:
-        """Close only the Launcher UI.
+        """Use the Windows tray policy without giving UI code ownership of Core."""
+        super().close()
 
-        Core lifetime is owned by ``run_launcher`` / ``CoreProcessManager``.
-        Closing the GUI must never terminate the independent Core process.
-        """
+    def exit_application(self) -> None:
+        """Exit the Launcher process while leaving independent Core alive."""
+        if getattr(self, "_really_exiting", False):
+            return
+        self._really_exiting = True
+        tray = getattr(self, "_tray", None)
+        if tray is not None:
+            tray.stop()
         self.root.destroy()
 
     def _apply_stt_status(self, payload: dict[str, Any]) -> None:
