@@ -163,6 +163,25 @@ class LauncherConversationTestMixin:
                 text += f" ({mib:.0f} MiB)"
         return text
 
+    @staticmethod
+    def _set_progress_visible(progress, visible: bool) -> None:  # noqa: ANN001
+        """Keep transient download progress visible only while work can continue.
+
+        Tk retains a packed Progressbar after it reaches 100%.  A completed or
+        failed provisioning state is terminal UI state, so remove the bar from
+        layout instead of leaving a stale download row on screen.  If the user
+        starts a later repair/download, pack it back with the canonical layout.
+        """
+        try:
+            manager = progress.winfo_manager()
+        except (AttributeError, TypeError):
+            manager = "pack"
+        if visible:
+            if not manager:
+                progress.pack(anchor="w", fill=X, pady=(0, 8))
+        elif manager:
+            progress.pack_forget()
+
     def _apply_stt_status(self, payload: dict[str, Any]) -> None:
         label = getattr(self, "_stt_status_label", None)
         progress = getattr(self, "_stt_progress", None)
@@ -175,6 +194,8 @@ class LauncherConversationTestMixin:
         progress.configure(value=float(percent) if percent is not None else 0.0)
         ready = bool(payload.get("ready"))
         running = bool(payload.get("running"))
+        failed = bool(payload.get("error")) or str(payload.get("stage", "")) == "failed"
+        self._set_progress_visible(progress, running and not ready and not failed)
         prepare.configure(state="disabled" if running or ready else "normal")
         conversation.configure(state="normal" if ready else "disabled")
 
