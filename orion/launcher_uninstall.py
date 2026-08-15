@@ -87,7 +87,7 @@ class LauncherUninstallMixin:
             dcs_button.configure(state="disabled")
             ttk.Label(
                 box,
-                text="DCS Integration removal is unavailable because no active Saved Games profile is recorded.",
+                text="DCS Integration cannot be located safely because no active Saved Games profile is recorded. Remove everything will still remove the complete local ORION installation.",
                 style="CardText.TLabel",
                 wraplength=570,
                 justify="left",
@@ -115,22 +115,10 @@ class LauncherUninstallMixin:
             if dcs.get() and dcs_path:
                 components.add(UninstallComponent.DCS_INTEGRATION)
 
-            remove_everything = bool(remove_all.get())
-            if remove_everything and not dcs_path:
-                # "Everything" still removes every locally installed product
-                # component. DCS is excluded only when we cannot identify the
-                # user's Saved Games profile safely.
-                components = {
-                    UninstallComponent.LAUNCHER,
-                    UninstallComponent.CORE,
-                    UninstallComponent.WHISPER,
-                }
-                remove_everything = False
-
             try:
                 request = UninstallRequest(
                     components=components,
-                    remove_everything=remove_everything,
+                    remove_everything=bool(remove_all.get()),
                     dcs_saved_games_path=dcs_path if dcs.get() else None,
                     parent_pid=os.getpid(),
                 )
@@ -139,6 +127,8 @@ class LauncherUninstallMixin:
                 return
 
             summary = "\n".join(f"• {line}" for line in request.summary_lines())
+            if request.remove_everything and not dcs_path:
+                summary += "\n• DCS Integration: path unknown, will be left untouched"
             if not messagebox.askyesno(
                 "ORION Uninstall",
                 f"The following will be removed:\n\n{summary}\n\nContinue?",
