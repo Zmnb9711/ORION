@@ -19,6 +19,9 @@ orion = "orion.launcher:main"
 orion-core = "orion.core_main:main"
 orion-launcher = "orion.launcher_main:main"
 
+[project.entry-points.pyinstaller40]
+hook-dirs = "orion._pyinstaller:get_hook_dirs"
+
 [project.optional-dependencies]
 dev = [
   "httpx>=0.27,<1.0",
