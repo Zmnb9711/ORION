@@ -7,7 +7,8 @@ from tkinter import ttk
 
 from orion.alpha_smoke_diagnostics import write_alpha_diagnostics_bundle
 from orion.branding import packaged_icon_path
-from orion.desktop_app import CoreServer, OrionDesktopLauncher
+from orion.core_process import CoreProcessManager
+from orion.desktop_app import OrionDesktopLauncher
 from orion.diagnostics_export import copy_diagnostics_bundle, reveal_in_file_manager
 from orion.dcs_installations import DcsInstallationType
 from orion.first_run_actions import (
@@ -24,10 +25,10 @@ from orion.windows_tray import TrayUnavailable, WindowsTrayController
 
 
 class WindowsOrionDesktopLauncher(OrionDesktopLauncher):
-    def __init__(self, root: Tk, runtime_dir: Path, core: CoreServer) -> None:
+    def __init__(self, root: Tk, runtime_dir: Path, core: CoreProcessManager) -> None:
         self._really_exiting = False
         self._tray = WindowsTrayController(self._request_restore, self._request_exit)
-        super().__init__(root, runtime_dir, core)
+        super().__init__(root, runtime_dir, core)  # type: ignore[arg-type]
         self._apply_window_icon(root)
 
     @staticmethod
