@@ -52,8 +52,6 @@ Name: "{localappdata}\ORION\runtime\diagnostics"
 Name: "{localappdata}\ORION\runtime\updates"
 
 [Icons]
-; Launcher is the only user-facing entry point. Core and the uninstall helper
-; are managed internally and do not receive their own Start Menu shortcuts.
 Name: "{autoprograms}\ORION"; Filename: "{app}\{#MyLauncherExe}"; WorkingDir: "{app}\Launcher"
 Name: "{autodesktop}\ORION"; Filename: "{app}\{#MyLauncherExe}"; WorkingDir: "{app}\Launcher"; Tasks: desktopicon
 
@@ -68,8 +66,6 @@ Filename: "{cmd}"; Parameters: "/C taskkill /F /IM ORION-Launcher.exe >nul 2>&1 
 Filename: "{cmd}"; Parameters: "/C taskkill /F /IM ORION-Core.exe >nul 2>&1 || exit /B 0"; Flags: runhidden waituntilterminated
 
 [UninstallDelete]
-; Full Inno uninstall removes all local ORION state. Selective component removal
-; is handled by ORION-Uninstall.exe and does not invoke this section.
 Type: filesandordirs; Name: "{localappdata}\ORION"
 
 [Code]
@@ -78,9 +74,9 @@ var
   ResultCode: Integer;
 begin
   Result := '';
-  ; Stop every old ORION process before InstallDelete or file replacement. This
-  ; makes an upgrade deterministic and prevents a new Launcher from attaching
-  ; to an old in-memory Core.
+  // Stop every old ORION process before InstallDelete or file replacement.
+  // This makes an upgrade deterministic and prevents a new Launcher from
+  // attaching to an old in-memory Core.
   Exec(ExpandConstant('{cmd}'), '/C taskkill /F /IM ORION-Launcher.exe >nul 2>&1', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   Exec(ExpandConstant('{cmd}'), '/C taskkill /F /IM ORION-Core.exe >nul 2>&1', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
 end;
