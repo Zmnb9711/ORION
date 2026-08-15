@@ -15,8 +15,8 @@ from orion.whisper_cpp_stt import recognize_wav
 from orion.windows_sapi_backend import WindowsSapiBackend
 from orion.windows_wasapi_backend import WasapiDirection, WasapiEndpoint
 
-PROMPT = "Привет, как дела?"
-RESPONSE = "Дела отлично. Связь установлена."
+PROMPT = "Привет. Как дела?"
+RESPONSE = "Всё хорошо. Связь установлена."
 
 
 class ConversationalAudioTestResult(BaseModel):
