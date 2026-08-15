@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-import webbrowser
 from pathlib import Path
 from typing import TextIO
 
@@ -53,7 +52,11 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="ORION DCS Alpha launcher")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
-    parser.add_argument("--no-browser", action="store_true")
+    parser.add_argument(
+        "--no-browser",
+        action="store_true",
+        help="Compatibility option; ORION no longer opens a browser automatically.",
+    )
     parser.add_argument(
         "--desktop",
         action="store_true",
@@ -74,9 +77,6 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.desktop:
-        # Keep the stable compatibility module as the public desktop dispatch
-        # surface. Besides preserving external imports, this makes the launcher
-        # entry point straightforward to replace in headless tests.
         from orion.desktop_launcher import run_desktop_launcher
 
         return run_desktop_launcher(runtime, host=args.host, port=args.port)
@@ -85,12 +85,6 @@ def main(argv: list[str] | None = None) -> int:
     print(f"ORION Alpha {__version__}")
     print(f"Core API: {url}")
     print("Keep this window open while using ORION with DCS.")
-
-    if not args.no_browser:
-        try:
-            webbrowser.open(f"{url}/docs")
-        except webbrowser.Error:
-            pass
 
     uvicorn.run("orion.app:app", host=args.host, port=args.port, log_level="info")
     return 0
