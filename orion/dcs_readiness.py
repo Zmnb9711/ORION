@@ -94,6 +94,41 @@ def install_export_integration(saved_games_path: str) -> DcsReadinessReport:
     return inspect_dcs_readiness(str(root))
 
 
+def remove_export_integration(saved_games_path: str) -> DcsReadinessReport:
+    """Remove only ORION-owned DCS integration content.
+
+    ``Scripts/Export.lua`` is a shared user file and may contain Tacview, SRS,
+    DCS-BIOS or other exporters.  Never delete it wholesale: remove the exact
+    ORION marker/call pair while preserving every unrelated line.  The payload
+    under ``Scripts/ORION`` is ORION-owned and may be removed directly.
+    """
+    root = Path(saved_games_path)
+    scripts = root / "Scripts"
+    export_path = scripts / "Export.lua"
+    if export_path.is_file():
+        lines = export_path.read_text(encoding="utf-8").splitlines()
+        filtered = [line for line in lines if line.strip() not in {ORION_EXPORT_MARKER, ORION_EXPORT_LINE}]
+        if filtered:
+            export_path.write_text("\n".join(filtered).rstrip() + "\n", encoding="utf-8")
+        else:
+            export_path.unlink()
+
+    orion_dir = scripts / "ORION"
+    integration = orion_dir / "Export.lua"
+    try:
+        integration.unlink()
+    except FileNotFoundError:
+        pass
+    try:
+        orion_dir.rmdir()
+    except (FileNotFoundError, OSError):
+        # Preserve the directory if it contains user/diagnostic files that are
+        # not owned by the standard ORION exporter payload.
+        pass
+
+    return inspect_dcs_readiness(str(root))
+
+
 def _packaged_export_source() -> Path:
     bundle_root = getattr(sys, "_MEIPASS", None)
     if bundle_root:
@@ -129,9 +164,6 @@ def _windows_saved_games_root() -> Path | None:
     shell32 = ctypes.windll.shell32
     ole32 = ctypes.windll.ole32
     shell32.SHGetKnownFolderPath.argtypes = [ctypes.POINTER(GUID), wintypes.DWORD, wintypes.HANDLE, ctypes.POINTER(ctypes.c_wchar_p)]
-    # HRESULT is a signed 32-bit LONG. ctypes.wintypes does not expose HRESULT
-    # consistently across supported Python versions, so use the ABI-compatible
-    # ctypes type directly.
     shell32.SHGetKnownFolderPath.restype = ctypes.c_long
     hr = shell32.SHGetKnownFolderPath(ctypes.byref(guid), 0, None, ctypes.byref(result))
     if hr != 0 or not result.value:
