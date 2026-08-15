@@ -18,6 +18,7 @@ on:
     branches:
       - main
       - fix/whisper-direct-wav
+      - hardening/launcher-core
     tags:
       - "v*"
 
@@ -27,7 +28,7 @@ permissions:
 jobs:
   build-alpha:
     runs-on: windows-latest
-    timeout-minutes: 35
+    timeout-minutes: 40
 
     steps:
       - name: Check out repository
@@ -54,7 +55,7 @@ jobs:
           $actual = (Get-FileHash $icon -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($actual -ne $expected) { throw "Approved ORION icon SHA-256 mismatch. Expected $expected, got $actual" }
 
-      - name: Run Windows deployment, Launcher and DCS regression tests
+      - name: Run Windows deployment, Launcher, Core, STT and DCS regression tests
         shell: pwsh
         run: |
           python -m pytest -q `
@@ -65,18 +66,23 @@ jobs:
             tests/test_launcher_conversation_test.py `
             tests/test_launcher_core_client.py `
             tests/test_component_uninstall.py `
-            tests/test_alpha_smoke_diagnostics.py
+            tests/test_alpha_smoke_diagnostics.py `
+            tests/test_core_process_hardening.py `
+            tests/test_canonical_launcher_boundary.py `
+            tests/test_launcher_shell_hardening.py `
+            tests/test_launcher_close_contract.py `
+            tests/test_whisper_stt_hardening.py
 
       - name: Import canonical production entry points
         shell: pwsh
         run: |
-          python -c "from orion.core_main import main as core_main; from orion.launcher_main import main as launcher_main; from orion.uninstall_main import main as uninstall_main; from orion.core_process import CoreProcessManager; from orion.desktop_product_launcher import WindowsOrionProductLauncher; assert all((core_main, launcher_main, uninstall_main, CoreProcessManager, WindowsOrionProductLauncher))"
+          python -c "from orion.core_main import main as core_main; from orion.launcher_main import main as launcher_main; from orion.uninstall_main import main as uninstall_main; from orion.core_process import CoreProcessManager; from orion.launcher_shell import OrionLauncher; assert all((core_main, launcher_main, uninstall_main, CoreProcessManager, OrionLauncher))"
 
       - name: Build ORION Core
         shell: pwsh
         run: |
           $args = @(
-            "--noconfirm", "--clean", "--onedir", "--windowed",
+            "--noconfirm", "--clean", "--onedir", "--console",
             "--name", "ORION-Core",
             "--collect-submodules", "orion",
             "--collect-submodules", "uvicorn",
@@ -145,7 +151,7 @@ jobs:
           Remove-Item $runtime -Recurse -Force -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Force $runtime | Out-Null
           $env:ORION_RUNTIME_DIR = $runtime
-          $process = Start-Process -FilePath "dist-product/Core/ORION-Core.exe" -ArgumentList "--port","8123" -PassThru
+          $process = Start-Process -FilePath "dist-product/Core/ORION-Core.exe" -ArgumentList "--port","8123" -WorkingDirectory "dist-product/Core" -WindowStyle Hidden -PassThru
           try {
             $ready = $false
             for ($i = 0; $i -lt 60; $i++) {
@@ -157,15 +163,13 @@ jobs:
               } catch {}
             }
             if (-not $ready) { throw "Standalone ORION Core health endpoint did not become ready" }
-          } finally {
             $startupLog = Join-Path $runtime "core-startup.log"
-            if (Test-Path $startupLog) {
-              Write-Host "===== ORION Core startup log ====="
-              Get-Content $startupLog
-              Write-Host "===== end startup log ====="
-            } else {
-              Write-Warning "ORION Core did not create core-startup.log"
-            }
+            if (-not (Test-Path $startupLog)) { throw "ORION Core did not create core-startup.log" }
+            $text = Get-Content $startupLog -Raw
+            if ($text -notmatch "frozen=True") { throw "Startup log did not confirm frozen Core" }
+            if ($text -notmatch "process_role=core") { throw "Startup log did not confirm Core role" }
+            Write-Host $text
+          } finally {
             if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force }
           }
 
