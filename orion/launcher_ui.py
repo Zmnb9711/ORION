@@ -166,7 +166,7 @@ class LauncherUiMixin:
         ttk.Label(audio, text="CONVERSATIONAL AUDIO TEST", style="CardTitle.TLabel").pack(anchor="w")
         ttk.Label(
             audio,
-            text='Press START and say: “Привет, как дела?”  Expected reply: “Дела отлично. Связь установлена.”',
+            text='Press START and say: “Привет, как дела?”  Expected reply: “Всё хорошо. Связь установлена.”',
             style="CardText.TLabel",
             wraplength=780,
             justify="left",
@@ -199,3 +199,19 @@ class LauncherUiMixin:
 
         if core_ok:
             self.root.after(50, self._poll_stt_status)
+
+    def _apply_stt_status(self, payload: dict) -> None:
+        super()._apply_stt_status(payload)
+        prepare = getattr(self, "_stt_prepare_button", None)
+        if prepare is None:
+            return
+        ready = bool(payload.get("ready"))
+        try:
+            manager = prepare.winfo_manager()
+        except (AttributeError, TypeError):
+            manager = "pack"
+        if ready:
+            if manager:
+                prepare.pack_forget()
+        elif not manager:
+            prepare.pack(side=LEFT)
