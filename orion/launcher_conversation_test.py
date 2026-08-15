@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import json
-import urllib.error
-import urllib.request
 from datetime import datetime
 from pathlib import Path
 from time import perf_counter
@@ -12,6 +9,7 @@ from typing import Any
 from uuid import uuid4
 
 from orion.audio_hardware_test import AudioHardwareTester
+from orion.launcher_core_client import LauncherCoreClient
 from orion.windows_wasapi_backend import WasapiEndpoint
 
 
@@ -118,18 +116,25 @@ class LauncherConversationTestMixin:
         else:
             messagebox.showwarning("ORION Test", text, parent=self.root)
 
-    def _core_json(self, method: str, path: str, *, timeout: float = 5.0) -> Any:
-        request = urllib.request.Request(f"{self.core.base_url}{path}", method=method)
-        try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
-                return json.loads(response.read().decode("utf-8"))
-        except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
-            raise RuntimeError(f"Core audio API unavailable: {exc}") from exc
+    def _core_json(
+        self,
+        path: str,
+        *,
+        method: str = "GET",
+        payload: dict[str, Any] | None = None,
+        timeout: float = 5.0,
+    ) -> Any:
+        return LauncherCoreClient(self.core.base_url).request(
+            path,
+            method=method,
+            payload=payload,
+            timeout=timeout,
+        )
 
     def _conversation_core_json(self) -> Any:
         return self._core_json(
-            "POST",
             "/v1/windows-audio/test/conversation",
+            method="POST",
             timeout=self.CONVERSATION_TIMEOUT_SECONDS,
         )
 
@@ -165,13 +170,6 @@ class LauncherConversationTestMixin:
 
     @staticmethod
     def _set_progress_visible(progress, visible: bool) -> None:  # noqa: ANN001
-        """Keep transient download progress visible only while work can continue.
-
-        Tk retains a packed Progressbar after it reaches 100%.  A completed or
-        failed provisioning state is terminal UI state, so remove the bar from
-        layout instead of leaving a stale download row on screen.  If the user
-        starts a later repair/download, pack it back with the canonical layout.
-        """
         try:
             manager = progress.winfo_manager()
         except (AttributeError, TypeError):
@@ -203,7 +201,7 @@ class LauncherConversationTestMixin:
         if not hasattr(self, "_stt_status_label"):
             return
         try:
-            payload = self._core_json("GET", "/v1/windows-audio/stt/status", timeout=3.0)
+            payload = self._core_json("/v1/windows-audio/stt/status", timeout=3.0)
         except RuntimeError as exc:
             if hasattr(self, "_stt_status_label"):
                 self._stt_status_label.configure(text=str(exc))
@@ -216,7 +214,7 @@ class LauncherConversationTestMixin:
         log_path = self._new_test_log("stt-prepare")
         self._append_test_log(log_path, "REQUEST method=POST path=/v1/windows-audio/stt/prepare")
         try:
-            payload = self._core_json("POST", "/v1/windows-audio/stt/prepare", timeout=5.0)
+            payload = self._core_json("/v1/windows-audio/stt/prepare", method="POST", timeout=5.0)
         except RuntimeError as exc:
             self._append_test_log(log_path, f"ERROR {exc}")
             self._append_test_log(log_path, "END status=FAIL")
@@ -230,7 +228,7 @@ class LauncherConversationTestMixin:
     def _run_conversational_audio_test(self) -> None:
         log_path = self._new_test_log("conversation")
         try:
-            stt = self._core_json("GET", "/v1/windows-audio/stt/status", timeout=3.0)
+            stt = self._core_json("/v1/windows-audio/stt/status", timeout=3.0)
         except RuntimeError as exc:
             self._append_test_log(log_path, f"ERROR STT status unavailable: {exc}")
             self._append_test_log(log_path, "END status=FAIL")
