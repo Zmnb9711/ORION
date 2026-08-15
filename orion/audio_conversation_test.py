@@ -8,7 +8,7 @@ from uuid import uuid4
 from pydantic import BaseModel
 
 from orion.audio_device_config import audio_device_config
-from orion.faster_whisper_stt import recognize_wav
+from orion.whisper_cpp_direct_stt import recognize_wav
 from orion.native_wasapi_player import NativeWasapiPlayer
 from orion.tts_audio import AudioRenderRequest, TtsBackend, VoiceProfile
 from orion.voice_core import VoiceAgent
