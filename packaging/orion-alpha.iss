@@ -3,6 +3,7 @@
 #define MyAppPublisher "ORION"
 #define MyLauncherExe "Launcher\ORION-Launcher.exe"
 #define MyCoreExe "Core\ORION-Core.exe"
+#define MyUninstallerHelperExe "Uninstaller\ORION-Uninstall.exe"
 
 [Setup]
 AppId={{6E4CA1C5-4E77-42CE-9E6B-A6D1124B09E7}
@@ -28,6 +29,7 @@ SetupIconFile=..\branding\orion.ico
 [Files]
 Source: "..\dist-product\Core\*"; DestDir: "{app}\Core"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\dist-product\Launcher\*"; DestDir: "{app}\Launcher"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\dist-product\Uninstaller\*"; DestDir: "{app}\Uninstaller"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\dist-product\Integration\*"; DestDir: "{app}\Integration"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Dirs]
@@ -37,8 +39,9 @@ Name: "{localappdata}\ORION\runtime\diagnostics"
 Name: "{localappdata}\ORION\runtime\updates"
 
 [Icons]
+; Launcher is the only user-facing entry point. Core and the uninstall helper
+; are managed internally and do not receive their own Start Menu shortcuts.
 Name: "{autoprograms}\ORION"; Filename: "{app}\{#MyLauncherExe}"; WorkingDir: "{app}\Launcher"
-Name: "{autoprograms}\ORION Core"; Filename: "{app}\{#MyCoreExe}"; WorkingDir: "{app}\Core"
 Name: "{autodesktop}\ORION"; Filename: "{app}\{#MyLauncherExe}"; WorkingDir: "{app}\Launcher"; Tasks: desktopicon
 
 [Tasks]
@@ -55,7 +58,6 @@ Filename: "{cmd}"; Parameters: "/C taskkill /F /IM ORION-Launcher.exe >nul 2>&1 
 Filename: "{cmd}"; Parameters: "/C taskkill /F /IM ORION-Core.exe >nul 2>&1 || exit /B 0"; Flags: runhidden waituntilterminated
 
 [UninstallDelete]
-; Runtime content is transient Alpha state (logs, diagnostics, downloaded
-; updates). A product uninstall removes it deliberately so the next Alpha test
-; starts clean. DCS Saved Games content is not touched here.
-Type: filesandordirs; Name: "{localappdata}\ORION\runtime"
+; Full Inno uninstall removes all local ORION state. Selective component removal
+; is handled by ORION-Uninstall.exe and does not invoke this section.
+Type: filesandordirs; Name: "{localappdata}\ORION"
