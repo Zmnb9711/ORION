@@ -8,7 +8,7 @@ from pydantic import BaseModel
 
 from orion.audio_conversation_test import ConversationalAudioTestResult, run_conversational_audio_test
 from orion.audio_device_config import AudioEndpointSelection, AudioEndpointState, audio_device_config
-from orion.faster_whisper_stt import WHISPER_MODEL_NAME, ensure_runtime, runtime_ready
+from orion.whisper_cpp_stt import WHISPER_MODEL_NAME, ensure_runtime, runtime_ready
 from orion.windows_audio_worker import AudioDevice, AudioPlaybackRequest, AudioPlaybackStatus, windows_audio_worker
 from orion.windows_wasapi_backend import WasapiDirection, WasapiEndpoint, wasapi_endpoint_catalog
 
@@ -137,7 +137,7 @@ def prepare_stt() -> SttProvisionStatus:
         percent=None,
         error="",
     )
-    threading.Thread(target=_prepare_stt_worker, name="orion-faster-whisper-prepare", daemon=True).start()
+    threading.Thread(target=_prepare_stt_worker, name="orion-whisper-cpp-prepare", daemon=True).start()
     return _stt_snapshot()
 
 
@@ -154,7 +154,7 @@ def conversation_audio_test() -> ConversationalAudioTestResult:
                 "output_resolved": False,
                 "response_played": False,
             },
-            message="Faster Whisper medium is not prepared. Use Prepare Speech Recognition in Launcher first.",
+            message="Whisper medium is not prepared. Use Prepare Speech Recognition in Launcher first.",
         )
     try:
         return run_conversational_audio_test()
