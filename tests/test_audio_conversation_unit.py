@@ -15,11 +15,12 @@ def test_conversation_success_without_hardware(monkeypatch) -> None:
     out = WasapiEndpoint(device_id="out", name="Out", direction=WasapiDirection.OUTPUT)
     monkeypatch.setattr(subject.audio_device_config, "state", lambda: SimpleNamespace(resolved_input=mic, resolved_output=out))
     monkeypatch.setattr(subject, "_capture_wav", lambda endpoint, path: path.write_bytes(b"RIFF"))
-    monkeypatch.setattr(subject, "_recognize_windows_speech", lambda path: "Привет как дела")
+    monkeypatch.setattr(subject, "recognize_wav", lambda path, language="auto": "Привет как дела")
 
     class Backend:
         def __init__(self, spool_dir: str) -> None:
             self.spool_dir = Path(spool_dir)
+
         def render(self, request):
             target = self.spool_dir / "reply.wav"
             target.parent.mkdir(parents=True, exist_ok=True)
