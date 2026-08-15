@@ -59,5 +59,5 @@ def run_field_fixed_launcher(runtime_dir: Path, host: str = "127.0.0.1", port: i
         FieldFixedConversationalAudioLauncher(root, runtime_dir=runtime_dir, core=core)  # type: ignore[arg-type]
         root.mainloop()
     finally:
-        core.stop()
+        core.detach()
     return 0
