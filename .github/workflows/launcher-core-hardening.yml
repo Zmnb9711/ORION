@@ -17,7 +17,7 @@ permissions:
 jobs:
   hardening:
     runs-on: windows-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
 
     steps:
       - name: Check out repository
@@ -66,6 +66,35 @@ jobs:
           python -m PyInstaller @args
           if (-not (Test-Path "dist/ORION-Core/ORION-Core.exe")) { throw "ORION-Core.exe was not created" }
 
+      - name: Build ORION Launcher
+        shell: pwsh
+        run: |
+          $args = @(
+            "--noconfirm", "--clean", "--onedir", "--windowed",
+            "--name", "ORION-Launcher",
+            "--collect-submodules", "orion",
+            "--collect-submodules", "uvicorn",
+            "--add-data", "dcs-export;dcs-export",
+            "--icon", "branding/orion.ico",
+            "--add-data", "branding/orion.ico;branding",
+            "orion/launcher_main.py"
+          )
+          python -m PyInstaller @args
+          if (-not (Test-Path "dist/ORION-Launcher/ORION-Launcher.exe")) { throw "ORION-Launcher.exe was not created" }
+
+      - name: Build ORION uninstall helper
+        shell: pwsh
+        run: |
+          $args = @(
+            "--noconfirm", "--clean", "--onedir", "--windowed",
+            "--name", "ORION-Uninstall",
+            "--collect-submodules", "orion",
+            "--icon", "branding/orion.ico",
+            "orion/uninstall_main.py"
+          )
+          python -m PyInstaller @args
+          if (-not (Test-Path "dist/ORION-Uninstall/ORION-Uninstall.exe")) { throw "ORION-Uninstall.exe was not created" }
+
       - name: Frozen Core runtime context and health smoke test
         shell: pwsh
         run: |
@@ -85,14 +114,54 @@ jobs:
               } catch {}
             }
             if (-not $ready) { throw "Headless console Core did not become healthy" }
-
             $startupLog = Join-Path $runtime "core-startup.log"
             if (-not (Test-Path $startupLog)) { throw "Core startup context log missing" }
             $text = Get-Content $startupLog -Raw
             if ($text -notmatch "frozen=True") { throw "Startup log did not confirm frozen Core" }
             if ($text -notmatch "process_role=core") { throw "Startup log did not confirm Core process role" }
             if ($text -notmatch "cwd=") { throw "Startup log did not record cwd" }
-            Write-Host $text
           } finally {
             if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force }
           }
+
+      - name: Assemble hardening product layout
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force "dist-product/Core" | Out-Null
+          New-Item -ItemType Directory -Force "dist-product/Launcher" | Out-Null
+          New-Item -ItemType Directory -Force "dist-product/Uninstaller" | Out-Null
+          New-Item -ItemType Directory -Force "dist-product/Integration/DCS/Export" | Out-Null
+          New-Item -ItemType Directory -Force "dist-product/Integration/DCS/MissionPack" | Out-Null
+          New-Item -ItemType Directory -Force "dist-product/Integration/DCS/MissionTemplate" | Out-Null
+          Copy-Item "dist/ORION-Core/*" "dist-product/Core" -Recurse -Force
+          Copy-Item "dist/ORION-Launcher/*" "dist-product/Launcher" -Recurse -Force
+          Copy-Item "dist/ORION-Uninstall/*" "dist-product/Uninstaller" -Recurse -Force
+          Copy-Item "dcs-export/*" "dist-product/Integration/DCS/Export" -Recurse -Force
+          Copy-Item "dcs-mission-pack/*" "dist-product/Integration/DCS/MissionPack" -Recurse -Force
+          Copy-Item "dcs-mission-template/*" "dist-product/Integration/DCS/MissionTemplate" -Recurse -Force
+          $required = @(
+            "dist-product/Core/ORION-Core.exe",
+            "dist-product/Launcher/ORION-Launcher.exe",
+            "dist-product/Uninstaller/ORION-Uninstall.exe",
+            "dist-product/Integration/DCS/Export/Export.lua"
+          )
+          foreach ($path in $required) { if (-not (Test-Path $path)) { throw "Missing hardening payload: $path" } }
+
+      - name: Locate Inno Setup
+        id: inno
+        shell: pwsh
+        run: |
+          $candidates = @("C:\Program Files (x86)\Inno Setup 6\ISCC.exe", "C:\Program Files\Inno Setup 6\ISCC.exe")
+          $iscc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) {
+            choco install innosetup --yes --no-progress
+            $iscc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          }
+          if (-not $iscc) { throw "Inno Setup compiler not found" }
+          "iscc=$iscc" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Compile installer packaging smoke
+        shell: pwsh
+        run: |
+          & "${{ steps.inno.outputs.iscc }}" "packaging/orion-alpha.iss"
+          if (-not (Test-Path "dist-installer/ORION-Alpha-0.2-Setup.exe")) { throw "Hardening installer was not created" }
