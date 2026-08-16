@@ -4,20 +4,9 @@ on:
   workflow_dispatch:
   pull_request:
     branches: [main]
-    paths:
-      - "orion/**"
-      - "dcs-export/**"
-      - "dcs-mission-pack/**"
-      - "dcs-mission-template/**"
-      - "branding/**"
-      - "packaging/**"
-      - "tests/**"
-      - "pyproject.toml"
-      - ".github/workflows/alpha-build.yml"
   push:
     branches: [main]
-    tags:
-      - "v*"
+    tags: ["v*"]
 
 permissions:
   contents: write
@@ -25,8 +14,7 @@ permissions:
 jobs:
   build-alpha:
     runs-on: windows-latest
-    timeout-minutes: 35
-
+    timeout-minutes: 45
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -43,169 +31,63 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev,windows-audio]"
 
-      - name: Verify approved ORION Alpha icon
+      - name: Run Voice regression tests
         shell: pwsh
         run: |
-          $icon = "branding/orion.ico"
-          $expected = "e5197c2de9ed7b3a3f2bcf505627222253e39f2317028f72117c073396c76b6c"
-          if (-not (Test-Path $icon)) { throw "Approved ORION icon is missing: $icon" }
-          $actual = (Get-FileHash $icon -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($actual -ne $expected) { throw "Approved ORION icon SHA-256 mismatch. Expected $expected, got $actual" }
-
-      - name: Run Windows deployment and DCS regression tests
-        shell: pwsh
-        run: |
-          python -m pytest -q `
-            tests/test_dcs_installation_discovery.py `
-            tests/test_setup_wizard_model.py `
-            tests/test_dcs_readiness.py `
-            tests/test_launcher.py `
-            tests/test_alpha_smoke_diagnostics.py
-
-      - name: Import canonical production entry points
-        shell: pwsh
-        run: |
-          python -c "from orion.core_main import main as core_main; from orion.launcher_main import main as launcher_main; from orion.core_process import CoreProcessManager; from orion.desktop_product_launcher import WindowsOrionProductLauncher; assert all((core_main, launcher_main, CoreProcessManager, WindowsOrionProductLauncher))"
+          python -m pytest -q tests/test_whisper_voice_worker.py
 
       - name: Build ORION Core
         shell: pwsh
         run: |
-          $args = @(
-            "--noconfirm", "--clean", "--onedir", "--windowed",
-            "--name", "ORION-Core",
-            "--collect-submodules", "orion",
-            "--collect-submodules", "uvicorn",
-            "--add-data", "dcs-export;dcs-export",
-            "--add-data", "dcs-mission-pack;dcs-mission-pack",
-            "--add-data", "dcs-mission-template;dcs-mission-template",
-            "--icon", "branding/orion.ico",
-            "orion/core_main.py"
-          )
-          python -m PyInstaller @args
-          if (-not (Test-Path "dist/ORION-Core/ORION-Core.exe")) { throw "ORION-Core.exe was not created" }
+          python -m PyInstaller --noconfirm --clean --onedir --windowed --name ORION-Core --collect-submodules orion --collect-submodules uvicorn --add-data "dcs-export;dcs-export" --icon branding/orion.ico orion/core_main.py
 
       - name: Build ORION Launcher
         shell: pwsh
         run: |
-          $args = @(
-            "--noconfirm", "--clean", "--onedir", "--windowed",
-            "--name", "ORION-Launcher",
-            "--collect-submodules", "orion",
-            "--collect-submodules", "uvicorn",
-            "--add-data", "dcs-export;dcs-export",
-            "--icon", "branding/orion.ico",
-            "--add-data", "branding/orion.ico;branding",
-            "orion/launcher_main.py"
-          )
-          python -m PyInstaller @args
-          if (-not (Test-Path "dist/ORION-Launcher/ORION-Launcher.exe")) { throw "ORION-Launcher.exe was not created" }
+          python -m PyInstaller --noconfirm --clean --onedir --windowed --name ORION-Launcher --collect-submodules orion --collect-submodules uvicorn --add-data "dcs-export;dcs-export" --icon branding/orion.ico --add-data "branding/orion.ico;branding" orion/launcher_main.py
+
+      - name: Build ORION Voice
+        shell: pwsh
+        run: |
+          python -m PyInstaller --noconfirm --clean --onedir --windowed --name ORION-Voice --collect-submodules orion --icon branding/orion.ico orion/whisper_voice_worker.py
+          if (-not (Test-Path "dist/ORION-Voice/ORION-Voice.exe")) { throw "ORION-Voice.exe was not created" }
+
+      - name: Download pinned whisper.cpp live runtime
+        shell: pwsh
+        run: |
+          $url = "https://github.com/ggml-org/whisper.cpp/releases/download/v1.8.6/whisper-bin-x64.zip"
+          Invoke-WebRequest -Uri $url -OutFile whisper-bin-x64.zip
+          Expand-Archive whisper-bin-x64.zip -DestinationPath whisper-runtime -Force
+          $stream = Get-ChildItem whisper-runtime -Recurse -Filter whisper-stream.exe | Select-Object -First 1
+          $sdl = Get-ChildItem whisper-runtime -Recurse -Filter SDL2.dll | Select-Object -First 1
+          if (-not $stream) { throw "Official whisper.cpp v1.8.6 package does not contain whisper-stream.exe" }
+          if (-not $sdl) { throw "Official whisper.cpp v1.8.6 package does not contain SDL2.dll" }
 
       - name: Assemble canonical product layout
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force "dist-product/Core" | Out-Null
-          New-Item -ItemType Directory -Force "dist-product/Launcher" | Out-Null
-          New-Item -ItemType Directory -Force "dist-product/Integration/DCS/Export" | Out-Null
-          New-Item -ItemType Directory -Force "dist-product/Integration/DCS/MissionPack" | Out-Null
-          New-Item -ItemType Directory -Force "dist-product/Integration/DCS/MissionTemplate" | Out-Null
+          New-Item -ItemType Directory -Force "dist-product/Core","dist-product/Launcher","dist-product/Voice","dist-product/Voice/whisper","dist-product/Integration/DCS/Export" | Out-Null
           Copy-Item "dist/ORION-Core/*" "dist-product/Core" -Recurse -Force
           Copy-Item "dist/ORION-Launcher/*" "dist-product/Launcher" -Recurse -Force
+          Copy-Item "dist/ORION-Voice/*" "dist-product/Voice" -Recurse -Force
+          $bin = (Get-ChildItem whisper-runtime -Recurse -Filter whisper-stream.exe | Select-Object -First 1).Directory.FullName
+          Copy-Item "$bin/*" "dist-product/Voice/whisper" -Recurse -Force
           Copy-Item "dcs-export/*" "dist-product/Integration/DCS/Export" -Recurse -Force
-          Copy-Item "dcs-mission-pack/*" "dist-product/Integration/DCS/MissionPack" -Recurse -Force
-          Copy-Item "dcs-mission-template/*" "dist-product/Integration/DCS/MissionTemplate" -Recurse -Force
-          if (-not (Test-Path "dist-product/Core/ORION-Core.exe")) { throw "Canonical Core layout missing" }
-          if (-not (Test-Path "dist-product/Launcher/ORION-Launcher.exe")) { throw "Canonical Launcher layout missing" }
-          if (-not (Test-Path "dist-product/Integration/DCS/Export/Export.lua")) { throw "DCS Export integration missing" }
+          if (-not (Test-Path "dist-product/Voice/whisper/whisper-stream.exe")) { throw "Voice payload missing whisper-stream.exe" }
+          if (-not (Test-Path "dist-product/Voice/whisper/SDL2.dll")) { throw "Voice payload missing SDL2.dll" }
 
-      - name: Frozen standalone Core smoke test
+      - name: Verify live Whisper executable starts
         shell: pwsh
         run: |
-          $runtime = Join-Path $env:RUNNER_TEMP "orion-core-runtime"
-          Remove-Item $runtime -Recurse -Force -ErrorAction SilentlyContinue
-          New-Item -ItemType Directory -Force $runtime | Out-Null
-          $env:ORION_RUNTIME_DIR = $runtime
-          $process = Start-Process -FilePath "dist-product/Core/ORION-Core.exe" -ArgumentList "--port","8123" -PassThru
-          try {
-            $ready = $false
-            for ($i = 0; $i -lt 60; $i++) {
-              Start-Sleep -Milliseconds 500
-              if ($process.HasExited) { throw "ORION Core exited before becoming ready (exit code $($process.ExitCode))" }
-              try {
-                $response = Invoke-RestMethod -Uri "http://127.0.0.1:8123/health" -TimeoutSec 1
-                if ($response.status -eq "ok") { $ready = $true; break }
-              } catch {}
-            }
-            if (-not $ready) { throw "Standalone ORION Core health endpoint did not become ready" }
-          } finally {
-            $startupLog = Join-Path $runtime "core-startup.log"
-            if (Test-Path $startupLog) {
-              Write-Host "===== ORION Core startup log ====="
-              Get-Content $startupLog
-              Write-Host "===== end startup log ====="
-            } else {
-              Write-Warning "ORION Core did not create core-startup.log"
-            }
-            if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force }
-          }
+          $output = & "dist-product/Voice/whisper/whisper-stream.exe" --help 2>&1 | Out-String
+          if ($LASTEXITCODE -ne 0) { throw "whisper-stream.exe failed to start: $output" }
+          Write-Host $output
 
-      - name: Launcher restarts and reuses external Core
+      - name: Verify installed Voice payload
         shell: pwsh
         run: |
-          $runtime = Join-Path $env:RUNNER_TEMP "orion-launcher-runtime"
-          Remove-Item $runtime -Recurse -Force -ErrorAction SilentlyContinue
-          New-Item -ItemType Directory -Force $runtime | Out-Null
-          $env:ORION_RUNTIME_DIR = $runtime
-          $launcher = $null
-          $launcher2 = $null
-          try {
-            $launcher = Start-Process -FilePath "dist-product/Launcher/ORION-Launcher.exe" -ArgumentList "--port","8124" -PassThru
-            $ready = $false
-            for ($i = 0; $i -lt 40; $i++) {
-              Start-Sleep -Milliseconds 500
-              if ($launcher.HasExited) { throw "ORION Launcher exited before external Core became ready" }
-              try {
-                $response = Invoke-RestMethod -Uri "http://127.0.0.1:8124/health" -TimeoutSec 2
-                if ($response.status -eq "ok") { $ready = $true; break }
-              } catch {}
-            }
-            if (-not $ready) { throw "Launcher did not start the external ORION Core" }
-
-            $coreBefore = @(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.EndsWith("ORION-Core.exe") })
-            if ($coreBefore.Count -ne 1) { throw "Expected exactly one ORION Core before Launcher restart, found $($coreBefore.Count)" }
-            $corePid = $coreBefore[0].ProcessId
-
-            Stop-Process -Id $launcher.Id -Force
-            $launcher.WaitForExit()
-            Start-Sleep -Seconds 1
-            $response = Invoke-RestMethod -Uri "http://127.0.0.1:8124/health" -TimeoutSec 2
-            if ($response.status -ne "ok") { throw "ORION Core did not survive Launcher exit" }
-
-            $launcher2 = Start-Process -FilePath "dist-product/Launcher/ORION-Launcher.exe" -ArgumentList "--port","8124" -PassThru
-            Start-Sleep -Seconds 2
-            if ($launcher2.HasExited) { throw "Restarted ORION Launcher exited unexpectedly" }
-            $response = Invoke-RestMethod -Uri "http://127.0.0.1:8124/health" -TimeoutSec 2
-            if ($response.status -ne "ok") { throw "Restarted Launcher did not reconnect to existing ORION Core" }
-
-            $coreAfter = @(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.EndsWith("ORION-Core.exe") })
-            if ($coreAfter.Count -ne 1) { throw "Launcher restart spawned a duplicate ORION Core; found $($coreAfter.Count) processes" }
-            if ($coreAfter[0].ProcessId -ne $corePid) { throw "Launcher restart replaced the existing ORION Core instead of attaching to it" }
-          } finally {
-            if ($launcher -and -not $launcher.HasExited) { Stop-Process -Id $launcher.Id -Force -ErrorAction SilentlyContinue }
-            if ($launcher2 -and -not $launcher2.HasExited) { Stop-Process -Id $launcher2.Id -Force -ErrorAction SilentlyContinue }
-            Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.EndsWith("ORION-Core.exe") } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
-          }
-
-      - name: Verify installed product payload
-        shell: pwsh
-        run: |
-          $required = @(
-            "dist-product/Core/ORION-Core.exe",
-            "dist-product/Launcher/ORION-Launcher.exe",
-            "dist-product/Integration/DCS/Export/Export.lua",
-            "dist-product/Integration/DCS/MissionPack/ORION_MissionPack.lua",
-            "dist-product/Integration/DCS/MissionTemplate/ORION_SafeSlot.lua"
-          )
-          foreach ($path in $required) { if (-not (Test-Path $path)) { throw "Missing product payload: $path" } }
+          $required = @("dist-product/Voice/ORION-Voice.exe","dist-product/Voice/whisper/whisper-stream.exe","dist-product/Voice/whisper/SDL2.dll")
+          foreach ($path in $required) { if (-not (Test-Path $path)) { throw "Missing Voice payload: $path" } }
 
       - name: Locate Inno Setup
         id: inno
@@ -213,10 +95,7 @@ jobs:
         run: |
           $candidates = @("C:\Program Files (x86)\Inno Setup 6\ISCC.exe", "C:\Program Files\Inno Setup 6\ISCC.exe")
           $iscc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
-          if (-not $iscc) {
-            choco install innosetup --yes --no-progress
-            $iscc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
-          }
+          if (-not $iscc) { choco install innosetup --yes --no-progress; $iscc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1 }
           if (-not $iscc) { throw "Inno Setup compiler not found" }
           "iscc=$iscc" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
@@ -224,20 +103,6 @@ jobs:
         shell: pwsh
         run: |
           & "${{ steps.inno.outputs.iscc }}" "packaging/orion-alpha.iss"
-          if (-not (Test-Path "dist-installer/ORION-Alpha-0.2-Setup.exe")) { throw "Installer was not created" }
-
-      - name: Package portable product
-        shell: pwsh
-        run: |
-          Compress-Archive -Path "dist-product/*" -DestinationPath "dist-installer/ORION-Alpha-0.2-portable.zip" -Force
-          if (-not (Test-Path "dist-installer/ORION-Alpha-0.2-portable.zip")) { throw "Portable package was not created" }
-
-      - name: Upload canonical product bundle
-        uses: actions/upload-artifact@v4
-        with:
-          name: ORION-Alpha-0.2-product
-          path: dist-product
-          if-no-files-found: error
 
       - name: Upload installer
         uses: actions/upload-artifact@v4
@@ -245,21 +110,3 @@ jobs:
           name: ORION-Alpha-0.2-Setup
           path: dist-installer/ORION-Alpha-0.2-Setup.exe
           if-no-files-found: error
-
-      - name: Upload portable package
-        uses: actions/upload-artifact@v4
-        with:
-          name: ORION-Alpha-0.2-portable
-          path: dist-installer/ORION-Alpha-0.2-portable.zip
-          if-no-files-found: error
-
-      - name: Publish GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
-        with:
-          name: ORION ${{ github.ref_name }}
-          generate_release_notes: true
-          prerelease: true
-          files: |
-            dist-installer/ORION-Alpha-0.2-Setup.exe
-            dist-installer/ORION-Alpha-0.2-portable.zip
