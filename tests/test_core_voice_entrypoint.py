@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -70,8 +69,8 @@ def test_voice_runtime_api_status_and_ensure(monkeypatch) -> None:
     monkeypatch.setattr(audio_api.voice_runtime, "status", lambda: status)
     monkeypatch.setattr(audio_api.voice_runtime, "ensure_ready", lambda: status)
 
-    assert audio_api.voice_runtime_status().pid == 55
-    assert audio_api.ensure_voice_runtime().whisper_ready is True
+    assert audio_api.voice_status().pid == 55
+    assert audio_api.ensure_voice().whisper_ready is True
 
 
 def test_voice_runtime_api_conversation_and_shutdown(monkeypatch) -> None:
@@ -85,8 +84,8 @@ def test_voice_runtime_api_conversation_and_shutdown(monkeypatch) -> None:
     monkeypatch.setattr(audio_api.voice_runtime, "conversation_test", lambda: result.model_dump(mode="json"))
     monkeypatch.setattr(audio_api.voice_runtime, "shutdown", lambda: stopped)
 
-    assert audio_api.test_voice_runtime().ok is True
-    assert audio_api.shutdown_voice_runtime().state == "stopped"
+    assert audio_api.conversation_audio_test().ok is True
+    assert audio_api.shutdown_voice().state == "stopped"
 
 
 def test_voice_runtime_api_maps_ensure_failure_to_503(monkeypatch) -> None:
@@ -95,6 +94,17 @@ def test_voice_runtime_api_maps_ensure_failure_to_503(monkeypatch) -> None:
 
     monkeypatch.setattr(audio_api.voice_runtime, "ensure_ready", fail_ready)
     with pytest.raises(audio_api.HTTPException) as captured:
-        audio_api.ensure_voice_runtime()
+        audio_api.ensure_voice()
     assert captured.value.status_code == 503
     assert "Whisper unavailable" in str(captured.value.detail)
+
+
+def test_voice_runtime_api_contains_conversation_failure(monkeypatch) -> None:
+    def fail_test():
+        raise RuntimeError("microphone unavailable")
+
+    monkeypatch.setattr(audio_api.voice_runtime, "conversation_test", fail_test)
+    result = audio_api.conversation_audio_test()
+    assert result.ok is False
+    assert result.stages["voice_worker_ready"] is False
+    assert "microphone unavailable" in result.message
