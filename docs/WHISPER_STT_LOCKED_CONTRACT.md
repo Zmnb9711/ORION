@@ -11,6 +11,18 @@ Status: **product invariant**. Do not replace or remove this STT path as part of
 - STT installation is **explicitly user-controlled** from Launcher via **DOWNLOAD & INSTALL STT**
 - `LAUNCH DCS` and `START AUDIO TEST` must never silently download or replace STT
 
+## Physical process boundary
+
+The installed Windows product has three distinct executable processes:
+
+- `Voice\ORION-Voice.exe` — owns the live Voice worker and Whisper STT execution/control channel.
+- `Core\ORION-Core.exe` — owns the ORION Core/API service only. It must not host a `--voice-worker` mode and must not be used as the executable container for Whisper.
+- `Launcher\ORION-Launcher.exe` — owns the UI/tray and supervises product lifecycle.
+
+The Voice executable may be a console-subsystem binary internally so stdin/stdout remain available for the worker JSON protocol, but it is launched with `CREATE_NO_WINDOW`; no additional console window should appear to the user.
+
+Speech recognition belongs to Voice/Whisper. Core may request/consume Voice results through the Voice runtime boundary, but Core must not perform STT itself.
+
 ## Installation state
 
 Launcher must visibly distinguish at least:
@@ -35,9 +47,9 @@ Completed payloads are checksum-verified before promotion. Promotion from `.part
 The STT implementation is wrapped by, not replaced by, the Voice lifecycle:
 
 1. `DOWNLOAD & INSTALL STT` -> Whisper READY.
-2. `LAUNCH DCS` -> ensure the already-installed Voice/Whisper worker is READY -> launch DCS.
-3. `START AUDIO TEST` -> use the already-live worker -> Voice remains READY afterwards.
+2. `LAUNCH DCS` -> ensure the already-installed `ORION-Voice.exe` / Whisper worker is READY -> launch DCS.
+3. `START AUDIO TEST` -> use the already-live Voice worker -> Voice remains READY afterwards.
 4. Closing the Launcher window -> tray; Voice/Whisper and Core continue.
 5. Tray `Exit` -> Voice/Whisper -> Core -> Launcher; no orphan processes.
 
-Any future change that alters the Whisper version, model, CPU-only policy, explicit install UX, resumability, or lifecycle semantics requires an explicit product decision rather than an incidental refactor.
+Any future change that alters the Whisper version, model, CPU-only policy, explicit install UX, resumability, physical Voice/Core process boundary, or lifecycle semantics requires an explicit product decision rather than an incidental refactor.
