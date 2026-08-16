@@ -12,7 +12,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
-from orion.whisper_cpp_stt import configured_threads, stt_root, whisper_model_path
+from orion.whisper_cpp_stt import (
+    configured_threads,
+    ensure_runtime,
+    runtime_ready,
+    stt_root,
+    whisper_model_path,
+)
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 CORE_URL = os.environ.get("ORION_CORE_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
@@ -44,6 +50,15 @@ def _write_state(state: str, *, heard: str = "", reply: str = "", error: str = "
     temporary = path.with_suffix(".tmp")
     temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     temporary.replace(path)
+
+
+def _provision_progress(stage: str, completed: int, total: int | None) -> None:
+    if total and total > 0:
+        percent = min(100.0, max(0.0, completed * 100.0 / total))
+        detail = f"{stage}: {percent:.1f}% ({completed}/{total} bytes)"
+    else:
+        detail = f"{stage}: {completed} bytes"
+    _write_state("PROVISIONING", error=detail)
 
 
 def whisper_stream_path() -> Path:
@@ -180,6 +195,12 @@ def startup_probe() -> int:
 
 def run_forever(*, core_url: str = CORE_URL) -> int:
     try:
+        # The installed Voice process owns first-run STT provisioning.  It runs
+        # outside the Launcher UI process, so the ~1.5 GB medium-model download
+        # cannot freeze the Launcher.  Subsequent starts take the fast ready path.
+        if not runtime_ready():
+            _write_state("PROVISIONING", error="Preparing local Whisper medium model")
+            ensure_runtime(progress=_provision_progress)
         command = build_stream_command()
         _write_state("READY")
         process = subprocess.Popen(
