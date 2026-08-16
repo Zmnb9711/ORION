@@ -30,16 +30,14 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev,windows-audio]"
-      - name: Build installed-product payload
+      - name: Build production Core and Launcher payload
         shell: pwsh
         run: |
           python -m PyInstaller --noconfirm --clean --onedir --console --name ORION-Core --collect-submodules orion --collect-submodules uvicorn --add-data "dcs-export;dcs-export" --add-data "dcs-mission-pack;dcs-mission-pack" --add-data "dcs-mission-template;dcs-mission-template" --icon branding/orion.ico orion/core_main.py
           python -m PyInstaller --noconfirm --clean --onedir --windowed --name ORION-Launcher --collect-submodules orion --collect-submodules uvicorn --add-data "dcs-export;dcs-export" --icon branding/orion.ico --add-data "branding/orion.ico;branding" orion/launcher_main.py
-          python -m PyInstaller --noconfirm --clean --onefile --windowed --name ORION-Uninstall --collect-submodules orion --icon branding/orion.ico orion/uninstall_main.py
-          New-Item -ItemType Directory -Force "dist-product/Core","dist-product/Launcher","dist-product/Uninstaller","dist-product/Integration/DCS/Export","dist-product/Integration/DCS/MissionPack","dist-product/Integration/DCS/MissionTemplate" | Out-Null
+          New-Item -ItemType Directory -Force "dist-product/Core","dist-product/Launcher","dist-product/Integration/DCS/Export","dist-product/Integration/DCS/MissionPack","dist-product/Integration/DCS/MissionTemplate" | Out-Null
           Copy-Item "dist/ORION-Core/*" "dist-product/Core" -Recurse -Force
           Copy-Item "dist/ORION-Launcher/*" "dist-product/Launcher" -Recurse -Force
-          Copy-Item "dist/ORION-Uninstall.exe" "dist-product/Uninstaller/ORION-Uninstall.exe" -Force
           Copy-Item "dcs-export/*" "dist-product/Integration/DCS/Export" -Recurse -Force
           Copy-Item "dcs-mission-pack/*" "dist-product/Integration/DCS/MissionPack" -Recurse -Force
           Copy-Item "dcs-mission-template/*" "dist-product/Integration/DCS/MissionTemplate" -Recurse -Force
