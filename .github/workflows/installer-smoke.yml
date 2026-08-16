@@ -14,12 +14,12 @@ on:
       - "pyproject.toml"
       - ".github/workflows/installer-smoke.yml"
   push:
-    branches: [main]
+    branches: [main, voice/worker-launcher-lifecycle-v01]
 
 jobs:
   installer-lifecycle:
     runs-on: windows-latest
-    timeout-minutes: 35
+    timeout-minutes: 45
 
     steps:
       - name: Check out repository
@@ -37,25 +37,44 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev,windows-audio]"
 
-      - name: Build Core and Launcher
+      - name: Run Voice regression tests
+        shell: pwsh
+        run: python -m pytest -q tests/test_voice_text_bridge_api.py tests/test_whisper_voice_worker.py
+
+      - name: Build Core, Launcher, and Voice
         shell: pwsh
         run: |
           python -m PyInstaller --noconfirm --clean --onedir --windowed --name ORION-Core --collect-submodules orion --collect-submodules uvicorn --add-data "dcs-export;dcs-export" --add-data "dcs-mission-pack;dcs-mission-pack" --add-data "dcs-mission-template;dcs-mission-template" --icon branding/orion.ico orion/core_main.py
           python -m PyInstaller --noconfirm --clean --onedir --windowed --name ORION-Launcher --collect-submodules orion --collect-submodules uvicorn --add-data "dcs-export;dcs-export" --icon branding/orion.ico --add-data "branding/orion.ico;branding" orion/launcher_main.py
+          python -m PyInstaller --noconfirm --clean --onedir --windowed --name ORION-Voice --collect-submodules orion --icon branding/orion.ico orion/whisper_voice_worker.py
 
-      - name: Assemble installer payload
+      - name: Download pinned whisper.cpp live runtime
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force "dist-product/Core" | Out-Null
-          New-Item -ItemType Directory -Force "dist-product/Launcher" | Out-Null
-          New-Item -ItemType Directory -Force "dist-product/Integration/DCS/Export" | Out-Null
-          New-Item -ItemType Directory -Force "dist-product/Integration/DCS/MissionPack" | Out-Null
-          New-Item -ItemType Directory -Force "dist-product/Integration/DCS/MissionTemplate" | Out-Null
+          Invoke-WebRequest "https://github.com/ggml-org/whisper.cpp/releases/download/v1.8.6/whisper-bin-x64.zip" -OutFile whisper.zip
+          Expand-Archive whisper.zip whisper-runtime -Force
+
+      - name: Assemble canonical installer payload
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force "dist-product/Core","dist-product/Launcher","dist-product/Voice","dist-product/Voice/whisper","dist-product/Integration/DCS/Export","dist-product/Integration/DCS/MissionPack","dist-product/Integration/DCS/MissionTemplate" | Out-Null
           Copy-Item "dist/ORION-Core/*" "dist-product/Core" -Recurse -Force
           Copy-Item "dist/ORION-Launcher/*" "dist-product/Launcher" -Recurse -Force
+          Copy-Item "dist/ORION-Voice/*" "dist-product/Voice" -Recurse -Force
+          $bin = (Get-ChildItem whisper-runtime -Recurse -Filter whisper-stream.exe | Select-Object -First 1).Directory.FullName
+          Copy-Item "$bin/*" "dist-product/Voice/whisper" -Recurse -Force
           Copy-Item "dcs-export/*" "dist-product/Integration/DCS/Export" -Recurse -Force
           Copy-Item "dcs-mission-pack/*" "dist-product/Integration/DCS/MissionPack" -Recurse -Force
           Copy-Item "dcs-mission-template/*" "dist-product/Integration/DCS/MissionTemplate" -Recurse -Force
+          foreach ($path in @("dist-product/Voice/ORION-Voice.exe","dist-product/Voice/whisper/whisper-stream.exe","dist-product/Voice/whisper/SDL2.dll")) {
+            if (-not (Test-Path $path)) { throw "Canonical Voice payload missing: $path" }
+          }
+
+      - name: Verify live Whisper executable starts
+        shell: pwsh
+        run: |
+          & "dist-product/Voice/whisper/whisper-stream.exe" --help | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "whisper-stream failed" }
 
       - name: Locate Inno Setup
         id: inno
@@ -76,16 +95,19 @@ jobs:
           & "${{ steps.inno.outputs.iscc }}" "packaging/orion-alpha.iss"
           if (-not (Test-Path "dist-installer/ORION-Alpha-0.2-Setup.exe")) { throw "Installer was not created" }
 
-      - name: Silent install, repair install, and complete uninstall
+      - name: Silent install, repair install, Voice lifecycle, and complete uninstall
         shell: pwsh
         run: |
           $setup = (Resolve-Path "dist-installer/ORION-Alpha-0.2-Setup.exe").Path
           $installDir = Join-Path $env:ProgramFiles "ORION"
           $launcherDir = Join-Path $installDir "Launcher"
           $coreDir = Join-Path $installDir "Core"
+          $voiceDir = Join-Path $installDir "Voice"
           $integrationDir = Join-Path $installDir "Integration"
           $launcher = Join-Path $launcherDir "ORION-Launcher.exe"
           $core = Join-Path $coreDir "ORION-Core.exe"
+          $voice = Join-Path $voiceDir "ORION-Voice.exe"
+          $stream = Join-Path $voiceDir "whisper\whisper-stream.exe"
           $export = Join-Path $integrationDir "DCS\Export\Export.lua"
           $uninstaller = Join-Path $installDir "unins000.exe"
           $runtimeDir = Join-Path $env:LOCALAPPDATA "ORION\runtime"
@@ -95,32 +117,39 @@ jobs:
             if ($process.ExitCode -ne 0) { throw "Installer exited with code $($process.ExitCode): $arguments" }
           }
 
-          # Clean install to the normal x64 Program Files location.
           Invoke-Setup "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-"
-          foreach ($path in @($launcher, $core, $export, $uninstaller, $runtimeDir)) {
+          foreach ($path in @($launcher,$core,$voice,$stream,$export,$uninstaller,$runtimeDir)) {
             if (-not (Test-Path $path)) { throw "Installed payload missing: $path" }
           }
 
-          # Same-version install exercises repair/upgrade behavior.
           Invoke-Setup "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-"
-          foreach ($path in @($launcher, $core, $export, $uninstaller)) {
+          foreach ($path in @($launcher,$core,$voice,$stream,$export,$uninstaller)) {
             if (-not (Test-Path $path)) { throw "Payload missing after repair install: $path" }
           }
 
-          # Reproduce the real Alpha lifecycle: Core is allowed to outlive the
-          # Launcher. Uninstall must still terminate it and remove all payload.
           $coreProcess = Start-Process -FilePath $core -PassThru
           Start-Sleep -Seconds 2
           if ($coreProcess.HasExited) { throw "Core did not stay running for uninstall lock test" }
+
+          $env:ORION_RUNTIME_DIR = Join-Path $env:RUNNER_TEMP "orion-installer-smoke-voice"
+          $env:ORION_CORE_BASE_URL = "http://127.0.0.1:8000"
+          $env:ORION_VOICE_STARTUP_PROBE = "1"
+          $voiceProcess = Start-Process -FilePath $voice -PassThru -Wait
+          if ($voiceProcess.ExitCode -ne 0) { throw "Installed Voice startup probe failed: $($voiceProcess.ExitCode)" }
+          $voiceState = Join-Path $env:ORION_RUNTIME_DIR "voice\state.json"
+          if (-not (Test-Path $voiceState)) { throw "Voice startup state was not published" }
+          $state = Get-Content $voiceState -Raw | ConvertFrom-Json
+          if ($state.state -ne "PROBE_PASS") { throw "Unexpected Voice startup state: $($state.state); $($state.error)" }
+          Remove-Item Env:ORION_VOICE_STARTUP_PROBE -ErrorAction SilentlyContinue
 
           $uninstallProcess = Start-Process -FilePath $uninstaller -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART" -PassThru -Wait
           if ($uninstallProcess.ExitCode -ne 0) { throw "Uninstaller exited with code $($uninstallProcess.ExitCode)" }
           Start-Sleep -Seconds 2
 
-          $remainingCore = Get-Process -Name "ORION-Core" -ErrorAction SilentlyContinue
-          if ($remainingCore) { throw "ORION-Core process remained running after uninstall" }
-
-          foreach ($path in @($launcherDir, $coreDir, $integrationDir, $launcher, $core, $export, $uninstaller, $runtimeDir, $installDir)) {
+          foreach ($processName in @("ORION-Core","ORION-Voice")) {
+            if (Get-Process -Name $processName -ErrorAction SilentlyContinue) { throw "$processName remained running after uninstall" }
+          }
+          foreach ($path in @($launcherDir,$coreDir,$voiceDir,$integrationDir,$launcher,$core,$voice,$stream,$export,$uninstaller,$runtimeDir,$installDir)) {
             if (Test-Path $path) { throw "ORION content remained after uninstall: $path" }
           }
 
