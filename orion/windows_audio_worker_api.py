@@ -4,8 +4,9 @@ from uuid import UUID
 
 from fastapi import APIRouter, HTTPException
 
-from orion.audio_conversation_test import ConversationalAudioTestResult, run_conversational_audio_test
+from orion.audio_conversation_test import ConversationalAudioTestResult
 from orion.audio_device_config import AudioEndpointSelection, AudioEndpointState, audio_device_config
+from orion.voice_runtime import VoiceRuntimeStatus, voice_runtime
 from orion.windows_audio_worker import AudioDevice, AudioPlaybackRequest, AudioPlaybackStatus, windows_audio_worker
 from orion.windows_wasapi_backend import WasapiDirection, WasapiEndpoint, wasapi_endpoint_catalog
 
@@ -56,24 +57,43 @@ def reset_audio_selection() -> AudioEndpointState:
     return audio_device_config.reset()
 
 
+@router.get("/voice/status", response_model=VoiceRuntimeStatus)
+def voice_status() -> VoiceRuntimeStatus:
+    return voice_runtime.status()
+
+
+@router.post("/voice/ensure", response_model=VoiceRuntimeStatus)
+def ensure_voice() -> VoiceRuntimeStatus:
+    try:
+        return voice_runtime.ensure_ready()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.post("/voice/shutdown", response_model=VoiceRuntimeStatus)
+def shutdown_voice() -> VoiceRuntimeStatus:
+    return voice_runtime.shutdown()
+
+
 @router.post("/test/conversation", response_model=ConversationalAudioTestResult)
 def conversation_audio_test() -> ConversationalAudioTestResult:
     try:
-        return run_conversational_audio_test()
+        return ConversationalAudioTestResult.model_validate(voice_runtime.conversation_test())
     except Exception as exc:
-        # A diagnostics endpoint must report a failed stage to Launcher rather
-        # than turn a device/driver problem into an opaque HTTP 500.
         return ConversationalAudioTestResult(
             ok=False,
             stages={
                 "core_connected": True,
+                "voice_worker_ready": False,
+                "whisper_ready": False,
                 "input_resolved": False,
                 "audio_captured": False,
                 "phrase_recognized": False,
                 "output_resolved": False,
                 "response_played": False,
+                "voice_worker_still_ready": False,
             },
-            message=f"Audio test failed inside Core: {exc}",
+            message=f"Audio test failed inside Voice worker: {exc}",
         )
 
 
