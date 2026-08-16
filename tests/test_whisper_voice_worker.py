@@ -56,10 +56,48 @@ def test_post_text_contract(monkeypatch: pytest.MonkeyPatch) -> None:
     assert result.tts_requested is True
 
 
+def test_worker_provisions_whisper_before_spawning_stream(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    stream = tmp_path / "whisper-stream.exe"
+    stream.write_bytes(b"stream")
+    monkeypatch.setattr(worker, "whisper_stream_path", lambda: stream)
+    monkeypatch.setattr(worker, "runtime_ready", lambda: False)
+    monkeypatch.setattr(worker, "build_stream_command", lambda: [str(stream)])
+
+    calls: list[str] = []
+
+    def fake_ensure_runtime(progress=None):
+        calls.append("ensure")
+        if progress is not None:
+            progress("model", 50, 100)
+        return tmp_path / "whisper-cli.exe", tmp_path / "ggml-medium.bin"
+
+    class FakeProcess:
+        stdout = iter([])
+
+        def poll(self):
+            return 0
+
+        def terminate(self):
+            raise AssertionError("completed process should not be terminated")
+
+        def wait(self):
+            return 0
+
+    def fake_popen(*args, **kwargs):
+        calls.append("spawn")
+        return FakeProcess()
+
+    monkeypatch.setattr(worker, "ensure_runtime", fake_ensure_runtime)
+    monkeypatch.setattr(worker.subprocess, "Popen", fake_popen)
+    assert worker.run_forever(core_url="http://core") == 0
+    assert calls == ["ensure", "spawn"]
+
+
 def test_worker_bridges_transcript_and_speaks(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     stream = tmp_path / "whisper-stream.exe"
     stream.write_bytes(b"stream")
     monkeypatch.setattr(worker, "whisper_stream_path", lambda: stream)
+    monkeypatch.setattr(worker, "runtime_ready", lambda: True)
     monkeypatch.setattr(worker, "build_stream_command", lambda: [str(stream)])
 
     class FakeProcess:
