@@ -5,7 +5,6 @@ import os
 import subprocess
 import sys
 import threading
-from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel
@@ -29,10 +28,7 @@ class VoiceRuntimeSupervisor:
         if override:
             return [override]
         if getattr(sys, "frozen", False):
-            sibling = Path(sys.executable).resolve().with_name("ORION-Voice.exe")
-            if not sibling.is_file():
-                raise FileNotFoundError(f"ORION Voice worker is not installed: expected {sibling}")
-            return [str(sibling)]
+            return [sys.executable, "--voice-worker"]
         return [sys.executable, "-m", "orion.voice_runtime_worker"]
 
     def _alive(self) -> bool:
