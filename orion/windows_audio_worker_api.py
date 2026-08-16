@@ -4,7 +4,13 @@ from uuid import UUID
 
 from fastapi import APIRouter, HTTPException
 
-from orion.audio_conversation_test import ConversationalAudioTestResult
+from orion.audio_conversation_test import (
+    RESPONSE,
+    ConversationalAudioTestResult,
+    VoiceTranscriptionTestResult,
+    _matches_control_phrase,
+    play_response_for_test,
+)
 from orion.audio_device_config import AudioEndpointSelection, AudioEndpointState, audio_device_config
 from orion.voice_runtime import VoiceRuntimeStatus, voice_runtime
 from orion.windows_audio_worker import AudioDevice, AudioPlaybackRequest, AudioPlaybackStatus, windows_audio_worker
@@ -77,23 +83,65 @@ def shutdown_voice() -> VoiceRuntimeStatus:
 
 @router.post("/test/conversation", response_model=ConversationalAudioTestResult)
 def conversation_audio_test() -> ConversationalAudioTestResult:
+    stages = {
+        "core_connected": True,
+        "voice_worker_ready": False,
+        "whisper_ready": False,
+        "input_resolved": False,
+        "audio_captured": False,
+        "phrase_recognized": False,
+        "output_resolved": False,
+        "response_played": False,
+        "voice_worker_still_ready": False,
+    }
     try:
-        return ConversationalAudioTestResult.model_validate(voice_runtime.conversation_test())
+        ready = voice_runtime.ensure_ready()
+        stages["voice_worker_ready"] = ready.worker_alive
+        stages["whisper_ready"] = ready.whisper_ready
+        transcription = VoiceTranscriptionTestResult.model_validate(voice_runtime.transcribe_test())
+        stages["input_resolved"] = transcription.input_samplerate is not None
+        stages["audio_captured"] = transcription.input_samplerate is not None
+        if not transcription.ok:
+            stages["voice_worker_still_ready"] = voice_runtime.status().worker_alive
+            return ConversationalAudioTestResult(
+                ok=False,
+                recognized_text=transcription.recognized_text,
+                stages=stages,
+                input_samplerate=transcription.input_samplerate,
+                message=transcription.message,
+            )
+        if not _matches_control_phrase(transcription.recognized_text):
+            stages["voice_worker_still_ready"] = voice_runtime.status().worker_alive
+            return ConversationalAudioTestResult(
+                ok=False,
+                recognized_text=transcription.recognized_text,
+                stages=stages,
+                input_samplerate=transcription.input_samplerate,
+                message=f"Control phrase was not recognized by Whisper: {transcription.recognized_text or '(no speech)'}",
+            )
+        stages["phrase_recognized"] = True
+        stages["output_resolved"] = audio_device_config.state().resolved_output is not None
+
+        # Core owns the text boundary. Only after Whisper returns a transcript
+        # does Core produce the response text and hand it to Windows SAPI.
+        played, message = play_response_for_test(RESPONSE)
+        stages["response_played"] = played
+        after = voice_runtime.status()
+        stages["voice_worker_still_ready"] = after.worker_alive and after.whisper_ready
+        return ConversationalAudioTestResult(
+            ok=played and stages["voice_worker_still_ready"],
+            recognized_text=transcription.recognized_text,
+            stages=stages,
+            input_samplerate=transcription.input_samplerate,
+            message=message,
+        )
     except Exception as exc:
+        after = voice_runtime.status()
+        stages["voice_worker_still_ready"] = after.worker_alive and after.whisper_ready
         return ConversationalAudioTestResult(
             ok=False,
-            stages={
-                "core_connected": True,
-                "voice_worker_ready": False,
-                "whisper_ready": False,
-                "input_resolved": False,
-                "audio_captured": False,
-                "phrase_recognized": False,
-                "output_resolved": False,
-                "response_played": False,
-                "voice_worker_still_ready": False,
-            },
-            message=f"Audio test failed inside Voice worker: {exc}",
+            stages=stages,
+            message=f"Audio test failed across Whisper -> Core -> SAPI pipeline: {exc}",
         )
 
 
