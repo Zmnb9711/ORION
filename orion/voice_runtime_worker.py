@@ -5,7 +5,7 @@ import sys
 from typing import Any
 
 from orion.audio_conversation_test import run_conversational_audio_test
-from orion.whisper_cpp_stt import ensure_runtime, runtime_ready
+from orion.whisper_cpp_stt import runtime_ready
 
 
 def _reply(payload: dict[str, Any]) -> None:
@@ -14,13 +14,17 @@ def _reply(payload: dict[str, Any]) -> None:
 
 
 def main() -> int:
-    try:
-        ensure_runtime()
-    except Exception as exc:
-        _reply({"ok": False, "event": "startup", "error": str(exc)})
+    if not runtime_ready():
+        _reply(
+            {
+                "ok": False,
+                "event": "startup",
+                "error": "Whisper medium is not installed. Use DOWNLOAD & INSTALL STT in Launcher first.",
+            }
+        )
         return 2
 
-    _reply({"ok": True, "event": "ready", "whisper_ready": runtime_ready()})
+    _reply({"ok": True, "event": "ready", "whisper_ready": True})
     for raw in sys.stdin:
         line = raw.strip()
         if not line:
@@ -31,6 +35,8 @@ def main() -> int:
             if action == "ping":
                 response = {"ok": True, "state": "ready", "whisper_ready": runtime_ready()}
             elif action == "conversation_test":
+                if not runtime_ready():
+                    raise RuntimeError("Whisper medium is not ready")
                 result = run_conversational_audio_test()
                 response = {"ok": True, "result": result.model_dump(mode="json")}
             elif action == "shutdown":
