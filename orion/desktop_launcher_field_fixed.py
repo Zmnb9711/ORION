@@ -8,14 +8,16 @@ from orion.desktop_launcher import _install_tk_exception_boundary
 from orion.desktop_launcher_conversation import ConversationalAudioRuntimeLauncher
 from orion.launcher_field_ui_fix import LauncherFieldUiFixMixin
 from orion.launcher_lifecycle import LauncherVoiceLifecycleMixin
+from orion.launcher_stt_install import LauncherSttInstallMixin
 
 
 class FieldFixedConversationalAudioLauncher(
     LauncherVoiceLifecycleMixin,
+    LauncherSttInstallMixin,
     LauncherFieldUiFixMixin,
     ConversationalAudioRuntimeLauncher,
 ):
-    """Canonical Launcher with field-tested UI and hardened Voice lifecycle."""
+    """Canonical Launcher with explicit STT install and hardened Voice lifecycle."""
 
 
 def run_field_fixed_launcher(runtime_dir: Path, host: str = "127.0.0.1", port: int = 8000) -> int:
