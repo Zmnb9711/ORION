@@ -50,12 +50,11 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription:
 Filename: "{app}\{#MyLauncherExe}"; WorkingDir: "{app}\Launcher"; Description: "Launch ORION"; Flags: nowait postinstall skipifsilent
 
 [UninstallRun]
-; Explicit product Exit is Voice -> Core -> Launcher. Uninstall is the final
-; containment boundary and force-stops any remaining product process before
-; files are removed.
-Filename: "{cmd}"; Parameters: "/C taskkill /F /IM ORION-Launcher.exe >nul 2>&1 || exit /B 0"; Flags: runhidden waituntilterminated
+; Explicit product Exit and final uninstall containment both stop product roles
+; in the same order: Voice/Whisper -> Core -> Launcher.
 Filename: "{cmd}"; Parameters: "/C taskkill /F /IM ORION-Voice.exe >nul 2>&1 || exit /B 0"; Flags: runhidden waituntilterminated
 Filename: "{cmd}"; Parameters: "/C taskkill /F /IM ORION-Core.exe >nul 2>&1 || exit /B 0"; Flags: runhidden waituntilterminated
+Filename: "{cmd}"; Parameters: "/C taskkill /F /IM ORION-Launcher.exe >nul 2>&1 || exit /B 0"; Flags: runhidden waituntilterminated
 
 [UninstallDelete]
 ; Runtime content is transient Alpha state (logs, diagnostics, downloaded
