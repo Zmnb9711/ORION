@@ -84,8 +84,8 @@ def test_runtime_ready_requires_version_marker_and_generic_cpu_backend(
 ) -> None:
     cli, model = _bind_runtime(monkeypatch, tmp_path)
     monkeypatch.setattr(stt, "os", SimpleNamespace(name="nt", environ=os.environ))
-    cli.parent.mkdir(parents=True)
-    model.parent.mkdir(parents=True)
+    cli.parent.mkdir(parents=True, exist_ok=True)
+    model.parent.mkdir(parents=True, exist_ok=True)
     cli.write_bytes(b"cli")
     model.write_bytes(b"model")
     assert stt.runtime_ready() is False
