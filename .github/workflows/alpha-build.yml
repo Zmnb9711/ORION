@@ -55,31 +55,46 @@ jobs:
       - name: Build Windows installer
         shell: pwsh
         run: '& "${{ steps.inno.outputs.iscc }}" "packaging/orion-alpha.iss"; if(-not(Test-Path "dist-installer/ORION-Alpha-0.2-Setup.exe")){throw "Installer missing"}'
-      - name: Install package and prove Voice reaches microphone boundary
+      - name: Install package and prove packaged Voice can spawn whisper-stream
         shell: pwsh
         run: |
-          $setup=(Resolve-Path "dist-installer/ORION-Alpha-0.2-Setup.exe").Path; $p=Start-Process $setup -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/SP-" -Wait -PassThru; if($p.ExitCode){throw "Installer failed"}
-          $root="C:\Program Files\ORION"; $core="$root\Core\ORION-Core.exe"; $voice="$root\Voice\ORION-Voice.exe"; $stream="$root\Voice\whisper\whisper-stream.exe"
+          $setup=(Resolve-Path "dist-installer/ORION-Alpha-0.2-Setup.exe").Path
+          $install=Start-Process $setup -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/SP-" -Wait -PassThru
+          if($install.ExitCode){throw "Installer failed: $($install.ExitCode)"}
+          $root="C:\Program Files\ORION"
+          $core="$root\Core\ORION-Core.exe"
+          $voice="$root\Voice\ORION-Voice.exe"
+          $stream="$root\Voice\whisper\whisper-stream.exe"
           foreach($x in @($core,$voice,$stream)){if(-not(Test-Path $x)){throw "Installed component missing: $x"}}
-          $runtime=Join-Path $env:RUNNER_TEMP "orion-installed-voice"; New-Item -ItemType Directory -Force $runtime | Out-Null
-          $modelDir=Join-Path $runtime "stt\whisper.cpp\models"; New-Item -ItemType Directory -Force $modelDir | Out-Null
-          # A tiny placeholder is sufficient here: the acceptance criterion is that packaged Voice starts whisper-stream and reaches SDL microphone initialization; CI runners have no physical microphone.
-          Set-Content -Encoding Byte -Path (Join-Path $modelDir "ggml-medium.bin") -Value ([byte[]](0))
-          $env:ORION_RUNTIME_DIR=$runtime; $env:ORION_CORE_BASE_URL="http://127.0.0.1:8000"
+          $runtime=Join-Path $env:RUNNER_TEMP "orion-installed-voice"
+          New-Item -ItemType Directory -Force $runtime | Out-Null
+          $env:ORION_RUNTIME_DIR=$runtime
+          $env:ORION_CORE_BASE_URL="http://127.0.0.1:8000"
+          $env:ORION_VOICE_STARTUP_PROBE="1"
           $cp=Start-Process $core -PassThru
           try {
-            for($i=0;$i -lt 30;$i++){try{$h=Invoke-RestMethod "$env:ORION_CORE_BASE_URL/health" -TimeoutSec 1;if($h.status -eq "ok"){break}}catch{};Start-Sleep -Milliseconds 500}
-            $body=@{text="Привет. Как дела?";source="whisper";language="ru"}|ConvertTo-Json; $r=Invoke-RestMethod "$env:ORION_CORE_BASE_URL/v1/voice/text" -Method Post -ContentType "application/json; charset=utf-8" -Body ([Text.Encoding]::UTF8.GetBytes($body)); if($r.reply -ne "Всё хорошо. Связь установлена."){throw "Voice text bridge failed"}
-            $vp=Start-Process $voice -PassThru; Start-Sleep -Seconds 5
-            $statePath=Join-Path $runtime "voice\state.json"; if(-not(Test-Path $statePath)){throw "Installed ORION-Voice did not publish state"}; $s=Get-Content $statePath -Raw|ConvertFrom-Json
-            Write-Host "VOICE_PROCESS_STATE=$($s.state)"; Write-Host "VOICE_PROCESS_ERROR=$($s.error)"
-            if($s.state -eq "STARTING"){throw "Voice never reached whisper-stream"}
-            if($s.state -eq "ERROR" -and $s.error -match "missing:.*whisper-stream"){throw "Packaged Voice could not locate installed whisper-stream"}
-            if($s.state -eq "ERROR" -and $s.error -match "Whisper model is missing"){throw "Packaged Voice could not locate runtime model"}
-            # ERROR from SDL/no capture device or model validation is acceptable on hosted CI: it proves the installed process crossed our Python/package boundary and invoked whisper-stream. LISTENING is stronger and also passes.
+            $healthy=$false
+            for($i=0;$i -lt 30;$i++){try{$h=Invoke-RestMethod "$env:ORION_CORE_BASE_URL/health" -TimeoutSec 1;if($h.status -eq "ok"){$healthy=$true;break}}catch{};Start-Sleep -Milliseconds 500}
+            if(-not $healthy){throw "Installed Core did not become healthy"}
+            $body=@{text="Привет. Как дела?";source="whisper";language="ru"}|ConvertTo-Json
+            $r=Invoke-RestMethod "$env:ORION_CORE_BASE_URL/v1/voice/text" -Method Post -ContentType "application/json; charset=utf-8" -Body ([Text.Encoding]::UTF8.GetBytes($body))
+            if($r.reply -ne "Всё хорошо. Связь установлена." -or -not $r.tts_requested){throw "Installed Voice text bridge failed"}
+            $vp=Start-Process $voice -PassThru -Wait
+            if($vp.ExitCode -ne 0){
+              $statePath=Join-Path $runtime "voice\state.json"
+              if(Test-Path $statePath){Write-Host (Get-Content $statePath -Raw)}
+              throw "Installed ORION-Voice startup probe failed: $($vp.ExitCode)"
+            }
+            $statePath=Join-Path $runtime "voice\state.json"
+            if(-not(Test-Path $statePath)){throw "Installed ORION-Voice did not publish startup state"}
+            $s=Get-Content $statePath -Raw|ConvertFrom-Json
+            Write-Host "VOICE_PROCESS_STATE=$($s.state)"
+            if($s.state -ne "PROBE_PASS"){throw "Unexpected packaged Voice probe state: $($s.state); $($s.error)"}
             Write-Host "INSTALLED_VOICE_PROCESS_BOUNDARY=PASS"
-            Stop-Process -Id $vp.Id -Force -ErrorAction SilentlyContinue
-          } finally {Stop-Process -Id $cp.Id -Force -ErrorAction SilentlyContinue}
+          } finally {
+            Stop-Process -Id $cp.Id -Force -ErrorAction SilentlyContinue
+            Remove-Item Env:ORION_VOICE_STARTUP_PROBE -ErrorAction SilentlyContinue
+          }
       - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
