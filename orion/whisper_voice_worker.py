@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import hashlib, json, os, re, subprocess, sys, tempfile, time, urllib.error, urllib.request
+import hashlib, json, os, re, subprocess, sys, time, urllib.error, urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,20 +16,14 @@ class VoiceBridgeReply: heard:str; reply:str; matched:bool; tts_requested:bool
 
 def _state_path(): return Path(os.environ.get("ORION_RUNTIME_DIR","runtime"))/"voice"/"state.json"
 def _write_state(state,*,heard="",reply="",error=""):
- p=_state_path();p.parent.mkdir(parents=True,exist_ok=True)
- payload=json.dumps({"state":state,"heard":heard,"reply":reply,"error":error,"updated_at":datetime.now(timezone.utc).isoformat()},ensure_ascii=False,indent=2)
- # Use a unique temp file so overlapping/retried writers never fight over state.tmp.
- q=p.with_name(f"{p.name}.{os.getpid()}.{uuid4().hex}.tmp")
+ p=_state_path();p.parent.mkdir(parents=True,exist_ok=True);payload=json.dumps({"state":state,"heard":heard,"reply":reply,"error":error,"updated_at":datetime.now(timezone.utc).isoformat()},ensure_ascii=False,indent=2);q=p.with_name(f"{p.name}.{os.getpid()}.{uuid4().hex}.tmp")
  try:
   q.write_text(payload,encoding="utf-8")
   for attempt in range(8):
-   try:
-    os.replace(q,p);return
+   try:os.replace(q,p);return
    except PermissionError:
     if attempt==7:break
     time.sleep(0.015*(attempt+1))
-  # State publication is diagnostic/UI only. A transient Windows reader/AV lock
-  # must never terminate Voice or abort a 1.5 GB model download.
   try:p.write_text(payload,encoding="utf-8")
   except OSError:pass
  finally:
@@ -54,22 +48,30 @@ def _model_ready():
 def ensure_voice_model():
  m=whisper_model_path()
  if _model_ready():return m
- m.parent.mkdir(parents=True,exist_ok=True)
- with tempfile.TemporaryDirectory(prefix="orion-voice-model-") as t:
-  x=Path(t)/m.name;r=urllib.request.Request(WHISPER_MODEL_URL,headers={"User-Agent":"ORION-DCS/0.2"})
-  with urllib.request.urlopen(r,timeout=120) as response,x.open("wb") as out:
-   z=response.headers.get("Content-Length")
-   try:total=int(z) if z else None
-   except ValueError:total=None
-   n=0
+ m.parent.mkdir(parents=True,exist_ok=True);part=m.with_suffix(m.suffix+".part");offset=part.stat().st_size if part.is_file() else 0
+ headers={"User-Agent":"ORION-DCS/0.2"}
+ if offset:headers["Range"]=f"bytes={offset}-"
+ r=urllib.request.Request(WHISPER_MODEL_URL,headers=headers)
+ try:response=urllib.request.urlopen(r,timeout=120)
+ except urllib.error.HTTPError as exc:
+  if offset and exc.code==416:part.unlink(missing_ok=True);return ensure_voice_model()
+  raise
+ with response:
+  status=getattr(response,"status",None) or response.getcode();append=bool(offset and status==206)
+  if offset and not append:offset=0
+  z=response.headers.get("Content-Length")
+  try:remaining=int(z) if z else None
+  except ValueError:remaining=None
+  total=(offset+remaining) if remaining is not None else None;n=offset
+  with part.open("ab" if append else "wb") as out:
    while True:
     c=response.read(1024*1024)
     if not c:break
-    out.write(c);n+=len(c);_provision_progress("model",n,total)
-  _write_state("PROVISIONING",error="model_verify");actual=_file_hash(x,"sha1")
-  if actual!=WHISPER_MODEL_SHA1:raise RuntimeError(f"Whisper medium model checksum mismatch: {actual}")
-  x.replace(m)
- return m
+    out.write(c);out.flush();n+=len(c);_provision_progress("model",n,total)
+ _write_state("PROVISIONING",error="model_verify");actual=_file_hash(part,"sha1")
+ if actual!=WHISPER_MODEL_SHA1:
+  part.unlink(missing_ok=True);raise RuntimeError(f"Whisper medium model checksum mismatch: {actual}")
+ os.replace(part,m);return m
 def _clean(line):return ANSI_RE.sub("",line).strip()
 def _is_mic_ready(line):
  t=_clean(line).casefold();return any(x.casefold() in t for x in MIC_READY_MARKERS)
