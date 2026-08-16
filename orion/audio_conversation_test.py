@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import os
-import subprocess
 import tempfile
 import wave
 from pathlib import Path
@@ -13,6 +11,7 @@ from orion.audio_device_config import audio_device_config
 from orion.native_wasapi_player import NativeWasapiPlayer
 from orion.tts_audio import AudioRenderRequest, TtsBackend, VoiceProfile
 from orion.voice_core import VoiceAgent
+from orion.whisper_cpp_stt import recognize_wav, runtime_ready
 from orion.windows_sapi_backend import WindowsSapiBackend
 from orion.windows_wasapi_backend import WasapiDirection, WasapiEndpoint
 
@@ -86,36 +85,6 @@ def _capture_wav(endpoint: WasapiEndpoint, target: Path, duration_seconds: float
     return samplerate
 
 
-def _recognize_windows_speech(path: Path, locale: str = "ru-RU") -> str:
-    if os.name != "nt":
-        raise RuntimeError("Windows speech recognition is only available on Windows")
-    escaped = str(path.resolve()).replace("'", "''")
-    escaped_locale = locale.replace("'", "''")
-    script = (
-        "Add-Type -AssemblyName System.Speech; "
-        f"$culture = [System.Globalization.CultureInfo]::GetCultureInfo('{escaped_locale}'); "
-        "$recognizers = [System.Speech.Recognition.SpeechRecognitionEngine]::InstalledRecognizers(); "
-        "$ri = $recognizers | Where-Object { $_.Culture.Name -eq $culture.Name } | Select-Object -First 1; "
-        "if (-not $ri) { throw 'Requested speech recognizer is not installed'; }; "
-        "$r = New-Object System.Speech.Recognition.SpeechRecognitionEngine($ri); "
-        "$r.LoadGrammar((New-Object System.Speech.Recognition.DictationGrammar)); "
-        f"$r.SetInputToWaveFile('{escaped}'); "
-        "$result = $r.Recognize(); "
-        "$r.Dispose(); "
-        "if ($result) { $result.Text }"
-    )
-    completed = subprocess.run(
-        ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
-        capture_output=True,
-        text=True,
-        check=False,
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-    )
-    if completed.returncode != 0:
-        raise RuntimeError(completed.stderr.strip() or completed.stdout.strip() or "Speech recognition failed")
-    return completed.stdout.strip()
-
-
 def _matches_control_phrase(text: str) -> bool:
     normalized = "".join(ch for ch in text.casefold() if ch.isalnum() or ch.isspace())
     words = set(normalized.split())
@@ -125,12 +94,18 @@ def _matches_control_phrase(text: str) -> bool:
 def run_conversational_audio_test() -> ConversationalAudioTestResult:
     stages = {
         "core_connected": True,
+        "voice_worker_ready": True,
+        "whisper_ready": runtime_ready(),
         "input_resolved": False,
         "audio_captured": False,
         "phrase_recognized": False,
         "output_resolved": False,
         "response_played": False,
+        "voice_worker_still_ready": False,
     }
+    if not stages["whisper_ready"]:
+        return ConversationalAudioTestResult(ok=False, stages=stages, message="Whisper runtime is not ready")
+
     state = audio_device_config.state()
     input_endpoint = state.resolved_input
     output_endpoint = state.resolved_output
@@ -146,14 +121,14 @@ def run_conversational_audio_test() -> ConversationalAudioTestResult:
             capture_path = Path(tmp) / "input.wav"
             samplerate = _capture_wav(input_endpoint, capture_path)
             stages["audio_captured"] = True
-            recognized = _recognize_windows_speech(capture_path)
+            recognized = recognize_wav(capture_path, language="ru")
             if not _matches_control_phrase(recognized):
                 return ConversationalAudioTestResult(
                     ok=False,
                     recognized_text=recognized,
                     stages=stages,
                     input_samplerate=samplerate,
-                    message=f"Control phrase was not recognized: {recognized or '(no speech)'}",
+                    message=f"Control phrase was not recognized by Whisper: {recognized or '(no speech)'}",
                 )
             stages["phrase_recognized"] = True
 
@@ -177,14 +152,16 @@ def run_conversational_audio_test() -> ConversationalAudioTestResult:
                 )
             NativeWasapiPlayer().play(Path(rendered.output_path), output_endpoint)
             stages["response_played"] = True
+            stages["voice_worker_still_ready"] = runtime_ready()
             return ConversationalAudioTestResult(
-                ok=True,
+                ok=stages["voice_worker_still_ready"],
                 recognized_text=recognized,
                 stages=stages,
                 input_samplerate=samplerate,
-                message=RESPONSE,
+                message=RESPONSE if stages["voice_worker_still_ready"] else "Voice worker lost Whisper readiness after test",
             )
     except Exception as exc:
+        stages["voice_worker_still_ready"] = runtime_ready()
         return ConversationalAudioTestResult(
             ok=False,
             recognized_text=recognized,

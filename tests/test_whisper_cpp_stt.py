@@ -196,10 +196,10 @@ def test_ensure_runtime_rejects_medium_model_checksum_mismatch(
     cli = root / "whisper-cli.exe"
     model = root / "models" / "ggml-medium.bin"
     cli.write_bytes(b"cli")
-    if os.name == "nt":
-        (root / stt.PORTABLE_CPU_BACKEND).write_bytes(b"x64")
+    (root / stt.PORTABLE_CPU_BACKEND).write_bytes(b"x64")
     monkeypatch.setattr(stt, "stt_root", lambda: root)
     _bind_runtime(monkeypatch, cli, model)
+    monkeypatch.setattr(stt, "os", SimpleNamespace(name="nt", environ=os.environ))
     monkeypatch.setattr(stt, "_download", lambda url, target, **kwargs: target.write_bytes(b"bad-model"))
     monkeypatch.setattr(stt, "_hash", lambda path, algorithm: "bad-model-checksum")
     with pytest.raises(RuntimeError, match="medium model checksum mismatch"):
@@ -254,7 +254,7 @@ def test_recognizer_refuses_to_download_implicitly(monkeypatch: pytest.MonkeyPat
 
 
 def test_recognizer_forces_cpu_only(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    source = tmp_path / "source.wav"
+    source = tmp_path / ("source.wav")
     cli = tmp_path / ("whisper-cli.exe" if os.name == "nt" else "whisper-cli")
     model = tmp_path / "ggml-medium.bin"
     _write_wav(source, sample_rate=16000)
