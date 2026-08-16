@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import hashlib, json, os, re, subprocess, sys, tempfile, urllib.error, urllib.request
+import hashlib, json, os, re, subprocess, sys, tempfile, time, urllib.error, urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,7 +16,26 @@ class VoiceBridgeReply: heard:str; reply:str; matched:bool; tts_requested:bool
 
 def _state_path(): return Path(os.environ.get("ORION_RUNTIME_DIR","runtime"))/"voice"/"state.json"
 def _write_state(state,*,heard="",reply="",error=""):
- p=_state_path();p.parent.mkdir(parents=True,exist_ok=True);q=p.with_suffix(".tmp");q.write_text(json.dumps({"state":state,"heard":heard,"reply":reply,"error":error,"updated_at":datetime.now(timezone.utc).isoformat()},ensure_ascii=False,indent=2),encoding="utf-8");q.replace(p)
+ p=_state_path();p.parent.mkdir(parents=True,exist_ok=True)
+ payload=json.dumps({"state":state,"heard":heard,"reply":reply,"error":error,"updated_at":datetime.now(timezone.utc).isoformat()},ensure_ascii=False,indent=2)
+ # Use a unique temp file so overlapping/retried writers never fight over state.tmp.
+ q=p.with_name(f"{p.name}.{os.getpid()}.{uuid4().hex}.tmp")
+ try:
+  q.write_text(payload,encoding="utf-8")
+  for attempt in range(8):
+   try:
+    os.replace(q,p);return
+   except PermissionError:
+    if attempt==7:break
+    time.sleep(0.015*(attempt+1))
+  # State publication is diagnostic/UI only. A transient Windows reader/AV lock
+  # must never terminate Voice or abort a 1.5 GB model download.
+  try:p.write_text(payload,encoding="utf-8")
+  except OSError:pass
+ finally:
+  try:
+   if q.exists():q.unlink()
+  except OSError:pass
 def _provision_progress(stage,completed,total): _write_state("PROVISIONING",error=(f"{stage}: {completed*100.0/total:.1f}% ({completed}/{total} bytes)" if total else f"{stage}: {completed} bytes"))
 def whisper_stream_path():
  o=os.environ.get("ORION_WHISPER_STREAM")
@@ -122,7 +141,9 @@ def run_forever(*,core_url=CORE_URL):
    _write_state("MIC_ERROR",error=detail);raise RuntimeError(f"Microphone was not opened: {detail}")
   return code
  except Exception as e:
-  if not _state_path().is_file() or json.loads(_state_path().read_text(encoding="utf-8")).get("state")!="MIC_ERROR":_write_state("ERROR",error=f"{type(e).__name__}: {e}")
+  try:mic_error=_state_path().is_file() and json.loads(_state_path().read_text(encoding="utf-8")).get("state")=="MIC_ERROR"
+  except (OSError,json.JSONDecodeError):mic_error=False
+  if not mic_error:_write_state("ERROR",error=f"{type(e).__name__}: {e}")
   raise
 def main():return startup_probe() if os.environ.get("ORION_VOICE_STARTUP_PROBE")=="1" else run_forever()
 if __name__=="__main__":raise SystemExit(main())
