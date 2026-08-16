@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 import threading
+from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel
@@ -23,12 +24,19 @@ class VoiceRuntimeSupervisor:
         self._process: subprocess.Popen[str] | None = None
         self._lock = threading.RLock()
 
+    def _frozen_voice_executable(self) -> Path:
+        core_dir = Path(sys.executable).resolve().parent
+        candidate = core_dir.parent / "Voice" / "ORION-Voice.exe"
+        if not candidate.is_file():
+            raise FileNotFoundError(f"ORION Voice worker is not installed: expected {candidate}")
+        return candidate
+
     def _command(self) -> list[str]:
         override = os.environ.get("ORION_VOICE_EXECUTABLE")
         if override:
             return [override]
         if getattr(sys, "frozen", False):
-            return [sys.executable, "--voice-worker"]
+            return [str(self._frozen_voice_executable())]
         return [sys.executable, "-m", "orion.voice_runtime_worker"]
 
     def _alive(self) -> bool:
@@ -41,6 +49,7 @@ class VoiceRuntimeSupervisor:
                 return self._status_from_reply(reply)
 
             env = os.environ.copy()
+            env["ORION_PROCESS_ROLE"] = "voice"
             creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
             self._process = subprocess.Popen(
                 self._command(),
@@ -49,6 +58,7 @@ class VoiceRuntimeSupervisor:
                 stderr=subprocess.DEVNULL,
                 text=True,
                 encoding="utf-8",
+                errors="strict",
                 bufsize=1,
                 env=env,
                 creationflags=creationflags,
