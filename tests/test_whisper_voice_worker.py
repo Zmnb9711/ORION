@@ -6,6 +6,13 @@ def test_stream_parser_drops_runtime_noise():
  assert worker._normalize_transcript_line("main: using VAD\n")=="";assert worker._normalize_transcript_line("whisper_init: loading model\n")=="";assert worker._normalize_transcript_line("  Привет, как дела?  \n")=="Привет, как дела?"
 def test_microphone_markers():
  assert worker._is_mic_ready("[Start speaking]\n");assert worker._is_mic_ready("capture: device opened\n");assert worker._mic_error("failed to open audio device")
+def test_state_write_survives_transient_windows_replace_lock(monkeypatch,tmp_path):
+ state=tmp_path/"voice"/"state.json";monkeypatch.setattr(worker,"_state_path",lambda:state);real_replace=worker.os.replace;calls=[]
+ def flaky(src,dst):
+  calls.append(1)
+  if len(calls)<3:raise PermissionError(5,"locked")
+  return real_replace(src,dst)
+ monkeypatch.setattr(worker.os,"replace",flaky);monkeypatch.setattr(worker.time,"sleep",lambda _:None);worker._write_state("LISTENING",heard="test");assert len(calls)==3;assert '"state": "LISTENING"' in state.read_text(encoding="utf-8");assert not list(state.parent.glob("*.tmp"))
 def test_stream_command_is_live_vad_cpu_only(monkeypatch,tmp_path):
  s=tmp_path/"whisper-stream.exe";m=tmp_path/"ggml-medium.bin";s.write_bytes(b"s");m.write_bytes(b"m");monkeypatch.setattr(worker,"whisper_stream_path",lambda:s);monkeypatch.setattr(worker,"whisper_model_path",lambda:m);monkeypatch.setattr(worker,"configured_threads",lambda:4);c=worker.build_stream_command();assert c[0]==str(s);assert c[c.index("--language")+1]=="ru";assert c[c.index("--step")+1]=="0";assert "--vad-thold" in c;assert "--no-gpu" in c
 def test_post_text_contract(monkeypatch):
