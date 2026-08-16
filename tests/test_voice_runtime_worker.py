@@ -20,7 +20,6 @@ def _run(monkeypatch, commands: list[object], *, ready: bool = True) -> tuple[in
     stdout = io.StringIO()
     monkeypatch.setattr(subject.sys, "stdin", stdin)
     monkeypatch.setattr(subject.sys, "stdout", stdout)
-    monkeypatch.setattr(subject, "ensure_runtime", lambda: ("cli", "model"))
     monkeypatch.setattr(subject, "runtime_ready", lambda: ready)
     monkeypatch.setattr(subject, "run_conversational_audio_test", lambda: _Result())
     code = subject.main()
@@ -53,22 +52,21 @@ def test_worker_handles_ping_conversation_error_and_shutdown(monkeypatch) -> Non
     assert replies[5] == {"ok": True, "state": "stopping"}
 
 
-def test_worker_reports_runtime_startup_failure(monkeypatch) -> None:
-    stdout = io.StringIO()
-    monkeypatch.setattr(subject.sys, "stdin", io.StringIO(""))
-    monkeypatch.setattr(subject.sys, "stdout", stdout)
-
-    def fail_runtime():
-        raise RuntimeError("whisper payload missing")
-
-    monkeypatch.setattr(subject, "ensure_runtime", fail_runtime)
-    code = subject.main()
-    reply = json.loads(stdout.getvalue().strip())
+def test_worker_refuses_start_when_stt_not_installed(monkeypatch) -> None:
+    code, replies = _run(monkeypatch, [], ready=False)
 
     assert code == 2
-    assert reply["ok"] is False
-    assert reply["event"] == "startup"
-    assert "whisper payload missing" in reply["error"]
+    assert replies == [
+        {
+            "ok": False,
+            "event": "startup",
+            "error": "Whisper medium is not installed. Use DOWNLOAD & INSTALL STT in Launcher first.",
+        }
+    ]
+
+
+def test_worker_never_provisions_stt_implicitly() -> None:
+    assert not hasattr(subject, "ensure_runtime")
 
 
 def test_reply_writes_unicode_json(monkeypatch) -> None:
