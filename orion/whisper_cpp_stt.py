@@ -358,10 +358,15 @@ def _force_portable_cpu_backend(root: Path, *, trigger_status: int | None = None
 
 
 def _run_whisper(command: list[str]) -> subprocess.CompletedProcess[str]:
+    # whisper.cpp may emit localized/native-library diagnostics that are not
+    # valid UTF-8 on Windows. The transcript file remains authoritative, so
+    # console diagnostics must never crash STT decoding.
     return subprocess.run(
         command,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         check=False,
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )

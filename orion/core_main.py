@@ -43,7 +43,11 @@ def _startup_log(runtime: Path, stage: str, detail: str | None = None) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Run ORION Core, or the long-lived Voice worker hosted by the frozen Core binary."""
+    """Run the ORION Core service only.
+
+    Voice/Whisper is a separate product process (ORION-Voice.exe) and must not
+    be hosted by this executable.
+    """
     _ensure_stdio()
     runtime = _runtime_root()
 
@@ -51,14 +55,7 @@ def main(argv: list[str] | None = None) -> int:
         parser = argparse.ArgumentParser(description="ORION Core")
         parser.add_argument("--host", default="127.0.0.1")
         parser.add_argument("--port", type=int, default=8000)
-        parser.add_argument("--voice-worker", action="store_true")
         args = parser.parse_args(argv)
-
-        if args.voice_worker:
-            os.environ["ORION_PROCESS_ROLE"] = "voice"
-            from orion.voice_runtime_worker import main as voice_worker_main
-
-            return voice_worker_main()
 
         os.environ["ORION_PROCESS_ROLE"] = "core"
         _startup_log(runtime, "boot", f"frozen={bool(getattr(sys, 'frozen', False))}")

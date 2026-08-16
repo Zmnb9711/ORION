@@ -1,14 +1,14 @@
 from __future__ import annotations
 
+import inspect
 from pathlib import Path
 
 import pytest
 
 import orion.core_main as core_main
-import orion.voice_runtime_worker as voice_worker_module
 import orion.windows_audio_worker_api as audio_api
 from orion.audio_conversation_test import ConversationalAudioTestResult
-from orion.voice_runtime import VoiceRuntimeStatus
+from orion.voice_runtime import VoiceRuntimeStatus, VoiceRuntimeSupervisor
 
 
 def test_runtime_root_uses_configured_directory(monkeypatch, tmp_path: Path) -> None:
@@ -19,18 +19,48 @@ def test_runtime_root_uses_configured_directory(monkeypatch, tmp_path: Path) -> 
 
 
 def test_startup_log_records_stage_and_detail(tmp_path: Path) -> None:
-    core_main._startup_log(tmp_path, "voice_ready", "pid=42")
+    core_main._startup_log(tmp_path, "core_ready", "pid=42")
     text = (tmp_path / "core-startup.log").read_text(encoding="utf-8")
-    assert "voice_ready | pid=42" in text
+    assert "core_ready | pid=42" in text
 
 
-def test_core_main_dispatches_to_hosted_voice_worker(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setattr(core_main, "_ensure_stdio", lambda: None)
-    monkeypatch.setattr(core_main, "_runtime_root", lambda: tmp_path)
-    monkeypatch.setattr(voice_worker_module, "main", lambda: 17)
+def test_core_entrypoint_cannot_host_voice_worker() -> None:
+    source = inspect.getsource(core_main)
+    assert "--voice-worker" not in source
+    assert "voice_runtime_worker" not in source
 
-    assert core_main.main(["--voice-worker"]) == 17
-    assert core_main.os.environ["ORION_PROCESS_ROLE"] == "voice"
+
+def test_frozen_voice_resolves_separate_product_executable(monkeypatch, tmp_path: Path) -> None:
+    core_dir = tmp_path / "ORION" / "Core"
+    voice_dir = tmp_path / "ORION" / "Voice"
+    core_dir.mkdir(parents=True)
+    voice_dir.mkdir(parents=True)
+    core = core_dir / "ORION-Core.exe"
+    voice = voice_dir / "ORION-Voice.exe"
+    core.write_bytes(b"core")
+    voice.write_bytes(b"voice")
+
+    import orion.voice_runtime as runtime_subject
+
+    monkeypatch.setattr(runtime_subject.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(runtime_subject.sys, "executable", str(core))
+    supervisor = VoiceRuntimeSupervisor()
+    assert supervisor._command() == [str(voice)]
+    assert "ORION-Core.exe" not in supervisor._command()[0]
+
+
+def test_frozen_voice_missing_binary_is_explicit_error(monkeypatch, tmp_path: Path) -> None:
+    core_dir = tmp_path / "ORION" / "Core"
+    core_dir.mkdir(parents=True)
+    core = core_dir / "ORION-Core.exe"
+    core.write_bytes(b"core")
+
+    import orion.voice_runtime as runtime_subject
+
+    monkeypatch.setattr(runtime_subject.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(runtime_subject.sys, "executable", str(core))
+    with pytest.raises(FileNotFoundError, match="ORION-Voice.exe"):
+        VoiceRuntimeSupervisor()._command()
 
 
 def test_core_main_runs_api_server_and_logs_lifecycle(monkeypatch, tmp_path: Path) -> None:

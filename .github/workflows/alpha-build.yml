@@ -65,7 +65,7 @@ jobs:
       - name: Import canonical production entry points
         shell: pwsh
         run: |
-          python -c "from orion.core_main import main as core_main; from orion.launcher_main import main as launcher_main; from orion.core_process import CoreProcessManager; from orion.desktop_product_launcher import WindowsOrionProductLauncher; assert all((core_main, launcher_main, CoreProcessManager, WindowsOrionProductLauncher))"
+          python -c "from orion.core_main import main as core_main; from orion.voice_runtime_worker import main as voice_main; from orion.launcher_main import main as launcher_main; from orion.core_process import CoreProcessManager; from orion.desktop_product_launcher import WindowsOrionProductLauncher; assert all((core_main, voice_main, launcher_main, CoreProcessManager, WindowsOrionProductLauncher))"
 
       - name: Build ORION Core
         shell: pwsh
@@ -83,6 +83,19 @@ jobs:
           )
           python -m PyInstaller @args
           if (-not (Test-Path "dist/ORION-Core/ORION-Core.exe")) { throw "ORION-Core.exe was not created" }
+
+      - name: Build ORION Voice
+        shell: pwsh
+        run: |
+          $args = @(
+            "--noconfirm", "--clean", "--onedir", "--console",
+            "--name", "ORION-Voice",
+            "--collect-submodules", "orion",
+            "--icon", "branding/orion.ico",
+            "orion/voice_runtime_worker.py"
+          )
+          python -m PyInstaller @args
+          if (-not (Test-Path "dist/ORION-Voice/ORION-Voice.exe")) { throw "ORION-Voice.exe was not created" }
 
       - name: Build ORION Launcher
         shell: pwsh
@@ -104,16 +117,19 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force "dist-product/Core" | Out-Null
+          New-Item -ItemType Directory -Force "dist-product/Voice" | Out-Null
           New-Item -ItemType Directory -Force "dist-product/Launcher" | Out-Null
           New-Item -ItemType Directory -Force "dist-product/Integration/DCS/Export" | Out-Null
           New-Item -ItemType Directory -Force "dist-product/Integration/DCS/MissionPack" | Out-Null
           New-Item -ItemType Directory -Force "dist-product/Integration/DCS/MissionTemplate" | Out-Null
           Copy-Item "dist/ORION-Core/*" "dist-product/Core" -Recurse -Force
+          Copy-Item "dist/ORION-Voice/*" "dist-product/Voice" -Recurse -Force
           Copy-Item "dist/ORION-Launcher/*" "dist-product/Launcher" -Recurse -Force
           Copy-Item "dcs-export/*" "dist-product/Integration/DCS/Export" -Recurse -Force
           Copy-Item "dcs-mission-pack/*" "dist-product/Integration/DCS/MissionPack" -Recurse -Force
           Copy-Item "dcs-mission-template/*" "dist-product/Integration/DCS/MissionTemplate" -Recurse -Force
           if (-not (Test-Path "dist-product/Core/ORION-Core.exe")) { throw "Canonical Core layout missing" }
+          if (-not (Test-Path "dist-product/Voice/ORION-Voice.exe")) { throw "Canonical Voice layout missing" }
           if (-not (Test-Path "dist-product/Launcher/ORION-Launcher.exe")) { throw "Canonical Launcher layout missing" }
           if (-not (Test-Path "dist-product/Integration/DCS/Export/Export.lua")) { throw "DCS Export integration missing" }
 
@@ -192,6 +208,7 @@ jobs:
           } finally {
             if ($launcher -and -not $launcher.HasExited) { Stop-Process -Id $launcher.Id -Force -ErrorAction SilentlyContinue }
             if ($launcher2 -and -not $launcher2.HasExited) { Stop-Process -Id $launcher2.Id -Force -ErrorAction SilentlyContinue }
+            Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.EndsWith("ORION-Voice.exe") } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
             Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.EndsWith("ORION-Core.exe") } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
           }
 
@@ -200,6 +217,7 @@ jobs:
         run: |
           $required = @(
             "dist-product/Core/ORION-Core.exe",
+            "dist-product/Voice/ORION-Voice.exe",
             "dist-product/Launcher/ORION-Launcher.exe",
             "dist-product/Integration/DCS/Export/Export.lua",
             "dist-product/Integration/DCS/MissionPack/ORION_MissionPack.lua",
