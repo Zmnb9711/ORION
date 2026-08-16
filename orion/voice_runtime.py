@@ -97,21 +97,26 @@ class VoiceRuntimeSupervisor:
                     message=str(exc),
                 )
 
-    def conversation_test(self) -> dict[str, Any]:
+    def transcribe_test(self) -> dict[str, Any]:
+        """Keep microphone/Whisper in the live worker and return only transcript data to Core."""
         with self._lock:
             ready = self.ensure_ready()
             if not ready.worker_alive or not ready.whisper_ready:
                 raise RuntimeError("Voice/Whisper is not ready")
-            reply = self._request_unlocked({"action": "conversation_test"})
+            reply = self._request_unlocked({"action": "transcribe_test"})
             if not reply.get("ok"):
-                raise RuntimeError(str(reply.get("error", "Voice worker audio test failed")))
+                raise RuntimeError(str(reply.get("error", "Voice worker transcription failed")))
             result = reply.get("result")
             if not isinstance(result, dict):
-                raise RuntimeError("Voice worker returned an invalid audio test result")
+                raise RuntimeError("Voice worker returned an invalid transcription result")
             after = self._request_unlocked({"action": "ping"})
             if not after.get("ok") or not after.get("whisper_ready"):
-                raise RuntimeError("Voice worker did not remain ready after audio test")
+                raise RuntimeError("Voice worker did not remain ready after transcription")
             return result
+
+    def conversation_test(self) -> dict[str, Any]:
+        """Backward-compatible alias; Core now owns the response/SAPI half."""
+        return self.transcribe_test()
 
     def shutdown(self) -> VoiceRuntimeStatus:
         with self._lock:
