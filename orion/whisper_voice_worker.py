@@ -19,7 +19,7 @@ from orion.windows_sapi_backend import WindowsSapiBackend
 
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
-CORE_URL = os.environ.get("ORION_CORE_URL", "http://127.0.0.1:8765").rstrip("/")
+CORE_URL = os.environ.get("ORION_CORE_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
 VOICE_ENDPOINT = "/v1/voice/text"
 
 
