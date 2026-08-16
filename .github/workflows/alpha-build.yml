@@ -62,15 +62,10 @@ jobs:
           $install=Start-Process $setup -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/SP-" -Wait -PassThru
           if($install.ExitCode){throw "Installer failed: $($install.ExitCode)"}
           $root="C:\Program Files\ORION"
-          $core="$root\Core\ORION-Core.exe"
-          $voice="$root\Voice\ORION-Voice.exe"
-          $stream="$root\Voice\whisper\whisper-stream.exe"
+          $core="$root\Core\ORION-Core.exe"; $voice="$root\Voice\ORION-Voice.exe"; $stream="$root\Voice\whisper\whisper-stream.exe"
           foreach($x in @($core,$voice,$stream)){if(-not(Test-Path $x)){throw "Installed component missing: $x"}}
-          $runtime=Join-Path $env:RUNNER_TEMP "orion-installed-voice"
-          New-Item -ItemType Directory -Force $runtime | Out-Null
-          $env:ORION_RUNTIME_DIR=$runtime
-          $env:ORION_CORE_BASE_URL="http://127.0.0.1:8000"
-          $env:ORION_VOICE_STARTUP_PROBE="1"
+          $runtime=Join-Path $env:RUNNER_TEMP "orion-installed-voice"; New-Item -ItemType Directory -Force $runtime | Out-Null
+          $env:ORION_RUNTIME_DIR=$runtime; $env:ORION_CORE_BASE_URL="http://127.0.0.1:8000"; $env:ORION_VOICE_STARTUP_PROBE="1"
           $cp=Start-Process $core -PassThru
           try {
             $healthy=$false
@@ -80,24 +75,24 @@ jobs:
             $r=Invoke-RestMethod "$env:ORION_CORE_BASE_URL/v1/voice/text" -Method Post -ContentType "application/json; charset=utf-8" -Body ([Text.Encoding]::UTF8.GetBytes($body))
             if($r.reply -ne "Всё хорошо. Связь установлена." -or -not $r.tts_requested){throw "Installed Voice text bridge failed"}
             $vp=Start-Process $voice -PassThru -Wait
-            if($vp.ExitCode -ne 0){
-              $statePath=Join-Path $runtime "voice\state.json"
-              if(Test-Path $statePath){Write-Host (Get-Content $statePath -Raw)}
-              throw "Installed ORION-Voice startup probe failed: $($vp.ExitCode)"
-            }
-            $statePath=Join-Path $runtime "voice\state.json"
-            if(-not(Test-Path $statePath)){throw "Installed ORION-Voice did not publish startup state"}
-            $s=Get-Content $statePath -Raw|ConvertFrom-Json
-            Write-Host "VOICE_PROCESS_STATE=$($s.state)"
-            if($s.state -ne "PROBE_PASS"){throw "Unexpected packaged Voice probe state: $($s.state); $($s.error)"}
-            Write-Host "INSTALLED_VOICE_PROCESS_BOUNDARY=PASS"
-          } finally {
-            Stop-Process -Id $cp.Id -Force -ErrorAction SilentlyContinue
-            Remove-Item Env:ORION_VOICE_STARTUP_PROBE -ErrorAction SilentlyContinue
-          }
-      - name: Upload installer
+            if($vp.ExitCode -ne 0){throw "Installed ORION-Voice startup probe failed: $($vp.ExitCode)"}
+            $statePath=Join-Path $runtime "voice\state.json"; if(-not(Test-Path $statePath)){throw "Installed ORION-Voice did not publish startup state"}
+            $s=Get-Content $statePath -Raw|ConvertFrom-Json; if($s.state -ne "PROBE_PASS"){throw "Unexpected packaged Voice probe state: $($s.state); $($s.error)"}
+          } finally { Stop-Process -Id $cp.Id -Force -ErrorAction SilentlyContinue; Remove-Item Env:ORION_VOICE_STARTUP_PROBE -ErrorAction SilentlyContinue }
+      - name: Upload installer artifact
         uses: actions/upload-artifact@v4
         with:
           name: ORION-Alpha-0.2-Setup
           path: dist-installer/ORION-Alpha-0.2-Setup.exe
           if-no-files-found: error
+      - name: Publish validated installer to GitHub Release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/voice/worker-launcher-lifecycle-v01'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag="alpha-0.2-build-${{ github.run_number }}"
+          $title="ORION Alpha 0.2 — Build #${{ github.run_number }}"
+          $asset="dist-installer/ORION-Alpha-0.2-Setup.exe"
+          gh release create $tag $asset --target "${{ github.sha }}" --title $title --notes "Validated ORION Alpha 0.2 test build. Commit: ${{ github.sha }}. Voice regression and packaged Voice probe passed before publication." --prerelease
+          Write-Host "RELEASE_DOWNLOAD=https://github.com/${{ github.repository }}/releases/download/$tag/ORION-Alpha-0.2-Setup.exe"
