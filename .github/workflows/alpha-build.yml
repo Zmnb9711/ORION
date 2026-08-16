@@ -20,51 +20,39 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
-
       - name: Install build dependencies
         shell: pwsh
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev,windows-audio]"
-
       - name: Run Voice regression tests
         shell: pwsh
-        run: |
-          python -m pytest -q tests/test_voice_text_bridge_api.py tests/test_whisper_voice_worker.py
-
+        run: python -m pytest -q tests/test_voice_text_bridge_api.py tests/test_whisper_voice_worker.py
       - name: Build ORION Core
         shell: pwsh
-        run: |
-          python -m PyInstaller --noconfirm --clean --onedir --windowed --name ORION-Core --collect-submodules orion --collect-submodules uvicorn --add-data "dcs-export;dcs-export" --icon branding/orion.ico orion/core_main.py
-
+        run: python -m PyInstaller --noconfirm --clean --onedir --windowed --name ORION-Core --collect-submodules orion --collect-submodules uvicorn --add-data "dcs-export;dcs-export" --icon branding/orion.ico orion/core_main.py
       - name: Build ORION Launcher
         shell: pwsh
-        run: |
-          python -m PyInstaller --noconfirm --clean --onedir --windowed --name ORION-Launcher --collect-submodules orion --collect-submodules uvicorn --add-data "dcs-export;dcs-export" --icon branding/orion.ico --add-data "branding/orion.ico;branding" orion/launcher_main.py
-
+        run: python -m PyInstaller --noconfirm --clean --onedir --windowed --name ORION-Launcher --collect-submodules orion --collect-submodules uvicorn --add-data "dcs-export;dcs-export" --icon branding/orion.ico --add-data "branding/orion.ico;branding" orion/launcher_main.py
       - name: Build ORION Voice
         shell: pwsh
         run: |
           python -m PyInstaller --noconfirm --clean --onedir --windowed --name ORION-Voice --collect-submodules orion --icon branding/orion.ico orion/whisper_voice_worker.py
           if (-not (Test-Path "dist/ORION-Voice/ORION-Voice.exe")) { throw "ORION-Voice.exe was not created" }
-
       - name: Download pinned whisper.cpp live runtime
         shell: pwsh
         run: |
-          $url = "https://github.com/ggml-org/whisper.cpp/releases/download/v1.8.6/whisper-bin-x64.zip"
-          Invoke-WebRequest -Uri $url -OutFile whisper-bin-x64.zip
+          Invoke-WebRequest -Uri "https://github.com/ggml-org/whisper.cpp/releases/download/v1.8.6/whisper-bin-x64.zip" -OutFile whisper-bin-x64.zip
           Expand-Archive whisper-bin-x64.zip -DestinationPath whisper-runtime -Force
           $stream = Get-ChildItem whisper-runtime -Recurse -Filter whisper-stream.exe | Select-Object -First 1
           $sdl = Get-ChildItem whisper-runtime -Recurse -Filter SDL2.dll | Select-Object -First 1
           if (-not $stream) { throw "Official whisper.cpp v1.8.6 package does not contain whisper-stream.exe" }
           if (-not $sdl) { throw "Official whisper.cpp v1.8.6 package does not contain SDL2.dll" }
-
       - name: Assemble canonical product layout
         shell: pwsh
         run: |
@@ -75,22 +63,15 @@ jobs:
           $bin = (Get-ChildItem whisper-runtime -Recurse -Filter whisper-stream.exe | Select-Object -First 1).Directory.FullName
           Copy-Item "$bin/*" "dist-product/Voice/whisper" -Recurse -Force
           Copy-Item "dcs-export/*" "dist-product/Integration/DCS/Export" -Recurse -Force
-          if (-not (Test-Path "dist-product/Voice/whisper/whisper-stream.exe")) { throw "Voice payload missing whisper-stream.exe" }
-          if (-not (Test-Path "dist-product/Voice/whisper/SDL2.dll")) { throw "Voice payload missing SDL2.dll" }
-
       - name: Verify live Whisper executable starts
         shell: pwsh
         run: |
           $output = & "dist-product/Voice/whisper/whisper-stream.exe" --help 2>&1 | Out-String
           if ($LASTEXITCODE -ne 0) { throw "whisper-stream.exe failed to start: $output" }
-          Write-Host $output
-
       - name: Verify installed Voice payload
         shell: pwsh
         run: |
-          $required = @("dist-product/Voice/ORION-Voice.exe","dist-product/Voice/whisper/whisper-stream.exe","dist-product/Voice/whisper/SDL2.dll")
-          foreach ($path in $required) { if (-not (Test-Path $path)) { throw "Missing Voice payload: $path" } }
-
+          foreach ($path in @("dist-product/Voice/ORION-Voice.exe","dist-product/Voice/whisper/whisper-stream.exe","dist-product/Voice/whisper/SDL2.dll")) { if (-not (Test-Path $path)) { throw "Missing Voice payload: $path" } }
       - name: Locate Inno Setup
         id: inno
         shell: pwsh
@@ -100,13 +81,38 @@ jobs:
           if (-not $iscc) { choco install innosetup --yes --no-progress; $iscc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1 }
           if (-not $iscc) { throw "Inno Setup compiler not found" }
           "iscc=$iscc" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-
       - name: Build Windows installer
         shell: pwsh
         run: |
           & "${{ steps.inno.outputs.iscc }}" "packaging/orion-alpha.iss"
           if (-not (Test-Path "dist-installer/ORION-Alpha-0.2-Setup.exe")) { throw "Installer was not created" }
-
+      - name: Install production package and verify Core text bridge
+        shell: pwsh
+        run: |
+          $setup=(Resolve-Path "dist-installer/ORION-Alpha-0.2-Setup.exe").Path
+          $p=Start-Process $setup -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/SP-" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Installer failed: $($p.ExitCode)" }
+          $core="C:\Program Files\ORION\Core\ORION-Core.exe"
+          $voice="C:\Program Files\ORION\Voice\ORION-Voice.exe"
+          $stream="C:\Program Files\ORION\Voice\whisper\whisper-stream.exe"
+          foreach ($path in @($core,$voice,$stream)) { if (-not (Test-Path $path)) { throw "Installed component missing: $path" } }
+          $runtime=Join-Path $env:RUNNER_TEMP "orion-installed-voice"
+          New-Item -ItemType Directory -Force $runtime | Out-Null
+          $env:ORION_RUNTIME_DIR=$runtime
+          $cp=Start-Process $core -PassThru
+          try {
+            $ready=$false
+            for ($i=0; $i -lt 30; $i++) { try { $h=Invoke-RestMethod "http://127.0.0.1:8000/health" -TimeoutSec 1; if ($h.status -eq "ok") { $ready=$true; break } } catch {}; Start-Sleep -Milliseconds 500 }
+            if (-not $ready) { throw "Installed Core did not become healthy" }
+            $body=@{text="Привет. Как дела?";source="whisper";language="ru"} | ConvertTo-Json
+            $r=Invoke-RestMethod "http://127.0.0.1:8000/v1/voice/text" -Method Post -ContentType "application/json; charset=utf-8" -Body ([Text.Encoding]::UTF8.GetBytes($body))
+            if (-not $r.matched) { throw "Installed Core did not match Voice v0.1 greeting" }
+            if ($r.reply -ne "Всё хорошо. Связь установлена.") { throw "Unexpected installed Core reply: $($r.reply)" }
+            if (-not $r.tts_requested) { throw "Installed Core did not request TTS" }
+            Write-Host "INSTALLED_VOICE_TEXT_BRIDGE=PASS"
+            Write-Host "HEARD=$($r.heard)"
+            Write-Host "REPLY=$($r.reply)"
+          } finally { Stop-Process -Id $cp.Id -Force -ErrorAction SilentlyContinue }
       - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
