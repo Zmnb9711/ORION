@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import io
 import json
-from types import SimpleNamespace
 
 import orion.voice_runtime_worker as subject
 
@@ -45,9 +44,11 @@ def test_worker_handles_ping_conversation_error_and_shutdown(monkeypatch) -> Non
     assert replies[0] == {"ok": True, "event": "ready", "whisper_ready": True}
     assert replies[1] == {"ok": True, "state": "ready", "whisper_ready": True}
     assert replies[2]["ok"] is True
-    assert replies[2]["result"]["message"] == "voice test ok"
+    result = replies[2]["result"]
+    assert isinstance(result, dict)
+    assert result["message"] == "voice test ok"
     assert replies[3]["ok"] is False
-    assert "Unsupported Voice worker action" in replies[3]["error"]
+    assert "Unsupported Voice worker action" in str(replies[3]["error"])
     assert replies[4]["ok"] is False
     assert replies[5] == {"ok": True, "state": "stopping"}
 
