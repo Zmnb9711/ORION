@@ -7,7 +7,6 @@ import pytest
 
 import orion.core_main as core_main
 import orion.windows_audio_worker_api as audio_api
-from orion.audio_conversation_test import ConversationalAudioTestResult
 from orion.voice_runtime import VoiceRuntimeStatus, VoiceRuntimeSupervisor
 
 
@@ -103,18 +102,42 @@ def test_voice_runtime_api_status_and_ensure(monkeypatch) -> None:
     assert audio_api.ensure_voice().whisper_ready is True
 
 
-def test_voice_runtime_api_conversation_and_shutdown(monkeypatch) -> None:
-    result = ConversationalAudioTestResult(
-        ok=True,
-        recognized_text="Привет как дела",
-        stages={"whisper_ready": True},
-        message="Дела отлично. Связь установлена.",
+def test_conversation_api_places_core_between_whisper_and_sapi(monkeypatch) -> None:
+    ready = VoiceRuntimeStatus(state="ready", worker_alive=True, whisper_ready=True, pid=55)
+    calls: list[str] = []
+    monkeypatch.setattr(audio_api.voice_runtime, "ensure_ready", lambda: ready)
+    monkeypatch.setattr(
+        audio_api.voice_runtime,
+        "transcribe_test",
+        lambda: {
+            "ok": True,
+            "recognized_text": "Привет как дела",
+            "input_samplerate": 48000,
+            "message": "Whisper transcription completed",
+        },
     )
-    stopped = VoiceRuntimeStatus(state="stopped", worker_alive=False, whisper_ready=False)
-    monkeypatch.setattr(audio_api.voice_runtime, "conversation_test", lambda: result.model_dump(mode="json"))
-    monkeypatch.setattr(audio_api.voice_runtime, "shutdown", lambda: stopped)
+    monkeypatch.setattr(audio_api.audio_device_config, "state", lambda: type("S", (), {"resolved_output": object()})())
 
-    assert audio_api.conversation_audio_test().ok is True
+    def play(text: str):
+        calls.append(text)
+        return True, text
+
+    monkeypatch.setattr(audio_api, "play_response_for_test", play)
+    monkeypatch.setattr(audio_api.voice_runtime, "status", lambda: ready)
+
+    result = audio_api.conversation_audio_test()
+
+    assert result.ok is True
+    assert result.recognized_text == "Привет как дела"
+    assert calls == [audio_api.RESPONSE]
+    assert result.stages["phrase_recognized"] is True
+    assert result.stages["response_played"] is True
+    assert result.stages["voice_worker_still_ready"] is True
+
+
+def test_voice_runtime_api_shutdown(monkeypatch) -> None:
+    stopped = VoiceRuntimeStatus(state="stopped", worker_alive=False, whisper_ready=False)
+    monkeypatch.setattr(audio_api.voice_runtime, "shutdown", lambda: stopped)
     assert audio_api.shutdown_voice().state == "stopped"
 
 
@@ -129,12 +152,16 @@ def test_voice_runtime_api_maps_ensure_failure_to_503(monkeypatch) -> None:
     assert "Whisper unavailable" in str(captured.value.detail)
 
 
-def test_voice_runtime_api_contains_conversation_failure(monkeypatch) -> None:
+def test_voice_runtime_api_contains_transcription_failure(monkeypatch) -> None:
+    ready = VoiceRuntimeStatus(state="ready", worker_alive=True, whisper_ready=True, pid=55)
+    monkeypatch.setattr(audio_api.voice_runtime, "ensure_ready", lambda: ready)
+
     def fail_test():
         raise RuntimeError("microphone unavailable")
 
-    monkeypatch.setattr(audio_api.voice_runtime, "conversation_test", fail_test)
+    monkeypatch.setattr(audio_api.voice_runtime, "transcribe_test", fail_test)
+    monkeypatch.setattr(audio_api.voice_runtime, "status", lambda: ready)
     result = audio_api.conversation_audio_test()
     assert result.ok is False
-    assert result.stages["voice_worker_ready"] is False
+    assert result.stages["voice_worker_ready"] is True
     assert "microphone unavailable" in result.message

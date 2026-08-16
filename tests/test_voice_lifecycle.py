@@ -39,24 +39,48 @@ class _FakeProcess:
         self._returncode = -9
 
 
-def test_voice_supervisor_reuses_live_worker_for_conversation() -> None:
+def test_voice_supervisor_reuses_live_worker_for_transcription() -> None:
     supervisor = VoiceRuntimeSupervisor()
     process = _FakeProcess(
         [
             {"ok": True, "state": "ready", "whisper_ready": True},
-            {"ok": True, "result": {"ok": True, "stages": {}, "message": "ok"}},
+            {
+                "ok": True,
+                "result": {
+                    "ok": True,
+                    "recognized_text": "Привет как дела",
+                    "input_samplerate": 48000,
+                    "message": "Whisper transcription completed",
+                },
+            },
             {"ok": True, "state": "ready", "whisper_ready": True},
             {"ok": True, "state": "ready", "whisper_ready": True},
         ]
     )
     supervisor._process = process  # type: ignore[assignment]
 
-    result = supervisor.conversation_test()
+    result = supervisor.transcribe_test()
 
     assert result["ok"] is True
+    assert result["recognized_text"] == "Привет как дела"
     commands = [json.loads(line) for line in process.stdin.getvalue().splitlines()]
-    assert [item["action"] for item in commands] == ["ping", "conversation_test", "ping"]
+    assert [item["action"] for item in commands] == ["ping", "transcribe_test", "ping"]
     assert supervisor.status().worker_alive is True
+
+
+def test_conversation_alias_does_not_move_sapi_into_worker() -> None:
+    supervisor = VoiceRuntimeSupervisor()
+    process = _FakeProcess(
+        [
+            {"ok": True, "state": "ready", "whisper_ready": True},
+            {"ok": True, "result": {"ok": True, "recognized_text": "текст"}},
+            {"ok": True, "state": "ready", "whisper_ready": True},
+        ]
+    )
+    supervisor._process = process  # type: ignore[assignment]
+    assert supervisor.conversation_test()["recognized_text"] == "текст"
+    commands = [json.loads(line) for line in process.stdin.getvalue().splitlines()]
+    assert [item["action"] for item in commands] == ["ping", "transcribe_test", "ping"]
 
 
 def test_voice_supervisor_starts_worker_and_reports_ready(monkeypatch) -> None:

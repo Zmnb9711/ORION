@@ -8,10 +8,11 @@ from uuid import uuid4
 from pydantic import BaseModel
 
 from orion.audio_device_config import audio_device_config
+from orion.faster_whisper_stt import recognize_wav
 from orion.native_wasapi_player import NativeWasapiPlayer
 from orion.tts_audio import AudioRenderRequest, TtsBackend, VoiceProfile
 from orion.voice_core import VoiceAgent
-from orion.whisper_cpp_stt import recognize_wav, runtime_ready
+from orion.whisper_cpp_stt import runtime_ready
 from orion.windows_sapi_backend import WindowsSapiBackend
 from orion.windows_wasapi_backend import WasapiDirection, WasapiEndpoint
 
@@ -27,6 +28,13 @@ class ConversationalAudioTestResult(BaseModel):
     stages: dict[str, bool]
     message: str
     input_samplerate: int | None = None
+
+
+class VoiceTranscriptionTestResult(BaseModel):
+    ok: bool
+    recognized_text: str = ""
+    input_samplerate: int | None = None
+    message: str = ""
 
 
 def _resolve_sounddevice_index(endpoint: WasapiEndpoint, direction: WasapiDirection) -> int:
@@ -91,7 +99,68 @@ def _matches_control_phrase(text: str) -> bool:
     return {"привет", "как", "дела"}.issubset(words)
 
 
+def capture_and_recognize_for_test() -> VoiceTranscriptionTestResult:
+    """Input half of the approved pipeline: microphone -> Whisper -> transcript."""
+    if not runtime_ready():
+        return VoiceTranscriptionTestResult(ok=False, message="Whisper runtime is not ready")
+    state = audio_device_config.state()
+    input_endpoint = state.resolved_input
+    if input_endpoint is None:
+        return VoiceTranscriptionTestResult(ok=False, message="Selected microphone could not be resolved")
+    samplerate: int | None = None
+    try:
+        with tempfile.TemporaryDirectory(prefix="orion-audio-input-") as tmp:
+            capture_path = Path(tmp) / "input.wav"
+            samplerate = _capture_wav(input_endpoint, capture_path)
+            recognized = recognize_wav(capture_path, language="ru")
+            return VoiceTranscriptionTestResult(
+                ok=True,
+                recognized_text=recognized,
+                input_samplerate=samplerate,
+                message="Whisper transcription completed",
+            )
+    except Exception as exc:
+        return VoiceTranscriptionTestResult(
+            ok=False,
+            input_samplerate=samplerate,
+            message=f"Whisper transcription failed: {exc}",
+        )
+
+
+def play_response_for_test(text: str = RESPONSE) -> tuple[bool, str]:
+    """Output half of the approved pipeline: Core text -> Windows SAPI -> speakers."""
+    state = audio_device_config.state()
+    output_endpoint = state.resolved_output
+    if output_endpoint is None:
+        return False, "Selected audio output could not be resolved"
+    try:
+        with tempfile.TemporaryDirectory(prefix="orion-audio-output-") as tmp:
+            backend = WindowsSapiBackend(spool_dir=str(Path(tmp) / "tts"))
+            request = AudioRenderRequest(
+                command_id=f"audio-test-{uuid4()}",
+                text=text,
+                agent=VoiceAgent.SYSTEM,
+                profile=VoiceProfile(
+                    profile_id="audio_test_ru",
+                    locale="ru-RU",
+                    persona="orion",
+                    rate=1.0,
+                    volume=1.0,
+                ),
+                backend=TtsBackend.WINDOWS_SAPI,
+                output_device=output_endpoint.device_id,
+            )
+            rendered = backend.render(request)
+            if not rendered.accepted or not rendered.output_path:
+                return False, rendered.message
+            NativeWasapiPlayer().play(Path(rendered.output_path), output_endpoint)
+            return True, text
+    except Exception as exc:
+        return False, f"Windows SAPI/output failed: {exc}"
+
+
 def run_conversational_audio_test() -> ConversationalAudioTestResult:
+    """Legacy in-process composition kept for diagnostics and unit coverage."""
     stages = {
         "core_connected": True,
         "voice_worker_ready": True,
@@ -103,69 +172,36 @@ def run_conversational_audio_test() -> ConversationalAudioTestResult:
         "response_played": False,
         "voice_worker_still_ready": False,
     }
-    if not stages["whisper_ready"]:
-        return ConversationalAudioTestResult(ok=False, stages=stages, message="Whisper runtime is not ready")
-
-    state = audio_device_config.state()
-    input_endpoint = state.resolved_input
-    output_endpoint = state.resolved_output
-    if input_endpoint is None or output_endpoint is None:
-        return ConversationalAudioTestResult(ok=False, stages=stages, message="Core could not resolve selected audio endpoints")
-    stages["input_resolved"] = True
-    stages["output_resolved"] = True
-
-    samplerate: int | None = None
-    recognized = ""
-    try:
-        with tempfile.TemporaryDirectory(prefix="orion-audio-test-") as tmp:
-            capture_path = Path(tmp) / "input.wav"
-            samplerate = _capture_wav(input_endpoint, capture_path)
-            stages["audio_captured"] = True
-            recognized = recognize_wav(capture_path, language="ru")
-            if not _matches_control_phrase(recognized):
-                return ConversationalAudioTestResult(
-                    ok=False,
-                    recognized_text=recognized,
-                    stages=stages,
-                    input_samplerate=samplerate,
-                    message=f"Control phrase was not recognized by Whisper: {recognized or '(no speech)'}",
-                )
-            stages["phrase_recognized"] = True
-
-            backend = WindowsSapiBackend(spool_dir=str(Path(tmp) / "tts"))
-            request = AudioRenderRequest(
-                command_id=f"audio-test-{uuid4()}",
-                text=RESPONSE,
-                agent=VoiceAgent.SYSTEM,
-                profile=VoiceProfile(profile_id="audio_test_ru", locale="ru-RU", persona="orion", rate=1.0, volume=1.0),
-                backend=TtsBackend.WINDOWS_SAPI,
-                output_device=output_endpoint.device_id,
-            )
-            rendered = backend.render(request)
-            if not rendered.accepted or not rendered.output_path:
-                return ConversationalAudioTestResult(
-                    ok=False,
-                    recognized_text=recognized,
-                    stages=stages,
-                    input_samplerate=samplerate,
-                    message=rendered.message,
-                )
-            NativeWasapiPlayer().play(Path(rendered.output_path), output_endpoint)
-            stages["response_played"] = True
-            stages["voice_worker_still_ready"] = runtime_ready()
-            return ConversationalAudioTestResult(
-                ok=stages["voice_worker_still_ready"],
-                recognized_text=recognized,
-                stages=stages,
-                input_samplerate=samplerate,
-                message=RESPONSE if stages["voice_worker_still_ready"] else "Voice worker lost Whisper readiness after test",
-            )
-    except Exception as exc:
+    transcription = capture_and_recognize_for_test()
+    stages["input_resolved"] = transcription.input_samplerate is not None
+    stages["audio_captured"] = transcription.input_samplerate is not None
+    if not transcription.ok:
         stages["voice_worker_still_ready"] = runtime_ready()
         return ConversationalAudioTestResult(
             ok=False,
-            recognized_text=recognized,
+            recognized_text=transcription.recognized_text,
             stages=stages,
-            input_samplerate=samplerate,
-            message=f"Audio test failed: {exc}",
+            input_samplerate=transcription.input_samplerate,
+            message=transcription.message,
         )
+    if not _matches_control_phrase(transcription.recognized_text):
+        stages["voice_worker_still_ready"] = runtime_ready()
+        return ConversationalAudioTestResult(
+            ok=False,
+            recognized_text=transcription.recognized_text,
+            stages=stages,
+            input_samplerate=transcription.input_samplerate,
+            message=f"Control phrase was not recognized by Whisper: {transcription.recognized_text or '(no speech)'}",
+        )
+    stages["phrase_recognized"] = True
+    stages["output_resolved"] = audio_device_config.state().resolved_output is not None
+    played, message = play_response_for_test(RESPONSE)
+    stages["response_played"] = played
+    stages["voice_worker_still_ready"] = runtime_ready()
+    return ConversationalAudioTestResult(
+        ok=played and stages["voice_worker_still_ready"],
+        recognized_text=transcription.recognized_text,
+        stages=stages,
+        input_samplerate=transcription.input_samplerate,
+        message=message,
+    )

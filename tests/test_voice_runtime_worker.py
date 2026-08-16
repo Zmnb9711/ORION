@@ -9,7 +9,12 @@ import orion.voice_runtime_worker as subject
 class _Result:
     def model_dump(self, mode: str = "python") -> dict[str, object]:
         assert mode == "json"
-        return {"ok": True, "message": "voice test ok", "stages": {"whisper_ready": True}}
+        return {
+            "ok": True,
+            "recognized_text": "Привет как дела",
+            "input_samplerate": 48000,
+            "message": "Whisper transcription completed",
+        }
 
 
 def _run(monkeypatch, commands: list[object], *, ready: bool = True) -> tuple[int, list[dict[str, object]]]:
@@ -21,18 +26,18 @@ def _run(monkeypatch, commands: list[object], *, ready: bool = True) -> tuple[in
     monkeypatch.setattr(subject.sys, "stdin", stdin)
     monkeypatch.setattr(subject.sys, "stdout", stdout)
     monkeypatch.setattr(subject, "runtime_ready", lambda: ready)
-    monkeypatch.setattr(subject, "run_conversational_audio_test", lambda: _Result())
+    monkeypatch.setattr(subject, "capture_and_recognize_for_test", lambda: _Result())
     code = subject.main()
     replies = [json.loads(line) for line in stdout.getvalue().splitlines()]
     return code, replies
 
 
-def test_worker_handles_ping_conversation_error_and_shutdown(monkeypatch) -> None:
+def test_worker_handles_ping_transcription_error_and_shutdown(monkeypatch) -> None:
     code, replies = _run(
         monkeypatch,
         [
             {"action": "ping"},
-            {"action": "conversation_test"},
+            {"action": "transcribe_test"},
             {"action": "unknown"},
             "not-json",
             {"action": "shutdown"},
@@ -45,11 +50,20 @@ def test_worker_handles_ping_conversation_error_and_shutdown(monkeypatch) -> Non
     assert replies[2]["ok"] is True
     result = replies[2]["result"]
     assert isinstance(result, dict)
-    assert result["message"] == "voice test ok"
+    assert result["recognized_text"] == "Привет как дела"
+    assert result["input_samplerate"] == 48000
+    assert "response" not in result
     assert replies[3]["ok"] is False
     assert "Unsupported Voice worker action" in str(replies[3]["error"])
     assert replies[4]["ok"] is False
     assert replies[5] == {"ok": True, "state": "stopping"}
+
+
+def test_worker_has_no_sapi_or_core_response_path() -> None:
+    source_names = set(subject.__dict__)
+    assert "WindowsSapiBackend" not in source_names
+    assert "play_response_for_test" not in source_names
+    assert "run_conversational_audio_test" not in source_names
 
 
 def test_worker_refuses_start_when_stt_not_installed(monkeypatch) -> None:
