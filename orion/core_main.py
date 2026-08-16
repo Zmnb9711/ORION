@@ -14,13 +14,7 @@ _NULL_STREAMS: list[TextIO] = []
 
 
 def _ensure_stdio() -> None:
-    """Provide sink streams for a PyInstaller ``--windowed`` Core executable.
-
-    Windows GUI-mode PyInstaller executables can expose ``sys.stdout`` and
-    ``sys.stderr`` as ``None``. Uvicorn/logging expects writable streams, so the
-    headless Core must restore safe sinks before any server startup work.
-    """
-
+    """Provide sink streams for a PyInstaller ``--windowed`` Core executable."""
     for name in ("stdout", "stderr"):
         if getattr(sys, name) is not None:
             continue
@@ -49,25 +43,26 @@ def _startup_log(runtime: Path, stage: str, detail: str | None = None) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Run ORION Core only.
-
-    This entry point deliberately has no desktop/UI dispatch. Production
-    packaging freezes it as ``ORION-Core.exe`` while the launcher remains a
-    separate client/process-lifecycle application.
-    """
-
+    """Run ORION Core, or the long-lived Voice worker hosted by the frozen Core binary."""
     _ensure_stdio()
     runtime = _runtime_root()
-    os.environ["ORION_PROCESS_ROLE"] = "core"
-    _startup_log(runtime, "boot", f"frozen={bool(getattr(sys, 'frozen', False))}")
 
     try:
         parser = argparse.ArgumentParser(description="ORION Core")
         parser.add_argument("--host", default="127.0.0.1")
         parser.add_argument("--port", type=int, default=8000)
+        parser.add_argument("--voice-worker", action="store_true")
         args = parser.parse_args(argv)
-        _startup_log(runtime, "args_ready", f"host={args.host} port={args.port}")
 
+        if args.voice_worker:
+            os.environ["ORION_PROCESS_ROLE"] = "voice"
+            from orion.voice_runtime_worker import main as voice_worker_main
+
+            return voice_worker_main()
+
+        os.environ["ORION_PROCESS_ROLE"] = "core"
+        _startup_log(runtime, "boot", f"frozen={bool(getattr(sys, 'frozen', False))}")
+        _startup_log(runtime, "args_ready", f"host={args.host} port={args.port}")
         _startup_log(runtime, "app_import_start")
         from orion.app import app
 
@@ -77,9 +72,6 @@ def main(argv: list[str] | None = None) -> int:
         _startup_log(runtime, "uvicorn_exit")
         return 0
     except Exception as exc:
-        # Fatal runtime boundary: log ordinary startup/runtime failures with a
-        # traceback, but do not swallow control-flow exceptions such as
-        # KeyboardInterrupt or SystemExit.
         _startup_log(runtime, "fatal", f"{type(exc).__name__}: {exc}")
         with (runtime / "core-startup.log").open("a", encoding="utf-8") as handle:
             traceback.print_exc(file=handle)
