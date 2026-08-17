@@ -27,6 +27,8 @@ The tray `Exit` action is the only normal full-product shutdown command. The shu
 
 A bounded timeout is required. If the owned Voice process tree does not terminate in time, only that exact tree rooted at the PID created by this Launcher is force-terminated. Global image-name killing is forbidden.
 
+Core follows the same containment rule. The packaged Core writes its exact PID to `runtime/orion-core.pid`. If Launcher reconnects to an already-running healthy Core, that PID is accepted only after Windows confirms that the PID belongs to `ORION-Core.exe`. Full Exit first requests termination of that exact PID, waits for a bounded timeout, and only then force-terminates the same PID if needed. No `taskkill /IM ORION-Core.exe` or other global image-name kill is allowed.
+
 After full Exit the field invariant is:
 
 - ORION Launcher = 0
@@ -35,4 +37,4 @@ After full Exit the field invariant is:
 
 ## Validation gate
 
-CI-only PR #116 exists solely to run the historical Build #284 Windows workflows against this candidate head. It must never be merged into `main`. The lifecycle change is accepted only after the generated installer passes the same real-machine Voice/STT test as Build #284 and the process-count invariant above is verified after tray Exit.
+Build #284 remains the immutable Voice/STT golden baseline. A lifecycle candidate may become the next baseline only after its generated Windows installer passes the same real-machine Voice/STT test as Build #284 and verifies both tray persistence and the process-count invariant above after explicit tray Exit.
