@@ -21,6 +21,15 @@ def test_stt_ui_keeps_explicit_install_action_and_locked_baseline() -> None:
     assert "never downloaded silently" in source
 
 
+def test_stt_ui_hides_download_progress_after_ready() -> None:
+    source = inspect.getsource(LauncherSttInstallMixin._install_stt_async)
+    assert 'detail_var.set("")' in source
+    assert "detail_label.pack_forget()" in source
+    assert "progress.pack_forget()" in source
+    assert "progress.configure(value=100)" not in source
+    assert "Whisper STT installation verified" not in source
+
+
 def test_voice_worker_does_not_provision_whisper_implicitly() -> None:
     source = inspect.getsource(voice_runtime_worker)
     assert "ensure_runtime" not in source
