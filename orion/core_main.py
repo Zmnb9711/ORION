@@ -48,6 +48,20 @@ def _startup_log(runtime: Path, stage: str, detail: str | None = None) -> None:
         handle.write(line + "\n")
 
 
+def _write_pid(runtime: Path) -> Path:
+    path = runtime / "orion-core.pid"
+    path.write_text(str(os.getpid()), encoding="ascii")
+    return path
+
+
+def _remove_pid(path: Path) -> None:
+    try:
+        if path.read_text(encoding="ascii").strip() == str(os.getpid()):
+            path.unlink(missing_ok=True)
+    except OSError:
+        return
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run ORION Core only.
 
@@ -59,7 +73,8 @@ def main(argv: list[str] | None = None) -> int:
     _ensure_stdio()
     runtime = _runtime_root()
     os.environ["ORION_PROCESS_ROLE"] = "core"
-    _startup_log(runtime, "boot", f"frozen={bool(getattr(sys, 'frozen', False))}")
+    pid_path = _write_pid(runtime)
+    _startup_log(runtime, "boot", f"frozen={bool(getattr(sys, 'frozen', False))} pid={os.getpid()}")
 
     try:
         parser = argparse.ArgumentParser(description="ORION Core")
@@ -84,6 +99,8 @@ def main(argv: list[str] | None = None) -> int:
         with (runtime / "core-startup.log").open("a", encoding="utf-8") as handle:
             traceback.print_exc(file=handle)
         raise
+    finally:
+        _remove_pid(pid_path)
 
 
 if __name__ == "__main__":

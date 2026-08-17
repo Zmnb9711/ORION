@@ -18,6 +18,24 @@ class FieldFixedConversationalAudioLauncher(
 ):
     """Canonical Launcher with field-tested UI stability/readability fixes."""
 
+    def exit_application(self) -> None:
+        """Fully exit ORION in the required child-before-parent order.
+
+        Closing the window is handled by ``WindowsOrionDesktopLauncher.close``
+        and only withdraws it to the tray.  This method is reserved for the
+        explicit tray Exit action and therefore owns the full runtime shutdown:
+        Voice/Whisper first, Core second, Launcher last.
+        """
+        if getattr(self, "_really_exiting", False):
+            return
+        self._really_exiting = True
+        self._tray.stop()
+        voice = getattr(self, "voice", None)
+        if voice is not None:
+            voice.stop()
+        self.core.shutdown()
+        self.root.destroy()
+
 
 def run_field_fixed_launcher(runtime_dir: Path, host: str = "127.0.0.1", port: int = 8000) -> int:
     core = CoreProcessManager(host, port, runtime_dir)
@@ -37,6 +55,8 @@ def run_field_fixed_launcher(runtime_dir: Path, host: str = "127.0.0.1", port: i
         launcher.voice = voice
         root.mainloop()
     finally:
+        # Also contain abnormal UI termination. These operations are idempotent;
+        # a normal tray Exit will already have completed them in the same order.
         voice.stop()
-        core.stop()
+        core.shutdown()
     return 0

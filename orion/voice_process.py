@@ -11,6 +11,9 @@ from pathlib import Path
 class VoiceProcessManager:
     """Own the local microphone/STT worker independently from ORION Core."""
 
+    GRACEFUL_STOP_TIMEOUT = 3.0
+    FORCE_STOP_TIMEOUT = 2.0
+
     def __init__(self, runtime_dir: Path, core_base_url: str) -> None:
         self.runtime_dir = runtime_dir
         self.core_base_url = core_base_url.rstrip("/")
@@ -51,18 +54,54 @@ class VoiceProcessManager:
         self._write_state("STARTING")
         self._process = subprocess.Popen(self._command(), cwd=str(self.runtime_dir.parent), env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=creationflags)  # noqa: S603
 
+    @staticmethod
+    def _taskkill_tree(pid: int, *, force: bool) -> None:
+        command = ["taskkill", "/PID", str(pid), "/T"]
+        if force:
+            command.append("/F")
+        subprocess.run(  # noqa: S603, S607
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=3.0,
+            check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+
     def stop(self) -> None:
+        """Stop the owned Voice process and its whisper-stream child tree.
+
+        On Windows, containment is rooted at the exact Voice PID created by this
+        manager. A normal tree termination is requested first. Only if that
+        owned tree fails to exit within the bounded timeout is the same PID tree
+        force-terminated. No image-name/global process kill is used.
+        """
         process = self._process
         if process is None:
             self._write_state("STOPPED")
             return
+
         if process.poll() is None:
-            process.terminate()
-            try:
-                process.wait(timeout=5.0)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait(timeout=2.0)
+            if os.name == "nt":
+                try:
+                    self._taskkill_tree(process.pid, force=False)
+                    process.wait(timeout=self.GRACEFUL_STOP_TIMEOUT)
+                except (OSError, subprocess.TimeoutExpired):
+                    try:
+                        self._taskkill_tree(process.pid, force=True)
+                        process.wait(timeout=self.FORCE_STOP_TIMEOUT)
+                    except (OSError, subprocess.TimeoutExpired):
+                        process.kill()
+                        process.wait(timeout=self.FORCE_STOP_TIMEOUT)
+            else:
+                process.terminate()
+                try:
+                    process.wait(timeout=self.GRACEFUL_STOP_TIMEOUT)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=self.FORCE_STOP_TIMEOUT)
+
         self._process = None
         self._write_state("STOPPED")
 
