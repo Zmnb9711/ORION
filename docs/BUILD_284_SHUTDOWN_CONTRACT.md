@@ -32,3 +32,7 @@ After full Exit the field invariant is:
 - ORION Launcher = 0
 - ORION Core = 0
 - `whisper-stream.exe` = 0
+
+## Validation gate
+
+CI-only PR #116 exists solely to run the historical Build #284 Windows workflows against this candidate head. It must never be merged into `main`. The lifecycle change is accepted only after the generated installer passes the same real-machine Voice/STT test as Build #284 and the process-count invariant above is verified after tray Exit.
