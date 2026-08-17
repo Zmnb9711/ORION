@@ -32,6 +32,9 @@ dev = [
 windows-audio = [
   "sounddevice>=0.5,<1.0",
 ]
+cloud-realtime = [
+  "websocket-client>=1.8,<2.0",
+]
 
 [tool.setuptools.packages.find]
 include = ["orion*"]
