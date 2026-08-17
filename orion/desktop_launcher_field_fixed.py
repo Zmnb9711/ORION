@@ -7,6 +7,7 @@ from orion.core_process import CoreProcessManager
 from orion.desktop_launcher import _install_tk_exception_boundary
 from orion.desktop_launcher_conversation import ConversationalAudioRuntimeLauncher
 from orion.launcher_cloud_voice_sections import LauncherCloudVoiceSectionsMixin
+from orion.launcher_dropdown_readability import LauncherDropdownReadabilityMixin
 from orion.launcher_field_ui_fix import LauncherFieldUiFixMixin
 from orion.launcher_voice_status import LauncherVoiceStatusMixin
 from orion.voice_process import VoiceProcessManager
@@ -15,6 +16,7 @@ from orion.voice_process import VoiceProcessManager
 class FieldFixedConversationalAudioLauncher(
     LauncherCloudVoiceSectionsMixin,
     LauncherVoiceStatusMixin,
+    LauncherDropdownReadabilityMixin,
     LauncherFieldUiFixMixin,
     ConversationalAudioRuntimeLauncher,
 ):
@@ -44,9 +46,6 @@ def run_field_fixed_launcher(runtime_dir: Path, host: str = "127.0.0.1", port: i
     voice = VoiceProcessManager(runtime_dir, core.base_url)
     core.start()
     try:
-        # Voice owns the microphone/STT process. Core receives recognized text only.
-        # Failure to provision/start Voice must not make the Launcher/Core unusable;
-        # the dedicated Test surface remains available for diagnosis/repair.
         try:
             voice.start()
         except (FileNotFoundError, OSError, RuntimeError) as exc:
@@ -57,8 +56,6 @@ def run_field_fixed_launcher(runtime_dir: Path, host: str = "127.0.0.1", port: i
         launcher.voice = voice
         root.mainloop()
     finally:
-        # Also contain abnormal UI termination. These operations are idempotent;
-        # a normal tray Exit will already have completed them in the same order.
         voice.stop()
         core.shutdown()
     return 0
