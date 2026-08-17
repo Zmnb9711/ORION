@@ -37,32 +37,43 @@ class LauncherSttInstallMixin:
             justify="left",
         ).pack(anchor="w", pady=(4, 7))
 
+        ready = stt.runtime_ready()
         status_var = tk.StringVar(value=self._stt_status_text())
         detail_var = tk.StringVar(value="")
         ttk.Label(card, textvariable=status_var, style="CardText.TLabel").pack(anchor="w")
-        ttk.Label(card, textvariable=detail_var, style="Muted.TLabel", wraplength=780, justify="left").pack(
-            anchor="w", pady=(2, 7)
+        detail_label = ttk.Label(
+            card,
+            textvariable=detail_var,
+            style="Muted.TLabel",
+            wraplength=780,
+            justify="left",
         )
         progress = ttk.Progressbar(card, orient="horizontal", mode="determinate", maximum=100)
-        progress.pack(fill=X, pady=(2, 9))
+        if not ready:
+            detail_label.pack(anchor="w", pady=(2, 7))
+            progress.pack(fill=X, pady=(2, 9))
 
         row = tk.Frame(card, bg="#111923")
         row.pack(fill=X)
         button = self._action_button(
             row,
             "DOWNLOAD & INSTALL STT",
-            lambda: self._install_stt_async(status_var, detail_var, progress, button),
+            lambda: self._install_stt_async(status_var, detail_var, detail_label, progress, button),
             primary=True,
-            enabled=not stt.runtime_ready(),
+            enabled=not ready,
         )
         button.pack(side=LEFT)
 
-    def _install_stt_async(self, status_var, detail_var, progress, button) -> None:  # noqa: ANN001
+    def _install_stt_async(self, status_var, detail_var, detail_label, progress, button) -> None:  # noqa: ANN001
         if getattr(self, "_stt_install_running", False):
             return
         self._stt_install_running = True
         button.configure(state="disabled")
         status_var.set("DOWNLOADING / INSTALLING")
+        if not detail_label.winfo_manager():
+            detail_label.pack(anchor="w", pady=(2, 7))
+        if not progress.winfo_manager():
+            progress.pack(fill=X, pady=(2, 9))
 
         def ui_progress(stage: str, done: int, total: int | None) -> None:
             def apply() -> None:
@@ -102,9 +113,10 @@ class LauncherSttInstallMixin:
             def completed() -> None:
                 self._stt_install_running = False
                 try:
-                    progress.configure(value=100)
                     status_var.set(f"READY — whisper.cpp {stt.WHISPER_CPP_VERSION} / Medium / CPU-only")
-                    detail_var.set("Whisper STT installation verified. Voice can now be started.")
+                    detail_var.set("")
+                    detail_label.pack_forget()
+                    progress.pack_forget()
                     button.configure(state="disabled")
                 except tk.TclError:
                     pass
