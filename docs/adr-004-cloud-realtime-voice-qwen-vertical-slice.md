@@ -114,13 +114,42 @@ Fallback policy may be automatic or user-selected later, but the first implement
 
 The Launcher is the user-facing control plane for cloud voice configuration and status.
 
-It should eventually show provider-neutral state such as:
+Approved UX contract:
 
-- Voice provider: Qwen / Local Whisper / Disabled;
-- Connection: Connecting / Ready / Error / Fallback;
-- authentication/configuration state;
-- realtime session state;
-- measured latency when available.
+`Settings -> Voice`
+
+Within Voice settings:
+
+- `Voice Backend`
+  - `Cloud Realtime` — cloud provider path;
+  - `Local` — the existing whisper.cpp/SAPI path.
+- `Cloud Provider` is shown only when `Cloud Realtime` is selected.
+  - First available provider: `Qwen Realtime`.
+  - The control must remain provider-neutral so additional providers can be added later without redesigning the Launcher.
+- `API Key`
+  - secret input for the selected cloud provider;
+  - credentials must not be stored in Core or committed to the repository.
+- `Test Connection`
+  - verifies provider authentication/connectivity without invoking DCS tools.
+- During the ADR-004 development slice only: `Test Tool Call`
+  - temporary diagnostic control used to prove `Launcher/Qwen -> Core -> deterministic test tool -> Qwen/Launcher`;
+  - removed or hidden from normal product UX after the vertical-slice smoke gate passes.
+- `Fallback`
+  - `whisper.cpp`, enabled/preserved by default for the experimental cloud phase.
+
+The existing working Build #312 Voice screen/flow must not be redesigned during the first Qwen slice. Cloud settings are added alongside the known-good local path so a failed Qwen experiment cannot break Local Voice.
+
+The main Launcher screen must show status only, not provider configuration. Example provider-neutral presentation:
+
+- `VOICE  READY`
+- `QWEN  CONNECTED`
+
+or while using fallback:
+
+- `VOICE  READY`
+- `LOCAL / WHISPER  READY`
+
+Qwen must not become a top-level product feature/button. Users select a Voice backend; Qwen is only the first implementation of `Cloud Realtime`.
 
 Secrets must not be committed to the repository or embedded in Core. Provider credentials belong in local protected configuration/environment handling appropriate for Windows.
 
