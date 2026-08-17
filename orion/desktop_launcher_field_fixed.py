@@ -6,12 +6,14 @@ from tkinter import Tk
 from orion.core_process import CoreProcessManager
 from orion.desktop_launcher import _install_tk_exception_boundary
 from orion.desktop_launcher_conversation import ConversationalAudioRuntimeLauncher
+from orion.launcher_cloud_voice_sections import LauncherCloudVoiceSectionsMixin
 from orion.launcher_field_ui_fix import LauncherFieldUiFixMixin
 from orion.launcher_voice_status import LauncherVoiceStatusMixin
 from orion.voice_process import VoiceProcessManager
 
 
 class FieldFixedConversationalAudioLauncher(
+    LauncherCloudVoiceSectionsMixin,
     LauncherVoiceStatusMixin,
     LauncherFieldUiFixMixin,
     ConversationalAudioRuntimeLauncher,
