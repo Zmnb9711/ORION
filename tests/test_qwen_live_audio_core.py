@@ -67,7 +67,8 @@ def test_qwen_live_session_is_audio_audio_and_keeps_tools_disabled() -> None:
     assert session["output_audio_format"] == "pcm"
     assert session["turn_detection"]["type"] == "server_vad"
     assert "tools" not in session
-    assert "ATC" in session["instructions"]
+    assert "ORION" in session["instructions"]
+    assert "realtime" in session["instructions"].lower()
 
 
 def test_qwen_live_uses_one_full_duplex_portaudio_stream() -> None:
