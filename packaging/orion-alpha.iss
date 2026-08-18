@@ -22,6 +22,8 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 PrivilegesRequired=admin
 UninstallDisplayIcon={app}\{#MyLauncherExe}
+CloseApplications=yes
+RestartApplications=no
 #if FileExists("..\branding\orion.ico")
 SetupIconFile=..\branding\orion.ico
 #endif
@@ -51,15 +53,29 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription:
 Filename: "{app}\{#MyLauncherExe}"; WorkingDir: "{app}\Launcher"; Description: "Launch ORION"; Flags: nowait postinstall skipifsilent
 
 [UninstallRun]
-; Launcher intentionally leaves Core running when its window closes. Stop all
-; product processes before Inno removes their files so uninstall cannot leave a
-; locked Core/Launcher/Voice payload behind on a real Windows machine.
 Filename: "{cmd}"; Parameters: "/C taskkill /F /IM ORION-Launcher.exe >nul 2>&1 || exit /B 0"; Flags: runhidden waituntilterminated
 Filename: "{cmd}"; Parameters: "/C taskkill /F /IM ORION-Voice.exe >nul 2>&1 || exit /B 0"; Flags: runhidden waituntilterminated
 Filename: "{cmd}"; Parameters: "/C taskkill /F /IM ORION-Core.exe >nul 2>&1 || exit /B 0"; Flags: runhidden waituntilterminated
 
 [UninstallDelete]
-; Runtime content is transient Alpha state (logs, diagnostics, downloaded
-; updates). A product uninstall removes it deliberately so the next Alpha test
-; starts clean. DCS Saved Games content is not touched here.
 Type: filesandordirs; Name: "{localappdata}\ORION\runtime"
+
+[Code]
+procedure KillProcessByImage(const ImageName: String);
+var
+  ResultCode: Integer;
+begin
+  Exec(ExpandConstant('{cmd}'), '/C taskkill /F /IM ' + ImageName + ' >nul 2>&1 || exit /B 0', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  { An alpha update is explicitly supported in-place. ORION Core intentionally
+    survives normal Launcher window closes, so Setup must own the upgrade
+    boundary and stop every product process before replacing binaries. }
+  KillProcessByImage('ORION-Launcher.exe');
+  KillProcessByImage('ORION-Voice.exe');
+  KillProcessByImage('ORION-Core.exe');
+  Sleep(400);
+  Result := '';
+end;

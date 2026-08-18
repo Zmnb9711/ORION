@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
+
+from orion.qwen_live_audio_core import QwenLiveStartRequest, QwenLiveStatus, qwen_live_audio
 
 router = APIRouter(prefix="/v1/realtime", tags=["Realtime Voice"])
 
@@ -82,3 +84,29 @@ def execute_realtime_tool(call: RealtimeToolCall) -> RealtimeToolResult:
     except (TypeError, ValueError) as exc:
         return RealtimeToolResult(call_id=call.call_id, name=call.name, ok=False, error=str(exc))
     return RealtimeToolResult(call_id=call.call_id, name=call.name, ok=True, output=output)
+
+
+@router.get("/qwen/live", response_model=QwenLiveStatus)
+def qwen_live_status() -> QwenLiveStatus:
+    """Return the state of the Core-owned Qwen speech-to-speech session."""
+
+    return qwen_live_audio.status()
+
+
+@router.post("/qwen/live/start", response_model=QwenLiveStatus)
+def qwen_live_start(payload: QwenLiveStartRequest) -> QwenLiveStatus:
+    """Start microphone -> Qwen -> selected-output inside ORION Core.
+
+    The API key crosses localhost once and remains memory-only; it is never
+    written to ORION configuration or diagnostic files.
+    """
+
+    try:
+        return qwen_live_audio.start(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/qwen/live/stop", response_model=QwenLiveStatus)
+def qwen_live_stop() -> QwenLiveStatus:
+    return qwen_live_audio.stop()

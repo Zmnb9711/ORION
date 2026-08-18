@@ -3,7 +3,7 @@ name: ORION Alpha Windows Build
 on:
   workflow_dispatch:
   pull_request:
-    branches: [main]
+    branches: [main, baseline/build317-toolcall]
   push:
     branches: [main, voice/worker-launcher-lifecycle-v01, ci/adr004-qwen-vertical-slice]
     tags: ["v*"]
@@ -20,12 +20,12 @@ jobs:
       - name: Install build dependencies
         shell: pwsh
         run: python -m pip install --upgrade pip; python -m pip install -e ".[dev,windows-audio,cloud-realtime]"
-      - name: Run Voice and ADR-004 regression tests
+      - name: Run Voice, Build 317 audio and ADR-004 regression tests
         shell: pwsh
-        run: python -m pytest -q tests/test_voice_text_bridge_api.py tests/test_whisper_voice_worker.py tests/test_realtime_tool_api.py tests/test_qwen_realtime_provider.py tests/test_cloud_voice_config_store.py tests/test_core_process_boundary.py
+        run: python -m pytest -q tests/test_launcher_audio_sections.py tests/test_voice_text_bridge_api.py tests/test_whisper_voice_worker.py tests/test_realtime_tool_api.py tests/test_qwen_realtime_provider.py tests/test_qwen_live_audio_core.py tests/test_cloud_voice_config_store.py tests/test_core_process_boundary.py
       - name: Build ORION Core
         shell: pwsh
-        run: python -m PyInstaller --noconfirm --clean --onedir --windowed --name ORION-Core --collect-submodules orion --collect-submodules uvicorn --add-data "dcs-export;dcs-export" --icon branding/orion.ico orion/core_main.py
+        run: python -m PyInstaller --noconfirm --clean --onedir --windowed --name ORION-Core --collect-submodules orion --collect-submodules uvicorn --collect-submodules websocket --add-data "dcs-export;dcs-export" --icon branding/orion.ico orion/core_main.py
       - name: Build ORION Launcher
         shell: pwsh
         run: python -m PyInstaller --noconfirm --clean --onedir --windowed --name ORION-Launcher --collect-submodules orion --collect-submodules uvicorn --collect-submodules websocket --add-data "dcs-export;dcs-export" --icon branding/orion.ico --add-data "branding/orion.ico;branding" orion/launcher_main.py
@@ -88,6 +88,8 @@ jobs:
             $ping=@{call_id="ci-ping";name="orion.test.ping";arguments=@{message="qwen-smoke"}}|ConvertTo-Json -Depth 5
             $pr=Invoke-RestMethod "$env:ORION_CORE_BASE_URL/v1/realtime/tools/execute" -Method Post -ContentType "application/json" -Body $ping
             if(-not $pr.ok -or $pr.output.message -ne "qwen-smoke"){throw "ADR-004 packaged Core ping failed"}
+            $live=Invoke-RestMethod "$env:ORION_CORE_BASE_URL/v1/realtime/qwen/live"
+            if($live.state -ne "stopped"){throw "ADR-004 Qwen live service did not boot stopped"}
             $vp=Start-Process $voice -PassThru -Wait
             if($vp.ExitCode -ne 0){throw "Installed ORION-Voice startup probe failed: $($vp.ExitCode)"}
             $statePath=Join-Path $runtime "voice\state.json"
@@ -95,6 +97,66 @@ jobs:
             $s=Get-Content $statePath -Raw|ConvertFrom-Json
             if($s.state -ne "PROBE_PASS"){throw "Unexpected packaged Voice probe state: $($s.state); $($s.error)"}
           } finally { Stop-Process -Id $cp.Id -Force -ErrorAction SilentlyContinue; Remove-Item Env:ORION_VOICE_STARTUP_PROBE -ErrorAction SilentlyContinue }
+      - name: Prove in-place upgrade stops a running packaged Core and restarts cleanly
+        shell: pwsh
+        run: |
+          $setup=(Resolve-Path "dist-installer/ORION-Alpha-0.2-Setup.exe").Path
+          $root="C:\Program Files\ORION"; $core="$root\Core\ORION-Core.exe"
+          $runtime=Join-Path $env:RUNNER_TEMP "orion-upgrade-smoke"
+          New-Item -ItemType Directory -Force $runtime | Out-Null
+          $env:ORION_RUNTIME_DIR=$runtime; $env:ORION_CORE_BASE_URL="http://127.0.0.1:8000"
+          $old=Start-Process $core -PassThru
+          $healthy=$false
+          for($i=0;$i -lt 30;$i++){try{$h=Invoke-RestMethod "$env:ORION_CORE_BASE_URL/health" -TimeoutSec 1;if($h.status -eq "ok"){$healthy=$true;break}}catch{};Start-Sleep -Milliseconds 500}
+          if(-not $healthy){throw "Pre-upgrade Core did not become healthy"}
+          $upgrade=Start-Process $setup -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/SP-" -Wait -PassThru
+          if($upgrade.ExitCode){throw "In-place upgrade failed: $($upgrade.ExitCode)"}
+          Start-Sleep -Milliseconds 500
+          if(Get-Process -Id $old.Id -ErrorAction SilentlyContinue){throw "Installer left old ORION-Core.exe running during upgrade"}
+          $new=Start-Process $core -PassThru
+          try {
+            $healthy=$false
+            for($i=0;$i -lt 30;$i++){try{$h=Invoke-RestMethod "$env:ORION_CORE_BASE_URL/health" -TimeoutSec 1;if($h.status -eq "ok"){$healthy=$true;break}}catch{};Start-Sleep -Milliseconds 500}
+            if(-not $healthy){throw "Post-upgrade Core did not become healthy"}
+            Start-Sleep -Seconds 2
+            if($new.HasExited){throw "Post-upgrade Core exited unexpectedly: $($new.ExitCode)"}
+          } finally { Stop-Process -Id $new.Id -Force -ErrorAction SilentlyContinue }
+      - name: Prove packaged Launcher starts Core and preserves Build 317 audio API
+        shell: pwsh
+        run: |
+          Get-Process ORION-Launcher,ORION-Voice,ORION-Core -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Milliseconds 500
+          $root="C:\Program Files\ORION"
+          $launcher="$root\Launcher\ORION-Launcher.exe"
+          $runtime=Join-Path $env:RUNNER_TEMP "orion-launcher-core-smoke"
+          New-Item -ItemType Directory -Force $runtime | Out-Null
+          $env:ORION_RUNTIME_DIR=$runtime
+          $lp=Start-Process $launcher -PassThru
+          try {
+            $healthy=$false
+            for($i=0;$i -lt 40;$i++){
+              if($lp.HasExited){throw "Packaged Launcher exited before Core became healthy: $($lp.ExitCode)"}
+              try{$h=Invoke-RestMethod "http://127.0.0.1:8000/health" -TimeoutSec 1;if($h.status -eq "ok"){$healthy=$true;break}}catch{}
+              Start-Sleep -Milliseconds 500
+            }
+            if(-not $healthy){
+              $startup=Join-Path $runtime "core-startup.log"
+              $detail=if(Test-Path $startup){Get-Content $startup -Raw}else{"core-startup.log missing"}
+              throw "Launcher did not bring Core to healthy state. $detail"
+            }
+            $inputs=Invoke-RestMethod "http://127.0.0.1:8000/v1/windows-audio/wasapi/inputs" -TimeoutSec 3
+            $outputs=Invoke-RestMethod "http://127.0.0.1:8000/v1/windows-audio/wasapi/outputs" -TimeoutSec 3
+            $selection=Invoke-RestMethod "http://127.0.0.1:8000/v1/windows-audio/selection" -TimeoutSec 3
+            if($null -eq $inputs){throw "Build 317 audio inputs endpoint returned null"}
+            if($null -eq $outputs){throw "Build 317 audio outputs endpoint returned null"}
+            if($null -eq $selection -or $null -eq $selection.selection){throw "Build 317 audio selection endpoint is invalid"}
+            $live=Invoke-RestMethod "http://127.0.0.1:8000/v1/realtime/qwen/live" -TimeoutSec 3
+            if($live.state -ne "stopped"){throw "Qwen live service did not boot stopped through Launcher-owned Core"}
+            Start-Sleep -Seconds 2
+            if($lp.HasExited){throw "Packaged Launcher exited unexpectedly after Core became healthy: $($lp.ExitCode)"}
+          } finally {
+            Get-Process ORION-Launcher,ORION-Voice,ORION-Core -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          }
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
         with:

@@ -1,5 +1,6 @@
 from orion.desktop_app import OrionDesktopLauncher
 from orion.launcher_audio_sections import LauncherAudioSectionsMixin
+from orion.launcher_cloud_voice_sections import LauncherCloudVoiceSectionsMixin
 
 
 def test_launcher_audio_sections_extend_existing_navigation_without_hiding_pages() -> None:
@@ -32,3 +33,32 @@ def test_selection_text_reports_core_resolution() -> None:
     assert LauncherAudioSectionsMixin._selection_text("mic", {"device_id": "mic", "name": "Microphone"}).startswith("PASS")
     assert LauncherAudioSectionsMixin._selection_text("missing", None).startswith("FAIL")
     assert LauncherAudioSectionsMixin._selection_text("default", None).startswith("WARNING")
+
+
+def test_qwen_voice_layer_cannot_shadow_canonical_audio_core_json_helper() -> None:
+    # Build #317 audio settings depend on LauncherAudioSectionsMixin._core_json
+    # accepting JSON arrays for WASAPI input/output discovery. Qwen Live must use
+    # a separately named helper so its stricter realtime response validation can
+    # never intercept those requests through Python MRO.
+    assert "_core_json" not in LauncherCloudVoiceSectionsMixin.__dict__
+    assert "_realtime_core_json" in LauncherCloudVoiceSectionsMixin.__dict__
+
+    class CombinedLauncher(LauncherCloudVoiceSectionsMixin, LauncherAudioSectionsMixin):
+        pass
+
+    assert CombinedLauncher._core_json is LauncherAudioSectionsMixin._core_json
+
+
+def test_qwen_api_key_survives_settings_page_rebuild_inside_launcher_session(monkeypatch) -> None:
+    launcher = object.__new__(LauncherCloudVoiceSectionsMixin)
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "env-key")
+
+    assert launcher._current_qwen_api_key() == "env-key"
+
+    launcher._remember_qwen_api_key("  live-session-key  ")
+    assert launcher._current_qwen_api_key() == "live-session-key"
+
+    # Rebuilding/navigating away from Settings must not fall back to the
+    # environment key once the user has edited the secret in this Launcher.
+    launcher._remember_qwen_api_key("next-key")
+    assert launcher._current_qwen_api_key() == "next-key"

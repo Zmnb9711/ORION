@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 import threading
+import urllib.error
+import urllib.request
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from tkinter import LEFT, X, StringVar, messagebox
@@ -46,10 +48,18 @@ class CloudVoiceConfigStore:
 
 
 class LauncherCloudVoiceSectionsMixin:
-    """ADR-004 Settings → Voice surface layered onto the #312 Launcher."""
+    """ADR-004 Settings → Voice surface layered onto the field-confirmed Launcher."""
 
     def _cloud_voice_store(self) -> CloudVoiceConfigStore:
         return CloudVoiceConfigStore(self.runtime_dir)
+
+    def _current_qwen_api_key(self) -> str:
+        """Return the session key without losing it when Tk pages are rebuilt."""
+        return str(getattr(self, "_qwen_api_key", "") or os.environ.get("DASHSCOPE_API_KEY", "")).strip()
+
+    def _remember_qwen_api_key(self, value: str) -> None:
+        """Keep the edited key for the lifetime of this Launcher process."""
+        self._qwen_api_key = value.strip()
 
     def _page_settings(self) -> None:
         super()._page_settings()
@@ -80,8 +90,12 @@ class LauncherCloudVoiceSectionsMixin:
         region = StringVar(value=reverse_region.get(config.qwen_region, "Singapore"))
         workspace = StringVar(value=config.qwen_workspace_id)
         model = StringVar(value=config.qwen_model)
-        api_key = StringVar(value=os.environ.get("DASHSCOPE_API_KEY", ""))
+        api_key = StringVar(value=self._current_qwen_api_key())
+        # Settings pages are destroyed/recreated during navigation. Mirror every
+        # edit immediately into Launcher session memory, not only on SAVE.
+        api_key.trace_add("write", lambda *_: self._remember_qwen_api_key(api_key.get()))
         fallback = StringVar(value="Local / Whisper.cpp")
+        live_status = StringVar(value="STOPPED — Qwen live audio is not active")
 
         box = ttk.Frame(self.content, style="Card.TFrame", padding=16)
         box.pack(fill=X)
@@ -106,7 +120,10 @@ class LauncherCloudVoiceSectionsMixin:
         ttk.Combobox(box, textvariable=fallback, values=("Local / Whisper.cpp",), state="readonly", width=42).pack(anchor="w", pady=(6, 12))
         ttk.Label(
             box,
-            text="ADR-004 Phase B: these controls test Qwen ↔ Core ↔ test tool only. They do not yet replace the live #312 microphone path.",
+            text=(
+                "ADR-004 clean live path: selected microphone → ORION Core → Qwen Realtime → selected output. "
+                "ATC/AWACS/JTAC/AAR tools remain disabled; whisper.cpp remains fallback."
+            ),
             style="CardText.TLabel",
             wraplength=780,
             justify="left",
@@ -127,7 +144,7 @@ class LauncherCloudVoiceSectionsMixin:
 
         def save() -> None:
             self._cloud_voice_store().save(selected_config())
-            self._qwen_api_key = api_key.get().strip()
+            self._remember_qwen_api_key(api_key.get())
             messagebox.showinfo("ORION Voice", "Voice settings saved. API key kept in memory only.", parent=self.root)
 
         ttk.Button(buttons, text="SAVE VOICE SETTINGS", style="Primary.TButton", command=save).pack(side=LEFT, padx=(0, 8))
@@ -144,8 +161,97 @@ class LauncherCloudVoiceSectionsMixin:
             command=lambda: self._qwen_smoke_async(selected_config(), api_key.get(), tool=True),
         ).pack(side=LEFT)
 
+        ttk.Separator(box, orient="horizontal").pack(fill=X, pady=(18, 14))
+        ttk.Label(box, text="QWEN LIVE REALTIME AUDIO", style="CardTitle.TLabel").pack(anchor="w")
+        ttk.Label(box, textvariable=live_status, style="CardText.TLabel", wraplength=780, justify="left").pack(anchor="w", pady=(6, 10))
+        live_buttons = ttk.Frame(box, style="Card.TFrame")
+        live_buttons.pack(fill=X)
+        ttk.Button(
+            live_buttons,
+            text="START LIVE QWEN",
+            style="Primary.TButton",
+            command=lambda: self._qwen_live_async(selected_config(), api_key.get(), live_status, start=True),
+        ).pack(side=LEFT, padx=(0, 8))
+        ttk.Button(
+            live_buttons,
+            text="STOP LIVE QWEN",
+            style="Secondary.TButton",
+            command=lambda: self._qwen_live_async(selected_config(), api_key.get(), live_status, start=False),
+        ).pack(side=LEFT)
+
+        self._qwen_live_poll(live_status)
+
+    def _realtime_core_json(self, path: str, *, method: str = "GET", payload: dict[str, object] | None = None) -> dict[str, object]:
+        """Realtime-only Core JSON helper.
+
+        Deliberately does not override LauncherAudioSectionsMixin._core_json: the
+        canonical audio helper must continue accepting list responses from the
+        WASAPI discovery endpoints used by Build #317.
+        """
+        data = None if payload is None else json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        request = urllib.request.Request(
+            f"{self.core.base_url.rstrip('/')}{path}",
+            data=data,
+            headers={"Content-Type": "application/json; charset=utf-8"} if data is not None else {},
+            method=method,
+        )
+        with urllib.request.urlopen(request, timeout=4.0) as response:
+            result = json.loads(response.read().decode("utf-8"))
+        if not isinstance(result, dict):
+            raise RuntimeError("ORION Core returned an invalid realtime response")
+        return result
+
+    def _qwen_live_async(
+        self,
+        config: CloudVoiceConfig,
+        api_key: str,
+        live_status: StringVar,
+        *,
+        start: bool,
+    ) -> None:
+        key = api_key.strip() or self._current_qwen_api_key()
+
+        def worker() -> None:
+            try:
+                if start:
+                    if not key:
+                        raise ValueError("Qwen API key is required")
+                    payload: dict[str, object] = {
+                        "api_key": key,
+                        "workspace_id": config.qwen_workspace_id,
+                        "region": config.qwen_region,
+                        "model": config.qwen_model,
+                        "voice": "Tina",
+                    }
+                    result = self._realtime_core_json("/v1/realtime/qwen/live/start", method="POST", payload=payload)
+                else:
+                    result = self._realtime_core_json("/v1/realtime/qwen/live/stop", method="POST")
+                state = str(result.get("state", "unknown")).upper()
+                message = str(result.get("message", ""))
+                self.root.after(0, lambda: live_status.set(f"{state} — {message}"))
+            except (OSError, ValueError, RuntimeError, urllib.error.URLError) as exc:
+                self.root.after(0, lambda exc=exc: live_status.set(f"ERROR — {type(exc).__name__}: {exc}"))
+
+        threading.Thread(target=worker, name="orion-qwen-live-control", daemon=True).start()
+
+    def _qwen_live_poll(self, live_status: StringVar) -> None:
+        def worker() -> None:
+            try:
+                result = self._realtime_core_json("/v1/realtime/qwen/live")
+            except Exception:
+                return
+            state = str(result.get("state", "unknown")).upper()
+            message = str(result.get("message", ""))
+            input_chunks = int(result.get("input_chunks", 0) or 0)
+            output_chunks = int(result.get("output_chunks", 0) or 0)
+            suffix = "" if not (input_chunks or output_chunks) else f" | mic={input_chunks} qwen_audio={output_chunks}"
+            self.root.after(0, lambda: live_status.set(f"{state} — {message}{suffix}"))
+
+        threading.Thread(target=worker, name="orion-qwen-live-status", daemon=True).start()
+        self.root.after(750, lambda: self._qwen_live_poll(live_status))
+
     def _qwen_smoke_async(self, config: CloudVoiceConfig, api_key: str, *, tool: bool) -> None:
-        key = api_key.strip() or getattr(self, "_qwen_api_key", "") or os.environ.get("DASHSCOPE_API_KEY", "")
+        key = api_key.strip() or self._current_qwen_api_key()
         qwen = QwenRealtimeProvider(
             QwenRealtimeConfig(
                 api_key=key,
