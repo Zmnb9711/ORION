@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 from array import array
+from pathlib import Path
 
 from orion.qwen_live_audio_core import (
     QWEN_INPUT_RATE,
     QWEN_OUTPUT_RATE,
-    QwenAudioPhase,
     QwenLiveAudioService,
-    _HalfDuplexGate,
     _audio_session_update,
     _resample_pcm16_mono,
 )
@@ -44,8 +43,6 @@ def test_qwen_live_resolves_selected_device_only_inside_core_process() -> None:
         direction=WasapiDirection.OUTPUT,
     )
 
-    # Stored PortAudio numbers are deliberately irrelevant. Core resolves the
-    # actual local WASAPI endpoints by the already-selected endpoint names.
     assert service._resolve_device(sd, microphone, WasapiDirection.INPUT) == 1
     assert service._resolve_device(sd, speakers, WasapiDirection.OUTPUT) == 2
 
@@ -73,16 +70,9 @@ def test_qwen_live_session_is_audio_audio_and_keeps_tools_disabled() -> None:
     assert "ATC" in session["instructions"]
 
 
-def test_half_duplex_gate_is_automatic_listening_speaking_listening() -> None:
-    gate = _HalfDuplexGate()
-
-    assert gate.phase is QwenAudioPhase.LISTENING
-    assert gate.can_capture()
-
-    gate.begin_playback()
-    assert gate.phase is QwenAudioPhase.SPEAKING
-    assert not gate.can_capture()
-
-    gate.end_playback()
-    assert gate.phase is QwenAudioPhase.LISTENING
-    assert gate.can_capture()
+def test_qwen_live_uses_one_full_duplex_portaudio_stream() -> None:
+    source = Path(__file__).parents[1].joinpath("orion", "qwen_live_audio_core.py").read_text(encoding="utf-8")
+    assert "sd.RawStream(" in source
+    assert "RawInputStream(" not in source
+    assert "RawOutputStream(" not in source
+    assert "capture_thread" not in source
