@@ -59,21 +59,27 @@ def test_qwen_live_resamples_qwen_24k_output_to_native_48k() -> None:
     assert len(converted) == 480 * 2
 
 
-def test_qwen_live_session_is_audio_audio_and_keeps_tools_disabled() -> None:
+def test_qwen_live_session_is_audio_audio_russian_and_keeps_tools_disabled() -> None:
     payload = _audio_session_update("qwen3.5-omni-flash-realtime", "Tina")
     session = payload["session"]
     assert session["modalities"] == ["text", "audio"]
     assert session["input_audio_format"] == "pcm"
     assert session["output_audio_format"] == "pcm"
     assert session["turn_detection"]["type"] == "server_vad"
+    assert session["turn_detection"]["silence_duration_ms"] == 800
     assert "tools" not in session
     assert "ORION" in session["instructions"]
-    assert "realtime" in session["instructions"].lower()
+    assert "always answer in Russian" in session["instructions"]
+    assert "Do not answer in Chinese" in session["instructions"]
 
 
-def test_qwen_live_uses_one_full_duplex_portaudio_stream() -> None:
+def test_qwen_live_uses_one_full_duplex_portaudio_stream_with_direct_callback_playback() -> None:
     source = Path(__file__).parents[1].joinpath("orion", "qwen_live_audio_core.py").read_text(encoding="utf-8")
     assert "sd.RawStream(" in source
     assert "RawInputStream(" not in source
     assert "RawOutputStream(" not in source
     assert "capture_thread" not in source
+    assert "callback=audio_callback" in source
+    assert "stream.read(" not in source
+    assert "stream.write(" not in source
+    assert "playback_queue.put(" in source
