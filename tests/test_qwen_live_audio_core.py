@@ -2,7 +2,15 @@ from __future__ import annotations
 
 from array import array
 
-from orion.qwen_live_audio_core import QWEN_INPUT_RATE, QWEN_OUTPUT_RATE, QwenLiveAudioService, _audio_session_update, _resample_pcm16_mono
+from orion.qwen_live_audio_core import (
+    QWEN_INPUT_RATE,
+    QWEN_OUTPUT_RATE,
+    QwenAudioPhase,
+    QwenLiveAudioService,
+    _HalfDuplexGate,
+    _audio_session_update,
+    _resample_pcm16_mono,
+)
 from orion.windows_wasapi_backend import WasapiDirection, WasapiEndpoint
 
 
@@ -63,3 +71,18 @@ def test_qwen_live_session_is_audio_audio_and_keeps_tools_disabled() -> None:
     assert session["turn_detection"]["type"] == "server_vad"
     assert "tools" not in session
     assert "ATC" in session["instructions"]
+
+
+def test_half_duplex_gate_is_automatic_listening_speaking_listening() -> None:
+    gate = _HalfDuplexGate()
+
+    assert gate.phase is QwenAudioPhase.LISTENING
+    assert gate.can_capture()
+
+    gate.begin_playback()
+    assert gate.phase is QwenAudioPhase.SPEAKING
+    assert not gate.can_capture()
+
+    gate.end_playback()
+    assert gate.phase is QwenAudioPhase.LISTENING
+    assert gate.can_capture()
