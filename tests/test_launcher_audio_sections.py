@@ -47,3 +47,18 @@ def test_qwen_voice_layer_cannot_shadow_canonical_audio_core_json_helper() -> No
         pass
 
     assert CombinedLauncher._core_json is LauncherAudioSectionsMixin._core_json
+
+
+def test_qwen_api_key_survives_settings_page_rebuild_inside_launcher_session(monkeypatch) -> None:
+    launcher = object.__new__(LauncherCloudVoiceSectionsMixin)
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "env-key")
+
+    assert launcher._current_qwen_api_key() == "env-key"
+
+    launcher._remember_qwen_api_key("  live-session-key  ")
+    assert launcher._current_qwen_api_key() == "live-session-key"
+
+    # Rebuilding/navigating away from Settings must not fall back to the
+    # environment key once the user has edited the secret in this Launcher.
+    launcher._remember_qwen_api_key("next-key")
+    assert launcher._current_qwen_api_key() == "next-key"
