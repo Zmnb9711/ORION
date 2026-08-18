@@ -32,6 +32,9 @@ dev = [
 windows-audio = [
   "sounddevice>=0.5,<1.0",
 ]
+cloud-realtime = [
+  "websocket-client>=1.8,<2.0",
+]
 
 [tool.setuptools.packages.find]
 include = ["orion*"]
@@ -43,14 +46,15 @@ testpaths = ["tests"]
 [tool.coverage.run]
 branch = true
 source = ["orion"]
-# Native desktop shells are exercised by the dedicated Windows import/frozen
-# launcher gates. Counting event-loop presentation code in the backend unit
-# coverage metric makes every visual-only change dilute otherwise unchanged
-# core coverage without improving functional confidence.
+# Native desktop shells and pure presentation mixins are exercised by dedicated
+# Windows import/frozen Launcher gates. Counting Tk event/presentation code in
+# the backend unit metric makes UI-only changes dilute otherwise unchanged core
+# coverage without improving functional confidence.
 omit = [
   "orion/desktop_app.py",
   "orion/desktop_app_windows.py",
   "orion/desktop_launcher.py",
+  "orion/launcher_cloud_voice_sections.py",
 ]
 
 [tool.coverage.report]

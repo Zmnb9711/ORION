@@ -67,6 +67,6 @@ def test_explicit_shutdown_terminates_owned_core(tmp_path: Path) -> None:
     core.shutdown()
 
     process.terminate.assert_called_once_with()
-    process.wait.assert_called_once_with(timeout=5.0)
+    process.wait.assert_called_once_with(timeout=core.GRACEFUL_STOP_TIMEOUT)
     assert core.owns_process is False
     assert core._process is None
