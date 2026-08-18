@@ -97,6 +97,30 @@ jobs:
             $s=Get-Content $statePath -Raw|ConvertFrom-Json
             if($s.state -ne "PROBE_PASS"){throw "Unexpected packaged Voice probe state: $($s.state); $($s.error)"}
           } finally { Stop-Process -Id $cp.Id -Force -ErrorAction SilentlyContinue; Remove-Item Env:ORION_VOICE_STARTUP_PROBE -ErrorAction SilentlyContinue }
+      - name: Prove in-place upgrade stops a running packaged Core and restarts cleanly
+        shell: pwsh
+        run: |
+          $setup=(Resolve-Path "dist-installer/ORION-Alpha-0.2-Setup.exe").Path
+          $root="C:\Program Files\ORION"; $core="$root\Core\ORION-Core.exe"
+          $runtime=Join-Path $env:RUNNER_TEMP "orion-upgrade-smoke"
+          New-Item -ItemType Directory -Force $runtime | Out-Null
+          $env:ORION_RUNTIME_DIR=$runtime; $env:ORION_CORE_BASE_URL="http://127.0.0.1:8000"
+          $old=Start-Process $core -PassThru
+          $healthy=$false
+          for($i=0;$i -lt 30;$i++){try{$h=Invoke-RestMethod "$env:ORION_CORE_BASE_URL/health" -TimeoutSec 1;if($h.status -eq "ok"){$healthy=$true;break}}catch{};Start-Sleep -Milliseconds 500}
+          if(-not $healthy){throw "Pre-upgrade Core did not become healthy"}
+          $upgrade=Start-Process $setup -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/SP-" -Wait -PassThru
+          if($upgrade.ExitCode){throw "In-place upgrade failed: $($upgrade.ExitCode)"}
+          Start-Sleep -Milliseconds 500
+          if(Get-Process -Id $old.Id -ErrorAction SilentlyContinue){throw "Installer left old ORION-Core.exe running during upgrade"}
+          $new=Start-Process $core -PassThru
+          try {
+            $healthy=$false
+            for($i=0;$i -lt 30;$i++){try{$h=Invoke-RestMethod "$env:ORION_CORE_BASE_URL/health" -TimeoutSec 1;if($h.status -eq "ok"){$healthy=$true;break}}catch{};Start-Sleep -Milliseconds 500}
+            if(-not $healthy){throw "Post-upgrade Core did not become healthy"}
+            Start-Sleep -Seconds 2
+            if($new.HasExited){throw "Post-upgrade Core exited unexpectedly: $($new.ExitCode)"}
+          } finally { Stop-Process -Id $new.Id -Force -ErrorAction SilentlyContinue }
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
         with:
