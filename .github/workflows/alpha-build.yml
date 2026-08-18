@@ -3,7 +3,7 @@ name: ORION Alpha Windows Build
 on:
   workflow_dispatch:
   pull_request:
-    branches: [main]
+    branches: [main, baseline/build317-toolcall]
   push:
     branches: [main, voice/worker-launcher-lifecycle-v01, ci/adr004-qwen-vertical-slice]
     tags: ["v*"]
