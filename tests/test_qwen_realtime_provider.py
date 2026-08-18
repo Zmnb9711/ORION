@@ -113,6 +113,24 @@ def test_tool_smoke_maps_qwen_function_to_local_orion_tool(monkeypatch: pytest.M
     assert result.tool_name == "orion.test.ping"
     assert result.assistant_text == "Smoke passed"
     assert calls == [("call-42", "orion_test_ping", '{"message":"qwen-smoke"}')]
+
+    user_item_indexes = [
+        index
+        for index, payload in enumerate(ws.sent)
+        if payload.get("type") == "conversation.item.create"
+        and isinstance(payload.get("item"), dict)
+        and payload["item"].get("type") == "message"
+        and payload["item"].get("role") == "user"
+    ]
+    response_create_indexes = [index for index, payload in enumerate(ws.sent) if payload.get("type") == "response.create"]
+    assert user_item_indexes
+    assert response_create_indexes
+    assert user_item_indexes[0] < response_create_indexes[0]
+    user_content = ws.sent[user_item_indexes[0]]["item"]["content"]
+    assert isinstance(user_content, list)
+    assert user_content[0]["type"] == "input_text"
+    assert "ORION connectivity test" in user_content[0]["text"]
+
     assert any(
         payload.get("type") == "conversation.item.create"
         and isinstance(payload.get("item"), dict)

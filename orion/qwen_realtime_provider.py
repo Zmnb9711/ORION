@@ -78,6 +78,27 @@ def _session_update(*, with_tool: bool) -> dict[str, Any]:
     return {"type": "session.update", "session": session}
 
 
+def _tool_smoke_user_item() -> dict[str, Any]:
+    """Seed the realtime conversation with an actual user turn.
+
+    Qwen rejects response.create when the conversation contains no user-role
+    message, even when session instructions explicitly request a tool call.
+    """
+    return {
+        "type": "conversation.item.create",
+        "item": {
+            "type": "message",
+            "role": "user",
+            "content": [
+                {
+                    "type": "input_text",
+                    "text": "Run the ORION connectivity test now. Use the required test tool before answering.",
+                }
+            ],
+        },
+    }
+
+
 def _execute_core_tool(config: QwenRealtimeConfig, call_id: str, provider_name: str, arguments: str) -> dict[str, Any]:
     core_name = _PROVIDER_TO_CORE_TOOL.get(provider_name)
     if core_name is None:
@@ -221,6 +242,7 @@ class QwenRealtimeProvider:
                     raise RuntimeError(self._error_message(event))
                 if event_type == "session.updated" and not session_ready:
                     session_ready = True
+                    ws.send(json.dumps(_tool_smoke_user_item(), ensure_ascii=False))
                     ws.send(json.dumps({"type": "response.create", "response": {"modalities": ["text"]}}))
                     continue
                 if event_type == "response.function_call_arguments.done":
