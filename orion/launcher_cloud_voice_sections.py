@@ -53,6 +53,14 @@ class LauncherCloudVoiceSectionsMixin:
     def _cloud_voice_store(self) -> CloudVoiceConfigStore:
         return CloudVoiceConfigStore(self.runtime_dir)
 
+    def _current_qwen_api_key(self) -> str:
+        """Return the session key without losing it when Tk pages are rebuilt."""
+        return str(getattr(self, "_qwen_api_key", "") or os.environ.get("DASHSCOPE_API_KEY", "")).strip()
+
+    def _remember_qwen_api_key(self, value: str) -> None:
+        """Keep the edited key for the lifetime of this Launcher process."""
+        self._qwen_api_key = value.strip()
+
     def _page_settings(self) -> None:
         super()._page_settings()
         config = self._cloud_voice_store().load()
@@ -82,7 +90,10 @@ class LauncherCloudVoiceSectionsMixin:
         region = StringVar(value=reverse_region.get(config.qwen_region, "Singapore"))
         workspace = StringVar(value=config.qwen_workspace_id)
         model = StringVar(value=config.qwen_model)
-        api_key = StringVar(value=os.environ.get("DASHSCOPE_API_KEY", ""))
+        api_key = StringVar(value=self._current_qwen_api_key())
+        # Settings pages are destroyed/recreated during navigation. Mirror every
+        # edit immediately into Launcher session memory, not only on SAVE.
+        api_key.trace_add("write", lambda *_: self._remember_qwen_api_key(api_key.get()))
         fallback = StringVar(value="Local / Whisper.cpp")
         live_status = StringVar(value="STOPPED — Qwen live audio is not active")
 
@@ -133,7 +144,7 @@ class LauncherCloudVoiceSectionsMixin:
 
         def save() -> None:
             self._cloud_voice_store().save(selected_config())
-            self._qwen_api_key = api_key.get().strip()
+            self._remember_qwen_api_key(api_key.get())
             messagebox.showinfo("ORION Voice", "Voice settings saved. API key kept in memory only.", parent=self.root)
 
         ttk.Button(buttons, text="SAVE VOICE SETTINGS", style="Primary.TButton", command=save).pack(side=LEFT, padx=(0, 8))
@@ -198,7 +209,7 @@ class LauncherCloudVoiceSectionsMixin:
         *,
         start: bool,
     ) -> None:
-        key = api_key.strip() or getattr(self, "_qwen_api_key", "") or os.environ.get("DASHSCOPE_API_KEY", "")
+        key = api_key.strip() or self._current_qwen_api_key()
 
         def worker() -> None:
             try:
@@ -240,7 +251,7 @@ class LauncherCloudVoiceSectionsMixin:
         self.root.after(750, lambda: self._qwen_live_poll(live_status))
 
     def _qwen_smoke_async(self, config: CloudVoiceConfig, api_key: str, *, tool: bool) -> None:
-        key = api_key.strip() or getattr(self, "_qwen_api_key", "") or os.environ.get("DASHSCOPE_API_KEY", "")
+        key = api_key.strip() or self._current_qwen_api_key()
         qwen = QwenRealtimeProvider(
             QwenRealtimeConfig(
                 api_key=key,
