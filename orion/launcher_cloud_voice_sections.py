@@ -170,7 +170,13 @@ class LauncherCloudVoiceSectionsMixin:
 
         self._qwen_live_poll(live_status)
 
-    def _core_json(self, path: str, *, method: str = "GET", payload: dict[str, object] | None = None) -> dict[str, object]:
+    def _realtime_core_json(self, path: str, *, method: str = "GET", payload: dict[str, object] | None = None) -> dict[str, object]:
+        """Realtime-only Core JSON helper.
+
+        Deliberately does not override LauncherAudioSectionsMixin._core_json: the
+        canonical audio helper must continue accepting list responses from the
+        WASAPI discovery endpoints used by Build #317.
+        """
         data = None if payload is None else json.dumps(payload, ensure_ascii=False).encode("utf-8")
         request = urllib.request.Request(
             f"{self.core.base_url.rstrip('/')}{path}",
@@ -206,9 +212,9 @@ class LauncherCloudVoiceSectionsMixin:
                         "model": config.qwen_model,
                         "voice": "Tina",
                     }
-                    result = self._core_json("/v1/realtime/qwen/live/start", method="POST", payload=payload)
+                    result = self._realtime_core_json("/v1/realtime/qwen/live/start", method="POST", payload=payload)
                 else:
-                    result = self._core_json("/v1/realtime/qwen/live/stop", method="POST")
+                    result = self._realtime_core_json("/v1/realtime/qwen/live/stop", method="POST")
                 state = str(result.get("state", "unknown")).upper()
                 message = str(result.get("message", ""))
                 self.root.after(0, lambda: live_status.set(f"{state} — {message}"))
@@ -220,7 +226,7 @@ class LauncherCloudVoiceSectionsMixin:
     def _qwen_live_poll(self, live_status: StringVar) -> None:
         def worker() -> None:
             try:
-                result = self._core_json("/v1/realtime/qwen/live")
+                result = self._realtime_core_json("/v1/realtime/qwen/live")
             except Exception:
                 return
             state = str(result.get("state", "unknown")).upper()
