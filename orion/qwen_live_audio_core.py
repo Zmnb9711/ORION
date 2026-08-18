@@ -247,7 +247,7 @@ class QwenLiveAudioService:
 
             # Keep one PortAudio full-duplex stream, but let PortAudio schedule playback
             # continuously. Qwen audio deltas go straight to the transport playback queue
-            # instead of waiting for ORION's capture/WebSocket loop to call stream.write().
+            # instead of waiting for ORION's capture/WebSocket loop before playback.
             with sd.RawStream(samplerate=audio.native_rate, blocksize=frames,
                               device=(audio.input_index, audio.output_index), channels=(CHANNELS, CHANNELS),
                               dtype=("int16", "int16"), extra_settings=(settings, settings),
