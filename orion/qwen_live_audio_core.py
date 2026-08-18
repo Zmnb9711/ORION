@@ -7,6 +7,7 @@ import time
 from array import array
 from dataclasses import dataclass
 from enum import StrEnum
+from queue import Empty, SimpleQueue
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -97,7 +98,11 @@ def _audio_session_update(model: str, voice: str) -> dict[str, Any]:
         "session": {
             "modalities": ["text", "audio"],
             "voice": voice,
-            "instructions": "You are ORION's realtime conversational voice. Talk naturally in the language used by the user.",
+            "instructions": (
+                "You are ORION's realtime conversational voice. "
+                "Understand Russian speech and always answer in Russian. "
+                "Do not answer in Chinese. Change language only if the user explicitly asks you to."
+            ),
             "input_audio_format": "pcm",
             "output_audio_format": "pcm",
             "turn_detection": {"type": vad_type, "threshold": 0.5, "silence_duration_ms": 800},
@@ -214,35 +219,69 @@ class QwenLiveAudioService:
             settings = sd.WasapiSettings(exclusive=False)
             self._set(state=QwenLiveState.CONNECTED, message="Qwen connected; opening one full-duplex WASAPI stream")
 
-            # One PortAudio PaStream owns both endpoints. This removes the previous
-            # unsupported two-stream topology that could crash the host process.
+            capture_queue: SimpleQueue[bytes] = SimpleQueue()
+            playback_queue: SimpleQueue[bytes] = SimpleQueue()
+            playback_pending = bytearray()
+
+            def audio_callback(indata: Any, outdata: Any, frame_count: int, time_info: Any, status: Any) -> None:
+                del frame_count, time_info, status
+                capture_queue.put(bytes(indata))
+
+                bytes_needed = len(outdata)
+                while len(playback_pending) < bytes_needed:
+                    try:
+                        playback_pending.extend(playback_queue.get_nowait())
+                    except Empty:
+                        break
+
+                if playback_pending:
+                    available = min(bytes_needed, len(playback_pending))
+                    outdata[:available] = playback_pending[:available]
+                    del playback_pending[:available]
+                    if available < bytes_needed:
+                        outdata[available:] = b"\x00" * (bytes_needed - available)
+                    with self._lock:
+                        self._status.output_chunks += 1
+                else:
+                    outdata[:] = b"\x00" * bytes_needed
+
+            # Keep one PortAudio full-duplex stream, but let PortAudio schedule playback
+            # continuously. Qwen audio deltas go straight to the transport playback queue
+            # instead of waiting for ORION's capture/WebSocket loop to call stream.write().
             with sd.RawStream(samplerate=audio.native_rate, blocksize=frames,
                               device=(audio.input_index, audio.output_index), channels=(CHANNELS, CHANNELS),
-                              dtype=("int16", "int16"), extra_settings=(settings, settings)) as stream:
+                              dtype=("int16", "int16"), extra_settings=(settings, settings),
+                              callback=audio_callback):
                 self._set(state=QwenLiveState.STREAMING, phase=QwenAudioPhase.LISTENING,
-                          message="Qwen live audio streaming through one WASAPI duplex stream")
-                playback = bytearray()
+                          message="Qwen live audio streaming through direct callback playback")
                 while not stop_event.is_set():
-                    # Keep PortAudio I/O serialized on this one thread. No capture
-                    # thread races PortAudio calls or the websocket anymore.
-                    raw, _overflowed = stream.read(frames)
-                    qwen_pcm = _resample_pcm16_mono(bytes(raw), audio.native_rate, QWEN_INPUT_RATE)
-                    ws.send(json.dumps({"type": "input_audio_buffer.append",
-                                        "audio": base64.b64encode(qwen_pcm).decode("ascii")}))
-                    with self._lock:
-                        self._status.input_chunks += 1
+                    try:
+                        raw = capture_queue.get_nowait()
+                    except Empty:
+                        raw = b""
 
-                    # Drain currently available Qwen events without blocking audio
-                    # indefinitely. Audio deltas are queued and emitted on this same stream.
+                    if raw:
+                        qwen_pcm = _resample_pcm16_mono(raw, audio.native_rate, QWEN_INPUT_RATE)
+                        ws.send(json.dumps({"type": "input_audio_buffer.append",
+                                            "audio": base64.b64encode(qwen_pcm).decode("ascii")}))
+                        with self._lock:
+                            self._status.input_chunks += 1
+
                     try:
                         event = provider._receive_json(ws)
                     except websocket.WebSocketTimeoutException:
-                        event = {}
+                        continue
                     event_type = str(event.get("type") or "")
                     if event_type == "error":
                         raise RuntimeError(provider._error_message(event))
                     if event_type == "response.audio.delta" and isinstance(event.get("delta"), str):
-                        playback.extend(_resample_pcm16_mono(base64.b64decode(event["delta"]), QWEN_OUTPUT_RATE, audio.native_rate))
+                        playback_queue.put(
+                            _resample_pcm16_mono(
+                                base64.b64decode(event["delta"]),
+                                QWEN_OUTPUT_RATE,
+                                audio.native_rate,
+                            )
+                        )
                         self._set(phase=QwenAudioPhase.SPEAKING, message="Qwen speaking")
                     elif event_type in {"response.audio.done", "response.done"}:
                         self._set(phase=QwenAudioPhase.LISTENING, message="Qwen listening")
@@ -251,18 +290,6 @@ class QwenLiveAudioService:
                         if isinstance(delta, str):
                             with self._lock:
                                 self._status.transcript = (self._status.transcript + delta)[-4000:]
-
-                    bytes_needed = frames * 2
-                    if playback:
-                        chunk = bytes(playback[:bytes_needed])
-                        del playback[:bytes_needed]
-                        if len(chunk) < bytes_needed:
-                            chunk += b"\x00" * (bytes_needed - len(chunk))
-                        with self._lock:
-                            self._status.output_chunks += 1
-                    else:
-                        chunk = b"\x00" * bytes_needed
-                    stream.write(chunk)
 
         except Exception as exc:
             self._set(state=QwenLiveState.ERROR, phase=QwenAudioPhase.IDLE, message=f"{type(exc).__name__}: {exc}")
