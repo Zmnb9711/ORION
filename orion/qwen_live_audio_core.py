@@ -30,6 +30,12 @@ class QwenLiveState(StrEnum):
     ERROR = "error"
 
 
+class QwenAudioPhase(StrEnum):
+    IDLE = "idle"
+    LISTENING = "listening"
+    SPEAKING = "speaking"
+
+
 class QwenLiveStartRequest(BaseModel):
     api_key: str = Field(min_length=1)
     workspace_id: str = Field(min_length=1)
@@ -40,6 +46,7 @@ class QwenLiveStartRequest(BaseModel):
 
 class QwenLiveStatus(BaseModel):
     state: QwenLiveState = QwenLiveState.STOPPED
+    phase: QwenAudioPhase = QwenAudioPhase.IDLE
     message: str = "Qwen live audio is stopped"
     input_name: str | None = None
     output_name: str | None = None
@@ -58,6 +65,26 @@ class _ResolvedAudio:
     output_index: int
     input_rate: int
     output_rate: int
+
+
+class _HalfDuplexGate:
+    """Automatic microphone gate for the stable Windows phase-1 voice path."""
+
+    def __init__(self) -> None:
+        self._capture_allowed = threading.Event()
+        self._capture_allowed.set()
+        self.phase = QwenAudioPhase.LISTENING
+
+    def begin_playback(self) -> None:
+        self._capture_allowed.clear()
+        self.phase = QwenAudioPhase.SPEAKING
+
+    def end_playback(self) -> None:
+        self.phase = QwenAudioPhase.LISTENING
+        self._capture_allowed.set()
+
+    def can_capture(self) -> bool:
+        return self._capture_allowed.is_set()
 
 
 def _resample_pcm16_mono(data: bytes, source_rate: int, target_rate: int) -> bytes:
@@ -144,6 +171,7 @@ class QwenLiveAudioService:
         with self._lock:
             if self._status.state is not QwenLiveState.ERROR:
                 self._status.state = QwenLiveState.STOPPED
+                self._status.phase = QwenAudioPhase.IDLE
                 self._status.message = "Qwen live audio stopped"
             return self._status.model_copy(deep=True)
 
@@ -241,6 +269,7 @@ class QwenLiveAudioService:
 
             self._set(state=QwenLiveState.CONNECTED, message="Qwen connected; opening Core-owned audio streams")
             capture_error: list[BaseException] = []
+            gate = _HalfDuplexGate()
 
             # Match the already field-proven Core microphone test: open a blocking
             # RawInputStream in shared WASAPI and read frames. No callback/start()
@@ -263,12 +292,24 @@ class QwenLiveAudioService:
                 dtype="int16",
                 extra_settings=output_settings,
             ) as speaker:
-                self._set(state=QwenLiveState.STREAMING, message="Qwen live audio streaming through ORION Core")
+                self._set(
+                    state=QwenLiveState.STREAMING,
+                    phase=QwenAudioPhase.LISTENING,
+                    message="Qwen live audio listening through ORION Core",
+                )
 
                 def capture() -> None:
                     try:
                         while not stop_event.is_set():
+                            if not gate.can_capture():
+                                time.sleep(0.01)
+                                continue
                             raw, _overflowed = mic.read(input_frames)
+                            # Playback can begin while a blocking read is in flight.
+                            # Re-check the gate and discard that frame instead of
+                            # echoing Qwen's own voice back into the cloud session.
+                            if not gate.can_capture():
+                                continue
                             qwen_pcm = _resample_pcm16_mono(bytes(raw), audio.input_rate, QWEN_INPUT_RATE)
                             ws.send(json.dumps({"type": "input_audio_buffer.append", "audio": base64.b64encode(qwen_pcm).decode("ascii")}))
                             with self._lock:
@@ -293,10 +334,18 @@ class QwenLiveAudioService:
                     if event_type == "response.audio.delta":
                         delta = event.get("delta")
                         if isinstance(delta, str) and delta:
+                            if gate.phase is not QwenAudioPhase.SPEAKING:
+                                gate.begin_playback()
+                                self._set(phase=QwenAudioPhase.SPEAKING, message="Qwen speaking; microphone upload paused automatically")
                             pcm = base64.b64decode(delta)
                             speaker.write(_resample_pcm16_mono(pcm, QWEN_OUTPUT_RATE, audio.output_rate))
                             with self._lock:
                                 self._status.output_chunks += 1
+                        continue
+                    if event_type in {"response.audio.done", "response.done"}:
+                        if gate.phase is QwenAudioPhase.SPEAKING:
+                            gate.end_playback()
+                            self._set(phase=QwenAudioPhase.LISTENING, message="Qwen finished; microphone listening resumed automatically")
                         continue
                     if event_type in {"response.audio_transcript.delta", "conversation.item.input_audio_transcription.delta"}:
                         delta = event.get("delta")
@@ -305,7 +354,7 @@ class QwenLiveAudioService:
                                 self._status.transcript = (self._status.transcript + delta)[-4000:]
 
         except Exception as exc:
-            self._set(state=QwenLiveState.ERROR, message=f"{type(exc).__name__}: {exc}")
+            self._set(state=QwenLiveState.ERROR, phase=QwenAudioPhase.IDLE, message=f"{type(exc).__name__}: {exc}")
         finally:
             stop_event.set()
             if capture_thread is not None and capture_thread.is_alive():
@@ -318,6 +367,7 @@ class QwenLiveAudioService:
             with self._lock:
                 if self._status.state is not QwenLiveState.ERROR:
                     self._status.state = QwenLiveState.STOPPED
+                    self._status.phase = QwenAudioPhase.IDLE
                     self._status.message = "Qwen live audio stopped"
 
 
