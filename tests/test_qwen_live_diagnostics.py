@@ -286,6 +286,81 @@ def test_diagnostics_are_bounded_and_exclude_sensitive_fields(tmp_path: Path) ->
     assert len(jsonl_path.read_text(encoding="utf-8").splitlines()) == 5
 
 
+def test_websocket_forensics_capture_close_exception_and_lifetime(
+    tmp_path: Path,
+) -> None:
+    recorder = _recorder(tmp_path)
+    recorder.record_websocket_connect(t_ns=START_NS + 10_000_000)
+    recorder.record_websocket_session_ready(t_ns=START_NS + 20_000_000)
+    recorder.record_websocket_ping_configuration(configured=False)
+    recorder.record_websocket_close_frame(
+        (1000).to_bytes(2, "big") + "normal shutdown".encode(),
+        t_ns=START_NS + 30_000_000,
+    )
+
+    try:
+        try:
+            raise ConnectionResetError(10054, "connection reset by peer")
+        except ConnectionResetError as underlying:
+            raise RuntimeError("websocket receive failed") from underlying
+    except RuntimeError as exc:
+        recorder.record_websocket_exception(
+            exc,
+            ws=SimpleNamespace(sock=None),
+            stage="recv",
+            fatal=True,
+            t_ns=START_NS + 40_000_000,
+        )
+
+    for sequence in range(105):
+        recorder.record_websocket_event(
+            "RECV_EVENT_SUCCESS",
+            direction="recv",
+            operation="recv",
+            t_ns=START_NS + 50_000_000 + sequence,
+            event_type="response.audio.delta",
+            sequence=sequence,
+        )
+
+    lifecycle = recorder.websocket_forensics()
+    assert lifecycle["connect_timestamp"] == "2026-08-19T00:00:00.010000+00:00"
+    assert lifecycle["session_ready_timestamp"] == "2026-08-19T00:00:00.020000+00:00"
+    assert lifecycle["disconnect_timestamp"] == "2026-08-19T00:00:00.040000+00:00"
+    assert lifecycle["connection_duration_ms"] == pytest.approx(30)
+    assert lifecycle["close_timestamp"] == "2026-08-19T00:00:00.030000+00:00"
+    assert lifecycle["close_code"] == 1000
+    assert lifecycle["close_reason"] == "normal shutdown"
+    assert lifecycle["clean_close"] is True
+    assert lifecycle["close_frame_received"] is True
+    assert lifecycle["ping_configured"] is False
+    exception = lifecycle["exception"]
+    assert isinstance(exception, dict)
+    assert exception["exception_type"] == "RuntimeError"
+    assert exception["exception_message"] == "websocket receive failed"
+    assert "RuntimeError: websocket receive failed" in exception["full_traceback"]
+    assert "ConnectionResetError" in exception["underlying_exception"]
+    assert exception["socket_errno"] == 10054
+    recent = lifecycle["recent_events"]
+    assert isinstance(recent, list)
+    assert len(recent) == 100
+    assert recent[0]["sequence"] == 5
+    assert recent[-1]["sequence"] == 104
+    assert lifecycle["recv_thread_ids"] == [threading.get_ident()]
+
+    paths = recorder.finish(end_ns=START_NS + 200_000_000)
+    assert paths is not None
+    jsonl_path, summary_path = paths
+    records = [
+        json.loads(line) for line in jsonl_path.read_text(encoding="utf-8").splitlines()
+    ]
+    forensic_record = next(
+        record for record in records if record["kind"] == "websocket_forensics"
+    )
+    assert forensic_record["close_code"] == 1000
+    assert len(forensic_record["recent_events"]) == 100
+    assert "WEBSOCKET LIFECYCLE:" in summary_path.read_text(encoding="utf-8")
+
+
 def test_instrumented_transport_preserves_pcm_with_independent_workers(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

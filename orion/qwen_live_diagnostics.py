@@ -3,12 +3,14 @@ from __future__ import annotations
 import json
 import math
 import os
+import socket
 import statistics
 import threading
 import time
+import traceback
 import uuid
 from collections import defaultdict, deque
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from functools import wraps
 from pathlib import Path
 from typing import Any, Callable, Concatenate, ParamSpec, TypeVar
@@ -16,6 +18,7 @@ from typing import Any, Callable, Concatenate, ParamSpec, TypeVar
 
 DEFAULT_MAX_EVENTS = 20_000
 DEFAULT_MAX_TIMING_SAMPLES = 10_000
+DEFAULT_WEBSOCKET_RING_EVENTS = 100
 
 _P = ParamSpec("_P")
 _R = TypeVar("_R")
@@ -72,6 +75,23 @@ class QwenLiveDiagnostics:
         base = runtime_dir or Path(os.environ.get("ORION_RUNTIME_DIR", "runtime"))
         self.output_dir = base / "qwen-live"
         self._events: deque[dict[str, object]] = deque(maxlen=max_events)
+        self._websocket_events: deque[dict[str, object]] = deque(
+            maxlen=DEFAULT_WEBSOCKET_RING_EVENTS
+        )
+        self._websocket_connect_ns: int | None = None
+        self._websocket_session_ready_ns: int | None = None
+        self._websocket_disconnect_ns: int | None = None
+        self._websocket_close_ns: int | None = None
+        self._websocket_close_code: int | None = None
+        self._websocket_close_reason = ""
+        self._websocket_close_frame_received = False
+        self._websocket_clean_close = False
+        self._websocket_disconnect_origin = ""
+        self._websocket_exception: dict[str, object] | None = None
+        self._websocket_ping_configured = False
+        self._websocket_send_thread_ids: set[int] = set()
+        self._websocket_recv_thread_ids: set[int] = set()
+        self._websocket_close_thread_ids: set[int] = set()
         self._max_events = max_events
         self._dropped_events = 0
         self._max_timing_samples = max_timing_samples
@@ -168,6 +188,11 @@ class QwenLiveDiagnostics:
     def response_index(self) -> int:
         return self._response_index
 
+    @property
+    @_synchronized
+    def websocket_disconnect_recorded(self) -> bool:
+        return self._websocket_disconnect_ns is not None
+
     @_synchronized
     def update_audio_metadata(
         self,
@@ -214,6 +239,233 @@ class QwenLiveDiagnostics:
                 **safe_fields,
             }
         )
+
+    def _utc_timestamp(self, t_ns: int) -> str:
+        return (
+            self.start_utc
+            + timedelta(seconds=(t_ns - self.start_ns) / 1_000_000_000)
+        ).isoformat()
+
+    @_synchronized
+    def record_websocket_event(
+        self,
+        event: str,
+        *,
+        direction: str,
+        t_ns: int | None = None,
+        operation: str = "",
+        **fields: object,
+    ) -> None:
+        event_ns = self._clock_ns() if t_ns is None else t_ns
+        thread_id = threading.get_ident()
+        if operation == "send":
+            self._websocket_send_thread_ids.add(thread_id)
+        elif operation == "recv":
+            self._websocket_recv_thread_ids.add(thread_id)
+        elif operation == "close":
+            self._websocket_close_thread_ids.add(thread_id)
+        safe_fields: dict[str, object] = {}
+        for key, value in fields.items():
+            if key.casefold() in _FORBIDDEN_FIELD_NAMES:
+                continue
+            if isinstance(value, (bytes, bytearray, memoryview)):
+                continue
+            if value is None or isinstance(value, (str, int, float, bool)):
+                safe_fields[key] = value
+        self._websocket_events.append(
+            {
+                "timestamp": self._utc_timestamp(event_ns),
+                "t_ns": event_ns,
+                "event": event,
+                "event_type": str(safe_fields.pop("event_type", "")),
+                "thread_name": threading.current_thread().name,
+                "thread_id": thread_id,
+                "direction": direction,
+                **safe_fields,
+            }
+        )
+
+    @_synchronized
+    def record_websocket_connect(self, *, t_ns: int) -> None:
+        self._websocket_connect_ns = t_ns
+        self.record_websocket_event(
+            "CONNECT_SUCCESS", direction="lifecycle", t_ns=t_ns
+        )
+
+    @_synchronized
+    def record_websocket_session_ready(self, *, t_ns: int) -> None:
+        self._websocket_session_ready_ns = t_ns
+        self.record_websocket_event(
+            "SESSION_UPDATE_RECEIVED",
+            direction="recv",
+            operation="recv",
+            t_ns=t_ns,
+            event_type="session.updated",
+        )
+
+    @_synchronized
+    def record_websocket_ping_configuration(self, *, configured: bool) -> None:
+        self._websocket_ping_configured = configured
+        self.record_websocket_event(
+            "PING_CONFIGURED" if configured else "PING_NOT_CONFIGURED",
+            direction="lifecycle",
+            configured=configured,
+        )
+
+    @_synchronized
+    def record_websocket_close_frame(self, frame_data: bytes, *, t_ns: int) -> None:
+        code: int | None = None
+        reason = ""
+        if len(frame_data) >= 2:
+            code = int.from_bytes(frame_data[:2], "big")
+            reason = frame_data[2:].decode("utf-8", errors="replace")
+        self._websocket_close_ns = t_ns
+        self._websocket_close_code = code
+        self._websocket_close_reason = reason
+        self._websocket_close_frame_received = True
+        self._websocket_clean_close = code in {1000, 1001}
+        self.record_websocket_event(
+            "WEBSOCKET_CLOSE_RECEIVED",
+            direction="recv",
+            operation="recv",
+            t_ns=t_ns,
+            close_code=code,
+            close_reason=reason,
+            clean_close=self._websocket_clean_close,
+            close_frame_received=True,
+        )
+
+    @_synchronized
+    def record_websocket_close_attempt(self, *, t_ns: int) -> None:
+        if self._websocket_close_ns is None:
+            self._websocket_close_ns = t_ns
+        self.record_websocket_event(
+            "WEBSOCKET_CLOSE_START",
+            direction="close",
+            operation="close",
+            t_ns=t_ns,
+            close_frame_received=self._websocket_close_frame_received,
+        )
+
+    @staticmethod
+    def _underlying_exception(exc: BaseException) -> tuple[str, int | None]:
+        parts: list[str] = []
+        socket_errno = exc.errno if isinstance(exc, OSError) else None
+        seen: set[int] = set()
+        current = exc.__cause__ or exc.__context__
+        while current is not None and id(current) not in seen:
+            seen.add(id(current))
+            parts.append(f"{type(current).__name__}: {current}")
+            if socket_errno is None and isinstance(current, OSError):
+                socket_errno = current.errno
+            current = current.__cause__ or current.__context__
+        return " <- ".join(parts), socket_errno
+
+    @staticmethod
+    def _socket_errno(ws: Any, fallback: int | None) -> int | None:
+        if fallback is not None:
+            return fallback
+        sock = getattr(ws, "sock", None)
+        if sock is None:
+            return None
+        try:
+            return int(sock.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR))
+        except (AttributeError, OSError, TypeError, ValueError):
+            return None
+
+    @_synchronized
+    def record_websocket_exception(
+        self,
+        exc: BaseException,
+        *,
+        ws: Any,
+        stage: str,
+        fatal: bool,
+        t_ns: int | None = None,
+    ) -> None:
+        event_ns = self._clock_ns() if t_ns is None else t_ns
+        underlying, underlying_errno = self._underlying_exception(exc)
+        details: dict[str, object] = {
+            "exception_type": type(exc).__name__,
+            "exception_message": str(exc),
+            "full_traceback": "".join(
+                traceback.format_exception(type(exc), exc, exc.__traceback__)
+            ),
+            "underlying_exception": underlying,
+            "socket_errno": self._socket_errno(ws, underlying_errno),
+            "stage": stage,
+            "fatal": fatal,
+            "close_frame_received": self._websocket_close_frame_received,
+            "close_code": self._websocket_close_code,
+            "close_reason": self._websocket_close_reason,
+        }
+        if fatal or self._websocket_exception is None:
+            self._websocket_exception = details
+        self.record_websocket_event(
+            "WEBSOCKET_EXCEPTION",
+            direction=stage,
+            operation="recv" if stage == "recv" else "send" if stage == "send" else "",
+            t_ns=event_ns,
+            **details,
+        )
+        if fatal:
+            self.record_websocket_disconnect(
+                t_ns=event_ns, origin=f"{stage}_exception"
+            )
+
+    @_synchronized
+    def record_websocket_disconnect(self, *, t_ns: int, origin: str) -> None:
+        if self._websocket_disconnect_ns is None:
+            self._websocket_disconnect_ns = t_ns
+            self._websocket_disconnect_origin = origin
+        self.record_websocket_event(
+            "WEBSOCKET_DISCONNECT",
+            direction="lifecycle",
+            t_ns=t_ns,
+            disconnect_origin=origin,
+            close_frame_received=self._websocket_close_frame_received,
+            close_code=self._websocket_close_code,
+            close_reason=self._websocket_close_reason,
+            clean_close=self._websocket_clean_close,
+        )
+
+    @_synchronized
+    def websocket_forensics(self) -> dict[str, object]:
+        connection_duration_ms = self._optional_elapsed_ms(
+            self._websocket_connect_ns, self._websocket_disconnect_ns
+        )
+        return {
+            "connect_timestamp": self._utc_timestamp(self._websocket_connect_ns)
+            if self._websocket_connect_ns is not None
+            else None,
+            "session_ready_timestamp": self._utc_timestamp(
+                self._websocket_session_ready_ns
+            )
+            if self._websocket_session_ready_ns is not None
+            else None,
+            "disconnect_timestamp": self._utc_timestamp(
+                self._websocket_disconnect_ns
+            )
+            if self._websocket_disconnect_ns is not None
+            else None,
+            "connection_duration_ms": connection_duration_ms,
+            "close_timestamp": self._utc_timestamp(self._websocket_close_ns)
+            if self._websocket_close_ns is not None
+            else None,
+            "close_code": self._websocket_close_code,
+            "close_reason": self._websocket_close_reason,
+            "clean_close": self._websocket_clean_close,
+            "close_frame_received": self._websocket_close_frame_received,
+            "disconnect_origin": self._websocket_disconnect_origin,
+            "ping_configured": self._websocket_ping_configured,
+            "exception": dict(self._websocket_exception)
+            if self._websocket_exception is not None
+            else None,
+            "send_thread_ids": sorted(self._websocket_send_thread_ids),
+            "recv_thread_ids": sorted(self._websocket_recv_thread_ids),
+            "close_thread_ids": sorted(self._websocket_close_thread_ids),
+            "recent_events": [dict(event) for event in self._websocket_events],
+        }
 
     def _timing(self, stage: str, duration_ms: float) -> None:
         samples = self._timing_samples[stage]
@@ -1006,6 +1258,7 @@ class QwenLiveDiagnostics:
             "playback_timeline": playback_timeline,
             "event_count_retained": len(self._events),
             "event_count_dropped": self._dropped_events,
+            "websocket_lifecycle": self.websocket_forensics(),
             "timings": {stage: self._stage_summary(stage) for stage in stages},
         }
 
@@ -1032,6 +1285,18 @@ class QwenLiveDiagnostics:
                 )
                 for event in self._events:
                     handle.write(json.dumps(event, ensure_ascii=False) + "\n")
+                websocket_forensics = self.websocket_forensics()
+                if websocket_forensics["recent_events"]:
+                    handle.write(
+                        json.dumps(
+                            {
+                                "kind": "websocket_forensics",
+                                **websocket_forensics,
+                            },
+                            ensure_ascii=False,
+                        )
+                        + "\n"
+                    )
                 handle.write(
                     json.dumps(
                         {"kind": "session_summary", **summary}, ensure_ascii=False
@@ -1101,6 +1366,7 @@ class QwenLiveDiagnostics:
         for heading, key in (
             ("LATENCY TIMELINE", "latency_timeline"),
             ("PLAYBACK TIMELINE", "playback_timeline"),
+            ("WEBSOCKET LIFECYCLE", "websocket_lifecycle"),
         ):
             lines.append(f"{heading}:")
             timeline = summary.get(key)

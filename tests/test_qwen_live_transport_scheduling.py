@@ -174,6 +174,23 @@ def test_audio_capture_send_and_playback_continue_while_recv_is_blocked(
         for message in sent_messages
     )
     assert diagnostics.summary()["recv_call_count"] == 1
+    lifecycle = diagnostics.websocket_forensics()
+    send_thread_ids = lifecycle["send_thread_ids"]
+    recv_thread_ids = lifecycle["recv_thread_ids"]
+    close_thread_ids = lifecycle["close_thread_ids"]
+    recent_events = lifecycle["recent_events"]
+    assert isinstance(send_thread_ids, list)
+    assert isinstance(recv_thread_ids, list)
+    assert isinstance(close_thread_ids, list)
+    assert isinstance(recent_events, list)
+    assert len(send_thread_ids) == 1
+    assert len(recv_thread_ids) == 1
+    assert len(close_thread_ids) == 1
+    lifecycle_events = [event["event"] for event in recent_events]
+    assert "AUDIO_SEND_START" in lifecycle_events
+    assert "RECV_EVENT_START" in lifecycle_events
+    assert "WEBSOCKET_ABORT_START" in lifecycle_events
+    assert "WEBSOCKET_CLOSE_START" in lifecycle_events
     assert not any(
         thread.name in {"orion-qwen-send", "orion-qwen-receive"}
         for thread in threading.enumerate()
@@ -349,6 +366,97 @@ def test_receive_worker_error_propagates_to_service_error_state(
         for path in (tmp_path / "qwen-live").iterdir()
     )
     assert "not-recorded" not in diagnostic_text
+    jsonl_path = next((tmp_path / "qwen-live").glob("*.jsonl"))
+    records = [
+        json.loads(line) for line in jsonl_path.read_text(encoding="utf-8").splitlines()
+    ]
+    lifecycle = next(
+        record for record in records if record["kind"] == "websocket_forensics"
+    )
+    exception = lifecycle["exception"]
+    assert exception["exception_type"] == "OSError"
+    assert exception["exception_message"] == "controlled receive failure"
+    assert "OSError: controlled receive failure" in exception["full_traceback"]
+    assert lifecycle["disconnect_origin"] == "recv_exception"
+    assert lifecycle["close_frame_received"] is False
+    events = [event["event"] for event in lifecycle["recent_events"]]
+    assert events.index("WEBSOCKET_EXCEPTION") < events.index(
+        "WORKER_FAILURE_REPORTED"
+    )
+    assert events.index("WORKER_FAILURE_REPORTED") < events.index("STOP_EVENT_SET")
+    assert events.index("STOP_EVENT_SET") < events.index(
+        "AUDIO_COORDINATOR_CLEANUP_START"
+    )
+    assert events.index("AUDIO_COORDINATOR_CLEANUP_START") < events.index(
+        "WEBSOCKET_ABORT_START"
+    )
+    assert events.index("WEBSOCKET_ABORT_START") < events.index(
+        "WEBSOCKET_CLOSE_START"
+    )
+
+
+def test_control_frame_observer_records_close_ping_and_pong_without_consuming(
+    tmp_path: Path,
+) -> None:
+    diagnostics = _diagnostics(tmp_path)
+
+    class FakeABNF:
+        OPCODE_CLOSE = 8
+        OPCODE_PING = 9
+        OPCODE_PONG = 10
+
+    frames = [
+        SimpleNamespace(opcode=FakeABNF.OPCODE_PING, data=b"provider-ping"),
+        SimpleNamespace(opcode=FakeABNF.OPCODE_PONG, data=b"provider-pong"),
+        SimpleNamespace(
+            opcode=FakeABNF.OPCODE_CLOSE,
+            data=(1001).to_bytes(2, "big") + b"provider shutdown",
+        ),
+    ]
+
+    class FakeWebSocket:
+        ping_calls = 0
+        pong_calls = 0
+
+        def recv_frame(self) -> SimpleNamespace:
+            return frames.pop(0)
+
+        def ping(self, _payload: bytes = b"") -> None:
+            self.ping_calls += 1
+
+        def pong(self, _payload: bytes = b"") -> None:
+            self.pong_calls += 1
+
+    ws = FakeWebSocket()
+    core._install_websocket_frame_telemetry(
+        ws,
+        SimpleNamespace(ABNF=FakeABNF),
+        diagnostics,
+    )
+
+    assert ws.recv_frame().opcode == FakeABNF.OPCODE_PING
+    assert ws.recv_frame().opcode == FakeABNF.OPCODE_PONG
+    assert ws.recv_frame().opcode == FakeABNF.OPCODE_CLOSE
+    ws.ping(b"client-ping")
+    ws.pong(b"client-pong")
+
+    lifecycle = diagnostics.websocket_forensics()
+    assert lifecycle["close_frame_received"] is True
+    assert lifecycle["close_code"] == 1001
+    assert lifecycle["close_reason"] == "provider shutdown"
+    assert lifecycle["clean_close"] is True
+    assert ws.ping_calls == 1
+    assert ws.pong_calls == 1
+    recent_events = lifecycle["recent_events"]
+    assert isinstance(recent_events, list)
+    events = [event["event"] for event in recent_events]
+    assert events == [
+        "PING_RECEIVED",
+        "PONG_RECEIVED",
+        "WEBSOCKET_CLOSE_RECEIVED",
+        "PING_SENT",
+        "PONG_SENT",
+    ]
 
 
 @pytest.mark.parametrize("failure_stage", ["capture", "playback"])

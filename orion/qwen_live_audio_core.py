@@ -185,6 +185,82 @@ def _resample_pcm16_mono(data: bytes, source_rate: int, target_rate: int) -> byt
     return output.tobytes()
 
 
+def _install_websocket_frame_telemetry(
+    ws: Any, websocket: Any, diagnostics: QwenLiveDiagnostics
+) -> None:
+    """Observe control frames without changing websocket-client receive behavior."""
+
+    recv_frame = getattr(ws, "recv_frame", None)
+    abnf = getattr(websocket, "ABNF", None)
+    if not callable(recv_frame) or abnf is None:
+        diagnostics.record_websocket_event(
+            "CONTROL_FRAME_TELEMETRY_UNAVAILABLE",
+            direction="lifecycle",
+        )
+        return
+    if getattr(ws, "_orion_forensic_telemetry_installed", False):
+        return
+
+    def monitored_recv_frame(*args: object, **kwargs: object) -> Any:
+        frame = recv_frame(*args, **kwargs)
+        opcode = getattr(frame, "opcode", None)
+        frame_data = getattr(frame, "data", b"")
+        now_ns = time.perf_counter_ns()
+        if opcode == abnf.OPCODE_CLOSE:
+            if isinstance(frame_data, str):
+                close_data = frame_data.encode("utf-8", errors="replace")
+            else:
+                close_data = bytes(frame_data)
+            diagnostics.record_websocket_close_frame(close_data, t_ns=now_ns)
+        elif opcode == abnf.OPCODE_PING:
+            diagnostics.record_websocket_event(
+                "PING_RECEIVED",
+                direction="recv",
+                operation="recv",
+                t_ns=now_ns,
+            )
+        elif opcode == abnf.OPCODE_PONG:
+            diagnostics.record_websocket_event(
+                "PONG_RECEIVED",
+                direction="recv",
+                operation="recv",
+                t_ns=now_ns,
+            )
+        return frame
+
+    try:
+        setattr(ws, "recv_frame", monitored_recv_frame)
+        setattr(ws, "_orion_forensic_telemetry_installed", True)
+    except (AttributeError, TypeError):
+        diagnostics.record_websocket_event(
+            "CONTROL_FRAME_TELEMETRY_UNAVAILABLE",
+            direction="lifecycle",
+        )
+        return
+
+    ping = getattr(ws, "ping", None)
+    if callable(ping):
+
+        def monitored_ping(*args: object, **kwargs: object) -> Any:
+            diagnostics.record_websocket_event(
+                "PING_SENT", direction="send", operation="control_send"
+            )
+            return ping(*args, **kwargs)
+
+        setattr(ws, "ping", monitored_ping)
+
+    pong = getattr(ws, "pong", None)
+    if callable(pong):
+
+        def monitored_pong(*args: object, **kwargs: object) -> Any:
+            diagnostics.record_websocket_event(
+                "PONG_SENT", direction="send", operation="control_send"
+            )
+            return pong(*args, **kwargs)
+
+        setattr(ws, "pong", monitored_pong)
+
+
 def _audio_session_update(model: str, voice: str) -> dict[str, Any]:
     normalized = model.strip().casefold()
     vad_type = "semantic_vad" if normalized == "qwen3.5-omni-realtime" or normalized.startswith("qwen3.5-omni-realtime-") else "server_vad"
@@ -209,6 +285,7 @@ class QwenLiveAudioService:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._status = QwenLiveStatus()
+        self._active_diagnostics: QwenLiveDiagnostics | None = None
 
     def status(self) -> QwenLiveStatus:
         with self._lock:
@@ -225,6 +302,14 @@ class QwenLiveAudioService:
             return self._status.model_copy(deep=True)
 
     def stop(self) -> QwenLiveStatus:
+        with self._lock:
+            diagnostics = self._active_diagnostics
+        if diagnostics is not None:
+            diagnostics.record_websocket_event(
+                "STOP_REQUESTED",
+                direction="lifecycle",
+                stop_source="service.stop",
+            )
         self._stop.set()
         thread = self._thread
         if thread is not None and thread.is_alive():
@@ -289,14 +374,28 @@ class QwenLiveAudioService:
     def _report_worker_failure(
         failures: queue.Queue[_WorkerFailure],
         stop_event: threading.Event,
+        diagnostics: QwenLiveDiagnostics,
         stage: str,
         error: Exception,
     ) -> None:
+        diagnostics.record_websocket_event(
+            "WORKER_FAILURE_REPORTED",
+            direction="lifecycle",
+            stage=stage,
+            exception_type=type(error).__name__,
+            stop_event_before=stop_event.is_set(),
+        )
         try:
             failures.put_nowait(_WorkerFailure(stage, error))
         except queue.Full:
             pass
         stop_event.set()
+        diagnostics.record_websocket_event(
+            "STOP_EVENT_SET",
+            direction="lifecycle",
+            stage=stage,
+            stop_event_after=stop_event.is_set(),
+        )
 
     def _send_worker(
         self,
@@ -314,6 +413,13 @@ class QwenLiveAudioService:
                 except queue.Empty:
                     continue
                 send_start_ns = time.perf_counter_ns()
+                diagnostics.record_websocket_event(
+                    "AUDIO_SEND_START",
+                    direction="send",
+                    operation="send",
+                    t_ns=send_start_ns,
+                    event_type="input_audio_buffer.append",
+                )
                 ws.send(
                     json.dumps(
                         {
@@ -323,17 +429,40 @@ class QwenLiveAudioService:
                     )
                 )
                 send_end_ns = time.perf_counter_ns()
+                diagnostics.record_websocket_event(
+                    "AUDIO_SEND_END",
+                    direction="send",
+                    operation="send",
+                    t_ns=send_end_ns,
+                    event_type="input_audio_buffer.append",
+                )
                 diagnostics.record_send(
                     send_start_ns=send_start_ns,
                     send_end_ns=send_end_ns,
                     pcm_frames=len(qwen_pcm) // 2,
                 )
         except Exception as exc:
+            diagnostics.record_websocket_exception(
+                exc,
+                ws=ws,
+                stage="send",
+                fatal=not stop_event.is_set(),
+            )
             if not stop_event.is_set():
                 self._report_worker_failure(
-                    failures, stop_event, "websocket send", exc
+                    failures,
+                    stop_event,
+                    diagnostics,
+                    "websocket send",
+                    exc,
                 )
         finally:
+            diagnostics.record_websocket_event(
+                "WORKER_EXIT",
+                direction="lifecycle",
+                worker="websocket_send",
+                stop_event=stop_event.is_set(),
+            )
             diagnostics.record("worker_stopped", stage="websocket_send")
 
     def _receive_worker(
@@ -351,10 +480,23 @@ class QwenLiveAudioService:
         try:
             while not stop_event.is_set():
                 recv_start_ns = time.perf_counter_ns()
+                diagnostics.record_websocket_event(
+                    "RECV_EVENT_START",
+                    direction="recv",
+                    operation="recv",
+                    t_ns=recv_start_ns,
+                )
                 try:
                     event = provider._receive_json(ws)
-                except websocket.WebSocketTimeoutException:
+                except websocket.WebSocketTimeoutException as exc:
                     recv_end_ns = time.perf_counter_ns()
+                    diagnostics.record_websocket_exception(
+                        exc,
+                        ws=ws,
+                        stage="recv",
+                        fatal=False,
+                        t_ns=recv_end_ns,
+                    )
                     diagnostics.record_recv(
                         recv_start_ns=recv_start_ns,
                         recv_end_ns=recv_end_ns,
@@ -363,6 +505,13 @@ class QwenLiveAudioService:
                     continue
                 recv_end_ns = time.perf_counter_ns()
                 event_type = str(event.get("type") or "")
+                diagnostics.record_websocket_event(
+                    "RECV_EVENT_SUCCESS",
+                    direction="recv",
+                    operation="recv",
+                    t_ns=recv_end_ns,
+                    event_type=event_type,
+                )
                 diagnostics.record_recv(
                     recv_start_ns=recv_start_ns,
                     recv_end_ns=recv_end_ns,
@@ -437,11 +586,27 @@ class QwenLiveAudioService:
                     end_ns=processing_end_ns,
                 )
         except Exception as exc:
+            diagnostics.record_websocket_exception(
+                exc,
+                ws=ws,
+                stage="recv",
+                fatal=not stop_event.is_set(),
+            )
             if not stop_event.is_set():
                 self._report_worker_failure(
-                    failures, stop_event, "websocket receive", exc
+                    failures,
+                    stop_event,
+                    diagnostics,
+                    "websocket receive",
+                    exc,
                 )
         finally:
+            diagnostics.record_websocket_event(
+                "WORKER_EXIT",
+                direction="lifecycle",
+                worker="websocket_receive",
+                stop_event=stop_event.is_set(),
+            )
             diagnostics.record("worker_stopped", stage="websocket_receive")
 
     def _run_transport(
@@ -591,19 +756,79 @@ class QwenLiveAudioService:
         except Exception as exc:
             transport_error = exc
         finally:
+            cleanup_ns = time.perf_counter_ns()
+            diagnostics.record_websocket_event(
+                "AUDIO_COORDINATOR_CLEANUP_START",
+                direction="lifecycle",
+                t_ns=cleanup_ns,
+                stop_event_before=stop_event.is_set(),
+                transport_error_type=(
+                    type(transport_error).__name__ if transport_error else ""
+                ),
+            )
+            diagnostics.record_websocket_disconnect(
+                t_ns=cleanup_ns,
+                origin=(
+                    "transport_error" if transport_error else "cleanup_after_stop"
+                ),
+            )
             stop_event.set()
+            diagnostics.record_websocket_event(
+                "STOP_EVENT_SET",
+                direction="lifecycle",
+                stage="audio_coordinator_cleanup",
+                stop_event_after=stop_event.is_set(),
+            )
             abort = getattr(ws, "abort", None)
             if callable(abort):
+                diagnostics.record_websocket_event(
+                    "WEBSOCKET_ABORT_START",
+                    direction="close",
+                    operation="close",
+                )
                 try:
                     abort()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    diagnostics.record_websocket_exception(
+                        exc,
+                        ws=ws,
+                        stage="close",
+                        fatal=False,
+                    )
+                diagnostics.record_websocket_event(
+                    "WEBSOCKET_ABORT_END",
+                    direction="close",
+                    operation="close",
+                )
+            diagnostics.record_websocket_close_attempt(
+                t_ns=time.perf_counter_ns()
+            )
             try:
                 ws.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                diagnostics.record_websocket_exception(
+                    exc,
+                    ws=ws,
+                    stage="close",
+                    fatal=False,
+                )
+            diagnostics.record_websocket_event(
+                "WEBSOCKET_CLOSE_END",
+                direction="close",
+                operation="close",
+                close_frame_received=diagnostics.websocket_forensics()[
+                    "close_frame_received"
+                ],
+            )
             for worker in workers:
                 worker.join(timeout=WORKER_JOIN_TIMEOUT_S)
+            diagnostics.record_websocket_event(
+                "AUDIO_COORDINATOR_CLEANUP_END",
+                direction="lifecycle",
+                workers_alive=",".join(
+                    worker.name for worker in workers if worker.is_alive()
+                ),
+            )
 
         alive_workers = [worker.name for worker in workers if worker.is_alive()]
         if alive_workers:
@@ -634,6 +859,9 @@ class QwenLiveAudioService:
             qwen_input_rate=QWEN_INPUT_RATE,
             qwen_output_rate=QWEN_OUTPUT_RATE,
         )
+        with self._lock:
+            self._active_diagnostics = diagnostics
+        connect_started = False
         try:
             import sounddevice as sd
             import websocket
@@ -655,8 +883,24 @@ class QwenLiveAudioService:
                                         region=request.region, model=request.model, timeout_s=15.0)
             provider = QwenRealtimeProvider(config)
             connect_start_ns = time.perf_counter_ns()
-            ws = provider._connect()
+            connect_started = True
+            diagnostics.record_websocket_event(
+                "CONNECT_START",
+                direction="lifecycle",
+                t_ns=connect_start_ns,
+            )
+            try:
+                ws = provider._connect()
+            except Exception as exc:
+                diagnostics.record_websocket_exception(
+                    exc,
+                    ws=None,
+                    stage="connect",
+                    fatal=True,
+                )
+                raise
             connect_end_ns = time.perf_counter_ns()
+            diagnostics.record_websocket_connect(t_ns=connect_end_ns)
             diagnostics.record(
                 "ws_connected",
                 t_ns=connect_end_ns,
@@ -664,11 +908,36 @@ class QwenLiveAudioService:
                 connect_end_ns=connect_end_ns,
                 connect_duration_ms=(connect_end_ns - connect_start_ns) / 1_000_000,
             )
+            diagnostics.record_websocket_ping_configuration(configured=False)
+            _install_websocket_frame_telemetry(ws, websocket, diagnostics)
             ws.settimeout(0.25)
             diagnostics.record("ws_timeout_configured", timeout_ms=250)
             session_send_start_ns = time.perf_counter_ns()
-            ws.send(json.dumps(session_update, ensure_ascii=False))
+            diagnostics.record_websocket_event(
+                "SESSION_UPDATE_SEND_START",
+                direction="send",
+                operation="send",
+                t_ns=session_send_start_ns,
+                event_type="session.update",
+            )
+            try:
+                ws.send(json.dumps(session_update, ensure_ascii=False))
+            except Exception as exc:
+                diagnostics.record_websocket_exception(
+                    exc,
+                    ws=ws,
+                    stage="send",
+                    fatal=True,
+                )
+                raise
             session_send_end_ns = time.perf_counter_ns()
+            diagnostics.record_websocket_event(
+                "SESSION_UPDATE_SENT",
+                direction="send",
+                operation="send",
+                t_ns=session_send_end_ns,
+                event_type="session.update",
+            )
             diagnostics.record(
                 "session_update_sent",
                 t_ns=session_send_end_ns,
@@ -679,10 +948,24 @@ class QwenLiveAudioService:
             deadline = time.monotonic() + config.timeout_s
             while time.monotonic() < deadline and not stop_event.is_set():
                 recv_start_ns = time.perf_counter_ns()
+                diagnostics.record_websocket_event(
+                    "RECV_EVENT_START",
+                    direction="recv",
+                    operation="recv",
+                    t_ns=recv_start_ns,
+                    stage="session_handshake",
+                )
                 try:
                     event = provider._receive_json(ws)
-                except websocket.WebSocketTimeoutException:
+                except websocket.WebSocketTimeoutException as exc:
                     recv_end_ns = time.perf_counter_ns()
+                    diagnostics.record_websocket_exception(
+                        exc,
+                        ws=ws,
+                        stage="recv",
+                        fatal=False,
+                        t_ns=recv_end_ns,
+                    )
                     diagnostics.record_recv(
                         recv_start_ns=recv_start_ns,
                         recv_end_ns=recv_end_ns,
@@ -691,6 +974,14 @@ class QwenLiveAudioService:
                     continue
                 recv_end_ns = time.perf_counter_ns()
                 event_type = str(event.get("type") or "")
+                diagnostics.record_websocket_event(
+                    "RECV_EVENT_SUCCESS",
+                    direction="recv",
+                    operation="recv",
+                    t_ns=recv_end_ns,
+                    event_type=event_type,
+                    stage="session_handshake",
+                )
                 diagnostics.record_recv(
                     recv_start_ns=recv_start_ns,
                     recv_end_ns=recv_end_ns,
@@ -700,6 +991,7 @@ class QwenLiveAudioService:
                 if event_type == "error":
                     raise RuntimeError(provider._error_message(event))
                 if event_type == "session.updated":
+                    diagnostics.record_websocket_session_ready(t_ns=recv_end_ns)
                     break
             else:
                 raise TimeoutError("Timed out waiting for Qwen session.updated")
@@ -735,15 +1027,38 @@ class QwenLiveAudioService:
                 ws = None
 
         except Exception as exc:
+            if connect_started and not diagnostics.websocket_disconnect_recorded:
+                diagnostics.record_websocket_exception(
+                    exc,
+                    ws=ws,
+                    stage="session",
+                    fatal=True,
+                )
             diagnostics.record("session_error", error_type=type(exc).__name__)
             self._set(state=QwenLiveState.ERROR, phase=QwenAudioPhase.IDLE, message=f"{type(exc).__name__}: {exc}")
         finally:
             stop_event.set()
             if ws is not None:
+                close_start_ns = time.perf_counter_ns()
+                diagnostics.record_websocket_disconnect(
+                    t_ns=close_start_ns,
+                    origin="session_cleanup",
+                )
+                diagnostics.record_websocket_close_attempt(t_ns=close_start_ns)
                 try:
                     ws.close()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    diagnostics.record_websocket_exception(
+                        exc,
+                        ws=ws,
+                        stage="close",
+                        fatal=False,
+                    )
+                diagnostics.record_websocket_event(
+                    "WEBSOCKET_CLOSE_END",
+                    direction="close",
+                    operation="close",
+                )
             with self._lock:
                 if self._status.state is not QwenLiveState.ERROR:
                     self._status.state = QwenLiveState.STOPPED
@@ -753,6 +1068,9 @@ class QwenLiveAudioService:
                 diagnostics.finish()
             except Exception:
                 pass
+            with self._lock:
+                if self._active_diagnostics is diagnostics:
+                    self._active_diagnostics = None
 
 
 qwen_live_audio = QwenLiveAudioService()
