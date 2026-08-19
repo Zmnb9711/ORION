@@ -15,9 +15,7 @@ from orion.qwen_realtime_provider import QwenRealtimeConfig, QwenRealtimeProvide
 
 @dataclass(slots=True)
 class CloudVoiceConfig:
-    voice_backend: str = "local_whisper"
     cloud_provider: str = "qwen_realtime"
-    fallback_backend: str = "local_whisper"
     qwen_region: str = "singapore"
     qwen_workspace_id: str = ""
     qwen_model: str = "qwen3.5-omni-flash-realtime"
@@ -48,7 +46,7 @@ class CloudVoiceConfigStore:
 
 
 class LauncherCloudVoiceSectionsMixin:
-    """ADR-004 Settings → Voice surface layered onto the field-confirmed Launcher."""
+    """Qwen-only Settings → Voice surface layered onto the Launcher."""
 
     def _cloud_voice_store(self) -> CloudVoiceConfigStore:
         return CloudVoiceConfigStore(self.runtime_dir)
@@ -70,22 +68,19 @@ class LauncherCloudVoiceSectionsMixin:
         ttk.Label(
             self.content,
             text=(
-                "Choose the ORION voice backend. Cloud Realtime is experimental; the field-confirmed "
-                "whisper.cpp path remains installed and available as fallback."
+                "ORION conversational voice requires Qwen Realtime. If the provider, network, or API key "
+                "is unavailable, voice mode is unavailable."
             ),
             style="Muted.TLabel",
             wraplength=820,
             justify="left",
         ).pack(anchor="w", pady=(4, 12))
 
-        backend_labels = {"Local / Whisper.cpp": "local_whisper", "Cloud Realtime": "cloud_realtime"}
         provider_labels = {"Qwen Realtime": "qwen_realtime"}
         region_labels = {"Singapore": "singapore", "China (Beijing)": "beijing"}
-        reverse_backend = {value: label for label, value in backend_labels.items()}
         reverse_provider = {value: label for label, value in provider_labels.items()}
         reverse_region = {value: label for label, value in region_labels.items()}
 
-        backend = StringVar(value=reverse_backend.get(config.voice_backend, "Local / Whisper.cpp"))
         provider = StringVar(value=reverse_provider.get(config.cloud_provider, "Qwen Realtime"))
         region = StringVar(value=reverse_region.get(config.qwen_region, "Singapore"))
         workspace = StringVar(value=config.qwen_workspace_id)
@@ -94,13 +89,10 @@ class LauncherCloudVoiceSectionsMixin:
         # Settings pages are destroyed/recreated during navigation. Mirror every
         # edit immediately into Launcher session memory, not only on SAVE.
         api_key.trace_add("write", lambda *_: self._remember_qwen_api_key(api_key.get()))
-        fallback = StringVar(value="Local / Whisper.cpp")
         live_status = StringVar(value="STOPPED — Qwen live audio is not active")
 
         box = ttk.Frame(self.content, style="Card.TFrame", padding=16)
         box.pack(fill=X)
-        ttk.Label(box, text="VOICE BACKEND", style="CardTitle.TLabel").pack(anchor="w")
-        ttk.Combobox(box, textvariable=backend, values=tuple(backend_labels), state="readonly", width=42).pack(anchor="w", pady=(6, 12))
         ttk.Label(box, text="CLOUD PROVIDER", style="CardTitle.TLabel").pack(anchor="w")
         ttk.Combobox(box, textvariable=provider, values=tuple(provider_labels), state="readonly", width=42).pack(anchor="w", pady=(6, 12))
         ttk.Label(box, text="REGION", style="CardTitle.TLabel").pack(anchor="w")
@@ -116,13 +108,11 @@ class LauncherCloudVoiceSectionsMixin:
             text="The API key is kept in memory for this Launcher session and is not written to cloud-voice.json.",
             style="CardText.TLabel",
         ).pack(anchor="w", pady=(0, 12))
-        ttk.Label(box, text="FALLBACK", style="CardTitle.TLabel").pack(anchor="w")
-        ttk.Combobox(box, textvariable=fallback, values=("Local / Whisper.cpp",), state="readonly", width=42).pack(anchor="w", pady=(6, 12))
         ttk.Label(
             box,
             text=(
-                "ADR-004 clean live path: selected microphone → ORION Core → Qwen Realtime → selected output. "
-                "ATC/AWACS/JTAC/AAR tools remain disabled; whisper.cpp remains fallback."
+                "Selected microphone → ORION Core → Qwen Realtime → selected output. "
+                "Qwen starts only when START LIVE QWEN is pressed; no local or text fallback is available."
             ),
             style="CardText.TLabel",
             wraplength=780,
@@ -134,9 +124,7 @@ class LauncherCloudVoiceSectionsMixin:
 
         def selected_config() -> CloudVoiceConfig:
             return CloudVoiceConfig(
-                voice_backend=backend_labels[backend.get()],
                 cloud_provider=provider_labels[provider.get()],
-                fallback_backend="local_whisper",
                 qwen_region=region_labels[region.get()],
                 qwen_workspace_id=workspace.get().strip(),
                 qwen_model=model.get().strip() or "qwen3.5-omni-flash-realtime",
@@ -180,6 +168,15 @@ class LauncherCloudVoiceSectionsMixin:
         ).pack(side=LEFT)
 
         self._qwen_live_poll(live_status)
+
+    def _stop_qwen_before_exit(self) -> None:
+        """Best-effort graceful stop while Core is still available."""
+        try:
+            self._realtime_core_json("/v1/realtime/qwen/live/stop", method="POST")
+        except Exception:
+            # Explicit application exit must still shut down a stopped or
+            # unreachable Core.  Core process shutdown is the final boundary.
+            return
 
     def _realtime_core_json(self, path: str, *, method: str = "GET", payload: dict[str, object] | None = None) -> dict[str, object]:
         """Realtime-only Core JSON helper.

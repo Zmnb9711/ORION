@@ -5,20 +5,17 @@ from tkinter import Tk
 
 from orion.core_process import CoreProcessManager
 from orion.desktop_launcher import _install_tk_exception_boundary
-from orion.desktop_launcher_conversation import ConversationalAudioRuntimeLauncher
+from orion.desktop_launcher_audio import AudioAwareRuntimeLauncher
 from orion.launcher_cloud_voice_sections import LauncherCloudVoiceSectionsMixin
 from orion.launcher_dropdown_readability import LauncherDropdownReadabilityMixin
 from orion.launcher_field_ui_fix import LauncherFieldUiFixMixin
-from orion.launcher_voice_status import LauncherVoiceStatusMixin
-from orion.voice_process import VoiceProcessManager
 
 
-class FieldFixedConversationalAudioLauncher(
+class FieldFixedAudioLauncher(
     LauncherCloudVoiceSectionsMixin,
-    LauncherVoiceStatusMixin,
     LauncherDropdownReadabilityMixin,
     LauncherFieldUiFixMixin,
-    ConversationalAudioRuntimeLauncher,
+    AudioAwareRuntimeLauncher,
 ):
     """Canonical Launcher with field-tested UI stability/readability fixes."""
 
@@ -28,34 +25,26 @@ class FieldFixedConversationalAudioLauncher(
         Closing the window is handled by ``WindowsOrionDesktopLauncher.close``
         and only withdraws it to the tray.  This method is reserved for the
         explicit tray Exit action and therefore owns the full runtime shutdown:
-        Voice/Whisper first, Core second, Launcher last.
+        An active Qwen session is stopped through Core first, followed by Core
+        and Launcher teardown.  If Core is unavailable, shutdown continues.
         """
         if getattr(self, "_really_exiting", False):
             return
         self._really_exiting = True
         self._tray.stop()
-        voice = getattr(self, "voice", None)
-        if voice is not None:
-            voice.stop()
+        self._stop_qwen_before_exit()
         self.core.shutdown()
         self.root.destroy()
 
 
 def run_field_fixed_launcher(runtime_dir: Path, host: str = "127.0.0.1", port: int = 8000) -> int:
     core = CoreProcessManager(host, port, runtime_dir)
-    voice = VoiceProcessManager(runtime_dir, core.base_url)
     core.start()
     try:
-        try:
-            voice.start()
-        except (FileNotFoundError, OSError, RuntimeError) as exc:
-            voice._write_state("ERROR", error=f"{type(exc).__name__}: {exc}")
         root = Tk()
         _install_tk_exception_boundary(root, runtime_dir)
-        launcher = FieldFixedConversationalAudioLauncher(root, runtime_dir=runtime_dir, core=core)  # type: ignore[arg-type]
-        launcher.voice = voice
+        FieldFixedAudioLauncher(root, runtime_dir=runtime_dir, core=core)  # type: ignore[arg-type]
         root.mainloop()
     finally:
-        voice.stop()
         core.shutdown()
     return 0

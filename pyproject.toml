@@ -18,7 +18,6 @@ dependencies = [
 orion = "orion.launcher:main"
 orion-core = "orion.core_main:main"
 orion-launcher = "orion.launcher_main:main"
-orion-voice = "orion.whisper_voice_worker:main"
 
 [project.optional-dependencies]
 dev = [

@@ -46,7 +46,6 @@ class _Launcher(LauncherFieldUiFixMixin):
         self.health = None
         self.snapshot_error = snapshot_error
         self.render_count = 0
-        self.conversation_runs = 0
         self.physical_runs: list[tuple[str, object]] = []
 
     def _render_status_strip(self):
@@ -71,9 +70,6 @@ class _Launcher(LauncherFieldUiFixMixin):
     def _card(self, *args, **kwargs):
         return _Widget()
 
-    def _run_conversational_audio_test(self):
-        self.conversation_runs += 1
-
     def _run_physical_audio_test(self, direction, endpoint):
         self.physical_runs.append((direction, endpoint))
 
@@ -96,8 +92,8 @@ def test_apply_health_updates_state_without_page_rebuild():
 
 def test_action_button_has_visible_text_and_disabled_state(monkeypatch):
     _patch_widgets(monkeypatch)
-    enabled = LauncherFieldUiFixMixin._action_button(object(), "START AUDIO TEST", lambda: None, primary=True)
-    assert enabled.kwargs["text"] == "START AUDIO TEST"
+    enabled = LauncherFieldUiFixMixin._action_button(object(), "TEST MICROPHONE", lambda: None, primary=True)
+    assert enabled.kwargs["text"] == "TEST MICROPHONE"
     assert enabled.kwargs["fg"] == "#031014"
     disabled = LauncherFieldUiFixMixin._action_button(object(), "TEST OUTPUT", lambda: None, enabled=False)
     assert disabled.kwargs["text"] == "TEST OUTPUT"
@@ -109,7 +105,7 @@ def test_page_test_renders_visible_audio_actions_when_endpoints_resolve(monkeypa
     launcher = _Launcher()
     launcher._page_test()
     texts = [button.kwargs.get("text") for button in _Button.created]
-    assert texts == ["START AUDIO TEST", "TEST MICROPHONE", "TEST OUTPUT"]
+    assert texts == ["TEST MICROPHONE", "TEST OUTPUT"]
     assert all(button.config.get("state") != "disabled" for button in _Button.created)
 
 
@@ -117,9 +113,9 @@ def test_page_test_disables_audio_actions_when_core_or_api_unavailable(monkeypat
     _patch_widgets(monkeypatch)
     launcher = _Launcher(healthy=False)
     launcher._page_test()
-    assert [button.config.get("state") for button in _Button.created] == ["disabled", "disabled", "disabled"]
+    assert [button.config.get("state") for button in _Button.created] == ["disabled", "disabled"]
 
     _Button.created.clear()
     launcher = _Launcher(healthy=True, snapshot_error=True)
     launcher._page_test()
-    assert [button.config.get("state") for button in _Button.created] == ["disabled", "disabled", "disabled"]
+    assert [button.config.get("state") for button in _Button.created] == ["disabled", "disabled"]

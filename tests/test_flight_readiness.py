@@ -93,3 +93,31 @@ def test_missing_optional_components_gives_limited_mode(tmp_path) -> None:
     assert report.level is ReadinessLevel.LIMITED
     assert report.ready_to_launch is True
     assert any(check.key == "mission_pack" and not check.passed for check in report.checks)
+
+
+def test_qwen_not_manually_started_does_not_block_dcs_launch(tmp_path) -> None:
+    executable = tmp_path / "DCS.exe"
+    executable.write_bytes(b"")
+    mission = tmp_path / "Training (ORION).miz"
+    _make_active_mission(mission)
+    profile = launch_profiles.create(
+        DcsLaunchProfileCreate(
+            name="Desktop",
+            mode=DcsLaunchMode.DESKTOP,
+            dcs_executable=str(executable),
+            mission_path=str(mission),
+        )
+    )
+
+    report = evaluate_flight_readiness(
+        FlightReadinessRequest(
+            profile_id=profile.profile_id,
+            ai_ready=True,
+            flight_bridge_installed=True,
+            voice_ready=False,
+        )
+    )
+
+    assert report.level is ReadinessLevel.LIMITED
+    assert report.ready_to_launch is True
+    assert any(check.key == "voice" and not check.passed and not check.blocking for check in report.checks)

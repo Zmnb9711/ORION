@@ -168,13 +168,13 @@ class LauncherFieldUiFixMixin:
             inputs, outputs, state, selection, resolved_in, resolved_out = [], [], {}, {}, None, None
             audio_api_ok = False
 
-        # Put the user action before diagnostics so it is always above the fold.
+        # Keep physical endpoint diagnostics above the fold.
         audio = ttk.Frame(self.content, style="Card.TFrame", padding=14)
         audio.pack(fill=X, pady=(12, 10))
-        ttk.Label(audio, text="CONVERSATIONAL AUDIO TEST", style="CardTitle.TLabel").pack(anchor="w")
+        ttk.Label(audio, text="PHYSICAL AUDIO TEST", style="CardTitle.TLabel").pack(anchor="w")
         ttk.Label(
             audio,
-            text='Press START and say: “Привет, как дела?”  Expected reply: “Дела отлично. Связь установлена.”',
+            text="Verify the selected microphone and output device without starting cloud voice.",
             style="CardText.TLabel",
             wraplength=780,
             justify="left",
@@ -183,15 +183,9 @@ class LauncherFieldUiFixMixin:
         action_row.pack(fill=X)
         self._action_button(
             action_row,
-            "START AUDIO TEST",
-            self._run_conversational_audio_test,
-            primary=True,
-            enabled=core_ok and resolved_in is not None and resolved_out is not None,
-        ).pack(side=LEFT, padx=(0, 8))
-        self._action_button(
-            action_row,
             "TEST MICROPHONE",
             lambda: self._run_physical_audio_test("input", resolved_in),
+            primary=True,
             enabled=resolved_in is not None,
         ).pack(side=LEFT, padx=(0, 8))
         self._action_button(

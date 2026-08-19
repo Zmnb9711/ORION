@@ -3,7 +3,6 @@
 #define MyAppPublisher "ORION"
 #define MyLauncherExe "Launcher\ORION-Launcher.exe"
 #define MyCoreExe "Core\ORION-Core.exe"
-#define MyVoiceExe "Voice\ORION-Voice.exe"
 
 [Setup]
 AppId={{6E4CA1C5-4E77-42CE-9E6B-A6D1124B09E7}
@@ -31,7 +30,6 @@ SetupIconFile=..\branding\orion.ico
 [Files]
 Source: "..\dist-product\Core\*"; DestDir: "{app}\Core"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\dist-product\Launcher\*"; DestDir: "{app}\Launcher"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "..\dist-product\Voice\*"; DestDir: "{app}\Voice"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\dist-product\Integration\*"; DestDir: "{app}\Integration"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Dirs]
@@ -39,7 +37,12 @@ Name: "{localappdata}\ORION\runtime"
 Name: "{localappdata}\ORION\runtime\logs"
 Name: "{localappdata}\ORION\runtime\diagnostics"
 Name: "{localappdata}\ORION\runtime\updates"
-Name: "{localappdata}\ORION\runtime\voice"
+
+[InstallDelete]
+; Upgrade migration: remove only known ORION-managed legacy voice paths.
+Type: filesandordirs; Name: "{app}\Voice"
+Type: filesandordirs; Name: "{localappdata}\ORION\runtime\voice"
+Type: filesandordirs; Name: "{localappdata}\ORION\runtime\stt\whisper.cpp"
 
 [Icons]
 Name: "{autoprograms}\ORION"; Filename: "{app}\{#MyLauncherExe}"; WorkingDir: "{app}\Launcher"
@@ -54,7 +57,6 @@ Filename: "{app}\{#MyLauncherExe}"; WorkingDir: "{app}\Launcher"; Description: "
 
 [UninstallRun]
 Filename: "{cmd}"; Parameters: "/C taskkill /F /IM ORION-Launcher.exe >nul 2>&1 || exit /B 0"; Flags: runhidden waituntilterminated
-Filename: "{cmd}"; Parameters: "/C taskkill /F /IM ORION-Voice.exe >nul 2>&1 || exit /B 0"; Flags: runhidden waituntilterminated
 Filename: "{cmd}"; Parameters: "/C taskkill /F /IM ORION-Core.exe >nul 2>&1 || exit /B 0"; Flags: runhidden waituntilterminated
 
 [UninstallDelete]
@@ -74,7 +76,6 @@ begin
     survives normal Launcher window closes, so Setup must own the upgrade
     boundary and stop every product process before replacing binaries. }
   KillProcessByImage('ORION-Launcher.exe');
-  KillProcessByImage('ORION-Voice.exe');
   KillProcessByImage('ORION-Core.exe');
   Sleep(400);
   Result := '';

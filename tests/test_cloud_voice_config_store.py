@@ -6,9 +6,7 @@ from orion.launcher_cloud_voice_sections import CloudVoiceConfig, CloudVoiceConf
 def test_cloud_voice_config_round_trip_contains_only_non_secret_settings(tmp_path) -> None:  # noqa: ANN001
     store = CloudVoiceConfigStore(tmp_path)
     config = CloudVoiceConfig(
-        voice_backend="cloud_realtime",
         cloud_provider="qwen_realtime",
-        fallback_backend="local_whisper",
         qwen_region="singapore",
         qwen_workspace_id="workspace-123",
         qwen_model="qwen3.5-omni-flash-realtime",
@@ -23,12 +21,25 @@ def test_cloud_voice_config_round_trip_contains_only_non_secret_settings(tmp_pat
     assert "bearer" not in raw.casefold()
 
 
-def test_cloud_voice_config_invalid_json_falls_back_to_local_whisper(tmp_path) -> None:  # noqa: ANN001
+def test_cloud_voice_config_invalid_json_falls_back_to_qwen_defaults(tmp_path) -> None:  # noqa: ANN001
     store = CloudVoiceConfigStore(tmp_path)
     store.path.write_text("{broken", encoding="utf-8")
 
     config = store.load()
 
-    assert config.voice_backend == "local_whisper"
-    assert config.fallback_backend == "local_whisper"
     assert config.cloud_provider == "qwen_realtime"
+
+
+def test_legacy_backend_fields_are_ignored(tmp_path) -> None:  # noqa: ANN001
+    store = CloudVoiceConfigStore(tmp_path)
+    store.path.write_text(
+        '{"voice_backend":"local_whisper","fallback_backend":"local_whisper","qwen_region":"beijing"}',
+        encoding="utf-8",
+    )
+
+    config = store.load()
+
+    assert config.cloud_provider == "qwen_realtime"
+    assert config.qwen_region == "beijing"
+    assert not hasattr(config, "voice_backend")
+    assert not hasattr(config, "fallback_backend")

@@ -1,6 +1,6 @@
 # ADR-004 — Cloud Realtime Voice / Qwen vertical slice
 
-Status: Accepted for experimental implementation
+Status: Superseded by ADR-005
 
 Baseline: ORION current field-confirmed working baseline is Build #312. Build #284 remains the immutable Voice/STT recovery GOLDEN.
 
