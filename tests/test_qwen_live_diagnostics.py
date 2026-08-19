@@ -366,7 +366,13 @@ def test_instrumented_transport_preserves_pcm_and_sync_operation_order(
         WasapiSettings=lambda **kwargs: kwargs,
         RawStream=lambda **kwargs: FakeRawStream(),
     )
+    fake_websocket = SimpleNamespace(
+        WebSocketTimeoutException=type(
+            "FakeWebSocketTimeoutException", (Exception,), {}
+        )
+    )
     monkeypatch.setitem(sys.modules, "sounddevice", fake_sounddevice)
+    monkeypatch.setitem(sys.modules, "websocket", fake_websocket)
     monkeypatch.setattr(core, "QwenRealtimeProvider", FakeProvider)
     monkeypatch.setenv("ORION_RUNTIME_DIR", str(tmp_path))
     service = core.QwenLiveAudioService()
