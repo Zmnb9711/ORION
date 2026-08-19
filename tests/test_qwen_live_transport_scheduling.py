@@ -192,7 +192,8 @@ def test_audio_capture_send_and_playback_continue_while_recv_is_blocked(
     assert "WEBSOCKET_ABORT_START" in lifecycle_events
     assert "WEBSOCKET_CLOSE_START" in lifecycle_events
     assert not any(
-        thread.name in {"orion-qwen-send", "orion-qwen-receive"}
+        thread.name
+        in {"orion-qwen-send", "orion-qwen-receive", "orion-qwen-heartbeat"}
         for thread in threading.enumerate()
     )
 

@@ -24,6 +24,11 @@ CAPTURE_MS = 40
 CAPTURE_QUEUE_BLOCKS = 25
 PLAYBACK_BUFFER_MS = 2_000
 WORKER_JOIN_TIMEOUT_S = 1.0
+PING_INTERVAL_SEC = 15.0
+PONG_TIMEOUT_SEC = 10.0
+FIRST_AUDIO_TIMEOUT_SEC = 20.0
+INTER_DELTA_TIMEOUT_SEC = 5.0
+RESPONSE_COMPLETION_TIMEOUT_SEC = 30.0
 
 
 class QwenLiveState(StrEnum):
@@ -76,6 +81,161 @@ class _ResolvedAudio:
 class _WorkerFailure:
     stage: str
     error: Exception
+
+
+class _HeartbeatTimeoutError(TimeoutError):
+    pass
+
+
+class _ProviderErrorEvent(RuntimeError):
+    pass
+
+
+@dataclass(slots=True, frozen=True)
+class _ResponseTimeout:
+    event: str
+    response_id: str
+    elapsed_ms: float
+
+
+class _SessionMonitor:
+    """Thread-safe monotonic heartbeat and response lifecycle state."""
+
+    def __init__(self, *, connected_ns: int) -> None:
+        self._lock = threading.Lock()
+        self._connected_ns = connected_ns
+        self.last_rx_ns = connected_ns
+        self.last_tx_ns = connected_ns
+        self.last_ping_ns: int | None = None
+        self.last_pong_ns: int | None = None
+        self._pong_deadline_ns: int | None = None
+        self._response_id = ""
+        self._response_created_ns: int | None = None
+        self._first_audio_ns: int | None = None
+        self._last_delta_ns: int | None = None
+        self._ignore_audio_until_created = False
+
+    def record_rx(self, t_ns: int) -> None:
+        with self._lock:
+            self.last_rx_ns = t_ns
+
+    def record_tx(self, t_ns: int) -> None:
+        with self._lock:
+            self.last_tx_ns = t_ns
+
+    def ping_due(self, now_ns: int) -> bool:
+        with self._lock:
+            reference = self.last_ping_ns or self._connected_ns
+            return (
+                self._pong_deadline_ns is None
+                and now_ns - reference >= int(PING_INTERVAL_SEC * 1_000_000_000)
+            )
+
+    def record_ping(self, t_ns: int) -> None:
+        with self._lock:
+            self.last_ping_ns = t_ns
+            self.last_tx_ns = t_ns
+            self._pong_deadline_ns = t_ns + int(PONG_TIMEOUT_SEC * 1_000_000_000)
+
+    def record_pong(self, t_ns: int) -> None:
+        with self._lock:
+            self.last_rx_ns = t_ns
+            self.last_pong_ns = t_ns
+            self._pong_deadline_ns = None
+
+    def heartbeat_expired(self, now_ns: int) -> bool:
+        with self._lock:
+            return (
+                self._pong_deadline_ns is not None
+                and now_ns >= self._pong_deadline_ns
+            )
+
+    def ages_ms(self, now_ns: int) -> dict[str, float | None]:
+        with self._lock:
+            return {
+                "last_rx_age_ms": (now_ns - self.last_rx_ns) / 1_000_000,
+                "last_tx_age_ms": (now_ns - self.last_tx_ns) / 1_000_000,
+                "last_ping_age_ms": (
+                    (now_ns - self.last_ping_ns) / 1_000_000
+                    if self.last_ping_ns is not None
+                    else None
+                ),
+                "last_pong_age_ms": (
+                    (now_ns - self.last_pong_ns) / 1_000_000
+                    if self.last_pong_ns is not None
+                    else None
+                ),
+            }
+
+    def response_created(self, event: dict[str, Any], t_ns: int) -> None:
+        response = event.get("response")
+        response_id = response.get("id") if isinstance(response, dict) else None
+        with self._lock:
+            self._response_id = str(response_id or event.get("response_id") or "")
+            self._response_created_ns = t_ns
+            self._first_audio_ns = None
+            self._last_delta_ns = None
+            self._ignore_audio_until_created = False
+
+    def audio_delta(self, t_ns: int) -> bool:
+        with self._lock:
+            if self._ignore_audio_until_created:
+                return False
+            if self._response_created_ns is None:
+                self._response_created_ns = t_ns
+            if self._first_audio_ns is None:
+                self._first_audio_ns = t_ns
+            self._last_delta_ns = t_ns
+            return True
+
+    def response_audio_done(self, t_ns: int) -> None:
+        with self._lock:
+            if self._response_created_ns is None:
+                return
+            if self._first_audio_ns is None:
+                self._first_audio_ns = t_ns
+            self._last_delta_ns = None
+
+    def response_done(self) -> None:
+        with self._lock:
+            self._clear_response_locked()
+
+    def response_timeout(self, now_ns: int) -> _ResponseTimeout | None:
+        with self._lock:
+            created_ns = self._response_created_ns
+            if created_ns is None:
+                return None
+            event = ""
+            start_ns = created_ns
+            if now_ns - created_ns >= int(
+                RESPONSE_COMPLETION_TIMEOUT_SEC * 1_000_000_000
+            ):
+                event = "RESPONSE_COMPLETION_TIMEOUT"
+            elif self._first_audio_ns is None and now_ns - created_ns >= int(
+                FIRST_AUDIO_TIMEOUT_SEC * 1_000_000_000
+            ):
+                event = "RESPONSE_FIRST_AUDIO_TIMEOUT"
+            elif self._last_delta_ns is not None and now_ns - self._last_delta_ns >= int(
+                INTER_DELTA_TIMEOUT_SEC * 1_000_000_000
+            ):
+                event = "RESPONSE_INTER_DELTA_TIMEOUT"
+                start_ns = self._last_delta_ns
+            if not event:
+                return None
+            timeout = _ResponseTimeout(
+                event=event,
+                response_id=self._response_id,
+                elapsed_ms=(now_ns - start_ns) / 1_000_000,
+            )
+            self._clear_response_locked()
+            self._ignore_audio_until_created = True
+            return timeout
+
+    def _clear_response_locked(self) -> None:
+        self._response_id = ""
+        self._response_created_ns = None
+        self._first_audio_ns = None
+        self._last_delta_ns = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -186,7 +346,10 @@ def _resample_pcm16_mono(data: bytes, source_rate: int, target_rate: int) -> byt
 
 
 def _install_websocket_frame_telemetry(
-    ws: Any, websocket: Any, diagnostics: QwenLiveDiagnostics
+    ws: Any,
+    websocket: Any,
+    diagnostics: QwenLiveDiagnostics,
+    monitor: _SessionMonitor | None = None,
 ) -> None:
     """Observe control frames without changing websocket-client receive behavior."""
 
@@ -206,6 +369,8 @@ def _install_websocket_frame_telemetry(
         opcode = getattr(frame, "opcode", None)
         frame_data = getattr(frame, "data", b"")
         now_ns = time.perf_counter_ns()
+        if monitor is not None:
+            monitor.record_rx(now_ns)
         if opcode == abnf.OPCODE_CLOSE:
             if isinstance(frame_data, str):
                 close_data = frame_data.encode("utf-8", errors="replace")
@@ -220,11 +385,18 @@ def _install_websocket_frame_telemetry(
                 t_ns=now_ns,
             )
         elif opcode == abnf.OPCODE_PONG:
+            if monitor is not None:
+                monitor.record_pong(now_ns)
+            ages = monitor.ages_ms(now_ns) if monitor is not None else {}
             diagnostics.record_websocket_event(
                 "PONG_RECEIVED",
                 direction="recv",
                 operation="recv",
                 t_ns=now_ns,
+                last_rx_age_ms=ages.get("last_rx_age_ms"),
+                last_tx_age_ms=ages.get("last_tx_age_ms"),
+                last_ping_age_ms=ages.get("last_ping_age_ms"),
+                last_pong_age_ms=ages.get("last_pong_age_ms"),
             )
         return frame
 
@@ -242,8 +414,17 @@ def _install_websocket_frame_telemetry(
     if callable(ping):
 
         def monitored_ping(*args: object, **kwargs: object) -> Any:
+            now_ns = time.perf_counter_ns()
+            ages = monitor.ages_ms(now_ns) if monitor is not None else {}
             diagnostics.record_websocket_event(
-                "PING_SENT", direction="send", operation="control_send"
+                "PING_SENT",
+                direction="send",
+                operation="control_send",
+                t_ns=now_ns,
+                last_rx_age_ms=ages.get("last_rx_age_ms"),
+                last_tx_age_ms=ages.get("last_tx_age_ms"),
+                last_ping_age_ms=ages.get("last_ping_age_ms"),
+                last_pong_age_ms=ages.get("last_pong_age_ms"),
             )
             return ping(*args, **kwargs)
 
@@ -310,13 +491,17 @@ class QwenLiveAudioService:
                 direction="lifecycle",
                 stop_source="service.stop",
             )
+            diagnostics.record_websocket_event(
+                "CONNECTION_CLASSIFIED",
+                direction="lifecycle",
+                classification="MANUAL_STOP",
+            )
         self._stop.set()
         thread = self._thread
         if thread is not None and thread.is_alive():
             thread.join(timeout=3.0)
         with self._lock:
-            if self._status.state is not QwenLiveState.ERROR:
-                self._status = QwenLiveStatus(message="Qwen live audio stopped")
+            self._status = QwenLiveStatus(message="Qwen live audio stopped")
             return self._status.model_copy(deep=True)
 
     def _set(self, **changes: Any) -> None:
@@ -404,6 +589,8 @@ class QwenLiveAudioService:
         capture_queue: queue.Queue[bytes],
         diagnostics: QwenLiveDiagnostics,
         failures: queue.Queue[_WorkerFailure],
+        send_lock: threading.Lock,
+        monitor: _SessionMonitor,
     ) -> None:
         diagnostics.record("worker_started", stage="websocket_send")
         try:
@@ -420,15 +607,17 @@ class QwenLiveAudioService:
                     t_ns=send_start_ns,
                     event_type="input_audio_buffer.append",
                 )
-                ws.send(
-                    json.dumps(
-                        {
-                            "type": "input_audio_buffer.append",
-                            "audio": base64.b64encode(qwen_pcm).decode("ascii"),
-                        }
+                with send_lock:
+                    ws.send(
+                        json.dumps(
+                            {
+                                "type": "input_audio_buffer.append",
+                                "audio": base64.b64encode(qwen_pcm).decode("ascii"),
+                            }
+                        )
                     )
-                )
                 send_end_ns = time.perf_counter_ns()
+                monitor.record_tx(send_end_ns)
                 diagnostics.record_websocket_event(
                     "AUDIO_SEND_END",
                     direction="send",
@@ -442,6 +631,12 @@ class QwenLiveAudioService:
                     pcm_frames=len(qwen_pcm) // 2,
                 )
         except Exception as exc:
+            diagnostics.record_websocket_event(
+                "CONNECTION_CLASSIFIED",
+                direction="lifecycle",
+                classification="SEND_FAILURE",
+                exception_type=type(exc).__name__,
+            )
             diagnostics.record_websocket_exception(
                 exc,
                 ws=ws,
@@ -465,6 +660,94 @@ class QwenLiveAudioService:
             )
             diagnostics.record("worker_stopped", stage="websocket_send")
 
+    def _heartbeat_worker(
+        self,
+        ws: Any,
+        stop_event: threading.Event,
+        diagnostics: QwenLiveDiagnostics,
+        failures: queue.Queue[_WorkerFailure],
+        send_lock: threading.Lock,
+        monitor: _SessionMonitor,
+    ) -> None:
+        diagnostics.record("worker_started", stage="websocket_heartbeat")
+        try:
+            while not stop_event.wait(0.05):
+                now_ns = time.perf_counter_ns()
+                if monitor.heartbeat_expired(now_ns):
+                    ages = monitor.ages_ms(now_ns)
+                    diagnostics.record_websocket_event(
+                        "PONG_TIMEOUT",
+                        direction="lifecycle",
+                        t_ns=now_ns,
+                        last_rx_age_ms=ages["last_rx_age_ms"],
+                        last_tx_age_ms=ages["last_tx_age_ms"],
+                        last_ping_age_ms=ages["last_ping_age_ms"],
+                        last_pong_age_ms=ages["last_pong_age_ms"],
+                    )
+                    diagnostics.record_websocket_event(
+                        "CONNECTION_CLASSIFIED",
+                        direction="lifecycle",
+                        t_ns=now_ns,
+                        classification="HEARTBEAT_TIMEOUT",
+                    )
+                    raise _HeartbeatTimeoutError(
+                        f"Qwen WebSocket pong was not received within {PONG_TIMEOUT_SEC:g}s"
+                    )
+                if not monitor.ping_due(now_ns):
+                    continue
+                with send_lock:
+                    ping_ns = time.perf_counter_ns()
+                    monitor.record_ping(ping_ns)
+                    ws.ping()
+        except Exception as exc:
+            diagnostics.record_websocket_exception(
+                exc,
+                ws=ws,
+                stage="heartbeat",
+                fatal=not stop_event.is_set(),
+            )
+            if not stop_event.is_set():
+                self._report_worker_failure(
+                    failures,
+                    stop_event,
+                    diagnostics,
+                    "websocket heartbeat",
+                    exc,
+                )
+        finally:
+            diagnostics.record_websocket_event(
+                "WORKER_EXIT",
+                direction="lifecycle",
+                worker="websocket_heartbeat",
+                stop_event=stop_event.is_set(),
+            )
+            diagnostics.record("worker_stopped", stage="websocket_heartbeat")
+
+    def _apply_response_timeout(
+        self,
+        *,
+        monitor: _SessionMonitor,
+        now_ns: int,
+        playback: _BoundedPlaybackBuffer,
+        diagnostics: QwenLiveDiagnostics,
+    ) -> bool:
+        response_timeout = monitor.response_timeout(now_ns)
+        if response_timeout is None:
+            return False
+        playback.mark_response_active(False)
+        diagnostics.record_websocket_event(
+            response_timeout.event,
+            direction="lifecycle",
+            t_ns=now_ns,
+            response_id=response_timeout.response_id,
+            elapsed_ms=response_timeout.elapsed_ms,
+        )
+        self._set(
+            phase=QwenAudioPhase.LISTENING,
+            message="Qwen response stalled; listening for a new turn",
+        )
+        return True
+
     def _receive_worker(
         self,
         ws: Any,
@@ -475,6 +758,7 @@ class QwenLiveAudioService:
         playback: _BoundedPlaybackBuffer,
         diagnostics: QwenLiveDiagnostics,
         failures: queue.Queue[_WorkerFailure],
+        monitor: _SessionMonitor,
     ) -> None:
         diagnostics.record("worker_started", stage="websocket_receive")
         try:
@@ -502,8 +786,21 @@ class QwenLiveAudioService:
                         recv_end_ns=recv_end_ns,
                         timeout=True,
                     )
+                    self._apply_response_timeout(
+                        monitor=monitor,
+                        now_ns=recv_end_ns,
+                        playback=playback,
+                        diagnostics=diagnostics,
+                    )
                     continue
                 recv_end_ns = time.perf_counter_ns()
+                monitor.record_rx(recv_end_ns)
+                self._apply_response_timeout(
+                    monitor=monitor,
+                    now_ns=recv_end_ns,
+                    playback=playback,
+                    diagnostics=diagnostics,
+                )
                 event_type = str(event.get("type") or "")
                 diagnostics.record_websocket_event(
                     "RECV_EVENT_SUCCESS",
@@ -520,8 +817,14 @@ class QwenLiveAudioService:
                 )
                 processing_start_ns = time.perf_counter_ns()
                 if event_type == "error":
-                    raise RuntimeError(provider._error_message(event))
+                    diagnostics.record_websocket_event(
+                        "CONNECTION_CLASSIFIED",
+                        direction="lifecycle",
+                        classification="PROVIDER_ERROR_EVENT",
+                    )
+                    raise _ProviderErrorEvent(provider._error_message(event))
                 if event_type == "response.created":
+                    monitor.response_created(event, recv_end_ns)
                     playback.mark_response_active(True)
                 if event_type == "response.audio.delta" and isinstance(
                     event.get("delta"), str
@@ -532,6 +835,14 @@ class QwenLiveAudioService:
                     resampled_delta = _resample_pcm16_mono(
                         decoded_delta, QWEN_OUTPUT_RATE, audio.native_rate
                     )
+                    if not monitor.audio_delta(recv_end_ns):
+                        diagnostics.record_websocket_event(
+                            "LATE_RESPONSE_AUDIO_IGNORED",
+                            direction="recv",
+                            operation="recv",
+                            t_ns=recv_end_ns,
+                        )
+                        continue
                     response_resample_end_ns = time.perf_counter_ns()
                     diagnostics.record_audio_delta(
                         receive_ns=recv_end_ns,
@@ -563,7 +874,15 @@ class QwenLiveAudioService:
                             capacity=playback.max_bytes,
                         )
                     self._set(phase=QwenAudioPhase.SPEAKING, message="Qwen speaking")
-                elif event_type in {"response.audio.done", "response.done"}:
+                elif event_type == "response.audio.done":
+                    monitor.response_audio_done(recv_end_ns)
+                    playback.mark_response_active(False)
+                    self._set(
+                        phase=QwenAudioPhase.LISTENING,
+                        message="Qwen listening",
+                    )
+                elif event_type == "response.done":
+                    monitor.response_done()
                     playback.mark_response_active(False)
                     self._set(
                         phase=QwenAudioPhase.LISTENING,
@@ -586,6 +905,27 @@ class QwenLiveAudioService:
                     end_ns=processing_end_ns,
                 )
         except Exception as exc:
+            if diagnostics.websocket_clean_close:
+                diagnostics.record_websocket_event(
+                    "CLEAN_REMOTE_CLOSE",
+                    direction="lifecycle",
+                    stop_event_before=stop_event.is_set(),
+                )
+                stop_event.set()
+                return
+            classification = (
+                "PROVIDER_ERROR_EVENT"
+                if isinstance(exc, _ProviderErrorEvent)
+                else "ABRUPT_EOF"
+                if type(exc).__name__ == "WebSocketConnectionClosedException"
+                else "RECEIVE_FAILURE"
+            )
+            diagnostics.record_websocket_event(
+                "CONNECTION_CLASSIFIED",
+                direction="lifecycle",
+                classification=classification,
+                exception_type=type(exc).__name__,
+            )
             diagnostics.record_websocket_exception(
                 exc,
                 ws=ws,
@@ -620,7 +960,10 @@ class QwenLiveAudioService:
         frames: int,
         stop_event: threading.Event,
         diagnostics: QwenLiveDiagnostics,
+        monitor: _SessionMonitor | None = None,
     ) -> None:
+        if monitor is None:
+            monitor = _SessionMonitor(connected_ns=time.perf_counter_ns())
         capture_queue: queue.Queue[bytes] = queue.Queue(
             maxsize=CAPTURE_QUEUE_BLOCKS
         )
@@ -631,6 +974,7 @@ class QwenLiveAudioService:
             )
         )
         failures: queue.Queue[_WorkerFailure] = queue.Queue(maxsize=1)
+        send_lock = threading.Lock()
         workers: list[threading.Thread] = []
         settings = sd.WasapiSettings(exclusive=False)
         transport_error: Exception | None = None
@@ -655,6 +999,8 @@ class QwenLiveAudioService:
                             capture_queue,
                             diagnostics,
                             failures,
+                            send_lock,
+                            monitor,
                         ),
                         daemon=True,
                         name="orion-qwen-send",
@@ -670,9 +1016,23 @@ class QwenLiveAudioService:
                             playback,
                             diagnostics,
                             failures,
+                            monitor,
                         ),
                         daemon=True,
                         name="orion-qwen-receive",
+                    ),
+                    threading.Thread(
+                        target=self._heartbeat_worker,
+                        args=(
+                            ws,
+                            stop_event,
+                            diagnostics,
+                            failures,
+                            send_lock,
+                            monitor,
+                        ),
+                        daemon=True,
+                        name="orion-qwen-heartbeat",
                     ),
                 ]
                 for worker in workers:
@@ -901,6 +1261,7 @@ class QwenLiveAudioService:
                 raise
             connect_end_ns = time.perf_counter_ns()
             diagnostics.record_websocket_connect(t_ns=connect_end_ns)
+            monitor = _SessionMonitor(connected_ns=connect_end_ns)
             diagnostics.record(
                 "ws_connected",
                 t_ns=connect_end_ns,
@@ -908,8 +1269,10 @@ class QwenLiveAudioService:
                 connect_end_ns=connect_end_ns,
                 connect_duration_ms=(connect_end_ns - connect_start_ns) / 1_000_000,
             )
-            diagnostics.record_websocket_ping_configuration(configured=False)
-            _install_websocket_frame_telemetry(ws, websocket, diagnostics)
+            diagnostics.record_websocket_ping_configuration(configured=True)
+            _install_websocket_frame_telemetry(
+                ws, websocket, diagnostics, monitor
+            )
             ws.settimeout(0.25)
             diagnostics.record("ws_timeout_configured", timeout_ms=250)
             session_send_start_ns = time.perf_counter_ns()
@@ -931,6 +1294,7 @@ class QwenLiveAudioService:
                 )
                 raise
             session_send_end_ns = time.perf_counter_ns()
+            monitor.record_tx(session_send_end_ns)
             diagnostics.record_websocket_event(
                 "SESSION_UPDATE_SENT",
                 direction="send",
@@ -989,7 +1353,12 @@ class QwenLiveAudioService:
                     event_type=event_type,
                 )
                 if event_type == "error":
-                    raise RuntimeError(provider._error_message(event))
+                    diagnostics.record_websocket_event(
+                        "CONNECTION_CLASSIFIED",
+                        direction="lifecycle",
+                        classification="PROVIDER_ERROR_EVENT",
+                    )
+                    raise _ProviderErrorEvent(provider._error_message(event))
                 if event_type == "session.updated":
                     diagnostics.record_websocket_session_ready(t_ns=recv_end_ns)
                     break
@@ -1020,6 +1389,7 @@ class QwenLiveAudioService:
                     frames=frames,
                     stop_event=stop_event,
                     diagnostics=diagnostics,
+                    monitor=monitor,
                 )
             finally:
                 # _run_transport closes the socket to wake and join both network

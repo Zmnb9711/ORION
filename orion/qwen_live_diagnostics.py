@@ -193,6 +193,13 @@ class QwenLiveDiagnostics:
     def websocket_disconnect_recorded(self) -> bool:
         return self._websocket_disconnect_ns is not None
 
+    @property
+    @_synchronized
+    def websocket_clean_close(self) -> bool:
+        return (
+            self._websocket_close_frame_received and self._websocket_clean_close
+        )
+
     @_synchronized
     def update_audio_metadata(
         self,
