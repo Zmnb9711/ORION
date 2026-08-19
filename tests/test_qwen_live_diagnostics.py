@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import inspect
 import json
 import sys
 import threading
@@ -285,15 +286,18 @@ def test_diagnostics_are_bounded_and_exclude_sensitive_fields(tmp_path: Path) ->
     assert len(jsonl_path.read_text(encoding="utf-8").splitlines()) == 5
 
 
-def test_instrumented_transport_preserves_pcm_and_sync_operation_order(
+def test_instrumented_transport_preserves_pcm_with_independent_workers(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     operations: list[str] = []
     sent_messages: list[str] = []
     written_chunks: list[bytes] = []
     stop_event = threading.Event()
+    response_ready = threading.Event()
+    capture_sent = threading.Event()
     microphone_pcm = array("h", range(1_920)).tobytes()
-    response_pcm = array("h", range(240)).tobytes()
+    response_pcm_a = array("h", range(240)).tobytes()
+    response_pcm_b = array("h", range(240, 480)).tobytes()
 
     class FakeWebSocket:
         def settimeout(self, timeout: float) -> None:
@@ -302,6 +306,11 @@ def test_instrumented_transport_preserves_pcm_and_sync_operation_order(
         def send(self, message: str) -> None:
             operations.append("send")
             sent_messages.append(message)
+            if json.loads(message).get("type") == "input_audio_buffer.append":
+                capture_sent.set()
+
+        def abort(self) -> None:
+            operations.append("abort")
 
         def close(self) -> None:
             operations.append("close")
@@ -319,10 +328,21 @@ def test_instrumented_transport_preserves_pcm_and_sync_operation_order(
             operations.append("recv")
             if self.receive_count == 1:
                 return {"type": "session.updated"}
-            return {
-                "type": "response.audio.delta",
-                "delta": base64.b64encode(response_pcm).decode("ascii"),
-            }
+            if self.receive_count == 2:
+                return {
+                    "type": "response.audio.delta",
+                    "delta": base64.b64encode(response_pcm_a).decode("ascii"),
+                }
+            if self.receive_count == 3:
+                return {
+                    "type": "response.audio.delta",
+                    "delta": base64.b64encode(response_pcm_b).decode("ascii"),
+                }
+            if self.receive_count == 4:
+                response_ready.set()
+                return {"type": "response.audio.done"}
+            stop_event.wait(timeout=1.0)
+            raise FakeWebSocketTimeoutException()
 
     class FakeRawStream:
         def __enter__(self) -> FakeRawStream:
@@ -335,12 +355,14 @@ def test_instrumented_transport_preserves_pcm_and_sync_operation_order(
         def read(self, frames: int) -> tuple[bytes, bool]:
             operations.append("read")
             assert frames == 1_920
-            stop_event.set()
+            assert response_ready.wait(timeout=1.0)
             return microphone_pcm, False
 
         def write(self, chunk: bytes) -> bool:
             operations.append("write")
             written_chunks.append(chunk)
+            assert capture_sent.wait(timeout=1.0)
+            stop_event.set()
             return False
 
     microphone = WasapiEndpoint(
@@ -366,10 +388,11 @@ def test_instrumented_transport_preserves_pcm_and_sync_operation_order(
         WasapiSettings=lambda **kwargs: kwargs,
         RawStream=lambda **kwargs: FakeRawStream(),
     )
+    class FakeWebSocketTimeoutException(Exception):
+        pass
+
     fake_websocket = SimpleNamespace(
-        WebSocketTimeoutException=type(
-            "FakeWebSocketTimeoutException", (Exception,), {}
-        )
+        WebSocketTimeoutException=FakeWebSocketTimeoutException
     )
     monkeypatch.setitem(sys.modules, "sounddevice", fake_sounddevice)
     monkeypatch.setitem(sys.modules, "websocket", fake_websocket)
@@ -387,27 +410,23 @@ def test_instrumented_transport_preserves_pcm_and_sync_operation_order(
     )
 
     assert service.status().state is core.QwenLiveState.STOPPED
-    assert operations == [
-        "connect",
-        "timeout:0.25",
-        "send",
-        "recv",
-        "stream_enter",
-        "read",
-        "send",
-        "recv",
-        "write",
-        "stream_exit",
-        "close",
-    ]
+    assert operations.count("stream_enter") == 1
+    assert operations.count("stream_exit") == 1
+    assert operations.index("recv") < operations.index("read")
+    assert operations.index("read") < operations.index("write")
     assert len(sent_messages) == 2
     input_append = json.loads(sent_messages[1])
     assert input_append["type"] == "input_audio_buffer.append"
     assert base64.b64decode(input_append["audio"]) == core._resample_pcm16_mono(
         microphone_pcm, 48_000, core.QWEN_INPUT_RATE
     )
-    expected_response = core._resample_pcm16_mono(
-        response_pcm, core.QWEN_OUTPUT_RATE, 48_000
+    expected_response = (
+        core._resample_pcm16_mono(
+            response_pcm_a, core.QWEN_OUTPUT_RATE, 48_000
+        )
+        + core._resample_pcm16_mono(
+            response_pcm_b, core.QWEN_OUTPUT_RATE, 48_000
+        )
     )
     assert written_chunks == [expected_response + b"\x00" * (3_840 - len(expected_response))]
     diagnostic_text = "\n".join(
@@ -416,7 +435,8 @@ def test_instrumented_transport_preserves_pcm_and_sync_operation_order(
     )
     assert "do-not-log-this-key" not in diagnostic_text
     assert base64.b64encode(microphone_pcm).decode("ascii") not in diagnostic_text
-    assert base64.b64encode(response_pcm).decode("ascii") not in diagnostic_text
+    assert base64.b64encode(response_pcm_a).decode("ascii") not in diagnostic_text
+    assert base64.b64encode(response_pcm_b).decode("ascii") not in diagnostic_text
 
 
 def test_qwen_live_status_api_does_not_start_audio_session() -> None:
@@ -427,37 +447,33 @@ def test_qwen_live_status_api_does_not_start_audio_session() -> None:
     assert response.json()["state"] == "stopped"
 
 
-def test_source_keeps_build_389_synchronous_architecture_and_configuration() -> None:
+def test_source_uses_one_blocking_stream_with_independent_network_workers() -> None:
     source = Path(core.__file__).read_text(encoding="utf-8")
-    diagnostics_source = Path(QwenLiveDiagnostics.__module__.replace(".", "/") + ".py")
-    diagnostics_text = diagnostics_source.read_text(encoding="utf-8")
-    read_position = source.index("stream.read(frames)")
-    send_position = source.index('"type": "input_audio_buffer.append"')
-    recv_position = source.index("provider._receive_json(ws)", read_position)
-    write_position = source.index("stream.write(chunk)")
+    transport_source = inspect.getsource(core.QwenLiveAudioService._run_transport)
+    send_source = inspect.getsource(core.QwenLiveAudioService._send_worker)
+    receive_source = inspect.getsource(core.QwenLiveAudioService._receive_worker)
 
-    assert read_position < send_position < recv_position < write_position
     assert source.count("stream.read(frames)") == 1
-    assert source.count("stream.write(chunk)") == 1
+    assert source.count("stream.write(block.pcm)") == 1
     assert source.count("sd.RawStream(") == 1
+    assert "provider._receive_json(ws)" not in transport_source
+    assert "ws.send(" not in transport_source
+    assert "ws.send(" in send_source
+    assert "provider._receive_json(ws)" in receive_source
     assert "ws.settimeout(0.25)" in source
     assert "CAPTURE_MS = 40" in source
     assert "QWEN_INPUT_RATE = 16_000" in source
     assert "QWEN_OUTPUT_RATE = 24_000" in source
+    assert "queue.Queue" in source
+    assert "maxsize=CAPTURE_QUEUE_BLOCKS" in source
+    assert "maxsize=1" in source
     for forbidden in (
         "RawInputStream",
         "RawOutputStream",
-        "capture_thread",
-        "playback_thread",
-        "Queue(",
         "asyncio",
         "callback=",
     ):
         assert forbidden not in source
-    assert "threading" not in diagnostics_text
-    assert "import queue" not in diagnostics_text
-    assert "from queue import" not in diagnostics_text
-    assert "Queue(" not in diagnostics_text
 
     session = core._audio_session_update(
         "qwen3.5-omni-flash-realtime", "Tina"

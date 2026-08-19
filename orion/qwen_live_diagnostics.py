@@ -4,16 +4,32 @@ import json
 import math
 import os
 import statistics
+import threading
 import time
 import uuid
 from collections import defaultdict, deque
 from datetime import UTC, datetime
+from functools import wraps
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable, Concatenate, ParamSpec, TypeVar
 
 
 DEFAULT_MAX_EVENTS = 20_000
 DEFAULT_MAX_TIMING_SAMPLES = 10_000
+
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
+
+
+def _synchronized(
+    method: Callable[Concatenate[Any, _P], _R],
+) -> Callable[Concatenate[Any, _P], _R]:
+    @wraps(method)
+    def wrapped(self: Any, *args: _P.args, **kwargs: _P.kwargs) -> _R:
+        with self._lock:
+            return method(self, *args, **kwargs)
+
+    return wrapped
 
 _FORBIDDEN_FIELD_NAMES = {
     "api_key",
@@ -27,7 +43,7 @@ _FORBIDDEN_FIELD_NAMES = {
 
 
 class QwenLiveDiagnostics:
-    """Bounded, in-memory timing recorder for the synchronous Qwen Live loop."""
+    """Bounded, thread-safe timing recorder for the Qwen Live transport."""
 
     def __init__(
         self,
@@ -48,6 +64,7 @@ class QwenLiveDiagnostics:
     ) -> None:
         if max_events <= 0 or max_timing_samples <= 0:
             raise ValueError("Diagnostic buffer limits must be positive")
+        self._lock = threading.RLock()
         self._clock_ns = clock_ns
         self.start_ns = clock_ns() if start_ns is None else start_ns
         self.start_utc = start_utc or datetime.now(UTC)
@@ -125,25 +142,33 @@ class QwenLiveDiagnostics:
         self._zero_padding_frames = 0
         self._zero_padded_after_recv_timeout_count = 0
         self._starved_after_recv_timeout_count = 0
+        self._queue_overflow_counts: dict[str, int] = defaultdict(int)
+        self._queue_dropped_bytes: dict[str, int] = defaultdict(int)
+        self._queue_dropped_audio_ms: dict[str, float] = defaultdict(float)
         self._duplex_rate = 0
         self.record("session_start", t_ns=self.start_ns)
 
     @property
+    @_synchronized
     def event_count(self) -> int:
         return len(self._events)
 
     @property
+    @_synchronized
     def dropped_event_count(self) -> int:
         return self._dropped_events
 
     @property
+    @_synchronized
     def response_active(self) -> bool:
         return self._response_active
 
     @property
+    @_synchronized
     def response_index(self) -> int:
         return self._response_index
 
+    @_synchronized
     def update_audio_metadata(
         self,
         *,
@@ -170,6 +195,7 @@ class QwenLiveDiagnostics:
         )
         self.record("audio_metadata_ready")
 
+    @_synchronized
     def record(self, kind: str, *, t_ns: int | None = None, **fields: object) -> None:
         safe_fields: dict[str, object] = {}
         for key, value in fields.items():
@@ -260,6 +286,7 @@ class QwenLiveDiagnostics:
             return 0.0
         return max(0, byte_count) / 2 / sample_rate * 1000
 
+    @_synchronized
     def record_capture(
         self,
         *,
@@ -294,6 +321,7 @@ class QwenLiveDiagnostics:
             capture_realtime_ratio=self._ratio(audio_ms, wall_ms),
         )
 
+    @_synchronized
     def record_send(
         self,
         *,
@@ -323,6 +351,7 @@ class QwenLiveDiagnostics:
             send_realtime_ratio=self._ratio(audio_ms, wall_ms),
         )
 
+    @_synchronized
     def record_recv(
         self,
         *,
@@ -364,6 +393,7 @@ class QwenLiveDiagnostics:
         if event_type:
             self.record_provider_event(event_type, t_ns=recv_end_ns)
 
+    @_synchronized
     def record_provider_event(self, event_type: str, *, t_ns: int) -> None:
         if event_type == "input_audio_buffer.speech_started":
             self._first_markers.setdefault("speech_started_ns", t_ns)
@@ -390,6 +420,7 @@ class QwenLiveDiagnostics:
             response_index=self._response_index,
         )
 
+    @_synchronized
     def record_audio_delta(
         self,
         *,
@@ -454,6 +485,7 @@ class QwenLiveDiagnostics:
             )
         return self._response_index
 
+    @_synchronized
     def record_playback_enqueue(
         self,
         *,
@@ -461,11 +493,16 @@ class QwenLiveDiagnostics:
         before_bytes: int,
         after_bytes: int,
         sample_rate: int,
+        added_bytes: int | None = None,
     ) -> None:
         before_ms = self.playback_ms(before_bytes, sample_rate)
         after_ms = self.playback_ms(after_bytes, sample_rate)
-        added_bytes = max(0, after_bytes - before_bytes)
-        added_ms = self.playback_ms(added_bytes, sample_rate)
+        accepted_bytes = (
+            max(0, after_bytes - before_bytes)
+            if added_bytes is None
+            else max(0, added_bytes)
+        )
+        added_ms = self.playback_ms(accepted_bytes, sample_rate)
         self._enqueued_response_audio_ms += added_ms
         self._track_playback_backlog(after_ms, active=True)
         self.record(
@@ -476,8 +513,54 @@ class QwenLiveDiagnostics:
             before_ms=before_ms,
             after_bytes=after_bytes,
             after_ms=after_ms,
-            added_bytes=added_bytes,
+            added_bytes=accepted_bytes,
             added_ms=added_ms,
+        )
+
+    @_synchronized
+    def record_queue_overflow(
+        self,
+        *,
+        channel: str,
+        dropped_bytes: int,
+        sample_rate: int,
+        depth: int,
+        capacity: int,
+    ) -> None:
+        safe_channel = channel if channel in {
+            "capture_queue",
+            "playback_buffer",
+        } else "unknown"
+        dropped = max(0, dropped_bytes)
+        dropped_ms = self.playback_ms(dropped, sample_rate)
+        self._queue_overflow_counts[safe_channel] += 1
+        self._queue_dropped_bytes[safe_channel] += dropped
+        self._queue_dropped_audio_ms[safe_channel] += dropped_ms
+        self.record(
+            "audio_queue_overflow",
+            channel=safe_channel,
+            dropped_bytes=dropped,
+            dropped_audio_ms=dropped_ms,
+            depth=max(0, depth),
+            capacity=max(0, capacity),
+        )
+
+    @_synchronized
+    def record_stage_timing(
+        self, stage: str, *, start_ns: int, end_ns: int
+    ) -> None:
+        safe_stage = stage if stage in {
+            "response_processing",
+        } else "worker_other"
+        duration_ms = self._elapsed_ms(start_ns, end_ns)
+        self._timing(safe_stage, duration_ms)
+        self.record(
+            "stage_timing",
+            t_ns=end_ns,
+            stage=safe_stage,
+            start_ns=start_ns,
+            end_ns=end_ns,
+            duration_ms=duration_ms,
         )
 
     def _track_playback_backlog(self, backlog_ms: float, *, active: bool) -> None:
@@ -486,6 +569,7 @@ class QwenLiveDiagnostics:
             current = self._minimum_playback_backlog_active_ms
             self._minimum_playback_backlog_active_ms = backlog_ms if current is None else min(current, backlog_ms)
 
+    @_synchronized
     def record_write(
         self,
         *,
@@ -609,6 +693,7 @@ class QwenLiveDiagnostics:
             self._close_starvation(response_period_end_ns)
             self._close_response_period(response_period_end_ns)
 
+    @_synchronized
     def record_loop(
         self,
         *,
@@ -627,9 +712,10 @@ class QwenLiveDiagnostics:
         stages = {
             "loop_total": total_ms,
             "input_resample": input_resample_ms,
-            "response_processing": response_processing_ms,
             "loop_other": other_ms,
         }
+        if response_processing_ms > 0:
+            stages["response_processing"] = response_processing_ms
         for stage, duration_ms in stages.items():
             self._timing(stage, duration_ms)
         self.record(
@@ -685,6 +771,7 @@ class QwenLiveDiagnostics:
             maximum_ns = max(maximum_ns, open_ns)
         return count, total_ns / 1_000_000, maximum_ns / 1_000_000
 
+    @_synchronized
     def summary(self, *, end_ns: int | None = None) -> dict[str, object]:
         final_ns = self._clock_ns() if end_ns is None else end_ns
         captured_audio_ms = self.playback_ms(self._captured_frames * 2, self._capture_rate)
@@ -705,7 +792,12 @@ class QwenLiveDiagnostics:
         non_silent_write_gap = self._stage_summary("non_silent_write_gap")
         active_write_gap = self._stage_summary("active_response_write_gap")
         audio_delta_gap = self._stage_summary("audio_delta_gap")
-        block_duration_ms = float(self._metadata.get("block_duration_ms", 0.0))
+        block_duration_value = self._metadata.get("block_duration_ms", 0.0)
+        block_duration_ms = (
+            float(block_duration_value)
+            if isinstance(block_duration_value, (int, float))
+            else 0.0
+        )
         playback_duty_cycle = self._ratio(
             self._non_silent_audio_written_ms, response_active_wall_ms
         )
@@ -814,6 +906,12 @@ class QwenLiveDiagnostics:
                 self._zero_padding_frames * 2, self._duplex_rate
             ),
             "output_underflow_count": self._output_underflow_count,
+            "playback_buffer_overflow_count": self._queue_overflow_counts.get(
+                "playback_buffer", 0
+            ),
+            "playback_buffer_dropped_audio_ms": (
+                self._queue_dropped_audio_ms.get("playback_buffer", 0.0)
+            ),
             "response_audio_done_ns": self._first_markers.get(
                 "response_audio_done_ns"
             ),
@@ -836,6 +934,21 @@ class QwenLiveDiagnostics:
                 else self._timing_sums["ws_recv"] / self._recv_call_count
             ),
             "recv_max_wait_ms": self._timing_maxima.get("ws_recv") or None,
+            "capture_queue_overflow_count": self._queue_overflow_counts.get(
+                "capture_queue", 0
+            ),
+            "capture_queue_dropped_audio_ms": self._queue_dropped_audio_ms.get(
+                "capture_queue", 0.0
+            ),
+            "playback_buffer_overflow_count": self._queue_overflow_counts.get(
+                "playback_buffer", 0
+            ),
+            "playback_buffer_dropped_audio_ms": (
+                self._queue_dropped_audio_ms.get("playback_buffer", 0.0)
+            ),
+            "queue_overflow_counts": dict(self._queue_overflow_counts),
+            "queue_dropped_bytes": dict(self._queue_dropped_bytes),
+            "queue_dropped_audio_ms": dict(self._queue_dropped_audio_ms),
             **self._first_markers,
             "speech_stopped_to_first_audio_delta_ms": self._optional_elapsed_ms(
                 speech_stopped, first_delta
@@ -896,6 +1009,7 @@ class QwenLiveDiagnostics:
             "timings": {stage: self._stage_summary(stage) for stage in stages},
         }
 
+    @_synchronized
     def finish(self, *, end_ns: int | None = None) -> tuple[Path, Path] | None:
         final_ns = self._clock_ns() if end_ns is None else end_ns
         self._close_starvation(final_ns)
@@ -945,6 +1059,10 @@ class QwenLiveDiagnostics:
             "recv_timeout_count",
             "recv_average_wait_ms",
             "recv_max_wait_ms",
+            "capture_queue_overflow_count",
+            "capture_queue_dropped_audio_ms",
+            "playback_buffer_overflow_count",
+            "playback_buffer_dropped_audio_ms",
             "speech_started_ns",
             "speech_stopped_ns",
             "first_response_event_ns",
