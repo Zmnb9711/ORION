@@ -277,6 +277,30 @@ Baseline freeze: do not change the following without a separately justified chan
 
 Build #402 is the control point for all future Qwen Live work. Future Qwen Live changes must be compared with it and must not regress connection stability, response completion, playback continuity, audio loss, or Stop behavior.
 
+### Qwen activation, ATC routing and deferred VR status overlay — 2026-08-20
+
+Approved interaction contract for the first Qwen/ATC integration:
+
+- Qwen Live must **not** remain continuously active merely because DCS is running. An idle cloud realtime session is unnecessary and uneconomical.
+- A single user-assignable button is configured in the Launcher. The existing Launcher Qwen controls otherwise remain unchanged for the first ATC integration.
+- The button is a **toggle**, not hold-to-talk: when Qwen is inactive, pressing it starts the Qwen Live session; pressing the same button again ends the session.
+- Outside an active DCS mission, a button-started Qwen session exposes **free conversation only**. DCS/Core mission capabilities must not be presented as available when there is no active mission.
+- During an active DCS mission, the same Qwen session exposes both **free conversation** and **Core-backed mission interaction**. Requests relevant to ATC and, later, other ORION modules are routed through Core and must use validated mission/telemetry/module state rather than invented simulator facts.
+- The first ATC integration should implement and field-test this button/session/context-routing contract before adding a DCS/VR status display. The button behavior may be adjusted after real in-simulator testing if needed.
+
+A future status-display concept was also reviewed, but is explicitly **deferred from the first ATC integration**:
+
+- Desired user-visible states include at least `QWEN READY` when ORION is ready but no cloud Qwen session exists, and `QWEN ON` while the Qwen Live session is active; transitional/error states may be added later if useful.
+- The desired display is a small status indicator in the upper-left area of the DCS/VR view and must not require modifying DCS executable code or embedding ORION logic into DCS itself.
+- For VR, the preferred future architecture is a **minimal OpenXR API layer that appends an `XrCompositionLayerQuad`** at frame submission, rather than drawing directly into DCS eye/projection render targets.
+- The quad should carry only a small transparent status texture and be positioned in view/reference space. ORION Core/Qwen state should reach the overlay through a minimal IPC/shared-state boundary.
+- The OpenXR component must remain deliberately small: no Qwen client, ATC logic, HTTP/Python runtime or Core business logic inside the layer.
+- Overlay failure must degrade gracefully: it must not stop Qwen, Core or DCS.
+- This approach was preferred conceptually because it keeps the DCS projection image untouched and should isolate the indicator better from DCS rendering, Quad Views/foveated rendering and aircraft-specific code. Actual compatibility with the user's OpenXR/Pimax path must be field-tested when this deferred feature is implemented.
+- The OpenXR Toolkit approach was used as a design reference for how VR-resident status/UI can participate in the OpenXR pipeline, but ORION should not copy its full rendering architecture for this small indicator.
+
+Decision: **do not implement the QWEN READY/ON VR overlay in the first ATC integration. Preserve the design as a later milestone.**
+
 ## 6. Real Windows/DCS test evidence
 
 ### Earlier Alpha evidence
@@ -375,16 +399,13 @@ This follows the same durable principle as Architecture Decision Records: preser
 
 ## 12. Current immediate plan
 
-As of 2026-08-13:
+As of 2026-08-20:
 
-1. Complete Telemetry v0.3 foundation and exporter population so the next DCS capture contains materially richer data.
-2. Preserve backward compatibility with v0.2 while adding sequence/capture metadata and normalized domains.
-3. Populate generic DCS data first using protected/validated calls; add F/A-18C-specific cockpit fields only through validated mappings.
-4. Keep Mission World separate from high-rate aircraft telemetry.
-5. Pass Python CI, Lua validation, Windows Installer Smoke and Alpha Windows Build.
-6. Only then ask for the next F/A-18C smoke run.
-7. Use the resulting up-to-5,000-packet capture to audit real values, availability, restrictions and module-specific semantics.
-8. Verify Core survival after Launcher closure and Launcher reconnection in the same real Windows/DCS evidence pass.
+1. Preserve Qwen Live Build #402 as the field-validated voice baseline.
+2. Begin the first Qwen/ATC integration with the Launcher-assigned toggle button and context-gated routing: free conversation outside a mission; free conversation plus Core-backed module interaction during an active mission.
+3. Keep the current Launcher Qwen UI otherwise unchanged for this integration pass.
+4. Do not implement the QWEN READY/ON DCS/VR overlay in the first ATC integration; retain the minimal OpenXR API layer + `XrCompositionLayerQuad` design for a later milestone.
+5. Validate the button/session behavior and ATC routing in a real DCS mission before refining the interaction model.
 
 ## 13. Items that must not be forgotten
 
@@ -402,7 +423,8 @@ As of 2026-08-13:
 - AWACS integration and tactical picture are required.
 - Russian, English and free natural-language modes are required.
 - Casual/random conversation is approved.
+- Qwen Live is user-activated by a Launcher-assigned toggle button; do not keep an idle cloud realtime session active merely because DCS is running.
+- Outside an active mission Qwen exposes free conversation only; in an active mission it additionally gains Core-backed ORION module interaction.
+- The QWEN READY/ON VR status indicator is deferred from the first ATC integration; preferred later design is a minimal OpenXR API layer + `XrCompositionLayerQuad` with graceful degradation.
 - Core must remain independent of Launcher.
 - Real Windows/DCS smoke evidence outranks optimistic progress estimates.
-- Voice/audio work is intentionally outside the current Alpha 0.2 connectivity/telemetry smoke pass.
-- The next user flight should wait until Telemetry v0.3 is built and validated through CI/Windows gates.
