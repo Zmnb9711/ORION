@@ -173,6 +173,19 @@ Audio-device design already approved for the voice layer:
 - persistence and fallback if a device disappears;
 - selected devices must eventually feed real voice input and TTS/WASAPI output.
 
+### Module installation and runtime selection — 2026-08-20
+
+Approved product requirement:
+
+- During ORION installation, the user must be able to choose which optional functional modules are installed and which are omitted.
+- The installer should present module selection as checkboxes, with **all available modules selected by default**.
+- The Launcher must contain a **Modules** section where the user can choose which installed modules are enabled and allowed to operate at runtime.
+- In the Launcher Modules section, **all installed modules are enabled by default**.
+- Installation selection and runtime enablement are separate decisions: the installer controls what is present on disk; the Launcher controls what is active in the current ORION runtime.
+- A module that is not enabled in the Launcher must not participate in normal ORION runtime/module routing until it is enabled again.
+
+This requirement is part of the long-term modular product design and should be preserved when installer/module management is implemented or revised.
+
 ## 5. Development history and major decisions
 
 ### Early project phase — 2026-08-04/05
@@ -426,5 +439,6 @@ As of 2026-08-20:
 - Qwen Live is user-activated by a Launcher-assigned toggle button; do not keep an idle cloud realtime session active merely because DCS is running.
 - Outside an active mission Qwen exposes free conversation only; in an active mission it additionally gains Core-backed ORION module interaction.
 - The QWEN READY/ON VR status indicator is deferred from the first ATC integration; preferred later design is a minimal OpenXR API layer + `XrCompositionLayerQuad` with graceful degradation.
+- Installer module selection is user-controlled, with all modules selected by default; Launcher runtime module selection is also user-controlled, with all installed modules enabled by default.
 - Core must remain independent of Launcher.
 - Real Windows/DCS smoke evidence outranks optimistic progress estimates.
