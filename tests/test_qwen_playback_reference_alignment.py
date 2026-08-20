@@ -62,7 +62,7 @@ def test_reference_cadence_writes_provider_deltas_fifo_without_silence(
         WasapiSettings=lambda **kwargs: kwargs,
         RawOutputStream=lambda **kwargs: FakeOutputStream(),
     )
-    audio = SimpleNamespace(native_rate=24_000, output_index=2)
+    audio = SimpleNamespace(output_native_rate=24_000, output_index=2)
     worker = threading.Thread(
         target=core.QwenLiveAudioService()._playback_worker,
         args=(

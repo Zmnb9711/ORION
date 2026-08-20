@@ -13,6 +13,11 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from orion.audio_device_config import audio_device_config
+from orion.qwen_audio_device import (
+    AudioDeviceRateError,
+    AudioDeviceRatePlan,
+    negotiate_audio_device_rate,
+)
 from orion.qwen_live_diagnostics import QwenLiveDiagnostics
 from orion.qwen_realtime_provider import QwenRealtimeConfig, QwenRealtimeProvider
 from orion.realtime_tools import RealtimeToolCall, qwen_live_tool_definition, realtime_tools
@@ -76,7 +81,8 @@ class _ResolvedAudio:
     output_index: int
     input_native_rate: int
     output_native_rate: int
-    native_rate: int
+    input_rate_plan: AudioDeviceRatePlan | None = None
+    output_rate_plan: AudioDeviceRatePlan | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -320,6 +326,18 @@ def _resample_pcm16_mono(data: bytes, source_rate: int, target_rate: int) -> byt
     return output.tobytes()
 
 
+def _pcm16_mono_levels(data: bytes) -> tuple[float, float]:
+    """Return normalized RMS and peak without retaining captured PCM."""
+
+    samples = array("h")
+    samples.frombytes(data)
+    if not samples:
+        return 0.0, 0.0
+    peak = max(abs(sample) for sample in samples) / 32768.0
+    mean_square = sum(sample * sample for sample in samples) / len(samples)
+    return (mean_square**0.5) / 32768.0, peak
+
+
 def _install_websocket_frame_telemetry(
     ws: Any,
     websocket: Any,
@@ -441,7 +459,7 @@ def _audio_session_update(model: str, voice: str) -> dict[str, Any]:
 
 
 class QwenLiveAudioService:
-    """Qwen realtime speech-to-speech using one PortAudio full-duplex stream."""
+    """Qwen realtime speech-to-speech with independent blocking audio streams."""
 
     def __init__(self) -> None:
         self._lock = threading.RLock()
@@ -509,32 +527,119 @@ class QwenLiveAudioService:
             return partial
         raise RuntimeError(f"Selected WASAPI {direction.value} endpoint is unavailable: {endpoint.name}")
 
-    @staticmethod
-    def _native_rate(sd: Any, index: int, fallback: int = 48_000) -> int:
-        try:
-            return max(1, int(round(float(sd.query_devices(index).get("default_samplerate", fallback)))))
-        except (TypeError, ValueError):
-            return fallback
-
     def _resolve_audio(self, sd: Any) -> _ResolvedAudio:
         state = audio_device_config.state()
         if state.resolved_input is None or state.resolved_output is None:
             raise RuntimeError("ORION Core audio input/output selection is not ready")
         input_index = self._resolve_device(sd, state.resolved_input, WasapiDirection.INPUT)
         output_index = self._resolve_device(sd, state.resolved_output, WasapiDirection.OUTPUT)
-        input_rate = self._native_rate(sd, input_index)
-        output_rate = self._native_rate(sd, output_index)
-        # PortAudio full duplex has one stream sample rate. Prefer the Windows mix
-        # rate when both endpoints agree; otherwise 48 kHz is the shared-mode norm.
-        native_rate = input_rate if input_rate == output_rate else 48_000
+        settings = sd.WasapiSettings(exclusive=False)
+        input_plan = negotiate_audio_device_rate(
+            sd,
+            direction="input",
+            logical_device_id=state.selection.input_device_id,
+            device_index=input_index,
+            protocol_rate=QWEN_INPUT_RATE,
+            extra_settings=settings,
+        )
+        output_plan = negotiate_audio_device_rate(
+            sd,
+            direction="output",
+            logical_device_id=state.selection.output_device_id,
+            device_index=output_index,
+            protocol_rate=QWEN_OUTPUT_RATE,
+            extra_settings=settings,
+        )
         return _ResolvedAudio(
             state.resolved_input,
             state.resolved_output,
             input_index,
             output_index,
-            input_rate,
-            output_rate,
-            native_rate,
+            input_plan.physical_rate,
+            output_plan.physical_rate,
+            input_plan,
+            output_plan,
+        )
+
+    @staticmethod
+    def _record_audio_rate_plan(
+        diagnostics: QwenLiveDiagnostics,
+        plan: AudioDeviceRatePlan,
+    ) -> None:
+        for rejection in plan.rejected_rates:
+            diagnostics.record(
+                "audio_rate_candidate_rejected",
+                direction=plan.direction.upper(),
+                logical_device_id=plan.logical_device_id,
+                device_index=plan.device_index,
+                device_name=plan.device_name,
+                candidate_rate=rejection.rate,
+                error_type=rejection.error_type,
+                error=rejection.message,
+            )
+        diagnostics.record(
+            "audio_device_rate_selected",
+            direction=plan.direction.upper(),
+            logical_device_id=plan.logical_device_id,
+            device_index=plan.device_index,
+            device_name=plan.device_name,
+            host_api=plan.host_api,
+            reported_default_samplerate=plan.default_rate,
+            attempted_rates=",".join(str(rate) for rate in plan.attempted_rates),
+            selected_native_rate=plan.physical_rate,
+            protocol_rate=plan.protocol_rate,
+            resampling_required=plan.resampling_required,
+        )
+
+    @staticmethod
+    def _record_audio_rate_error(
+        diagnostics: QwenLiveDiagnostics,
+        error: AudioDeviceRateError,
+    ) -> None:
+        for rejection in error.rejected_rates:
+            diagnostics.record(
+                "audio_rate_candidate_rejected",
+                direction=error.direction.upper(),
+                logical_device_id=error.logical_device_id,
+                device_index=error.device_index,
+                device_name=error.device_name,
+                candidate_rate=rejection.rate,
+                error_type=rejection.error_type,
+                error=rejection.message,
+            )
+        diagnostics.record(
+            "audio_device_rate_unavailable",
+            direction=error.direction.upper(),
+            logical_device_id=error.logical_device_id,
+            device_index=error.device_index,
+            device_name=error.device_name,
+            reported_default_samplerate=error.default_rate,
+            attempted_rates=",".join(str(rate) for rate in error.attempted_rates),
+        )
+
+    @staticmethod
+    def _audio_stream_open_error(
+        *,
+        direction: str,
+        endpoint: WasapiEndpoint,
+        device_index: int,
+        native_rate: int,
+        plan: AudioDeviceRatePlan | None,
+        error: Exception,
+    ) -> RuntimeError:
+        default_rate = plan.default_rate if plan is not None else None
+        attempted_rates = (
+            plan.attempted_rates if plan is not None else (native_rate,)
+        )
+        logical_device_id = (
+            plan.logical_device_id if plan is not None else endpoint.device_id
+        )
+        return RuntimeError(
+            f"Selected {direction} audio endpoint failed to open: "
+            f"{endpoint.name} [index={device_index}, id={logical_device_id}]; "
+            f"reported default={default_rate}; attempted rates={attempted_rates}; "
+            f"selected rate={native_rate}; underlying error="
+            f"{type(error).__name__}: {error}"
         )
 
     @staticmethod
@@ -654,26 +759,37 @@ class QwenLiveAudioService:
         diagnostics.record("worker_started", stage="audio_playback")
         settings = sd.WasapiSettings(exclusive=False)
         try:
-            with sd.RawOutputStream(
-                samplerate=audio.native_rate,
-                device=audio.output_index,
-                channels=CHANNELS,
-                dtype="int16",
-                extra_settings=settings,
-            ) as stream:
+            try:
+                output_stream = sd.RawOutputStream(
+                    samplerate=audio.output_native_rate,
+                    device=audio.output_index,
+                    channels=CHANNELS,
+                    dtype="int16",
+                    extra_settings=settings,
+                )
+            except Exception as exc:
+                raise self._audio_stream_open_error(
+                    direction="OUTPUT",
+                    endpoint=audio.output_endpoint,
+                    device_index=audio.output_index,
+                    native_rate=audio.output_native_rate,
+                    plan=audio.output_rate_plan,
+                    error=exc,
+                ) from exc
+            with output_stream as stream:
                 while True:
                     wait_start_ns = time.perf_counter_ns()
                     diagnostics.record_playback_wait_start(
                         t_ns=wait_start_ns,
                         depth_bytes=playback.depth_bytes,
-                        sample_rate=audio.native_rate,
+                        sample_rate=audio.output_native_rate,
                     )
                     pcm, before_bytes, after_bytes, response_active = playback.get()
                     wait_end_ns = time.perf_counter_ns()
                     diagnostics.record_playback_wait_end(
                         t_ns=wait_end_ns,
                         depth_bytes=after_bytes,
-                        sample_rate=audio.native_rate,
+                        sample_rate=audio.output_native_rate,
                     )
                     if pcm is None or stop_event.is_set():
                         return
@@ -690,7 +806,7 @@ class QwenLiveAudioService:
                         response_audio_frames=len(pcm) // 2,
                         zero_frames=0,
                         frames_written=len(pcm) // 2,
-                        sample_rate=audio.native_rate,
+                        sample_rate=audio.output_native_rate,
                         underflow=bool(underflowed),
                         response_active=response_active,
                     )
@@ -964,7 +1080,7 @@ class QwenLiveAudioService:
                     decoded_delta = base64.b64decode(encoded_delta)
                     response_resample_start_ns = time.perf_counter_ns()
                     resampled_delta = _resample_pcm16_mono(
-                        decoded_delta, QWEN_OUTPUT_RATE, audio.native_rate
+                        decoded_delta, QWEN_OUTPUT_RATE, audio.output_native_rate
                     )
                     if not monitor.audio_delta(recv_end_ns):
                         diagnostics.record_websocket_event(
@@ -983,7 +1099,7 @@ class QwenLiveAudioService:
                         resample_start_ns=response_resample_start_ns,
                         resample_end_ns=response_resample_end_ns,
                         resampled_bytes=len(resampled_delta),
-                        target_rate=audio.native_rate,
+                        target_rate=audio.output_native_rate,
                     )
                     playback.mark_response_active(True)
                     before_bytes, after_bytes = playback.put(resampled_delta)
@@ -991,7 +1107,7 @@ class QwenLiveAudioService:
                         t_ns=response_resample_end_ns,
                         before_bytes=before_bytes,
                         after_bytes=after_bytes,
-                        sample_rate=audio.native_rate,
+                        sample_rate=audio.output_native_rate,
                         added_bytes=len(resampled_delta),
                     )
                     self._set(phase=QwenAudioPhase.SPEAKING, message="Qwen speaking")
@@ -1106,14 +1222,25 @@ class QwenLiveAudioService:
         try:
             # Capture stays on this coordinator. A dedicated playback worker is
             # the sole owner of the independent blocking output stream.
-            with sd.RawInputStream(
-                samplerate=audio.native_rate,
-                blocksize=frames,
-                device=audio.input_index,
-                channels=CHANNELS,
-                dtype="int16",
-                extra_settings=settings,
-            ) as stream:
+            try:
+                input_stream = sd.RawInputStream(
+                    samplerate=audio.input_native_rate,
+                    blocksize=frames,
+                    device=audio.input_index,
+                    channels=CHANNELS,
+                    dtype="int16",
+                    extra_settings=settings,
+                )
+            except Exception as exc:
+                raise self._audio_stream_open_error(
+                    direction="INPUT",
+                    endpoint=audio.input_endpoint,
+                    device_index=audio.input_index,
+                    native_rate=audio.input_native_rate,
+                    plan=audio.input_rate_plan,
+                    error=exc,
+                ) from exc
+            with input_stream as stream:
                 workers = [
                     threading.Thread(
                         target=self._send_worker,
@@ -1197,9 +1324,15 @@ class QwenLiveAudioService:
                     )
                     input_resample_start_ns = time.perf_counter_ns()
                     qwen_pcm = _resample_pcm16_mono(
-                        bytes(raw), audio.native_rate, QWEN_INPUT_RATE
+                        bytes(raw), audio.input_native_rate, QWEN_INPUT_RATE
                     )
+                    input_rms, input_peak = _pcm16_mono_levels(bytes(raw))
                     input_resample_end_ns = time.perf_counter_ns()
+                    diagnostics.record_input_levels(
+                        t_ns=input_resample_end_ns,
+                        rms=input_rms,
+                        peak=input_peak,
+                    )
                     capture_depth, dropped_capture_bytes = _put_drop_oldest(
                         capture_queue, qwen_pcm
                     )
@@ -1335,7 +1468,11 @@ class QwenLiveAudioService:
             import websocket
 
             resolve_start_ns = time.perf_counter_ns()
-            audio = self._resolve_audio(sd)
+            try:
+                audio = self._resolve_audio(sd)
+            except AudioDeviceRateError as exc:
+                self._record_audio_rate_error(diagnostics, exc)
+                raise
             resolve_end_ns = time.perf_counter_ns()
             diagnostics.record(
                 "audio_resolved",
@@ -1344,9 +1481,29 @@ class QwenLiveAudioService:
                 resolve_end_ns=resolve_end_ns,
                 resolve_duration_ms=(resolve_end_ns - resolve_start_ns) / 1_000_000,
             )
+            if audio.input_rate_plan is not None:
+                self._record_audio_rate_plan(diagnostics, audio.input_rate_plan)
+            if audio.output_rate_plan is not None:
+                self._record_audio_rate_plan(diagnostics, audio.output_rate_plan)
+            frames = max(1, round(audio.input_native_rate * CAPTURE_MS / 1000))
+            diagnostics.update_audio_metadata(
+                input_device=audio.input_endpoint.name,
+                output_device=audio.output_endpoint.name,
+                input_native_rate=audio.input_native_rate,
+                output_native_rate=audio.output_native_rate,
+                duplex_rate=(
+                    audio.input_native_rate
+                    if audio.input_native_rate == audio.output_native_rate
+                    else None
+                ),
+                block_frames=frames,
+                block_duration_ms=CAPTURE_MS,
+                input_rate_plan=audio.input_rate_plan,
+                output_rate_plan=audio.output_rate_plan,
+            )
             self._set(message="Opening Qwen realtime session", input_name=audio.input_endpoint.name,
-                      output_name=audio.output_endpoint.name, input_native_rate=audio.native_rate,
-                      output_native_rate=audio.native_rate)
+                      output_name=audio.output_endpoint.name, input_native_rate=audio.input_native_rate,
+                      output_native_rate=audio.output_native_rate)
             config = QwenRealtimeConfig(api_key=request.api_key, workspace_id=request.workspace_id,
                                         region=request.region, model=request.model, timeout_s=15.0)
             provider = QwenRealtimeProvider(config)
@@ -1482,19 +1639,9 @@ class QwenLiveAudioService:
             )
             diagnostics.record("ws_runtime_blocking_configured", timeout=None)
 
-            frames = max(1, round(audio.native_rate * CAPTURE_MS / 1000))
-            diagnostics.update_audio_metadata(
-                input_device=audio.input_endpoint.name,
-                output_device=audio.output_endpoint.name,
-                input_native_rate=audio.input_native_rate,
-                output_native_rate=audio.output_native_rate,
-                duplex_rate=audio.native_rate,
-                block_frames=frames,
-                block_duration_ms=CAPTURE_MS,
-            )
             self._set(
                 state=QwenLiveState.CONNECTED,
-                message="Qwen connected; opening one full-duplex WASAPI stream",
+                message="Qwen connected; opening independent WASAPI audio streams",
             )
             try:
                 self._run_transport(

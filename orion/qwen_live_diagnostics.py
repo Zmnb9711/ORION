@@ -19,6 +19,7 @@ from typing import Any, Callable, Concatenate, ParamSpec, TypeVar
 DEFAULT_MAX_EVENTS = 20_000
 DEFAULT_MAX_TIMING_SAMPLES = 10_000
 DEFAULT_WEBSOCKET_RING_EVENTS = 100
+EFFECTIVE_SILENCE_PEAK = 0.001
 
 _P = ParamSpec("_P")
 _R = TypeVar("_R")
@@ -128,6 +129,11 @@ class QwenLiveDiagnostics:
         self._capture_rate = 0
         self._send_rate = qwen_input_rate
         self._input_overflow_count = 0
+        self._input_level_blocks = 0
+        self._input_silent_blocks = 0
+        self._input_rms_sum = 0.0
+        self._input_rms_max = 0.0
+        self._input_peak_max = 0.0
         self._output_underflow_count = 0
         self._recv_call_count = 0
         self._recv_timeout_count = 0
@@ -216,12 +222,49 @@ class QwenLiveDiagnostics:
         output_device: str,
         input_native_rate: int,
         output_native_rate: int,
-        duplex_rate: int,
+        duplex_rate: int | None,
         block_frames: int,
         block_duration_ms: float,
+        input_rate_plan: object | None = None,
+        output_rate_plan: object | None = None,
     ) -> None:
-        self._capture_rate = duplex_rate
-        self._duplex_rate = duplex_rate
+        self._capture_rate = input_native_rate
+        self._duplex_rate = duplex_rate or output_native_rate
+        audio_devices: dict[str, dict[str, object]] = {}
+        for direction, plan in (
+            ("input", input_rate_plan),
+            ("output", output_rate_plan),
+        ):
+            if plan is None:
+                continue
+            rejected = [
+                {
+                    "rate": getattr(item, "rate", None),
+                    "error_type": str(getattr(item, "error_type", "")),
+                    "message": str(getattr(item, "message", "")),
+                }
+                for item in getattr(plan, "rejected_rates", ())
+            ]
+            audio_devices[direction] = {
+                "logical_device_id": str(
+                    getattr(plan, "logical_device_id", "")
+                ),
+                "device_index": getattr(plan, "device_index", None),
+                "device_name": str(getattr(plan, "device_name", "")),
+                "host_api": str(getattr(plan, "host_api", "")),
+                "reported_default_samplerate": getattr(
+                    plan, "default_rate", None
+                ),
+                "attempted_rates": list(
+                    getattr(plan, "attempted_rates", ())
+                ),
+                "rejected_rates": rejected,
+                "selected_native_rate": getattr(plan, "physical_rate", None),
+                "protocol_rate": getattr(plan, "protocol_rate", None),
+                "resampling_required": bool(
+                    getattr(plan, "resampling_required", False)
+                ),
+            }
         self._metadata.update(
             {
                 "input_device": input_device,
@@ -231,9 +274,29 @@ class QwenLiveDiagnostics:
                 "duplex_rate": duplex_rate,
                 "block_frames": block_frames,
                 "block_duration_ms": block_duration_ms,
+                "audio_devices": audio_devices,
             }
         )
         self.record("audio_metadata_ready")
+
+    @_synchronized
+    def record_input_levels(self, *, t_ns: int, rms: float, peak: float) -> None:
+        self._input_level_blocks += 1
+        silent = peak < EFFECTIVE_SILENCE_PEAK
+        self._input_silent_blocks += int(silent)
+        self._input_rms_sum += rms
+        self._input_rms_max = max(self._input_rms_max, rms)
+        self._input_peak_max = max(self._input_peak_max, peak)
+        if self._input_level_blocks == 1 or self._input_level_blocks % 25 == 0:
+            self.record(
+                "input_level_aggregate",
+                t_ns=t_ns,
+                capture_block_count=self._input_level_blocks,
+                rms=rms,
+                peak=peak,
+                effectively_silent=silent,
+                silent_block_count=self._input_silent_blocks,
+            )
 
     @_synchronized
     def record(self, kind: str, *, t_ns: int | None = None, **fields: object) -> None:
@@ -1348,6 +1411,24 @@ class QwenLiveDiagnostics:
             "queue_overflow_counts": dict(self._queue_overflow_counts),
             "queue_dropped_bytes": dict(self._queue_dropped_bytes),
             "queue_dropped_audio_ms": dict(self._queue_dropped_audio_ms),
+            "audio_devices": self._metadata.get("audio_devices", {}),
+            "input_level_forensics": {
+                "capture_block_count": self._input_level_blocks,
+                "silence_peak_threshold": EFFECTIVE_SILENCE_PEAK,
+                "effectively_silent_block_count": self._input_silent_blocks,
+                "effectively_silent_block_ratio": (
+                    None
+                    if self._input_level_blocks == 0
+                    else self._input_silent_blocks / self._input_level_blocks
+                ),
+                "average_rms": (
+                    None
+                    if self._input_level_blocks == 0
+                    else self._input_rms_sum / self._input_level_blocks
+                ),
+                "maximum_rms": self._input_rms_max,
+                "maximum_peak": self._input_peak_max,
+            },
             **self._first_markers,
             "speech_stopped_to_first_audio_delta_ms": self._optional_elapsed_ms(
                 speech_stopped, first_delta

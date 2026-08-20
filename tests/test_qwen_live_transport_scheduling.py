@@ -36,7 +36,6 @@ def _resolved_audio() -> core._ResolvedAudio:
         2,
         48_000,
         48_000,
-        48_000,
     )
 
 

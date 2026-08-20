@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 
 import orion.qwen_live_audio_core as core
 from orion.app import app
+from orion.qwen_audio_device import AudioDeviceRatePlan, AudioRateRejection
 from orion.qwen_live_diagnostics import QwenLiveDiagnostics
 from orion.windows_wasapi_backend import WasapiDirection, WasapiEndpoint
 
@@ -383,6 +384,84 @@ def test_build_401_transport_configuration_is_explicit(tmp_path: Path) -> None:
     assert lifecycle["ping_configured"] is False
 
 
+def test_input_level_forensics_are_aggregate_only(tmp_path: Path) -> None:
+    recorder = _recorder(tmp_path)
+    recorder.record_input_levels(t_ns=START_NS + 1, rms=0.0, peak=0.0)
+    recorder.record_input_levels(t_ns=START_NS + 2, rms=0.25, peak=0.5)
+
+    levels = recorder.summary(end_ns=START_NS + 3)["input_level_forensics"]
+
+    assert levels == {
+        "capture_block_count": 2,
+        "silence_peak_threshold": 0.001,
+        "effectively_silent_block_count": 1,
+        "effectively_silent_block_ratio": 0.5,
+        "average_rms": 0.125,
+        "maximum_rms": 0.25,
+        "maximum_peak": 0.5,
+    }
+
+
+def test_audio_rate_plan_metadata_is_conclusive_and_bounded(tmp_path: Path) -> None:
+    recorder = _recorder(tmp_path)
+    input_plan = AudioDeviceRatePlan(
+        direction="input",
+        logical_device_id="dream-input",
+        device_index=4,
+        device_name="Dream Air Microphone",
+        host_api="Windows WASAPI",
+        default_rate=32_000,
+        attempted_rates=(32_000, 48_000),
+        rejected_rates=(
+            AudioRateRejection(32_000, "PortAudioError", "invalid rate"),
+        ),
+        physical_rate=48_000,
+        protocol_rate=16_000,
+    )
+    output_plan = AudioDeviceRatePlan(
+        direction="output",
+        logical_device_id="dream-output",
+        device_index=5,
+        device_name="Dream Air Output",
+        host_api="Windows WASAPI",
+        default_rate=44_100,
+        attempted_rates=(44_100,),
+        rejected_rates=(),
+        physical_rate=44_100,
+        protocol_rate=24_000,
+    )
+    recorder.update_audio_metadata(
+        input_device=input_plan.device_name,
+        output_device=output_plan.device_name,
+        input_native_rate=input_plan.physical_rate,
+        output_native_rate=output_plan.physical_rate,
+        duplex_rate=None,
+        block_frames=1_920,
+        block_duration_ms=40,
+        input_rate_plan=input_plan,
+        output_rate_plan=output_plan,
+    )
+
+    devices = recorder.summary(end_ns=START_NS + 1)["audio_devices"]
+
+    assert isinstance(devices, dict)
+    input_details = devices["input"]
+    output_details = devices["output"]
+    assert isinstance(input_details, dict)
+    assert isinstance(output_details, dict)
+    assert input_details["logical_device_id"] == "dream-input"
+    assert input_details["attempted_rates"] == [32_000, 48_000]
+    assert input_details["rejected_rates"] == [
+        {
+            "rate": 32_000,
+            "error_type": "PortAudioError",
+            "message": "invalid rate",
+        }
+    ]
+    assert input_details["selected_native_rate"] == 48_000
+    assert output_details["selected_native_rate"] == 44_100
+
+
 def test_instrumented_transport_preserves_pcm_with_independent_workers(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -392,9 +471,11 @@ def test_instrumented_transport_preserves_pcm_with_independent_workers(
     stop_event = threading.Event()
     response_ready = threading.Event()
     capture_sent = threading.Event()
-    microphone_pcm = array("h", range(1_920)).tobytes()
+    microphone_pcm = array("h", range(1_764)).tobytes()
     response_pcm_a = array("h", range(240)).tobytes()
     response_pcm_b = array("h", range(240, 480)).tobytes()
+    input_stream_options: dict[str, object] = {}
+    output_stream_options: dict[str, object] = {}
 
     class FakeWebSocket:
         def settimeout(self, timeout: float | None) -> None:
@@ -451,7 +532,7 @@ def test_instrumented_transport_preserves_pcm_with_independent_workers(
 
         def read(self, frames: int) -> tuple[bytes, bool]:
             operations.append("read")
-            assert frames == 1_920
+            assert frames == 1_764
             assert response_ready.wait(timeout=1.0)
             return microphone_pcm, False
 
@@ -486,14 +567,22 @@ def test_instrumented_transport_preserves_pcm_with_independent_workers(
         speakers,
         1,
         2,
-        48_000,
-        48_000,
+        44_100,
         48_000,
     )
+
+    def raw_input_stream(**kwargs: object) -> FakeInputStream:
+        input_stream_options.update(kwargs)
+        return FakeInputStream()
+
+    def raw_output_stream(**kwargs: object) -> FakeOutputStream:
+        output_stream_options.update(kwargs)
+        return FakeOutputStream()
+
     fake_sounddevice = SimpleNamespace(
         WasapiSettings=lambda **kwargs: kwargs,
-        RawInputStream=lambda **kwargs: FakeInputStream(),
-        RawOutputStream=lambda **kwargs: FakeOutputStream(),
+        RawInputStream=raw_input_stream,
+        RawOutputStream=raw_output_stream,
     )
     class FakeWebSocketTimeoutException(Exception):
         pass
@@ -526,6 +615,13 @@ def test_instrumented_transport_preserves_pcm_with_independent_workers(
     assert operations.count("output_stream_exit") == 1
     assert operations.index("recv") < operations.index("read")
     assert operations.index("read") < operations.index("write")
+    assert input_stream_options["samplerate"] == 44_100
+    assert input_stream_options["blocksize"] == 1_764
+    assert input_stream_options["channels"] == 1
+    assert input_stream_options["dtype"] == "int16"
+    assert output_stream_options["samplerate"] == 48_000
+    assert output_stream_options["channels"] == 1
+    assert output_stream_options["dtype"] == "int16"
     input_appends = [
         json.loads(message)
         for message in sent_messages
@@ -535,7 +631,7 @@ def test_instrumented_transport_preserves_pcm_with_independent_workers(
     input_append = input_appends[0]
     assert input_append["type"] == "input_audio_buffer.append"
     assert base64.b64decode(input_append["audio"]) == core._resample_pcm16_mono(
-        microphone_pcm, 48_000, core.QWEN_INPUT_RATE
+        microphone_pcm, 44_100, core.QWEN_INPUT_RATE
     )
     expected_response = [
         core._resample_pcm16_mono(

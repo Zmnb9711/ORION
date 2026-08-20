@@ -204,7 +204,7 @@ def test_clean_remote_close_is_classified_without_worker_failure(
         ws=object(),
         websocket=SimpleNamespace(WebSocketTimeoutException=TimeoutError),
         provider=ClosingProvider(),  # type: ignore[arg-type]
-        audio=SimpleNamespace(native_rate=48_000),  # type: ignore[arg-type]
+        audio=SimpleNamespace(output_native_rate=48_000),  # type: ignore[arg-type]
         stop_event=stop_event,
         playback=core._PlaybackFifo(),
         diagnostics=diagnostics,
@@ -235,7 +235,7 @@ def test_abrupt_eof_is_classified_as_connection_loss(tmp_path: Path) -> None:
         ws=object(),
         websocket=SimpleNamespace(WebSocketTimeoutException=TimeoutError),
         provider=FailingProvider(),  # type: ignore[arg-type]
-        audio=SimpleNamespace(native_rate=48_000),  # type: ignore[arg-type]
+        audio=SimpleNamespace(output_native_rate=48_000),  # type: ignore[arg-type]
         stop_event=stop_event,
         playback=core._PlaybackFifo(),
         diagnostics=diagnostics,
@@ -271,7 +271,7 @@ def test_local_close_eof_is_not_classified_as_abrupt(tmp_path: Path) -> None:
         ws=object(),
         websocket=SimpleNamespace(WebSocketTimeoutException=TimeoutError),
         provider=LocallyClosedProvider(),  # type: ignore[arg-type]
-        audio=SimpleNamespace(native_rate=48_000),  # type: ignore[arg-type]
+        audio=SimpleNamespace(output_native_rate=48_000),  # type: ignore[arg-type]
         stop_event=stop_event,
         playback=core._PlaybackFifo(),
         diagnostics=diagnostics,
@@ -388,7 +388,8 @@ def test_manual_stop_unblocks_blocking_receive_with_normal_close(
             output_index=2,
             input_native_rate=48_000,
             output_native_rate=48_000,
-            native_rate=48_000,
+            input_rate_plan=None,
+            output_rate_plan=None,
         ),
     )
 
@@ -444,7 +445,7 @@ def test_disabled_response_watchdog_is_not_applied(
         ws=object(),
         websocket=SimpleNamespace(WebSocketTimeoutException=TimeoutError),
         provider=TimeoutProvider(),  # type: ignore[arg-type]
-        audio=SimpleNamespace(native_rate=48_000),  # type: ignore[arg-type]
+        audio=SimpleNamespace(output_native_rate=48_000),  # type: ignore[arg-type]
         stop_event=stop_event,
         playback=core._PlaybackFifo(),
         diagnostics=_diagnostics(tmp_path),
