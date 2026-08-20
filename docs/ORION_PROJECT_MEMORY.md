@@ -1,6 +1,6 @@
 # ORION Project Memory
 
-> Canonical long-term project context. Updated: 2026-08-13.
+> Canonical long-term project context. Updated: 2026-08-20.
 >
 > Purpose: preserve approved product requirements, architectural invariants, milestone history, real-world test evidence, known risks, and the next agreed action across chats and development sessions.
 >
@@ -233,6 +233,49 @@ Decision:
 4. Keep Mission World as a separate architecture/source.
 5. Use the 5,000-packet recorder to validate actual values and module behavior, not assumptions from documentation.
 6. Request the next large F/A-18C smoke only after the Telemetry v0.3 tranche has passed CI/Windows build gates.
+
+### Qwen Live field-validated baseline — Build #402, 2026-08-20
+
+**Status: FIELD TEST VALIDATED**
+
+Control point:
+
+- ORION Alpha Windows Build **#402**;
+- commit `4e8b49afff0b8f5d1ec1a008f09f79ae08e1a546`.
+
+Live field tests confirmed:
+
+- WebSocket transport is reference-aligned from Build #401 onward;
+- playback is reference-aligned FIFO from Build #402 onward;
+- field tests pass both without VPN and with VPN;
+- the previously observed abrupt disconnects and early Qwen Live failures are resolved;
+- `response.audio.done` and `response.done` arrive normally;
+- clean WebSocket close is confirmed;
+- playback overflow is zero;
+- dropped provider audio is zero;
+- artificial zero padding is zero;
+- speech is subjectively normal;
+- VPN increases jitter/starvation, but no longer causes Qwen Live failure or PCM loss.
+
+Known observation / technical debt:
+
+- FIFO backlog can grow significantly in individual tests; approximately 10–11 seconds has been observed.
+- This has not been established as a user-facing problem and is not, by itself, a reason to change the working playback path.
+- Do not optimize the backlog without separate measurement and regression A/B validation against Build #402.
+
+Baseline freeze: do not change the following without a separately justified change and regression/A-B test against Build #402:
+
+- Qwen WebSocket transport;
+- socket runtime semantics;
+- shutdown semantics;
+- Qwen event flow;
+- `server_vad` flow;
+- playback FIFO architecture;
+- output worker architecture;
+- absence of artificial zero padding;
+- absence of a drop-oldest playback policy.
+
+Build #402 is the control point for all future Qwen Live work. Future Qwen Live changes must be compared with it and must not regress connection stability, response completion, playback continuity, audio loss, or Stop behavior.
 
 ## 6. Real Windows/DCS test evidence
 
