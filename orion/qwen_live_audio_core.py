@@ -22,7 +22,6 @@ QWEN_OUTPUT_RATE = 24_000
 CHANNELS = 1
 CAPTURE_MS = 40
 CAPTURE_QUEUE_BLOCKS = 25
-PLAYBACK_BUFFER_MS = 2_000
 WORKER_JOIN_TIMEOUT_S = 1.0
 ENABLE_QWEN_HEARTBEAT = False
 ENABLE_QWEN_RESPONSE_WATCHDOG = False
@@ -240,70 +239,43 @@ class _SessionMonitor:
         self._last_delta_ns = None
 
 
-@dataclass(slots=True, frozen=True)
-class _PlaybackBlock:
-    pcm: bytes
-    buffer_before_bytes: int
-    buffer_after_bytes: int
-    response_audio_frames: int
-    zero_frames: int
-    response_active: bool
+class _PlaybackFifo:
+    """Unbounded provider-delta FIFO matching the working reference client."""
 
-
-class _BoundedPlaybackBuffer:
-    """Thread-safe continuous PCM buffer with a drop-oldest size bound."""
-
-    def __init__(self, max_bytes: int) -> None:
-        if max_bytes <= 0 or max_bytes % 2:
-            raise ValueError("Playback buffer size must be a positive PCM16 byte count")
-        self.max_bytes = max_bytes
-        self._data = bytearray()
-        self._response_active = False
+    def __init__(self) -> None:
+        self._queue: queue.Queue[bytes | None] = queue.Queue()
         self._lock = threading.Lock()
+        self._depth_bytes = 0
+        self._response_active = False
+
+    @property
+    def depth_bytes(self) -> int:
+        with self._lock:
+            return self._depth_bytes
 
     def mark_response_active(self, active: bool) -> None:
         with self._lock:
             self._response_active = active
 
-    def append(self, pcm: bytes) -> tuple[int, int, int]:
-        if len(pcm) % 2:
+    def put(self, pcm: bytes) -> tuple[int, int]:
+        if not pcm or len(pcm) % 2:
             raise ValueError("Playback PCM must contain complete int16 samples")
         with self._lock:
-            before = len(self._data)
-            dropped = max(0, before + len(pcm) - self.max_bytes)
-            if dropped:
-                buffered_drop = min(dropped, before)
-                del self._data[:buffered_drop]
-                pcm = pcm[dropped - buffered_drop :]
-            self._data.extend(pcm)
-            return before, len(self._data), dropped
+            before = self._depth_bytes
+            self._depth_bytes += len(pcm)
+            self._queue.put_nowait(pcm)
+            return before, self._depth_bytes
 
-    def take_block(self, frames: int) -> _PlaybackBlock:
-        bytes_needed = frames * 2
+    def get(self) -> tuple[bytes | None, int, int, bool]:
+        pcm = self._queue.get()
         with self._lock:
-            before = len(self._data)
-            response_active = self._response_active or before > 0
-            if before >= bytes_needed:
-                response_pcm = bytes(self._data[:bytes_needed])
-                del self._data[:bytes_needed]
-            elif before and not self._response_active:
-                response_pcm = bytes(self._data)
-                self._data.clear()
-            else:
-                # Hold a short provider delta for the next block instead of
-                # padding each delta and inserting silence between valid PCM.
-                response_pcm = b""
-            after = len(self._data)
-        response_frames = len(response_pcm) // 2
-        zero_frames = frames - response_frames
-        return _PlaybackBlock(
-            pcm=response_pcm + b"\x00" * (zero_frames * 2),
-            buffer_before_bytes=before,
-            buffer_after_bytes=after,
-            response_audio_frames=response_frames,
-            zero_frames=zero_frames,
-            response_active=response_active,
-        )
+            before = self._depth_bytes
+            if pcm is not None:
+                self._depth_bytes -= len(pcm)
+            return pcm, before, self._depth_bytes, self._response_active
+
+    def stop(self) -> None:
+        self._queue.put_nowait(None)
 
 
 def _put_drop_oldest(
@@ -662,6 +634,70 @@ class QwenLiveAudioService:
             )
             diagnostics.record("worker_stopped", stage="websocket_send")
 
+    def _playback_worker(
+        self,
+        sd: Any,
+        audio: _ResolvedAudio,
+        stop_event: threading.Event,
+        playback: _PlaybackFifo,
+        diagnostics: QwenLiveDiagnostics,
+        failures: queue.Queue[_WorkerFailure],
+    ) -> None:
+        diagnostics.record("worker_started", stage="audio_playback")
+        settings = sd.WasapiSettings(exclusive=False)
+        try:
+            with sd.RawOutputStream(
+                samplerate=audio.native_rate,
+                device=audio.output_index,
+                channels=CHANNELS,
+                dtype="int16",
+                extra_settings=settings,
+            ) as stream:
+                while True:
+                    wait_start_ns = time.perf_counter_ns()
+                    diagnostics.record_playback_wait_start(
+                        t_ns=wait_start_ns,
+                        depth_bytes=playback.depth_bytes,
+                        sample_rate=audio.native_rate,
+                    )
+                    pcm, before_bytes, after_bytes, response_active = playback.get()
+                    wait_end_ns = time.perf_counter_ns()
+                    diagnostics.record_playback_wait_end(
+                        t_ns=wait_end_ns,
+                        depth_bytes=after_bytes,
+                        sample_rate=audio.native_rate,
+                    )
+                    if pcm is None or stop_event.is_set():
+                        return
+                    write_start_ns = time.perf_counter_ns()
+                    underflowed = stream.write(pcm)
+                    write_end_ns = time.perf_counter_ns()
+                    with self._lock:
+                        self._status.output_chunks += 1
+                    diagnostics.record_write(
+                        write_start_ns=write_start_ns,
+                        write_end_ns=write_end_ns,
+                        buffer_before_bytes=before_bytes,
+                        buffer_after_bytes=after_bytes,
+                        response_audio_frames=len(pcm) // 2,
+                        zero_frames=0,
+                        frames_written=len(pcm) // 2,
+                        sample_rate=audio.native_rate,
+                        underflow=bool(underflowed),
+                        response_active=response_active,
+                    )
+        except Exception as exc:
+            if not stop_event.is_set():
+                self._report_worker_failure(
+                    failures,
+                    stop_event,
+                    diagnostics,
+                    "audio playback",
+                    exc,
+                )
+        finally:
+            diagnostics.record("worker_stopped", stage="audio_playback")
+
     def _heartbeat_worker(
         self,
         ws: Any,
@@ -730,7 +766,7 @@ class QwenLiveAudioService:
         *,
         monitor: _SessionMonitor,
         now_ns: int,
-        playback: _BoundedPlaybackBuffer,
+        playback: _PlaybackFifo,
         diagnostics: QwenLiveDiagnostics,
     ) -> bool:
         response_timeout = monitor.response_timeout(now_ns)
@@ -757,7 +793,7 @@ class QwenLiveAudioService:
         provider: QwenRealtimeProvider,
         audio: _ResolvedAudio,
         stop_event: threading.Event,
-        playback: _BoundedPlaybackBuffer,
+        playback: _PlaybackFifo,
         diagnostics: QwenLiveDiagnostics,
         failures: queue.Queue[_WorkerFailure],
         monitor: _SessionMonitor,
@@ -859,9 +895,7 @@ class QwenLiveAudioService:
                         target_rate=audio.native_rate,
                     )
                     playback.mark_response_active(True)
-                    before_bytes, after_bytes, dropped_bytes = playback.append(
-                        resampled_delta
-                    )
+                    before_bytes, after_bytes = playback.put(resampled_delta)
                     diagnostics.record_playback_enqueue(
                         t_ns=response_resample_end_ns,
                         before_bytes=before_bytes,
@@ -869,14 +903,6 @@ class QwenLiveAudioService:
                         sample_rate=audio.native_rate,
                         added_bytes=len(resampled_delta),
                     )
-                    if dropped_bytes:
-                        diagnostics.record_queue_overflow(
-                            channel="playback_buffer",
-                            dropped_bytes=dropped_bytes,
-                            sample_rate=audio.native_rate,
-                            depth=after_bytes,
-                            capacity=playback.max_bytes,
-                        )
                     self._set(phase=QwenAudioPhase.SPEAKING, message="Qwen speaking")
                 elif event_type == "response.audio.done":
                     monitor.response_audio_done(recv_end_ns)
@@ -979,12 +1005,7 @@ class QwenLiveAudioService:
         capture_queue: queue.Queue[bytes] = queue.Queue(
             maxsize=CAPTURE_QUEUE_BLOCKS
         )
-        playback = _BoundedPlaybackBuffer(
-            max_bytes=max(
-                frames * 2,
-                round(audio.native_rate * PLAYBACK_BUFFER_MS / 1000) * 2,
-            )
-        )
+        playback = _PlaybackFifo()
         failures: queue.Queue[_WorkerFailure] = queue.Queue(maxsize=1)
         send_lock = threading.Lock()
         workers: list[threading.Thread] = []
@@ -992,15 +1013,15 @@ class QwenLiveAudioService:
         transport_error: Exception | None = None
 
         try:
-            # One blocking PaStream and one calling thread own both WASAPI
-            # endpoints. Network send/receive never execute on this thread.
-            with sd.RawStream(
+            # Capture stays on this coordinator. A dedicated playback worker is
+            # the sole owner of the independent blocking output stream.
+            with sd.RawInputStream(
                 samplerate=audio.native_rate,
                 blocksize=frames,
-                device=(audio.input_index, audio.output_index),
-                channels=(CHANNELS, CHANNELS),
-                dtype=("int16", "int16"),
-                extra_settings=(settings, settings),
+                device=audio.input_index,
+                channels=CHANNELS,
+                dtype="int16",
+                extra_settings=settings,
             ) as stream:
                 workers = [
                     threading.Thread(
@@ -1033,6 +1054,19 @@ class QwenLiveAudioService:
                         daemon=True,
                         name="orion-qwen-receive",
                     ),
+                    threading.Thread(
+                        target=self._playback_worker,
+                        args=(
+                            sd,
+                            audio,
+                            stop_event,
+                            playback,
+                            diagnostics,
+                            failures,
+                        ),
+                        daemon=True,
+                        name="orion-qwen-playback",
+                    ),
                 ]
                 if ENABLE_QWEN_HEARTBEAT:
                     workers.append(
@@ -1055,7 +1089,7 @@ class QwenLiveAudioService:
                 self._set(
                     state=QwenLiveState.STREAMING,
                     phase=QwenAudioPhase.LISTENING,
-                    message="Qwen live audio streaming through one WASAPI duplex stream",
+                    message="Qwen live audio streaming through blocking WASAPI input/output streams",
                 )
 
                 while not stop_event.is_set():
@@ -1095,25 +1129,6 @@ class QwenLiveAudioService:
                     with self._lock:
                         self._status.input_chunks += 1
 
-                    block = playback.take_block(frames)
-                    write_start_ns = time.perf_counter_ns()
-                    underflowed = stream.write(block.pcm)
-                    write_end_ns = time.perf_counter_ns()
-                    if block.response_audio_frames:
-                        with self._lock:
-                            self._status.output_chunks += 1
-                    diagnostics.record_write(
-                        write_start_ns=write_start_ns,
-                        write_end_ns=write_end_ns,
-                        buffer_before_bytes=block.buffer_before_bytes,
-                        buffer_after_bytes=block.buffer_after_bytes,
-                        response_audio_frames=block.response_audio_frames,
-                        zero_frames=block.zero_frames,
-                        frames_written=frames,
-                        sample_rate=audio.native_rate,
-                        underflow=bool(underflowed),
-                        response_active=block.response_active,
-                    )
                     loop_end_ns = time.perf_counter_ns()
                     diagnostics.record_loop(
                         loop_start_ns=loop_start_ns,
@@ -1126,7 +1141,7 @@ class QwenLiveAudioService:
                         send_ms=0.0,
                         recv_ms=0.0,
                         response_processing_ms=0.0,
-                        write_ms=(write_end_ns - write_start_ns) / 1_000_000,
+                        write_ms=0.0,
                     )
         except Exception as exc:
             transport_error = exc
@@ -1148,6 +1163,7 @@ class QwenLiveAudioService:
                 ),
             )
             stop_event.set()
+            playback.stop()
             diagnostics.record_websocket_event(
                 "STOP_EVENT_SET",
                 direction="lifecycle",

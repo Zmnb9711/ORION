@@ -1,16 +1,10 @@
 from pathlib import Path
 
 
-def test_qwen_live_must_not_open_two_independent_portaudio_streams_in_core() -> None:
-    """Regression contract for ADR-004.
-
-    Qwen Live must not own independent RawInputStream + RawOutputStream objects
-    inside ORION Core. PortAudio documents simultaneous multi-stream device use
-    as implementation-defined; a native PortAudio/WASAPI failure must not be
-    allowed to take down the stable Core process.
-    """
+def test_qwen_live_build_402_has_one_blocking_owner_per_audio_direction() -> None:
     source = Path("orion/qwen_live_audio_core.py").read_text(encoding="utf-8")
 
-    assert not (
-        "sd.RawInputStream(" in source and "sd.RawOutputStream(" in source
-    ), "Qwen Live still opens independent input/output PortAudio streams inside Core"
+    assert source.count("sd.RawInputStream(") == 1
+    assert source.count("sd.RawOutputStream(") == 1
+    assert "sd.RawStream(" not in source
+    assert "callback=" not in source

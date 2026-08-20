@@ -139,6 +139,7 @@ class QwenLiveDiagnostics:
         self._maximum_consecutive_audio_delta_events = 0
         self._near_zero_wait_audio_delta_count = 0
         self._audio_delta_count = 0
+        self._provider_delta_bytes = 0
         self._previous_audio_delta_ns: int | None = None
         self._first_audio_delta_session_ns: int | None = None
         self._last_audio_delta_session_ns: int | None = None
@@ -157,6 +158,7 @@ class QwenLiveDiagnostics:
         self._response_period_start_ns: int | None = None
         self._response_period_closed_ns = 0
         self._starvation_start_ns: int | None = None
+        self._playback_wait_start_ns: int | None = None
         self._starvation_closed_count = 0
         self._starvation_closed_ns = 0
         self._starvation_max_closed_ns = 0
@@ -740,10 +742,21 @@ class QwenLiveDiagnostics:
             self._current_response_has_audio = False
             self._start_response_period(t_ns)
             self._first_markers.setdefault("first_response_event_ns", t_ns)
+            if (
+                self._playback_wait_start_ns is not None
+                and self._starvation_start_ns is None
+            ):
+                self._starvation_start_ns = t_ns
+                self.record(
+                    "PLAYBACK_STARVATION_STARTED",
+                    t_ns=t_ns,
+                    response_index=self._response_index,
+                )
         elif event_type.startswith("response."):
             self._first_markers.setdefault("first_response_event_ns", t_ns)
         if event_type in {"response.audio.done", "response.done"}:
             self._response_active = False
+            self._close_starvation(t_ns)
         if event_type == "response.audio.done":
             self._first_markers.setdefault("response_audio_done_ns", t_ns)
         elif event_type == "response.done":
@@ -788,6 +801,7 @@ class QwenLiveDiagnostics:
             self._first_audio_delta_session_ns = receive_ns
         self._last_audio_delta_session_ns = receive_ns
         self._audio_delta_count += 1
+        self._provider_delta_bytes += decoded_bytes
         duration_ms = self._elapsed_ms(resample_start_ns, resample_end_ns)
         self._timing("response_resample", duration_ms)
         decoded_audio_ms = self.playback_ms(decoded_bytes, source_rate)
@@ -804,6 +818,9 @@ class QwenLiveDiagnostics:
             decoded_pcm_bytes=decoded_bytes,
             decoded_samples=decoded_bytes // 2,
             decoded_audio_ms=decoded_audio_ms,
+            provider_delta_count=self._audio_delta_count,
+            provider_delta_bytes=decoded_bytes,
+            provider_delta_duration_ms=decoded_audio_ms,
             previous_delta_gap_ms=delta_gap_ms,
             resample_start_ns=resample_start_ns,
             resample_end_ns=resample_end_ns,
@@ -850,6 +867,44 @@ class QwenLiveDiagnostics:
             after_ms=after_ms,
             added_bytes=accepted_bytes,
             added_ms=added_ms,
+            playback_queue_depth_bytes=after_bytes,
+            playback_queue_depth_ms=after_ms,
+        )
+
+    @_synchronized
+    def record_playback_wait_start(
+        self, *, t_ns: int, depth_bytes: int, sample_rate: int
+    ) -> None:
+        self._playback_wait_start_ns = t_ns
+        if self._response_active and self._starvation_start_ns is None:
+            self._starvation_start_ns = t_ns
+            self.record(
+                "PLAYBACK_STARVATION_STARTED",
+                t_ns=t_ns,
+                response_index=self._response_index,
+            )
+        self.record(
+            "playback_wait_start",
+            t_ns=t_ns,
+            playback_queue_depth_bytes=depth_bytes,
+            playback_queue_depth_ms=self.playback_ms(depth_bytes, sample_rate),
+            response_active=self._response_active,
+        )
+
+    @_synchronized
+    def record_playback_wait_end(
+        self, *, t_ns: int, depth_bytes: int, sample_rate: int
+    ) -> None:
+        wait_start_ns = self._playback_wait_start_ns
+        self._playback_wait_start_ns = None
+        self._close_starvation(t_ns)
+        self.record(
+            "playback_wait_end",
+            t_ns=t_ns,
+            wait_duration_ms=self._optional_elapsed_ms(wait_start_ns, t_ns),
+            playback_queue_depth_bytes=depth_bytes,
+            playback_queue_depth_ms=self.playback_ms(depth_bytes, sample_rate),
+            response_active=self._response_active,
         )
 
     @_synchronized
@@ -993,10 +1048,15 @@ class QwenLiveDiagnostics:
             write_start_ns=write_start_ns,
             write_end_ns=write_end_ns,
             write_duration_ms=duration_ms,
+            playback_write_start_ns=write_start_ns,
+            playback_write_end_ns=write_end_ns,
+            playback_write_duration_ms=duration_ms,
             buffer_before_bytes=buffer_before_bytes,
             buffer_before_ms=self.playback_ms(buffer_before_bytes, sample_rate),
             buffer_after_bytes=buffer_after_bytes,
             buffer_after_ms=after_ms,
+            playback_queue_depth_bytes=buffer_after_bytes,
+            playback_queue_depth_ms=after_ms,
             bytes_removed=max(0, buffer_before_bytes - buffer_after_bytes),
             response_audio_frames=response_audio_frames,
             response_audio_duration_ms=written_audio_ms,
@@ -1180,6 +1240,9 @@ class QwenLiveDiagnostics:
         }
         playback_timeline = {
             "audio_delta_count": self._audio_delta_count,
+            "provider_delta_count": self._audio_delta_count,
+            "provider_delta_bytes": self._provider_delta_bytes,
+            "provider_delta_duration_ms": self._decoded_response_audio_ms,
             "audio_delta_gap_ms": audio_delta_gap,
             "audio_delta_recv_wait_ms": self._stage_summary(
                 "audio_delta_recv_wait"
@@ -1225,6 +1288,7 @@ class QwenLiveDiagnostics:
             "playback_starvation_total_ms": starvation_total_ms,
             "playback_starvation_max_ms": starvation_max_ms,
             "zero_padded_write_count": self._zero_padded_write_count,
+            "artificial_zero_padding_count": self._zero_padded_write_count,
             "partial_zero_padded_write_count": (
                 self._partial_zero_padded_write_count
             ),
@@ -1301,6 +1365,9 @@ class QwenLiveDiagnostics:
                 self._optional_elapsed_ms(speech_stopped, first_write)
             ),
             "audio_delta_count": self._audio_delta_count,
+            "provider_delta_count": self._audio_delta_count,
+            "provider_delta_bytes": self._provider_delta_bytes,
+            "provider_delta_duration_ms": self._decoded_response_audio_ms,
             "audio_delta_gap_ms": audio_delta_gap,
             "maximum_consecutive_audio_delta_events": (
                 self._maximum_consecutive_audio_delta_events
@@ -1322,6 +1389,7 @@ class QwenLiveDiagnostics:
             "playback_starvation_max_ms": starvation_max_ms,
             "insufficient_audio_cycle_count": self._insufficient_audio_cycles,
             "zero_padded_write_count": self._zero_padded_write_count,
+            "artificial_zero_padding_count": self._zero_padded_write_count,
             "partial_zero_padded_write_count": (
                 self._partial_zero_padded_write_count
             ),

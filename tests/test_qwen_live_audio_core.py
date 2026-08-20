@@ -71,9 +71,10 @@ def test_qwen_live_session_is_audio_audio_and_keeps_tools_disabled() -> None:
     assert "realtime" in session["instructions"].lower()
 
 
-def test_qwen_live_uses_one_full_duplex_portaudio_stream() -> None:
+def test_qwen_live_uses_reference_aligned_blocking_input_and_output_streams() -> None:
     source = Path(__file__).parents[1].joinpath("orion", "qwen_live_audio_core.py").read_text(encoding="utf-8")
-    assert "sd.RawStream(" in source
-    assert "RawInputStream(" not in source
-    assert "RawOutputStream(" not in source
+    assert source.count("sd.RawInputStream(") == 1
+    assert source.count("sd.RawOutputStream(") == 1
+    assert "sd.RawStream(" not in source
     assert "capture_thread" not in source
+    assert "callback=" not in source

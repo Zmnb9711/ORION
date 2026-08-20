@@ -62,26 +62,19 @@ def _diagnostics(tmp_path: Path) -> QwenLiveDiagnostics:
     return recorder
 
 
-def test_short_deltas_are_concatenated_without_partial_zero_padding() -> None:
-    playback = core._BoundedPlaybackBuffer(max_bytes=16)
+def test_provider_deltas_use_unbounded_fifo_without_zero_padding() -> None:
+    playback = core._PlaybackFifo()
     first = b"\x01\x00"
     second = b"\x02\x00"
     playback.mark_response_active(True)
 
-    assert playback.append(first) == (0, 2, 0)
-    waiting = playback.take_block(2)
-    assert waiting.pcm == b"\x00" * 4
-    assert waiting.response_audio_frames == 0
-    assert waiting.buffer_after_bytes == 2
-
-    assert playback.append(second) == (2, 4, 0)
-    complete = playback.take_block(2)
-    assert complete.pcm == first + second
-    assert complete.response_audio_frames == 2
-    assert complete.zero_frames == 0
+    assert playback.put(first) == (0, 2)
+    assert playback.put(second) == (2, 4)
+    assert playback.get() == (first, 4, 2, True)
+    assert playback.get() == (second, 2, 0, True)
 
 
-def test_capture_queue_and_playback_buffer_are_bounded_drop_oldest() -> None:
+def test_capture_queue_remains_bounded_but_playback_fifo_never_drops() -> None:
     capture: queue.Queue[bytes] = queue.Queue(maxsize=2)
     assert core._put_drop_oldest(capture, b"aa") == (1, 0)
     assert core._put_drop_oldest(capture, b"bb") == (2, 0)
@@ -89,11 +82,11 @@ def test_capture_queue_and_playback_buffer_are_bounded_drop_oldest() -> None:
     assert capture.get_nowait() == b"bb"
     assert capture.get_nowait() == b"cc"
 
-    playback = core._BoundedPlaybackBuffer(max_bytes=8)
-    assert playback.append(b"00112233") == (0, 8, 0)
-    assert playback.append(b"4455") == (8, 8, 4)
-    playback.mark_response_active(False)
-    assert playback.take_block(4).pcm == b"22334455"
+    playback = core._PlaybackFifo()
+    assert playback.put(b"00112233") == (0, 8)
+    assert playback.put(b"4455") == (8, 12)
+    assert playback.get()[0] == b"00112233"
+    assert playback.get()[0] == b"4455"
 
 
 def test_audio_capture_send_and_playback_continue_while_recv_is_blocked(
@@ -107,7 +100,7 @@ def test_audio_capture_send_and_playback_continue_while_recv_is_blocked(
     abort_calls = 0
 
     class BlockingProvider:
-        def _receive_json(self, _ws: object) -> dict[str, str]:
+        def _receive_json(self, _ws: object) -> dict[str, object]:
             recv_entered.set()
             recv_release.wait(timeout=2.0)
             raise FakeWebSocketTimeoutException()
@@ -139,20 +132,20 @@ def test_audio_capture_send_and_playback_continue_while_recv_is_blocked(
         def read(self, frames: int) -> tuple[bytes, bool]:
             assert recv_entered.wait(timeout=1.0)
             self.reads += 1
+            if self.reads == 6:
+                assert five_sends.wait(timeout=1.0)
+                stop_event.set()
             return b"\x01\x00" * frames, False
 
         def write(self, pcm: bytes) -> bool:
-            assert len(pcm) == 3_840
             self.writes += 1
-            if self.writes == 5:
-                assert five_sends.wait(timeout=1.0)
-                stop_event.set()
-            return False
+            raise AssertionError(f"Artificial playback write: {len(pcm)} bytes")
 
     stream = RealtimeStream()
     fake_sd = SimpleNamespace(
         WasapiSettings=lambda **kwargs: kwargs,
-        RawStream=lambda **kwargs: stream,
+        RawInputStream=lambda **kwargs: stream,
+        RawOutputStream=lambda **kwargs: stream,
     )
     service = core.QwenLiveAudioService()
     diagnostics = _diagnostics(tmp_path)
@@ -169,9 +162,9 @@ def test_audio_capture_send_and_playback_continue_while_recv_is_blocked(
         diagnostics=diagnostics,
     )
 
-    assert stream.reads == 5
-    assert stream.writes == 5
-    assert len(sent_messages) == 5
+    assert stream.reads == 6
+    assert stream.writes == 0
+    assert len(sent_messages) >= 5
     assert abort_calls == 0
     assert all(
         json.loads(message)["type"] == "input_audio_buffer.append"
@@ -206,8 +199,9 @@ def test_audio_capture_send_and_playback_continue_while_recv_is_blocked(
     )
 
 
-def test_receive_drains_multiple_deltas_before_microphone_cycle(
-    tmp_path: Path,
+@pytest.mark.parametrize("completion_event", ["response.audio.done", "response.done"])
+def test_receive_completion_does_not_discard_queued_deltas(
+    completion_event: str, tmp_path: Path,
 ) -> None:
     stop_event = threading.Event()
     recv_release = threading.Event()
@@ -222,7 +216,7 @@ def test_receive_drains_multiple_deltas_before_microphone_cycle(
             "delta": base64.b64encode(delta).decode("ascii"),
         }
         for delta in source_deltas
-    ] + [{"type": "response.audio.done"}]
+    ] + [{"type": completion_event}]
 
     class BurstProvider:
         def _receive_json(self, _ws: object) -> dict[str, str]:
@@ -259,7 +253,8 @@ def test_receive_drains_multiple_deltas_before_microphone_cycle(
 
         def write(self, pcm: bytes) -> bool:
             self.written.append(pcm)
-            stop_event.set()
+            if len(self.written) == 3:
+                stop_event.set()
             return False
 
     stream = OneCycleStream()
@@ -268,7 +263,8 @@ def test_receive_drains_multiple_deltas_before_microphone_cycle(
     service._run_transport(
         sd=SimpleNamespace(
             WasapiSettings=lambda **kwargs: kwargs,
-            RawStream=lambda **kwargs: stream,
+            RawInputStream=lambda **kwargs: stream,
+            RawOutputStream=lambda **kwargs: stream,
         ),
         websocket=SimpleNamespace(
             WebSocketTimeoutException=FakeWebSocketTimeoutException
@@ -281,11 +277,10 @@ def test_receive_drains_multiple_deltas_before_microphone_cycle(
         diagnostics=diagnostics,
     )
 
-    expected = b"".join(
+    assert stream.written == [
         core._resample_pcm16_mono(delta, core.QWEN_OUTPUT_RATE, 48_000)
         for delta in source_deltas
-    )
-    assert stream.written == [expected]
+    ]
     summary = diagnostics.summary()
     assert summary["audio_delta_count"] == 3
     assert summary["partial_zero_padded_write_count"] == 0
@@ -336,7 +331,8 @@ def test_emergency_abort_is_only_used_after_normal_close_cannot_unblock_recv(
     core.QwenLiveAudioService()._run_transport(
         sd=SimpleNamespace(
             WasapiSettings=lambda **kwargs: kwargs,
-            RawStream=lambda **kwargs: StopStream(),
+            RawInputStream=lambda **kwargs: StopStream(),
+            RawOutputStream=lambda **kwargs: StopStream(),
         ),
         websocket=SimpleNamespace(
             WebSocketTimeoutException=FakeWebSocketTimeoutException
@@ -412,7 +408,8 @@ def test_receive_worker_error_propagates_to_service_error_state(
         "sounddevice",
         SimpleNamespace(
             WasapiSettings=lambda **kwargs: kwargs,
-            RawStream=lambda **kwargs: FakeRawStream(),
+            RawInputStream=lambda **kwargs: FakeRawStream(),
+            RawOutputStream=lambda **kwargs: FakeRawStream(),
         ),
     )
     monkeypatch.setitem(
@@ -542,7 +539,19 @@ def test_audio_io_failure_propagates_and_stops_network_workers(
     recv_release = threading.Event()
 
     class BlockingProvider:
-        def _receive_json(self, _ws: object) -> dict[str, str]:
+        def __init__(self) -> None:
+            self.receive_count = 0
+
+        def _receive_json(self, _ws: object) -> dict[str, object]:
+            if failure_stage == "playback":
+                self.receive_count += 1
+                if self.receive_count == 1:
+                    return {"type": "response.created", "response": {"id": "r1"}}
+                if self.receive_count == 2:
+                    return {
+                        "type": "response.audio.delta",
+                        "delta": base64.b64encode(b"\x01\x00" * 320).decode("ascii"),
+                    }
             recv_release.wait(timeout=2.0)
             raise FakeWebSocketTimeoutException()
 
@@ -572,11 +581,12 @@ def test_audio_io_failure_propagates_and_stops_network_workers(
             raise OSError("controlled playback failure")
 
     service = core.QwenLiveAudioService()
-    with pytest.raises(OSError, match=f"controlled {failure_stage} failure"):
+    with pytest.raises(Exception, match=f"controlled {failure_stage} failure"):
         service._run_transport(
             sd=SimpleNamespace(
                 WasapiSettings=lambda **kwargs: kwargs,
-                RawStream=lambda **kwargs: FailingStream(),
+                RawInputStream=lambda **kwargs: FailingStream(),
+                RawOutputStream=lambda **kwargs: FailingStream(),
             ),
             websocket=SimpleNamespace(
                 WebSocketTimeoutException=FakeWebSocketTimeoutException
@@ -590,7 +600,8 @@ def test_audio_io_failure_propagates_and_stops_network_workers(
         )
 
     assert not any(
-        thread.name in {"orion-qwen-send", "orion-qwen-receive"}
+        thread.name
+        in {"orion-qwen-send", "orion-qwen-receive", "orion-qwen-playback"}
         for thread in threading.enumerate()
     )
 

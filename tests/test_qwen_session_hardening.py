@@ -121,25 +121,19 @@ def test_response_watchdog_deadlines(
     assert monitor.response_timeout(reference_ns + 60_000_000_000) is None
 
 
-def test_response_watchdog_stops_unbounded_silent_padding() -> None:
-    playback = core._BoundedPlaybackBuffer(max_bytes=16)
+def test_response_watchdog_state_does_not_discard_fifo_audio() -> None:
+    playback = core._PlaybackFifo()
     monitor = core._SessionMonitor(connected_ns=0)
     monitor.response_created({"response": {"id": "response-1"}}, 0)
     playback.mark_response_active(True)
-    playback.append(b"\x01\x00")
-
-    active = playback.take_block(2)
-    assert active.response_active is True
-    assert active.response_audio_frames == 0
+    playback.put(b"\x01\x00")
 
     assert monitor.response_timeout(20_100_000_000) is not None
     playback.mark_response_active(False)
-    drained = playback.take_block(2)
-    idle = playback.take_block(2)
+    pcm, before_bytes, after_bytes, response_active = playback.get()
 
-    assert drained.response_audio_frames == 1
-    assert idle.response_active is False
-    assert idle.zero_frames == 2
+    assert pcm == b"\x01\x00"
+    assert (before_bytes, after_bytes, response_active) == (2, 0, False)
 
 
 def test_audio_done_stops_padding_but_completion_deadline_remains() -> None:
@@ -212,7 +206,7 @@ def test_clean_remote_close_is_classified_without_worker_failure(
         provider=ClosingProvider(),  # type: ignore[arg-type]
         audio=SimpleNamespace(native_rate=48_000),  # type: ignore[arg-type]
         stop_event=stop_event,
-        playback=core._BoundedPlaybackBuffer(max_bytes=16),
+        playback=core._PlaybackFifo(),
         diagnostics=diagnostics,
         failures=failures,
         monitor=core._SessionMonitor(connected_ns=time.perf_counter_ns()),
@@ -243,7 +237,7 @@ def test_abrupt_eof_is_classified_as_connection_loss(tmp_path: Path) -> None:
         provider=FailingProvider(),  # type: ignore[arg-type]
         audio=SimpleNamespace(native_rate=48_000),  # type: ignore[arg-type]
         stop_event=stop_event,
-        playback=core._BoundedPlaybackBuffer(max_bytes=16),
+        playback=core._PlaybackFifo(),
         diagnostics=diagnostics,
         failures=failures,
         monitor=core._SessionMonitor(connected_ns=time.perf_counter_ns()),
@@ -279,7 +273,7 @@ def test_local_close_eof_is_not_classified_as_abrupt(tmp_path: Path) -> None:
         provider=LocallyClosedProvider(),  # type: ignore[arg-type]
         audio=SimpleNamespace(native_rate=48_000),  # type: ignore[arg-type]
         stop_event=stop_event,
-        playback=core._BoundedPlaybackBuffer(max_bytes=16),
+        playback=core._PlaybackFifo(),
         diagnostics=diagnostics,
         failures=failures,
         monitor=core._SessionMonitor(connected_ns=time.perf_counter_ns()),
@@ -369,7 +363,8 @@ def test_manual_stop_unblocks_blocking_receive_with_normal_close(
         "sounddevice",
         SimpleNamespace(
             WasapiSettings=lambda **kwargs: kwargs,
-            RawStream=lambda **kwargs: FakeRawStream(),
+            RawInputStream=lambda **kwargs: FakeRawStream(),
+            RawOutputStream=lambda **kwargs: FakeRawStream(),
         ),
     )
     monkeypatch.setitem(
@@ -451,20 +446,22 @@ def test_disabled_response_watchdog_is_not_applied(
         provider=TimeoutProvider(),  # type: ignore[arg-type]
         audio=SimpleNamespace(native_rate=48_000),  # type: ignore[arg-type]
         stop_event=stop_event,
-        playback=core._BoundedPlaybackBuffer(max_bytes=16),
+        playback=core._PlaybackFifo(),
         diagnostics=_diagnostics(tmp_path),
         failures=core.queue.Queue(maxsize=1),
         monitor=core._SessionMonitor(connected_ns=time.perf_counter_ns()),
     )
 
 
-def test_transport_architecture_remains_blocking_single_raw_stream() -> None:
+def test_transport_architecture_keeps_blocking_reference_aligned_streams() -> None:
     import inspect
 
     source = inspect.getsource(core.QwenLiveAudioService._run_transport)
-    assert source.count("sd.RawStream(") == 1
-    assert "RawInputStream" not in source
-    assert "RawOutputStream" not in source
+    playback_source = inspect.getsource(core.QwenLiveAudioService._playback_worker)
+    assert source.count("sd.RawInputStream(") == 1
+    assert "sd.RawStream(" not in source
+    assert playback_source.count("sd.RawOutputStream(") == 1
     assert "callback=" not in source
     assert 'name="orion-qwen-send"' in source
     assert 'name="orion-qwen-receive"' in source
+    assert 'name="orion-qwen-playback"' in source

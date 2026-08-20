@@ -121,7 +121,11 @@ def test_recv_backlog_and_zero_padding_telemetry(tmp_path: Path) -> None:
     assert summary["maximum_playback_backlog_ms"] == pytest.approx(20)
     assert summary["minimum_playback_backlog_active_ms"] == pytest.approx(0)
     assert summary["insufficient_audio_cycle_count"] == 1
+    assert summary["provider_delta_count"] == 1
+    assert summary["provider_delta_bytes"] == 960
+    assert summary["provider_delta_duration_ms"] == pytest.approx(20)
     assert summary["zero_padded_write_count"] == 1
+    assert summary["artificial_zero_padding_count"] == 1
     assert summary["partial_zero_padded_write_count"] == 1
     assert summary["fully_silent_active_write_count"] == 0
     assert summary["total_inserted_silence_ms"] == pytest.approx(20)
@@ -437,13 +441,13 @@ def test_instrumented_transport_preserves_pcm_with_independent_workers(
             stop_event.wait(timeout=1.0)
             raise FakeWebSocketTimeoutException()
 
-    class FakeRawStream:
-        def __enter__(self) -> FakeRawStream:
-            operations.append("stream_enter")
+    class FakeInputStream:
+        def __enter__(self) -> FakeInputStream:
+            operations.append("input_stream_enter")
             return self
 
         def __exit__(self, *_args: object) -> None:
-            operations.append("stream_exit")
+            operations.append("input_stream_exit")
 
         def read(self, frames: int) -> tuple[bytes, bool]:
             operations.append("read")
@@ -451,11 +455,20 @@ def test_instrumented_transport_preserves_pcm_with_independent_workers(
             assert response_ready.wait(timeout=1.0)
             return microphone_pcm, False
 
+    class FakeOutputStream:
+        def __enter__(self) -> FakeOutputStream:
+            operations.append("output_stream_enter")
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            operations.append("output_stream_exit")
+
         def write(self, chunk: bytes) -> bool:
+            assert capture_sent.wait(timeout=1.0)
             operations.append("write")
             written_chunks.append(chunk)
-            assert capture_sent.wait(timeout=1.0)
-            stop_event.set()
+            if len(written_chunks) == 2:
+                stop_event.set()
             return False
 
     microphone = WasapiEndpoint(
@@ -479,7 +492,8 @@ def test_instrumented_transport_preserves_pcm_with_independent_workers(
     )
     fake_sounddevice = SimpleNamespace(
         WasapiSettings=lambda **kwargs: kwargs,
-        RawStream=lambda **kwargs: FakeRawStream(),
+        RawInputStream=lambda **kwargs: FakeInputStream(),
+        RawOutputStream=lambda **kwargs: FakeOutputStream(),
     )
     class FakeWebSocketTimeoutException(Exception):
         pass
@@ -505,26 +519,33 @@ def test_instrumented_transport_preserves_pcm_with_independent_workers(
     assert service.status().state is core.QwenLiveState.STOPPED
     assert "timeout:None" in operations
     assert "abort" not in operations
-    assert operations.index("close") > operations.index("stream_exit")
-    assert operations.count("stream_enter") == 1
-    assert operations.count("stream_exit") == 1
+    assert operations.index("close") > operations.index("input_stream_exit")
+    assert operations.count("input_stream_enter") == 1
+    assert operations.count("input_stream_exit") == 1
+    assert operations.count("output_stream_enter") == 1
+    assert operations.count("output_stream_exit") == 1
     assert operations.index("recv") < operations.index("read")
     assert operations.index("read") < operations.index("write")
-    assert len(sent_messages) == 2
-    input_append = json.loads(sent_messages[1])
+    input_appends = [
+        json.loads(message)
+        for message in sent_messages
+        if json.loads(message).get("type") == "input_audio_buffer.append"
+    ]
+    assert input_appends
+    input_append = input_appends[0]
     assert input_append["type"] == "input_audio_buffer.append"
     assert base64.b64decode(input_append["audio"]) == core._resample_pcm16_mono(
         microphone_pcm, 48_000, core.QWEN_INPUT_RATE
     )
-    expected_response = (
+    expected_response = [
         core._resample_pcm16_mono(
             response_pcm_a, core.QWEN_OUTPUT_RATE, 48_000
-        )
-        + core._resample_pcm16_mono(
+        ),
+        core._resample_pcm16_mono(
             response_pcm_b, core.QWEN_OUTPUT_RATE, 48_000
-        )
-    )
-    assert written_chunks == [expected_response + b"\x00" * (3_840 - len(expected_response))]
+        ),
+    ]
+    assert written_chunks == expected_response
     diagnostic_text = "\n".join(
         path.read_text(encoding="utf-8")
         for path in (tmp_path / "qwen-live").iterdir()
@@ -543,19 +564,24 @@ def test_qwen_live_status_api_does_not_start_audio_session() -> None:
     assert response.json()["state"] == "stopped"
 
 
-def test_source_uses_one_blocking_stream_with_independent_network_workers() -> None:
+def test_source_uses_reference_fifo_with_independent_blocking_audio_workers() -> None:
     source = Path(core.__file__).read_text(encoding="utf-8")
     transport_source = inspect.getsource(core.QwenLiveAudioService._run_transport)
     send_source = inspect.getsource(core.QwenLiveAudioService._send_worker)
     receive_source = inspect.getsource(core.QwenLiveAudioService._receive_worker)
+    playback_source = inspect.getsource(core.QwenLiveAudioService._playback_worker)
 
     assert source.count("stream.read(frames)") == 1
-    assert source.count("stream.write(block.pcm)") == 1
-    assert source.count("sd.RawStream(") == 1
+    assert source.count("stream.write(pcm)") == 1
+    assert source.count("sd.RawInputStream(") == 1
+    assert source.count("sd.RawOutputStream(") == 1
+    assert "sd.RawStream(" not in source
     assert "provider._receive_json(ws)" not in transport_source
     assert "ws.send(" not in transport_source
+    assert "stream.write(" not in transport_source
     assert "ws.send(" in send_source
     assert "provider._receive_json(ws)" in receive_source
+    assert "stream.write(pcm)" in playback_source
     assert "ws.settimeout(None)" in source
     assert "ENABLE_QWEN_HEARTBEAT = False" in source
     assert "ENABLE_QWEN_RESPONSE_WATCHDOG = False" in source
@@ -565,12 +591,7 @@ def test_source_uses_one_blocking_stream_with_independent_network_workers() -> N
     assert "queue.Queue" in source
     assert "maxsize=CAPTURE_QUEUE_BLOCKS" in source
     assert "maxsize=1" in source
-    for forbidden in (
-        "RawInputStream",
-        "RawOutputStream",
-        "asyncio",
-        "callback=",
-    ):
+    for forbidden in ("asyncio", "callback="):
         assert forbidden not in source
 
     session = core._audio_session_update(
