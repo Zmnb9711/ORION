@@ -7,7 +7,7 @@ import urllib.error
 import urllib.request
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from tkinter import LEFT, X, StringVar, messagebox
+from tkinter import LEFT, X, StringVar, TclError, messagebox
 from tkinter import ttk
 from typing import Any
 
@@ -54,6 +54,90 @@ class CloudVoiceConfigStore:
         self.path.write_text(json.dumps(asdict(config), indent=2, ensure_ascii=False), encoding="utf-8")
 
 
+class QwenControlsViewLifecycle:
+    """Own and cancel every Tk callback associated with one Settings view."""
+
+    def __init__(self, root: Any) -> None:
+        self.root = root
+        self._generation = 0
+        self._owner: Any | None = None
+        self._active = False
+        self._after_ids: set[str] = set()
+        self._lock = threading.RLock()
+
+    def activate(self, owner: Any) -> int:
+        self.deactivate()
+        with self._lock:
+            self._generation += 1
+            self._owner = owner
+            self._active = True
+            return self._generation
+
+    def is_active(self, generation: int) -> bool:
+        with self._lock:
+            return self._active and generation == self._generation
+
+    def is_alive(self, generation: int) -> bool:
+        with self._lock:
+            if not self._active or generation != self._generation:
+                return False
+            owner = self._owner
+        if owner is None:
+            return False
+        try:
+            return bool(owner.winfo_exists())
+        except TclError:
+            return False
+
+    def schedule(self, delay_ms: int, callback: Any, generation: int) -> str | None:
+        if not self.is_active(generation):
+            return None
+        holder: dict[str, str] = {}
+
+        def run() -> None:
+            callback_id = holder.get("id")
+            if callback_id is not None:
+                with self._lock:
+                    self._after_ids.discard(callback_id)
+            if self.is_alive(generation):
+                callback()
+
+        try:
+            callback_id = str(self.root.after(delay_ms, run))
+        except TclError:
+            return None
+        holder["id"] = callback_id
+        with self._lock:
+            if not self._active or generation != self._generation:
+                try:
+                    self.root.after_cancel(callback_id)
+                except TclError:
+                    pass
+                return None
+            self._after_ids.add(callback_id)
+        return callback_id
+
+    def deactivate(self) -> None:
+        with self._lock:
+            self._active = False
+            self._generation += 1
+            self._owner = None
+            callback_ids = tuple(self._after_ids)
+            self._after_ids.clear()
+        for callback_id in callback_ids:
+            try:
+                self.root.after_cancel(callback_id)
+            except TclError:
+                # The root may already be tearing down. Ownership has already
+                # been invalidated, so no callback can reschedule itself.
+                pass
+
+    @property
+    def pending_count(self) -> int:
+        with self._lock:
+            return len(self._after_ids)
+
+
 class LauncherCloudVoiceSectionsMixin:
     """Qwen-only Settings → Voice surface layered onto the Launcher."""
 
@@ -63,6 +147,8 @@ class LauncherCloudVoiceSectionsMixin:
     content: Any
 
     def __init__(self, root, runtime_dir: Path, core) -> None:  # noqa: ANN001
+        self._qwen_view_lifecycle = QwenControlsViewLifecycle(root)
+        self._qwen_view_generation = 0
         super().__init__(root, runtime_dir, core)  # type: ignore[misc]
         self._qwen_control_diagnostics = BoundedControlDiagnostics()
         self._qwen_session_controller = QwenSessionController(self._realtime_core_json)
@@ -73,6 +159,10 @@ class LauncherCloudVoiceSectionsMixin:
             diagnostics=self._qwen_control_diagnostics,
         )
         self._qwen_controller_monitor.start()
+
+    def _clear(self) -> None:
+        self._teardown_qwen_controls_view()
+        super()._clear()  # type: ignore[misc]
 
     def _cloud_voice_store(self) -> CloudVoiceConfigStore:
         return CloudVoiceConfigStore(self.runtime_dir)
@@ -193,9 +283,8 @@ class LauncherCloudVoiceSectionsMixin:
             command=lambda: self._qwen_live_async(selected_config(), api_key.get(), live_status, start=False),
         ).pack(side=LEFT)
 
-        self._build_qwen_controls(box)
-
-        self._qwen_live_poll(live_status)
+        generation = self._build_qwen_controls(box)
+        self._qwen_live_poll(live_status, generation)
 
     @staticmethod
     def _qwen_start_payload(config: CloudVoiceConfig, api_key: str) -> dict[str, object]:
@@ -244,9 +333,9 @@ class LauncherCloudVoiceSectionsMixin:
             if variable is not None:
                 variable.set(text)
 
-        self.root.after(0, apply)
+        self._schedule_qwen_ui(0, apply)
 
-    def _build_qwen_controls(self, box: ttk.Frame) -> None:
+    def _build_qwen_controls(self, box: ttk.Frame) -> int:
         monitor = self._qwen_controller_monitor
         devices = monitor.devices()
         labels = {item.display_name: item for item in devices}
@@ -265,9 +354,13 @@ class LauncherCloudVoiceSectionsMixin:
             selected_label = next(iter(labels))
 
         ttk.Separator(box, orient="horizontal").pack(fill=X, pady=(18, 14))
-        ttk.Label(box, text="CONTROLS", style="CardTitle.TLabel").pack(anchor="w")
+        controls = ttk.Frame(box, style="Card.TFrame")
+        controls.pack(fill=X)
+        generation = self._qwen_view_lifecycle.activate(controls)
+        self._qwen_view_generation = generation
+        ttk.Label(controls, text="CONTROLS", style="CardTitle.TLabel").pack(anchor="w")
         ttk.Label(
-            box,
+            controls,
             text="Assign one joystick/HOTAS/throttle button to start and stop the same Core-owned Qwen session.",
             style="CardText.TLabel",
             wraplength=780,
@@ -280,8 +373,8 @@ class LauncherCloudVoiceSectionsMixin:
         self._qwen_control_binding_var = binding_var
         self._qwen_control_devices = labels
 
-        ttk.Label(box, text="DEVICE", style="CardTitle.TLabel").pack(anchor="w")
-        device_row = ttk.Frame(box, style="Card.TFrame")
+        ttk.Label(controls, text="DEVICE", style="CardTitle.TLabel").pack(anchor="w")
+        device_row = ttk.Frame(controls, style="Card.TFrame")
         device_row.pack(fill=X, pady=(6, 12))
         device_combo = ttk.Combobox(
             device_row,
@@ -299,8 +392,18 @@ class LauncherCloudVoiceSectionsMixin:
             command=self._refresh_qwen_controller_devices,
         ).pack(side=LEFT, padx=(8, 0))
 
-        ttk.Label(box, text="QWEN SESSION TOGGLE", style="CardTitle.TLabel").pack(anchor="w")
-        control_row = ttk.Frame(box, style="Card.TFrame")
+        diagnostic_var = StringVar()
+        self._qwen_control_diagnostic_var = diagnostic_var
+        ttk.Label(
+            controls,
+            textvariable=diagnostic_var,
+            style="CardText.TLabel",
+            wraplength=780,
+            justify="left",
+        ).pack(anchor="w", pady=(0, 12))
+
+        ttk.Label(controls, text="QWEN SESSION TOGGLE", style="CardTitle.TLabel").pack(anchor="w")
+        control_row = ttk.Frame(controls, style="Card.TFrame")
         control_row.pack(fill=X, pady=(6, 0))
         ttk.Label(
             control_row,
@@ -324,21 +427,52 @@ class LauncherCloudVoiceSectionsMixin:
         ).pack(side=LEFT, padx=(8, 0))
         self._qwen_control_assign_button = assign
         self._refresh_qwen_control_status()
+        return generation
+
+    def _schedule_qwen_ui(
+        self,
+        delay_ms: int,
+        callback: Any,
+        generation: int | None = None,
+    ) -> str | None:
+        token = self._qwen_view_generation if generation is None else generation
+        return self._qwen_view_lifecycle.schedule(delay_ms, callback, token)
+
+    def _teardown_qwen_controls_view(self) -> None:
+        lifecycle = getattr(self, "_qwen_view_lifecycle", None)
+        if lifecycle is not None:
+            lifecycle.deactivate()
+        monitor = getattr(self, "_qwen_controller_monitor", None)
+        if monitor is not None:
+            monitor.cancel_assignment(notify=False, reason="Qwen controls view closed")
+        for name in (
+            "_qwen_control_device_combo",
+            "_qwen_control_device_var",
+            "_qwen_control_binding_var",
+            "_qwen_control_diagnostic_var",
+        ):
+            self.__dict__.pop(name, None)
+        self._qwen_control_devices = {}
 
     def _refresh_qwen_controller_devices(self) -> None:
         self._qwen_controller_monitor.refresh()
-        self.root.after(150, self._refresh_qwen_control_ui)
+        self._schedule_qwen_ui(150, self._refresh_qwen_control_ui)
 
-    def _refresh_qwen_control_ui(self) -> None:
-        if not hasattr(self, "_qwen_control_device_var"):
+    def _refresh_qwen_control_ui(self, generation: int | None = None) -> None:
+        token = self._qwen_view_generation if generation is None else generation
+        if not self._qwen_view_lifecycle.is_alive(token):
             return
         devices = self._qwen_controller_monitor.devices()
         labels = {item.display_name: item for item in devices}
         self._qwen_control_devices = labels
         combo = getattr(self, "_qwen_control_device_combo", None)
-        if combo is not None:
-            combo.configure(values=tuple(labels))
-        current = self._qwen_control_device_var.get()
+        if combo is None:
+            return
+        device_var = getattr(self, "_qwen_control_device_var", None)
+        if device_var is None:
+            return
+        combo.configure(values=tuple(labels))
+        current = device_var.get()
         if current not in labels:
             binding = self._qwen_controller_monitor.binding
             current = next(
@@ -350,7 +484,7 @@ class LauncherCloudVoiceSectionsMixin:
                 ),
                 next(iter(labels), ""),
             )
-            self._qwen_control_device_var.set(current)
+            device_var.set(current)
         self._refresh_qwen_control_status()
 
     def _refresh_qwen_control_status(self) -> None:
@@ -360,39 +494,59 @@ class LauncherCloudVoiceSectionsMixin:
         binding = self._qwen_controller_monitor.binding
         _, availability = self._qwen_controller_monitor.binding_availability()
         variable.set("UNASSIGNED" if binding is None else f"{binding.display_name} — {availability}")
+        diagnostic = getattr(self, "_qwen_control_diagnostic_var", None)
+        if diagnostic is not None:
+            status = self._qwen_controller_monitor.diagnostic_status()
+            error = status.get("error")
+            prefix = "SDL ERROR" if error else "SDL READY" if status["initialized"] else "SDL INITIALIZING"
+            device_var = getattr(self, "_qwen_control_device_var", None)
+            selected = device_var.get() if device_var is not None else ""
+            selected_device = self._qwen_control_devices.get(selected)
+            selected_status = "resolved" if selected_device is not None and selected_device.assignable else "not selected/resolved"
+            details = f"{prefix} — {status['device_count']} device(s) visible; selected: {selected or 'none'} ({selected_status})"
+            diagnostic.set(f"{details}{'' if not error else f'; {error}'}")
 
     def _assign_qwen_control(self, button: ttk.Button) -> None:
+        device_var = getattr(self, "_qwen_control_device_var", None)
+        binding_var = getattr(self, "_qwen_control_binding_var", None)
+        if device_var is None or binding_var is None:
+            return
         if str(button.cget("text")) == "CANCEL":
             self._qwen_controller_monitor.cancel_assignment()
             button.configure(text="ASSIGN / CHANGE")
             self._refresh_qwen_control_status()
             return
-        selected = self._qwen_control_devices.get(self._qwen_control_device_var.get())
+        selected = self._qwen_control_devices.get(device_var.get())
         if selected is None:
-            self._qwen_control_binding_var.set("Select an available controller first")
+            binding_var.set("Select an available controller first")
             return
+
+        generation = self._qwen_view_generation
 
         def captured(binding: ControllerBinding | None, error: str | None) -> None:
             def apply() -> None:
                 button.configure(text="ASSIGN / CHANGE")
                 if error:
-                    self._qwen_control_binding_var.set(error)
+                    binding_var.set(error)
                 else:
                     self._refresh_qwen_control_status()
 
-            self.root.after(0, apply)
+            self._schedule_qwen_ui(0, apply, generation)
 
         if self._qwen_controller_monitor.begin_assignment(selected.identity.stable_key, captured):
             button.configure(text="CANCEL")
-            self._qwen_control_binding_var.set(
-                f"LISTENING — press a button on {selected.identity.name}"
+            binding_var.set(
+                f"WAITING FOR BUTTON — {selected.identity.name}"
             )
+        else:
+            binding_var.set("Selected controller is no longer available; press Refresh")
 
     def _clear_qwen_control(self) -> None:
         self._qwen_controller_monitor.clear_binding()
         self._refresh_qwen_control_status()
 
     def _shutdown_qwen_controls(self) -> None:
+        self._teardown_qwen_controls_view()
         monitor = getattr(self, "_qwen_controller_monitor", None)
         if monitor is not None:
             monitor.stop()
@@ -437,6 +591,7 @@ class LauncherCloudVoiceSectionsMixin:
     ) -> None:
         key = api_key.strip() or self._current_qwen_api_key()
         self._qwen_live_status_var = live_status
+        generation = self._qwen_view_generation
 
         def worker() -> None:
             try:
@@ -448,13 +603,19 @@ class LauncherCloudVoiceSectionsMixin:
                     control = self._qwen_session_controller.request_stop()
                 state = control.state.upper()
                 message = control.message
-                self.root.after(0, lambda: live_status.set(f"{state} — {message}"))
+                self._schedule_qwen_ui(0, lambda: live_status.set(f"{state} — {message}"), generation)
             except (OSError, ValueError, RuntimeError, urllib.error.URLError) as exc:
-                self.root.after(0, lambda exc=exc: live_status.set(f"ERROR — {type(exc).__name__}: {exc}"))
+                self._schedule_qwen_ui(
+                    0,
+                    lambda exc=exc: live_status.set(f"ERROR — {type(exc).__name__}: {exc}"),
+                    generation,
+                )
 
         threading.Thread(target=worker, name="orion-qwen-live-control", daemon=True).start()
 
-    def _qwen_live_poll(self, live_status: StringVar) -> None:
+    def _qwen_live_poll(self, live_status: StringVar, generation: int) -> None:
+        if not self._qwen_view_lifecycle.is_alive(generation):
+            return
         self._qwen_live_status_var = live_status
 
         def worker() -> None:
@@ -467,11 +628,23 @@ class LauncherCloudVoiceSectionsMixin:
             input_chunks = int(str(result.get("input_chunks", 0) or 0))
             output_chunks = int(str(result.get("output_chunks", 0) or 0))
             suffix = "" if not (input_chunks or output_chunks) else f" | mic={input_chunks} qwen_audio={output_chunks}"
-            self.root.after(0, lambda: live_status.set(f"{state} — {message}{suffix}"))
-            self.root.after(0, self._refresh_qwen_control_ui)
+
+            def apply() -> None:
+                live_status.set(f"{state} — {message}{suffix}")
+                self._refresh_qwen_control_ui(generation)
+
+            self._schedule_qwen_ui(
+                0,
+                apply,
+                generation,
+            )
 
         threading.Thread(target=worker, name="orion-qwen-live-status", daemon=True).start()
-        self.root.after(750, lambda: self._qwen_live_poll(live_status))
+        self._schedule_qwen_ui(
+            750,
+            lambda: self._qwen_live_poll(live_status, generation),
+            generation,
+        )
 
     def _qwen_smoke_async(self, config: CloudVoiceConfig, api_key: str, *, tool: bool) -> None:
         key = api_key.strip() or self._current_qwen_api_key()

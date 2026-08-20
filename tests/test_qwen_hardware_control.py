@@ -3,11 +3,14 @@ from __future__ import annotations
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
+import sys
 
 from orion.controller_input import (
     ControllerBindingStore,
     ControllerDevice,
     ControllerDeviceIdentity,
+    PygameJoystickBackend,
     QwenControllerMonitor,
 )
 from orion.qwen_session_control import QwenSessionController
@@ -30,15 +33,30 @@ class _Backend:
         self.devices = devices
         self.states = {item.runtime_id: frozenset() for item in devices}
         self.closed = False
+        self.pump_count = 0
+
+    def pump(self) -> None:
+        self.pump_count += 1
 
     def refresh(self) -> list[ControllerDevice]:
         return list(self.devices)
 
     def pressed_buttons(self, runtime_id: int) -> frozenset[int]:
-        return self.states[runtime_id]
+        try:
+            return self.states[runtime_id]
+        except KeyError as exc:
+            raise OSError("controller unavailable") from exc
 
     def close(self) -> None:
         self.closed = True
+
+    def diagnostic_status(self) -> dict[str, object]:
+        return {
+            "backend": "fake/SDL2",
+            "initialized": True,
+            "device_count": len(self.devices),
+            "error": None,
+        }
 
 
 def _wait(predicate, timeout: float = 1.0) -> None:  # noqa: ANN001
@@ -74,6 +92,82 @@ def test_device_enumeration_abstraction_and_missing_binding_are_safe(tmp_path: P
     backend.states = {}
     monitor.stop()
     assert backend.closed is True
+    assert backend.pump_count > 1
+
+
+def test_pygame_backend_initializes_hidden_event_owner_and_pumps(monkeypatch) -> None:  # noqa: ANN001
+    calls: list[object] = []
+
+    class FakeError(Exception):
+        pass
+
+    class Display:
+        surface = None
+
+        @classmethod
+        def init(cls) -> None:
+            calls.append("display.init")
+
+        @classmethod
+        def get_surface(cls):  # noqa: ANN206
+            return cls.surface
+
+        @classmethod
+        def set_mode(cls, size, *, flags):  # noqa: ANN001, ANN206
+            calls.append(("display.set_mode", size, flags))
+            cls.surface = object()
+            return cls.surface
+
+        @classmethod
+        def quit(cls) -> None:
+            calls.append("display.quit")
+
+    class Joysticks:
+        @staticmethod
+        def init() -> None:
+            calls.append("joystick.init")
+
+        @staticmethod
+        def get_count() -> int:
+            return 0
+
+        @staticmethod
+        def quit() -> None:
+            calls.append("joystick.quit")
+
+    class Events:
+        @staticmethod
+        def pump() -> None:
+            calls.append("event.pump")
+
+    pygame = SimpleNamespace(
+        error=FakeError,
+        HIDDEN=99,
+        display=Display,
+        joystick=Joysticks,
+        event=Events,
+    )
+    monkeypatch.setitem(sys.modules, "pygame", pygame)
+    backend = PygameJoystickBackend()
+
+    assert backend.refresh() == []
+    backend.pump()
+    status = backend.diagnostic_status()
+
+    assert calls[:4] == [
+        "display.init",
+        ("display.set_mode", (1, 1), 99),
+        "joystick.init",
+        "event.pump",
+    ]
+    assert calls.count("event.pump") == 2
+    assert status == {
+        "backend": "pygame/SDL2",
+        "initialized": True,
+        "device_count": 0,
+        "error": None,
+    }
+    backend.close()
 
 
 def test_binding_round_trip_uses_device_identity_and_button(tmp_path: Path) -> None:
@@ -125,6 +219,62 @@ def test_assignment_listens_only_to_selected_device_and_does_not_toggle(tmp_path
     assert toggles == []
     time.sleep(0.03)
     assert toggles == []
+    monitor.stop()
+
+
+def test_selected_device_disappearing_exits_assignment_once(tmp_path: Path) -> None:
+    selected = ControllerDevice(_identity("Stick", "guid-stick"), runtime_id=1)
+    backend = _Backend([selected])
+    captures = []
+    monitor = _monitor(tmp_path, backend, [])
+    monitor.start()
+    _wait(lambda: monitor.devices() == [selected])
+    assert monitor.begin_assignment(
+        selected.identity.stable_key,
+        lambda binding, error: captures.append((binding, error)),
+    )
+
+    backend.devices = []
+    backend.states = {}
+    monitor.refresh()
+    _wait(lambda: len(captures) == 1)
+    assert captures == [(None, "Selected controller became unavailable during assignment")]
+    monitor.refresh()
+    time.sleep(0.03)
+    assert len(captures) == 1
+    monitor.stop()
+
+
+def test_refresh_preserves_persisted_binding_and_reports_device_diagnostics(tmp_path: Path) -> None:
+    device = ControllerDevice(_identity("Throttle", "guid-a"), runtime_id=11)
+    from orion.controller_input import ControllerBinding
+
+    store = ControllerBindingStore(tmp_path)
+    binding = ControllerBinding(device.identity, "button", 26, "Button 27")
+    store.save(binding)
+    backend = _Backend([device])
+    monitor = QwenControllerMonitor(
+        backend=backend,
+        store=store,
+        on_toggle=lambda: None,
+        poll_interval_s=0.005,
+        refresh_interval_s=0.02,
+    )
+    monitor.start()
+    _wait(lambda: monitor.binding_availability() == (True, "READY"))
+    status = monitor.diagnostic_status()
+    assert monitor.binding == binding
+    assert status["initialized"] is True
+    assert status["device_count"] == 1
+    assert status["devices"] == [
+        {
+            "name": "Throttle",
+            "guid": "guid-a",
+            "buttons": 32,
+            "runtime_id": 11,
+            "ambiguous": False,
+        }
+    ]
     monitor.stop()
 
 

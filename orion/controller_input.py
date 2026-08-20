@@ -104,6 +104,8 @@ class ControllerBindingStore:
 
 
 class ControllerBackend(Protocol):
+    def pump(self) -> None: ...
+
     def refresh(self) -> list[ControllerDevice]: ...
 
     def pressed_buttons(self, runtime_id: int) -> frozenset[int]: ...
@@ -117,6 +119,8 @@ class PygameJoystickBackend:
     def __init__(self) -> None:
         self._pygame: Any | None = None
         self._joysticks: dict[int, Any] = {}
+        self._initialized = False
+        self._last_error: str | None = None
 
     def _ensure_started(self) -> Any:
         if self._pygame is not None:
@@ -126,23 +130,43 @@ class PygameJoystickBackend:
         try:
             import pygame
         except ImportError as exc:
+            self._last_error = "pygame/SDL controller support is not installed"
             raise RuntimeError("pygame/SDL controller support is not installed") from exc
-        pygame.joystick.init()
+        try:
+            # pygame's event queue requires an initialized display owner even
+            # when Tk owns the visible Launcher window.  A hidden 1x1 surface
+            # gives the controller thread a valid event-pump lifecycle without
+            # taking focus or consuming the HOTAS input from DCS.
+            pygame.display.init()
+            if pygame.display.get_surface() is None:
+                pygame.display.set_mode((1, 1), flags=pygame.HIDDEN)
+            pygame.joystick.init()
+        except pygame.error as exc:
+            self._last_error = f"SDL initialization failed: {exc}"
+            raise RuntimeError(self._last_error) from exc
         self._pygame = pygame
+        self._initialized = True
+        self._last_error = None
         return pygame
 
-    def refresh(self) -> list[ControllerDevice]:
+    def pump(self) -> None:
         pygame = self._ensure_started()
         try:
             pygame.event.pump()
-        except pygame.error:
-            # Direct joystick state polling remains available without a pygame
-            # display; Tk owns the actual Launcher window.
-            pass
+        except pygame.error as exc:
+            self._last_error = f"SDL event pump failed: {exc}"
+            raise RuntimeError(self._last_error) from exc
+        self._last_error = None
+
+    def refresh(self) -> list[ControllerDevice]:
+        pygame = self._ensure_started()
+        self.pump()
         found: list[ControllerDevice] = []
         joysticks: dict[int, Any] = {}
         for index in range(pygame.joystick.get_count()):
             joystick = pygame.joystick.Joystick(index)
+            if not joystick.get_init():
+                joystick.init()
             runtime_id = int(joystick.get_instance_id())
             identity = ControllerDeviceIdentity(
                 backend="sdl2",
@@ -182,10 +206,23 @@ class PygameJoystickBackend:
 
     def close(self) -> None:
         pygame = self._pygame
+        joysticks = list(self._joysticks.values())
         self._joysticks.clear()
         self._pygame = None
+        self._initialized = False
         if pygame is not None:
+            for joystick in joysticks:
+                joystick.quit()
             pygame.joystick.quit()
+            pygame.display.quit()
+
+    def diagnostic_status(self) -> dict[str, object]:
+        return {
+            "backend": "pygame/SDL2",
+            "initialized": self._initialized,
+            "device_count": len(self._joysticks),
+            "error": self._last_error,
+        }
 
 
 @dataclass(slots=True, frozen=True)
@@ -241,6 +278,8 @@ class QwenControllerMonitor:
         self._suppressed_until_release: tuple[str, int] | None = None
         self._last_toggle_at = 0.0
         self._availability: str | None = None
+        self._backend_state: tuple[object, ...] | None = None
+        self._pump_error: str | None = None
         self._lock = threading.RLock()
         self._stop = threading.Event()
         self._refresh = threading.Event()
@@ -254,6 +293,28 @@ class QwenControllerMonitor:
     def devices(self) -> list[ControllerDevice]:
         with self._lock:
             return list(self._devices)
+
+    def diagnostic_status(self) -> dict[str, object]:
+        status_getter = getattr(self.backend, "diagnostic_status", None)
+        raw_value = status_getter() if callable(status_getter) else {}
+        raw: dict[str, object] = raw_value if isinstance(raw_value, dict) else {}
+        devices = self.devices()
+        return {
+            "backend": str(raw.get("backend", "controller")),
+            "initialized": bool(raw.get("initialized", True)),
+            "device_count": len(devices),
+            "error": raw.get("error"),
+            "devices": [
+                {
+                    "name": item.identity.name,
+                    "guid": item.identity.guid,
+                    "buttons": item.identity.buttons,
+                    "runtime_id": item.runtime_id,
+                    "ambiguous": item.ambiguous,
+                }
+                for item in devices
+            ],
+        }
 
     def binding_availability(self) -> tuple[bool, str]:
         binding = self.binding
@@ -291,16 +352,23 @@ class QwenControllerMonitor:
             return False
         with self._lock:
             self._assignment = (stable_key, callback)
-        self.diagnostics.record("assignment_started", device=matches[0].identity.name)
+        self.diagnostics.record(
+            "assignment_started",
+            device=matches[0].identity.name,
+            guid=matches[0].identity.guid,
+            buttons=matches[0].identity.buttons,
+            resolved=True,
+        )
         return True
 
-    def cancel_assignment(self) -> None:
+    def cancel_assignment(self, *, notify: bool = True, reason: str = "Assignment cancelled") -> None:
         with self._lock:
             assignment = self._assignment
             self._assignment = None
         if assignment is not None:
-            self.diagnostics.record("assignment_cancelled")
-            assignment[1](None, "Assignment cancelled")
+            self.diagnostics.record("assignment_cancelled", reason=reason)
+            if notify:
+                assignment[1](None, reason)
 
     def clear_binding(self) -> None:
         with self._lock:
@@ -310,16 +378,52 @@ class QwenControllerMonitor:
         self.diagnostics.record("binding_cleared")
 
     def _refresh_devices(self) -> None:
+        error: str | None = None
         try:
             devices = self.backend.refresh()
-        except (OSError, RuntimeError):
+        except (OSError, RuntimeError) as exc:
             devices = []
+            error = str(exc)
+        lost_assignment: tuple[str, AssignmentCallback] | None = None
         with self._lock:
             self._devices = devices
             runtime_ids = {item.runtime_id for item in devices}
             self._previous = {
                 runtime_id: pressed for runtime_id, pressed in self._previous.items() if runtime_id in runtime_ids
             }
+            assignment = self._assignment
+            if assignment is not None:
+                matches = [
+                    item
+                    for item in devices
+                    if item.identity.stable_key == assignment[0] and item.assignable
+                ]
+                if len(matches) != 1:
+                    lost_assignment = assignment
+                    self._assignment = None
+        status = self.diagnostic_status()
+        backend_state = (
+            status["initialized"],
+            status["device_count"],
+            error or status["error"],
+            tuple(
+                (item["name"], item["guid"], item["buttons"], item["ambiguous"])
+                for item in status["devices"]  # type: ignore[union-attr]
+            ),
+        )
+        if backend_state != self._backend_state:
+            self._backend_state = backend_state
+            self.diagnostics.record(
+                "backend_refresh",
+                initialized=status["initialized"],
+                device_count=status["device_count"],
+                devices=status["devices"],
+                error=error or status["error"],
+            )
+        if lost_assignment is not None:
+            reason = "Selected controller became unavailable during assignment"
+            self.diagnostics.record("assignment_unavailable", reason=reason)
+            lost_assignment[1](None, reason)
         available, reason = self.binding_availability()
         availability = "resolved" if available else reason.casefold().replace(" ", "_")
         if availability != self._availability:
@@ -330,6 +434,18 @@ class QwenControllerMonitor:
         next_refresh = 0.0
         while not self._stop.is_set():
             now = time.monotonic()
+            try:
+                self.backend.pump()
+            except (OSError, RuntimeError) as exc:
+                error = str(exc)
+                if error != self._pump_error:
+                    self._pump_error = error
+                    self.diagnostics.record("backend_pump_failed", error=error)
+                self._stop.wait(self.poll_interval_s)
+                continue
+            if self._pump_error is not None:
+                self._pump_error = None
+                self.diagnostics.record("backend_pump_recovered")
             if now >= next_refresh or self._refresh.is_set():
                 self._refresh.clear()
                 self._refresh_devices()
