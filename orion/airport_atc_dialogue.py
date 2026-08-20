@@ -10,7 +10,9 @@ from orion.airport_arrival_orchestration import AirportArrivalOrchestrator
 from orion.airport_arrival_request_controller import AirportArrivalRequestController, ArrivalRequestAction
 from orion.airport_arrival_requests import ArrivalRequestIntent, classify_arrival_request
 from orion.airport_arrival_runtime import AirportArrivalRuntime
+from orion.airport_surface_runtime import AirportSurfaceCoordinator
 from orion.atc_service import VirtualAtcService
+from orion.atc_service import virtual_atc
 from orion.dialogue import DialogueLanguage, detect_language
 
 
@@ -145,3 +147,17 @@ class AirportAtcDialogueGateway:
     @staticmethod
     def _pending_reply(language: DialogueLanguage, domain: AtcDialogueDomain) -> str:
         return (f"Домен ATC {domain.value} ещё не подключён к общему диалоговому шлюзу." if language is DialogueLanguage.RU else f"ATC domain {domain.value} is not yet wired into the common dialogue gateway.")
+
+
+# One canonical application-level gateway shared by HTTP and realtime tools.
+_surface = AirportSurfaceCoordinator(virtual_atc.core)
+_arrival = AirportArrivalRuntime(_surface)
+_arrival_orchestration = AirportArrivalOrchestrator(
+    service=virtual_atc,
+    arrival=_arrival,
+)
+airport_atc_dialogue = AirportAtcDialogueGateway(
+    service=virtual_atc,
+    arrival=_arrival,
+    arrival_orchestrator=_arrival_orchestration,
+)

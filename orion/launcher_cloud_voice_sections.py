@@ -9,8 +9,17 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from tkinter import LEFT, X, StringVar, messagebox
 from tkinter import ttk
+from typing import Any
 
+from orion.controller_input import (
+    BoundedControlDiagnostics,
+    ControllerBinding,
+    ControllerBindingStore,
+    PygameJoystickBackend,
+    QwenControllerMonitor,
+)
 from orion.qwen_realtime_provider import QwenRealtimeConfig, QwenRealtimeProvider
+from orion.qwen_session_control import QwenControlResult, QwenSessionController
 
 
 @dataclass(slots=True)
@@ -48,6 +57,23 @@ class CloudVoiceConfigStore:
 class LauncherCloudVoiceSectionsMixin:
     """Qwen-only Settings → Voice surface layered onto the Launcher."""
 
+    root: Any
+    runtime_dir: Path
+    core: Any
+    content: Any
+
+    def __init__(self, root, runtime_dir: Path, core) -> None:  # noqa: ANN001
+        super().__init__(root, runtime_dir, core)  # type: ignore[misc]
+        self._qwen_control_diagnostics = BoundedControlDiagnostics()
+        self._qwen_session_controller = QwenSessionController(self._realtime_core_json)
+        self._qwen_controller_monitor = QwenControllerMonitor(
+            backend=PygameJoystickBackend(),
+            store=ControllerBindingStore(runtime_dir),
+            on_toggle=self._hardware_qwen_toggle,
+            diagnostics=self._qwen_control_diagnostics,
+        )
+        self._qwen_controller_monitor.start()
+
     def _cloud_voice_store(self) -> CloudVoiceConfigStore:
         return CloudVoiceConfigStore(self.runtime_dir)
 
@@ -60,7 +86,7 @@ class LauncherCloudVoiceSectionsMixin:
         self._qwen_api_key = value.strip()
 
     def _page_settings(self) -> None:
-        super()._page_settings()
+        super()._page_settings()  # type: ignore[misc]
         config = self._cloud_voice_store().load()
 
         ttk.Separator(self.content, orient="horizontal").pack(fill=X, pady=(24, 18))
@@ -112,7 +138,7 @@ class LauncherCloudVoiceSectionsMixin:
             box,
             text=(
                 "Selected microphone → ORION Core → Qwen Realtime → selected output. "
-                "Qwen starts only when START LIVE QWEN is pressed; no local or text fallback is available."
+                "Start Qwen from the Launcher or an assigned controller toggle; no local or text fallback is available."
             ),
             style="CardText.TLabel",
             wraplength=780,
@@ -167,10 +193,213 @@ class LauncherCloudVoiceSectionsMixin:
             command=lambda: self._qwen_live_async(selected_config(), api_key.get(), live_status, start=False),
         ).pack(side=LEFT)
 
+        self._build_qwen_controls(box)
+
         self._qwen_live_poll(live_status)
+
+    @staticmethod
+    def _qwen_start_payload(config: CloudVoiceConfig, api_key: str) -> dict[str, object]:
+        key = api_key.strip()
+        if not key:
+            raise ValueError("Qwen API key is required")
+        return {
+            "api_key": key,
+            "workspace_id": config.qwen_workspace_id,
+            "region": config.qwen_region,
+            "model": config.qwen_model,
+            "voice": "Tina",
+        }
+
+    def _hardware_start_payload(self) -> dict[str, object]:
+        return self._qwen_start_payload(
+            self._cloud_voice_store().load(),
+            self._current_qwen_api_key(),
+        )
+
+    def _hardware_qwen_toggle(self) -> None:
+        try:
+            result = self._qwen_session_controller.toggle(self._hardware_start_payload)
+        except (OSError, ValueError, RuntimeError, urllib.error.URLError) as exc:
+            self._qwen_control_diagnostics.record(
+                "toggle_failed",
+                error_type=type(exc).__name__,
+            )
+            self._set_live_status_text(f"ERROR — {type(exc).__name__}: {exc}")
+            return
+        event = (
+            f"{result.action}_requested"
+            if result.executed
+            else "toggle_ignored"
+        )
+        self._qwen_control_diagnostics.record(
+            event,
+            state=result.state,
+            reason=result.ignored_reason,
+        )
+        self._set_live_status_text(f"{result.state.upper()} — {result.message}")
+
+    def _set_live_status_text(self, text: str) -> None:
+        def apply() -> None:
+            variable = getattr(self, "_qwen_live_status_var", None)
+            if variable is not None:
+                variable.set(text)
+
+        self.root.after(0, apply)
+
+    def _build_qwen_controls(self, box: ttk.Frame) -> None:
+        monitor = self._qwen_controller_monitor
+        devices = monitor.devices()
+        labels = {item.display_name: item for item in devices}
+        binding = monitor.binding
+        selected_label = ""
+        if binding is not None:
+            selected_label = next(
+                (
+                    label
+                    for label, item in labels.items()
+                    if item.identity.stable_key == binding.device.stable_key
+                ),
+                "",
+            )
+        if not selected_label and labels:
+            selected_label = next(iter(labels))
+
+        ttk.Separator(box, orient="horizontal").pack(fill=X, pady=(18, 14))
+        ttk.Label(box, text="CONTROLS", style="CardTitle.TLabel").pack(anchor="w")
+        ttk.Label(
+            box,
+            text="Assign one joystick/HOTAS/throttle button to start and stop the same Core-owned Qwen session.",
+            style="CardText.TLabel",
+            wraplength=780,
+            justify="left",
+        ).pack(anchor="w", pady=(6, 10))
+
+        device_var = StringVar(value=selected_label)
+        binding_var = StringVar()
+        self._qwen_control_device_var = device_var
+        self._qwen_control_binding_var = binding_var
+        self._qwen_control_devices = labels
+
+        ttk.Label(box, text="DEVICE", style="CardTitle.TLabel").pack(anchor="w")
+        device_row = ttk.Frame(box, style="Card.TFrame")
+        device_row.pack(fill=X, pady=(6, 12))
+        device_combo = ttk.Combobox(
+            device_row,
+            textvariable=device_var,
+            values=tuple(labels),
+            state="readonly",
+            width=64,
+        )
+        device_combo.pack(side=LEFT, fill=X, expand=True)
+        self._qwen_control_device_combo = device_combo
+        ttk.Button(
+            device_row,
+            text="REFRESH",
+            style="Secondary.TButton",
+            command=self._refresh_qwen_controller_devices,
+        ).pack(side=LEFT, padx=(8, 0))
+
+        ttk.Label(box, text="QWEN SESSION TOGGLE", style="CardTitle.TLabel").pack(anchor="w")
+        control_row = ttk.Frame(box, style="Card.TFrame")
+        control_row.pack(fill=X, pady=(6, 0))
+        ttk.Label(
+            control_row,
+            textvariable=binding_var,
+            style="CardText.TLabel",
+            wraplength=510,
+            justify="left",
+        ).pack(side=LEFT, fill=X, expand=True)
+        assign = ttk.Button(
+            control_row,
+            text="ASSIGN / CHANGE",
+            style="Secondary.TButton",
+        )
+        assign.configure(command=lambda: self._assign_qwen_control(assign))
+        assign.pack(side=LEFT, padx=(8, 0))
+        ttk.Button(
+            control_row,
+            text="CLEAR",
+            style="Secondary.TButton",
+            command=self._clear_qwen_control,
+        ).pack(side=LEFT, padx=(8, 0))
+        self._qwen_control_assign_button = assign
+        self._refresh_qwen_control_status()
+
+    def _refresh_qwen_controller_devices(self) -> None:
+        self._qwen_controller_monitor.refresh()
+        self.root.after(150, self._refresh_qwen_control_ui)
+
+    def _refresh_qwen_control_ui(self) -> None:
+        if not hasattr(self, "_qwen_control_device_var"):
+            return
+        devices = self._qwen_controller_monitor.devices()
+        labels = {item.display_name: item for item in devices}
+        self._qwen_control_devices = labels
+        combo = getattr(self, "_qwen_control_device_combo", None)
+        if combo is not None:
+            combo.configure(values=tuple(labels))
+        current = self._qwen_control_device_var.get()
+        if current not in labels:
+            binding = self._qwen_controller_monitor.binding
+            current = next(
+                (
+                    label
+                    for label, item in labels.items()
+                    if binding is not None
+                    and item.identity.stable_key == binding.device.stable_key
+                ),
+                next(iter(labels), ""),
+            )
+            self._qwen_control_device_var.set(current)
+        self._refresh_qwen_control_status()
+
+    def _refresh_qwen_control_status(self) -> None:
+        variable = getattr(self, "_qwen_control_binding_var", None)
+        if variable is None:
+            return
+        binding = self._qwen_controller_monitor.binding
+        _, availability = self._qwen_controller_monitor.binding_availability()
+        variable.set("UNASSIGNED" if binding is None else f"{binding.display_name} — {availability}")
+
+    def _assign_qwen_control(self, button: ttk.Button) -> None:
+        if str(button.cget("text")) == "CANCEL":
+            self._qwen_controller_monitor.cancel_assignment()
+            button.configure(text="ASSIGN / CHANGE")
+            self._refresh_qwen_control_status()
+            return
+        selected = self._qwen_control_devices.get(self._qwen_control_device_var.get())
+        if selected is None:
+            self._qwen_control_binding_var.set("Select an available controller first")
+            return
+
+        def captured(binding: ControllerBinding | None, error: str | None) -> None:
+            def apply() -> None:
+                button.configure(text="ASSIGN / CHANGE")
+                if error:
+                    self._qwen_control_binding_var.set(error)
+                else:
+                    self._refresh_qwen_control_status()
+
+            self.root.after(0, apply)
+
+        if self._qwen_controller_monitor.begin_assignment(selected.identity.stable_key, captured):
+            button.configure(text="CANCEL")
+            self._qwen_control_binding_var.set(
+                f"LISTENING — press a button on {selected.identity.name}"
+            )
+
+    def _clear_qwen_control(self) -> None:
+        self._qwen_controller_monitor.clear_binding()
+        self._refresh_qwen_control_status()
+
+    def _shutdown_qwen_controls(self) -> None:
+        monitor = getattr(self, "_qwen_controller_monitor", None)
+        if monitor is not None:
+            monitor.stop()
 
     def _stop_qwen_before_exit(self) -> None:
         """Best-effort graceful stop while Core is still available."""
+        self._shutdown_qwen_controls()
         try:
             self._realtime_core_json("/v1/realtime/qwen/live/stop", method="POST")
         except Exception:
@@ -207,24 +436,18 @@ class LauncherCloudVoiceSectionsMixin:
         start: bool,
     ) -> None:
         key = api_key.strip() or self._current_qwen_api_key()
+        self._qwen_live_status_var = live_status
 
         def worker() -> None:
             try:
                 if start:
-                    if not key:
-                        raise ValueError("Qwen API key is required")
-                    payload: dict[str, object] = {
-                        "api_key": key,
-                        "workspace_id": config.qwen_workspace_id,
-                        "region": config.qwen_region,
-                        "model": config.qwen_model,
-                        "voice": "Tina",
-                    }
-                    result = self._realtime_core_json("/v1/realtime/qwen/live/start", method="POST", payload=payload)
+                    control = self._qwen_session_controller.request_start(
+                        lambda: self._qwen_start_payload(config, key)
+                    )
                 else:
-                    result = self._realtime_core_json("/v1/realtime/qwen/live/stop", method="POST")
-                state = str(result.get("state", "unknown")).upper()
-                message = str(result.get("message", ""))
+                    control = self._qwen_session_controller.request_stop()
+                state = control.state.upper()
+                message = control.message
                 self.root.after(0, lambda: live_status.set(f"{state} — {message}"))
             except (OSError, ValueError, RuntimeError, urllib.error.URLError) as exc:
                 self.root.after(0, lambda exc=exc: live_status.set(f"ERROR — {type(exc).__name__}: {exc}"))
@@ -232,6 +455,8 @@ class LauncherCloudVoiceSectionsMixin:
         threading.Thread(target=worker, name="orion-qwen-live-control", daemon=True).start()
 
     def _qwen_live_poll(self, live_status: StringVar) -> None:
+        self._qwen_live_status_var = live_status
+
         def worker() -> None:
             try:
                 result = self._realtime_core_json("/v1/realtime/qwen/live")
@@ -239,10 +464,11 @@ class LauncherCloudVoiceSectionsMixin:
                 return
             state = str(result.get("state", "unknown")).upper()
             message = str(result.get("message", ""))
-            input_chunks = int(result.get("input_chunks", 0) or 0)
-            output_chunks = int(result.get("output_chunks", 0) or 0)
+            input_chunks = int(str(result.get("input_chunks", 0) or 0))
+            output_chunks = int(str(result.get("output_chunks", 0) or 0))
             suffix = "" if not (input_chunks or output_chunks) else f" | mic={input_chunks} qwen_audio={output_chunks}"
             self.root.after(0, lambda: live_status.set(f"{state} — {message}{suffix}"))
+            self.root.after(0, self._refresh_qwen_control_ui)
 
         threading.Thread(target=worker, name="orion-qwen-live-status", daemon=True).start()
         self.root.after(750, lambda: self._qwen_live_poll(live_status))

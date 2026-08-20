@@ -8,11 +8,14 @@ from orion.app import app
 client = TestClient(app)
 
 
-def test_realtime_tool_catalog_exposes_only_smoke_tool() -> None:
+def test_realtime_tool_catalog_exposes_smoke_and_virtual_atc_tools() -> None:
     response = client.get("/v1/realtime/tools")
     assert response.status_code == 200
     payload = response.json()
-    assert [tool["name"] for tool in payload["tools"]] == ["orion.test.ping"]
+    assert [tool["name"] for tool in payload["tools"]] == [
+        "orion.test.ping",
+        "orion.virtual_atc.request",
+    ]
 
 
 def test_realtime_ping_executes_locally() -> None:

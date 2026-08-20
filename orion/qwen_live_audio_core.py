@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 from orion.audio_device_config import audio_device_config
 from orion.qwen_live_diagnostics import QwenLiveDiagnostics
 from orion.qwen_realtime_provider import QwenRealtimeConfig, QwenRealtimeProvider
+from orion.realtime_tools import RealtimeToolCall, qwen_live_tool_definition, realtime_tools
 from orion.windows_wasapi_backend import WasapiDirection, WasapiEndpoint
 
 QWEN_INPUT_RATE = 16_000
@@ -424,10 +425,17 @@ def _audio_session_update(model: str, voice: str) -> dict[str, Any]:
         "session": {
             "modalities": ["text", "audio"],
             "voice": voice,
-            "instructions": "You are ORION's realtime conversational voice. Talk naturally in the language used by the user.",
+            "instructions": (
+                "You are ORION's realtime conversational voice. Talk naturally in the language used by the user. "
+                "For ordinary conversation, answer without tools. For a DCS Virtual ATC request, call "
+                "orion_virtual_atc_request. ORION Core is authoritative for mission and ATC facts: never invent "
+                "an aircraft, airport, runway, clearance, traffic, frequency, telemetry value, or active mission. "
+                "If the tool reports unavailable, explain naturally that active DCS mission/ATC context is unavailable."
+            ),
             "input_audio_format": "pcm",
             "output_audio_format": "pcm",
             "turn_detection": {"type": vad_type, "threshold": 0.5, "silence_duration_ms": 800},
+            "tools": [qwen_live_tool_definition()],
         },
     }
 
@@ -786,6 +794,82 @@ class QwenLiveAudioService:
         )
         return True
 
+    @staticmethod
+    def _handle_realtime_tool_call(
+        *,
+        ws: Any,
+        event: dict[str, Any],
+        diagnostics: QwenLiveDiagnostics,
+        monitor: _SessionMonitor,
+    ) -> None:
+        started_ns = time.perf_counter_ns()
+        call_id = str(event.get("call_id") or "")
+        provider_name = str(event.get("name") or "")
+        raw_arguments = event.get("arguments")
+        core_name = {
+            "orion_virtual_atc_request": "orion.virtual_atc.request",
+        }.get(provider_name, provider_name)
+        diagnostics.record_websocket_event(
+            "CORE_TOOL_REQUEST",
+            direction="tool",
+            call_id=call_id,
+            tool_name=core_name,
+        )
+        if not call_id or not provider_name:
+            raise RuntimeError("Qwen returned an incomplete function call")
+        try:
+            arguments = json.loads(raw_arguments or "{}") if isinstance(raw_arguments, str) else raw_arguments
+        except json.JSONDecodeError:
+            arguments = None
+        if not isinstance(arguments, dict):
+            result = {
+                "call_id": call_id,
+                "name": core_name,
+                "ok": False,
+                "output": {},
+                "error": "Invalid tool arguments JSON object",
+            }
+        else:
+            result = realtime_tools.execute(
+                RealtimeToolCall(call_id=call_id, name=core_name, arguments=arguments)
+            ).model_dump(mode="json")
+        latency_ms = (time.perf_counter_ns() - started_ns) / 1_000_000
+        output = result.get("output")
+        route = output.get("domain") if isinstance(output, dict) else None
+        diagnostics.record_websocket_event(
+            "CORE_TOOL_RESULT",
+            direction="tool",
+            call_id=call_id,
+            tool_name=core_name,
+            accepted=bool(result.get("ok")),
+            route=route,
+            result_status=output.get("status") if isinstance(output, dict) else None,
+            latency_ms=latency_ms,
+        )
+        ws.send(
+            json.dumps(
+                {
+                    "type": "conversation.item.create",
+                    "item": {
+                        "type": "function_call_output",
+                        "call_id": call_id,
+                        "output": json.dumps(result, ensure_ascii=False),
+                    },
+                },
+                ensure_ascii=False,
+            )
+        )
+        ws.send(json.dumps({"type": "response.create", "response": {"modalities": ["text", "audio"]}}))
+        sent_ns = time.perf_counter_ns()
+        monitor.record_tx(sent_ns)
+        diagnostics.record_websocket_event(
+            "CORE_TOOL_FOLLOWUP_REQUESTED",
+            direction="send",
+            call_id=call_id,
+            tool_name=core_name,
+            t_ns=sent_ns,
+        )
+
     def _receive_worker(
         self,
         ws: Any,
@@ -866,6 +950,13 @@ class QwenLiveAudioService:
                 if event_type == "response.created":
                     monitor.response_created(event, recv_end_ns)
                     playback.mark_response_active(True)
+                if event_type == "response.function_call_arguments.done":
+                    self._handle_realtime_tool_call(
+                        ws=ws,
+                        event=event,
+                        diagnostics=diagnostics,
+                        monitor=monitor,
+                    )
                 if event_type == "response.audio.delta" and isinstance(
                     event.get("delta"), str
                 ):

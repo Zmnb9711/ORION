@@ -5,21 +5,13 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from orion.airport_arrival_orchestration import AirportArrivalOrchestrator
-from orion.airport_arrival_runtime import AirportArrivalRuntime
-from orion.airport_atc_dialogue import AtcDialogueRequest, AtcDialogueResult, AirportAtcDialogueGateway
-from orion.airport_surface_runtime import AirportSurfaceCoordinator
+from orion.airport_atc_dialogue import AtcDialogueDomain, AtcDialogueRequest, AtcDialogueResult, airport_atc_dialogue
 from orion.atc_service import AtcStatusSnapshot, virtual_atc
 from orion.atc_simulator_sync import AtcIntegrationMode
+from orion.dialogue import DialogueLanguage
 
 
 router = APIRouter(prefix="/v1/atc", tags=["Virtual ATC"])
-
-_surface = AirportSurfaceCoordinator(virtual_atc.core)
-_arrival = AirportArrivalRuntime(_surface)
-_arrival_orchestration = AirportArrivalOrchestrator(service=virtual_atc, arrival=_arrival)
-atc_dialogue = AirportAtcDialogueGateway(service=virtual_atc, arrival=_arrival, arrival_orchestrator=_arrival_orchestration)
-
 
 class AtcSessionBootstrapRequest(BaseModel):
     mission_id: str = Field(min_length=1, max_length=160)
@@ -55,18 +47,22 @@ def bootstrap_atc_session(payload: AtcSessionBootstrapRequest) -> AtcSessionBoot
 def start_arrival_session(session_id: UUID, payload: ArrivalStartRequest) -> AtcDialogueResult:
     try:
         virtual_atc.status(session_id)
-        session = _arrival_orchestration.start_arrival(session_id=session_id, runway_id=payload.runway_id, reason=payload.reason)
+        session = airport_atc_dialogue.arrival_orchestrator.start_arrival(
+            session_id=session_id,
+            runway_id=payload.runway_id,
+            reason=payload.reason,
+        )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="ATC session not found") from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return AtcDialogueResult(session_id=session_id, domain="arrival", language="en", intent="arrival_start", action="arrival_started", procedural_state=virtual_atc.status(session_id).procedural_state, reply="Arrival session started.", details={"arrival_state": session.state.value, "runway_id": session.runway_id})
+    return AtcDialogueResult(session_id=session_id, domain=AtcDialogueDomain.ARRIVAL, language=DialogueLanguage.EN, intent="arrival_start", action="arrival_started", procedural_state=virtual_atc.status(session_id).procedural_state, reply="Arrival session started.", details={"arrival_state": session.state.value, "runway_id": session.runway_id})
 
 
 @router.post("/sessions/{session_id}/dialogue", response_model=AtcDialogueResult)
 def handle_atc_dialogue(session_id: UUID, payload: AtcDialogueRequest) -> AtcDialogueResult:
     try:
-        return atc_dialogue.handle(session_id, payload)
+        return airport_atc_dialogue.handle(session_id, payload)
     except KeyError as exc:
         detail = "Airport arrival session not found" if "arrival" in str(exc).lower() else "ATC session not found"
         raise HTTPException(status_code=404, detail=detail) from exc

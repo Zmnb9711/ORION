@@ -604,8 +604,11 @@ def test_source_uses_reference_fifo_with_independent_blocking_audio_workers() ->
     }
     assert session["input_audio_format"] == "pcm"
     assert session["output_audio_format"] == "pcm"
-    assert session["instructions"] == (
+    assert session["instructions"].startswith(
         "You are ORION's realtime conversational voice. "
         "Talk naturally in the language used by the user."
     )
-    assert "tools" not in session
+    assert "ORION Core is authoritative" in session["instructions"]
+    assert [tool["function"]["name"] for tool in session["tools"]] == [
+        "orion_virtual_atc_request"
+    ]

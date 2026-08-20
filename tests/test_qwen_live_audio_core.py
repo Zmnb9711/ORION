@@ -59,16 +59,19 @@ def test_qwen_live_resamples_qwen_24k_output_to_native_48k() -> None:
     assert len(converted) == 480 * 2
 
 
-def test_qwen_live_session_is_audio_audio_and_keeps_tools_disabled() -> None:
+def test_qwen_live_session_is_audio_audio_and_exposes_only_core_atc_tool() -> None:
     payload = _audio_session_update("qwen3.5-omni-flash-realtime", "Tina")
     session = payload["session"]
     assert session["modalities"] == ["text", "audio"]
     assert session["input_audio_format"] == "pcm"
     assert session["output_audio_format"] == "pcm"
     assert session["turn_detection"]["type"] == "server_vad"
-    assert "tools" not in session
+    assert [tool["function"]["name"] for tool in session["tools"]] == [
+        "orion_virtual_atc_request"
+    ]
     assert "ORION" in session["instructions"]
     assert "realtime" in session["instructions"].lower()
+    assert "never invent" in session["instructions"].lower()
 
 
 def test_qwen_live_uses_reference_aligned_blocking_input_and_output_streams() -> None:
