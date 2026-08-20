@@ -104,6 +104,7 @@ def test_audio_capture_send_and_playback_continue_while_recv_is_blocked(
     recv_entered = threading.Event()
     five_sends = threading.Event()
     sent_messages: list[str] = []
+    abort_calls = 0
 
     class BlockingProvider:
         def _receive_json(self, _ws: object) -> dict[str, str]:
@@ -118,6 +119,8 @@ def test_audio_capture_send_and_playback_continue_while_recv_is_blocked(
                 five_sends.set()
 
         def abort(self) -> None:
+            nonlocal abort_calls
+            abort_calls += 1
             recv_release.set()
 
         def close(self) -> None:
@@ -169,6 +172,7 @@ def test_audio_capture_send_and_playback_continue_while_recv_is_blocked(
     assert stream.reads == 5
     assert stream.writes == 5
     assert len(sent_messages) == 5
+    assert abort_calls == 0
     assert all(
         json.loads(message)["type"] == "input_audio_buffer.append"
         for message in sent_messages
@@ -189,8 +193,12 @@ def test_audio_capture_send_and_playback_continue_while_recv_is_blocked(
     lifecycle_events = [event["event"] for event in recent_events]
     assert "AUDIO_SEND_START" in lifecycle_events
     assert "RECV_EVENT_START" in lifecycle_events
-    assert "WEBSOCKET_ABORT_START" in lifecycle_events
-    assert "WEBSOCKET_CLOSE_START" in lifecycle_events
+    assert "NORMAL_CLOSE_START" in lifecycle_events
+    assert "NORMAL_CLOSE_END" in lifecycle_events
+    assert "EMERGENCY_ABORT_START" not in lifecycle_events
+    assert lifecycle["normal_close_called"] is True
+    assert lifecycle["emergency_abort_called"] is False
+    assert "PING_SENT" not in lifecycle_events
     assert not any(
         thread.name
         in {"orion-qwen-send", "orion-qwen-receive", "orion-qwen-heartbeat"}
@@ -284,13 +292,82 @@ def test_receive_drains_multiple_deltas_before_microphone_cycle(
     assert summary["playback_buffer_overflow_count"] == 0
 
 
+def test_emergency_abort_is_only_used_after_normal_close_cannot_unblock_recv(
+    tmp_path: Path,
+) -> None:
+    stop_event = threading.Event()
+    recv_release = threading.Event()
+    recv_entered = threading.Event()
+    operations: list[str] = []
+
+    class BlockingProvider:
+        def _receive_json(self, _ws: object) -> dict[str, str]:
+            recv_entered.set()
+            recv_release.wait(timeout=3.0)
+            raise FakeWebSocketTimeoutException()
+
+    class StuckWebSocket:
+        def send(self, _message: str) -> None:
+            return None
+
+        def close(self) -> None:
+            operations.append("close")
+
+        def abort(self) -> None:
+            operations.append("abort")
+            recv_release.set()
+
+    class StopStream:
+        def __enter__(self) -> StopStream:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def read(self, frames: int) -> tuple[bytes, bool]:
+            assert recv_entered.wait(timeout=1.0)
+            stop_event.set()
+            return b"\x00\x00" * frames, False
+
+        def write(self, _pcm: bytes) -> bool:
+            return False
+
+    diagnostics = _diagnostics(tmp_path)
+    core.QwenLiveAudioService()._run_transport(
+        sd=SimpleNamespace(
+            WasapiSettings=lambda **kwargs: kwargs,
+            RawStream=lambda **kwargs: StopStream(),
+        ),
+        websocket=SimpleNamespace(
+            WebSocketTimeoutException=FakeWebSocketTimeoutException
+        ),
+        ws=StuckWebSocket(),
+        provider=BlockingProvider(),  # type: ignore[arg-type]
+        audio=_resolved_audio(),
+        frames=1_920,
+        stop_event=stop_event,
+        diagnostics=diagnostics,
+    )
+
+    lifecycle = diagnostics.websocket_forensics()
+    recent_events = lifecycle["recent_events"]
+    assert isinstance(recent_events, list)
+    events = [event["event"] for event in recent_events]
+    assert operations == ["close", "abort"]
+    assert events.index("NORMAL_CLOSE_END") < events.index(
+        "EMERGENCY_ABORT_START"
+    )
+    assert lifecycle["normal_close_called"] is True
+    assert lifecycle["emergency_abort_called"] is True
+
+
 def test_receive_worker_error_propagates_to_service_error_state(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     receive_failed = threading.Event()
 
     class FakeWebSocket:
-        def settimeout(self, _timeout: float) -> None:
+        def settimeout(self, _timeout: float | None) -> None:
             return None
 
         def send(self, _message: str) -> None:
@@ -389,11 +466,9 @@ def test_receive_worker_error_propagates_to_service_error_state(
         "AUDIO_COORDINATOR_CLEANUP_START"
     )
     assert events.index("AUDIO_COORDINATOR_CLEANUP_START") < events.index(
-        "WEBSOCKET_ABORT_START"
+        "NORMAL_CLOSE_START"
     )
-    assert events.index("WEBSOCKET_ABORT_START") < events.index(
-        "WEBSOCKET_CLOSE_START"
-    )
+    assert "EMERGENCY_ABORT_START" not in events
 
 
 def test_control_frame_observer_records_close_ping_and_pong_without_consuming(

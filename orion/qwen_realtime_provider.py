@@ -168,6 +168,7 @@ class QwenRealtimeProvider:
             build_qwen_realtime_url(self.config),
             header=[f"Authorization: Bearer {self.config.api_key.strip()}", "User-Agent: ORION/0.2"],
             timeout=self.config.timeout_s,
+            enable_multithread=True,
         )
 
     @staticmethod

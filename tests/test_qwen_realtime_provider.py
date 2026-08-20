@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import sys
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -11,7 +14,7 @@ from orion.qwen_realtime_provider import QwenRealtimeConfig, QwenRealtimeProvide
 class _FakeWebSocket:
     def __init__(self, events: list[dict[str, object]]) -> None:
         self.events = list(events)
-        self.sent: list[dict[str, object]] = []
+        self.sent: list[dict[str, Any]] = []
         self.closed = False
 
     def send(self, payload: str) -> None:
@@ -47,6 +50,28 @@ def test_build_qwen_url_requires_workspace_and_model() -> None:
         build_qwen_realtime_url(QwenRealtimeConfig(api_key="x", workspace_id=""))
     with pytest.raises(ValueError, match="model"):
         build_qwen_realtime_url(QwenRealtimeConfig(api_key="x", workspace_id="ws", model=""))
+
+
+def test_connect_explicitly_enables_websocket_multithread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def create_connection(url: str, **kwargs: object) -> object:
+        captured["url"] = url
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "websocket",
+        SimpleNamespace(create_connection=create_connection),
+    )
+
+    QwenRealtimeProvider(_config())._connect()
+
+    assert captured["enable_multithread"] is True
+    assert captured["timeout"] == _config().timeout_s
 
 
 def test_connection_smoke_waits_for_session_updated(monkeypatch: pytest.MonkeyPatch) -> None:

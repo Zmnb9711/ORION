@@ -89,6 +89,12 @@ class QwenLiveDiagnostics:
         self._websocket_disconnect_origin = ""
         self._websocket_exception: dict[str, object] | None = None
         self._websocket_ping_configured = False
+        self._runtime_socket_timeout: float | None = None
+        self._enable_multithread = False
+        self._heartbeat_enabled = False
+        self._response_watchdog_enabled = False
+        self._normal_close_called = False
+        self._emergency_abort_called = False
         self._websocket_send_thread_ids: set[int] = set()
         self._websocket_recv_thread_ids: set[int] = set()
         self._websocket_close_thread_ids: set[int] = set()
@@ -320,6 +326,28 @@ class QwenLiveDiagnostics:
         )
 
     @_synchronized
+    def record_transport_configuration(
+        self,
+        *,
+        runtime_socket_timeout: float | None,
+        enable_multithread: bool,
+        heartbeat_enabled: bool,
+        response_watchdog_enabled: bool,
+    ) -> None:
+        self._runtime_socket_timeout = runtime_socket_timeout
+        self._enable_multithread = enable_multithread
+        self._heartbeat_enabled = heartbeat_enabled
+        self._response_watchdog_enabled = response_watchdog_enabled
+        self.record_websocket_event(
+            "TRANSPORT_CONFIGURATION",
+            direction="lifecycle",
+            runtime_socket_timeout=runtime_socket_timeout,
+            enable_multithread=enable_multithread,
+            heartbeat_enabled=heartbeat_enabled,
+            response_watchdog_enabled=response_watchdog_enabled,
+        )
+
+    @_synchronized
     def record_websocket_close_frame(self, frame_data: bytes, *, t_ns: int) -> None:
         code: int | None = None
         reason = ""
@@ -352,6 +380,48 @@ class QwenLiveDiagnostics:
             operation="close",
             t_ns=t_ns,
             close_frame_received=self._websocket_close_frame_received,
+        )
+
+    @_synchronized
+    def record_normal_close_start(self, *, t_ns: int) -> None:
+        self._normal_close_called = True
+        if self._websocket_close_ns is None:
+            self._websocket_close_ns = t_ns
+        self.record_websocket_event(
+            "NORMAL_CLOSE_START",
+            direction="close",
+            operation="close",
+            t_ns=t_ns,
+            close_frame_received=self._websocket_close_frame_received,
+        )
+
+    @_synchronized
+    def record_normal_close_end(self, *, t_ns: int) -> None:
+        self.record_websocket_event(
+            "NORMAL_CLOSE_END",
+            direction="close",
+            operation="close",
+            t_ns=t_ns,
+            close_frame_received=self._websocket_close_frame_received,
+        )
+
+    @_synchronized
+    def record_emergency_abort_start(self, *, t_ns: int) -> None:
+        self._emergency_abort_called = True
+        self.record_websocket_event(
+            "EMERGENCY_ABORT_START",
+            direction="close",
+            operation="close",
+            t_ns=t_ns,
+        )
+
+    @_synchronized
+    def record_emergency_abort_end(self, *, t_ns: int) -> None:
+        self.record_websocket_event(
+            "EMERGENCY_ABORT_END",
+            direction="close",
+            operation="close",
+            t_ns=t_ns,
         )
 
     @staticmethod
@@ -465,6 +535,12 @@ class QwenLiveDiagnostics:
             "close_frame_received": self._websocket_close_frame_received,
             "disconnect_origin": self._websocket_disconnect_origin,
             "ping_configured": self._websocket_ping_configured,
+            "runtime_socket_timeout": self._runtime_socket_timeout,
+            "enable_multithread": self._enable_multithread,
+            "heartbeat_enabled": self._heartbeat_enabled,
+            "response_watchdog_enabled": self._response_watchdog_enabled,
+            "normal_close_called": self._normal_close_called,
+            "emergency_abort_called": self._emergency_abort_called,
             "exception": dict(self._websocket_exception)
             if self._websocket_exception is not None
             else None,

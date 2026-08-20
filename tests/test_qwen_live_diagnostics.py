@@ -361,6 +361,24 @@ def test_websocket_forensics_capture_close_exception_and_lifetime(
     assert "WEBSOCKET LIFECYCLE:" in summary_path.read_text(encoding="utf-8")
 
 
+def test_build_401_transport_configuration_is_explicit(tmp_path: Path) -> None:
+    recorder = _recorder(tmp_path)
+    recorder.record_websocket_ping_configuration(configured=False)
+    recorder.record_transport_configuration(
+        runtime_socket_timeout=None,
+        enable_multithread=True,
+        heartbeat_enabled=False,
+        response_watchdog_enabled=False,
+    )
+
+    lifecycle = recorder.websocket_forensics()
+    assert lifecycle["runtime_socket_timeout"] is None
+    assert lifecycle["enable_multithread"] is True
+    assert lifecycle["heartbeat_enabled"] is False
+    assert lifecycle["response_watchdog_enabled"] is False
+    assert lifecycle["ping_configured"] is False
+
+
 def test_instrumented_transport_preserves_pcm_with_independent_workers(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -375,7 +393,7 @@ def test_instrumented_transport_preserves_pcm_with_independent_workers(
     response_pcm_b = array("h", range(240, 480)).tobytes()
 
     class FakeWebSocket:
-        def settimeout(self, timeout: float) -> None:
+        def settimeout(self, timeout: float | None) -> None:
             operations.append(f"timeout:{timeout}")
 
         def send(self, message: str) -> None:
@@ -485,6 +503,9 @@ def test_instrumented_transport_preserves_pcm_with_independent_workers(
     )
 
     assert service.status().state is core.QwenLiveState.STOPPED
+    assert "timeout:None" in operations
+    assert "abort" not in operations
+    assert operations.index("close") > operations.index("stream_exit")
     assert operations.count("stream_enter") == 1
     assert operations.count("stream_exit") == 1
     assert operations.index("recv") < operations.index("read")
@@ -535,7 +556,9 @@ def test_source_uses_one_blocking_stream_with_independent_network_workers() -> N
     assert "ws.send(" not in transport_source
     assert "ws.send(" in send_source
     assert "provider._receive_json(ws)" in receive_source
-    assert "ws.settimeout(0.25)" in source
+    assert "ws.settimeout(None)" in source
+    assert "ENABLE_QWEN_HEARTBEAT = False" in source
+    assert "ENABLE_QWEN_RESPONSE_WATCHDOG = False" in source
     assert "CAPTURE_MS = 40" in source
     assert "QWEN_INPUT_RATE = 16_000" in source
     assert "QWEN_OUTPUT_RATE = 24_000" in source

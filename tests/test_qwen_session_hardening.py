@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import sys
 import threading
 import time
 from pathlib import Path
@@ -256,6 +258,204 @@ def test_abrupt_eof_is_classified_as_connection_loss(tmp_path: Path) -> None:
         if event["event"] == "CONNECTION_CLASSIFIED"
     ]
     assert classifications == ["ABRUPT_EOF"]
+
+
+def test_local_close_eof_is_not_classified_as_abrupt(tmp_path: Path) -> None:
+    class WebSocketConnectionClosedException(Exception):
+        pass
+
+    stop_event = threading.Event()
+
+    class LocallyClosedProvider:
+        def _receive_json(self, _ws: object) -> dict[str, str]:
+            stop_event.set()
+            raise WebSocketConnectionClosedException("socket closed locally")
+
+    diagnostics = _diagnostics(tmp_path)
+    failures: core.queue.Queue[core._WorkerFailure] = core.queue.Queue(maxsize=1)
+    core.QwenLiveAudioService()._receive_worker(
+        ws=object(),
+        websocket=SimpleNamespace(WebSocketTimeoutException=TimeoutError),
+        provider=LocallyClosedProvider(),  # type: ignore[arg-type]
+        audio=SimpleNamespace(native_rate=48_000),  # type: ignore[arg-type]
+        stop_event=stop_event,
+        playback=core._BoundedPlaybackBuffer(max_bytes=16),
+        diagnostics=diagnostics,
+        failures=failures,
+        monitor=core._SessionMonitor(connected_ns=time.perf_counter_ns()),
+    )
+
+    recent_events = diagnostics.websocket_forensics()["recent_events"]
+    assert isinstance(recent_events, list)
+    assert "LOCAL_SHUTDOWN_RECEIVE_EXIT" in {
+        event["event"] for event in recent_events
+    }
+    assert not any(
+        event.get("classification") == "ABRUPT_EOF" for event in recent_events
+    )
+    assert failures.empty()
+
+
+def test_build_401_transport_features_are_disabled() -> None:
+    assert core.ENABLE_QWEN_HEARTBEAT is False
+    assert core.ENABLE_QWEN_RESPONSE_WATCHDOG is False
+
+
+def test_manual_stop_unblocks_blocking_receive_with_normal_close(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    receive_entered = threading.Event()
+    receive_release = threading.Event()
+    audio_started = threading.Event()
+    close_calls = 0
+    abort_calls = 0
+
+    class WebSocketConnectionClosedException(Exception):
+        pass
+
+    class FakeWebSocket:
+        timeout: float | None = 15.0
+
+        def settimeout(self, timeout: float | None) -> None:
+            self.timeout = timeout
+
+        def send(self, _message: str) -> None:
+            return None
+
+        def close(self) -> None:
+            nonlocal close_calls
+            close_calls += 1
+            receive_release.set()
+
+        def abort(self) -> None:
+            nonlocal abort_calls
+            abort_calls += 1
+            receive_release.set()
+
+    ws = FakeWebSocket()
+
+    class BlockingProvider:
+        def __init__(self, _config: object) -> None:
+            self.receive_count = 0
+
+        def _connect(self) -> FakeWebSocket:
+            return ws
+
+        def _receive_json(self, _ws: object) -> dict[str, str]:
+            self.receive_count += 1
+            if self.receive_count == 1:
+                return {"type": "session.updated"}
+            receive_entered.set()
+            receive_release.wait(timeout=3.0)
+            raise WebSocketConnectionClosedException("socket closed locally")
+
+    class FakeRawStream:
+        def __enter__(self) -> FakeRawStream:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def read(self, frames: int) -> tuple[bytes, bool]:
+            audio_started.set()
+            time.sleep(0.001)
+            return b"\x00\x00" * frames, False
+
+        def write(self, _pcm: bytes) -> bool:
+            return False
+
+    monkeypatch.setitem(
+        sys.modules,
+        "sounddevice",
+        SimpleNamespace(
+            WasapiSettings=lambda **kwargs: kwargs,
+            RawStream=lambda **kwargs: FakeRawStream(),
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "websocket",
+        SimpleNamespace(
+            WebSocketTimeoutException=TimeoutError,
+            WebSocketConnectionClosedException=WebSocketConnectionClosedException,
+        ),
+    )
+    monkeypatch.setattr(core, "QwenRealtimeProvider", BlockingProvider)
+    monkeypatch.setenv("ORION_RUNTIME_DIR", str(tmp_path))
+    service = core.QwenLiveAudioService()
+    monkeypatch.setattr(
+        service,
+        "_resolve_audio",
+        lambda _sd: SimpleNamespace(
+            input_endpoint=SimpleNamespace(name="Test microphone"),
+            output_endpoint=SimpleNamespace(name="Test speakers"),
+            input_index=1,
+            output_index=2,
+            input_native_rate=48_000,
+            output_native_rate=48_000,
+            native_rate=48_000,
+        ),
+    )
+
+    service.start(
+        core.QwenLiveStartRequest(api_key="not-recorded", workspace_id="workspace")
+    )
+    assert audio_started.wait(timeout=1.0)
+    assert receive_entered.wait(timeout=1.0)
+    status = service.stop()
+    assert service._thread is not None
+    service._thread.join(timeout=2.0)
+
+    assert status.state is core.QwenLiveState.STOPPED
+    assert not service._thread.is_alive()
+    assert ws.timeout is None
+    assert close_calls == 1
+    assert abort_calls == 0
+    jsonl_path = next((tmp_path / "qwen-live").glob("*.jsonl"))
+    records = [
+        json.loads(line)
+        for line in jsonl_path.read_text(encoding="utf-8").splitlines()
+    ]
+    lifecycle = next(
+        record for record in records if record["kind"] == "websocket_forensics"
+    )
+    classifications = [
+        event.get("classification")
+        for event in lifecycle["recent_events"]
+        if event["event"] == "CONNECTION_CLASSIFIED"
+    ]
+    assert classifications == ["MANUAL_STOP"]
+    assert lifecycle["normal_close_called"] is True
+    assert lifecycle["emergency_abort_called"] is False
+
+
+def test_disabled_response_watchdog_is_not_applied(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    stop_event = threading.Event()
+
+    class TimeoutProvider:
+        def _receive_json(self, _ws: object) -> dict[str, str]:
+            stop_event.set()
+            raise TimeoutError("controlled receive poll")
+
+    service = core.QwenLiveAudioService()
+    monkeypatch.setattr(
+        service,
+        "_apply_response_timeout",
+        lambda **_kwargs: pytest.fail("disabled response watchdog was applied"),
+    )
+    service._receive_worker(
+        ws=object(),
+        websocket=SimpleNamespace(WebSocketTimeoutException=TimeoutError),
+        provider=TimeoutProvider(),  # type: ignore[arg-type]
+        audio=SimpleNamespace(native_rate=48_000),  # type: ignore[arg-type]
+        stop_event=stop_event,
+        playback=core._BoundedPlaybackBuffer(max_bytes=16),
+        diagnostics=_diagnostics(tmp_path),
+        failures=core.queue.Queue(maxsize=1),
+        monitor=core._SessionMonitor(connected_ns=time.perf_counter_ns()),
+    )
 
 
 def test_transport_architecture_remains_blocking_single_raw_stream() -> None:
