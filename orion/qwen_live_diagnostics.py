@@ -246,7 +246,11 @@ class QwenLiveDiagnostics:
                 for item in getattr(plan, "rejected_rates", ())
             ]
             audio_devices[direction] = {
+                "direction": direction.upper(),
                 "logical_device_id": str(
+                    getattr(plan, "logical_device_id", "")
+                ),
+                "selected_persistent_endpoint_id": str(
                     getattr(plan, "logical_device_id", "")
                 ),
                 "persisted_identity": str(
@@ -282,6 +286,9 @@ class QwenLiveDiagnostics:
                 ),
                 "extra_settings_mode": str(
                     getattr(plan, "extra_settings_mode", "")
+                ),
+                "extra_settings_type": str(
+                    getattr(plan, "extra_settings_type", "")
                 ),
             }
         self._metadata.update(

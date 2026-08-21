@@ -140,7 +140,10 @@ class LauncherAudioSectionsMixin:
     @staticmethod
     def _selection_text(selected: str, resolved: dict[str, Any] | None) -> str:
         if resolved:
-            return f"PASS — Core active: {resolved.get('name', selected)}"
+            name = str(resolved.get("name", selected))
+            host_api = str(resolved.get("host_api_name", "PortAudio"))
+            index = resolved.get("device_index", "?")
+            return f"PASS — Core active: {name} [{host_api}] (#{index})"
         if selected == "default":
             return "WARNING — Windows Default selected; no active endpoint resolved"
         return f"FAIL — selected endpoint unavailable: {selected}"
@@ -213,9 +216,7 @@ class LauncherAudioSectionsMixin:
                 continue
             name = str(item.get("name", "Audio endpoint"))
             host_api = str(item.get("host_api_name", "PortAudio"))
-            label = f"{name} — {host_api}"
-            if label in result:
-                label = f"{label} [PortAudio {item.get('device_index', '?')}]"
+            label = f"{name} [{host_api}] (#{item.get('device_index', '?')})"
             result[label] = device_id
         return result
 

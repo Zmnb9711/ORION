@@ -83,7 +83,7 @@ def test_audio_device_display_map_keeps_windows_default_and_stable_ids() -> None
     assert "SWD\\MMDEVAPI\\{0.0.1.00000000}.{usb-id}" in mapping.values()
 
 
-def test_audio_device_display_map_disambiguates_host_api_without_index_noise() -> None:
+def test_audio_device_display_map_always_shows_exact_host_api_and_index() -> None:
     mapping = LauncherAudioSectionsMixin._device_display_map(
         [
             {
@@ -102,12 +102,21 @@ def test_audio_device_display_map_disambiguates_host_api_without_index_noise() -
         "Windows Default",
     )
 
-    assert "Microphone (Pimax Dream Air) — MME" in mapping
-    assert "Microphone (Pimax Dream Air) — Windows WASAPI" in mapping
+    assert "Microphone (Pimax Dream Air) [MME] (#1)" in mapping
+    assert "Microphone (Pimax Dream Air) [Windows WASAPI] (#8)" in mapping
 
 
 def test_selection_text_reports_core_resolution() -> None:
-    assert LauncherAudioSectionsMixin._selection_text("mic", {"device_id": "mic", "name": "Microphone"}).startswith("PASS")
+    text = LauncherAudioSectionsMixin._selection_text(
+        "mic",
+        {
+            "device_id": "mic",
+            "name": "Microphone",
+            "host_api_name": "MME",
+            "device_index": 1,
+        },
+    )
+    assert text == "PASS — Core active: Microphone [MME] (#1)"
     assert LauncherAudioSectionsMixin._selection_text("missing", None).startswith("FAIL")
     assert LauncherAudioSectionsMixin._selection_text("default", None).startswith("WARNING")
 

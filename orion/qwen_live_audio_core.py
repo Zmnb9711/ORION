@@ -594,6 +594,7 @@ class QwenLiveAudioService:
             "audio_device_rate_selected",
             direction=plan.direction.upper(),
             logical_device_id=plan.logical_device_id,
+            selected_persistent_endpoint_id=plan.logical_device_id,
             persisted_identity=plan.persisted_identity,
             device_index=plan.device_index,
             device_name=plan.device_name,
@@ -611,6 +612,7 @@ class QwenLiveAudioService:
                 "RawInputStream" if plan.direction == "input" else "RawOutputStream"
             ),
             extra_settings_mode=plan.extra_settings_mode,
+            extra_settings_type=plan.extra_settings_type,
         )
 
     @staticmethod
@@ -1538,9 +1540,21 @@ class QwenLiveAudioService:
                 input_rate_plan=audio.input_rate_plan,
                 output_rate_plan=audio.output_rate_plan,
             )
-            self._set(message="Opening Qwen realtime session", input_name=audio.input_endpoint.name,
-                      output_name=audio.output_endpoint.name, input_native_rate=audio.input_native_rate,
-                      output_native_rate=audio.output_native_rate)
+            self._set(
+                message="Opening Qwen realtime session",
+                input_name=(
+                    f"{audio.input_endpoint.name} "
+                    f"[{getattr(audio.input_endpoint, 'host_api_name', 'PortAudio')}] "
+                    f"(#{getattr(audio.input_endpoint, 'device_index', '?')})"
+                ),
+                output_name=(
+                    f"{audio.output_endpoint.name} "
+                    f"[{getattr(audio.output_endpoint, 'host_api_name', 'PortAudio')}] "
+                    f"(#{getattr(audio.output_endpoint, 'device_index', '?')})"
+                ),
+                input_native_rate=audio.input_native_rate,
+                output_native_rate=audio.output_native_rate,
+            )
             config = QwenRealtimeConfig(api_key=request.api_key, workspace_id=request.workspace_id,
                                         region=request.region, model=request.model, timeout_s=15.0)
             provider = QwenRealtimeProvider(config)

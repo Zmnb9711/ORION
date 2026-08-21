@@ -102,6 +102,8 @@ def test_protocol_rate_is_used_before_reported_default(
     assert plan.attempted_rates == (protocol_rate,)
     assert plan.path == "direct_protocol_rate"
     assert not plan.resampling_required
+    assert plan.extra_settings_mode == "host_default"
+    assert plan.extra_settings_type == "None"
     checks = sd.input_checks if direction == "input" else sd.output_checks
     assert checks == [
         {
@@ -218,6 +220,10 @@ def test_core_resolves_input_and_output_rates_independently(
     assert resolved.output_rate_plan is not None
     assert resolved.input_rate_plan.logical_device_id == microphone.device_id
     assert resolved.output_rate_plan.logical_device_id == output.device_id
+    assert resolved.input_rate_plan.host_api == "MME"
+    assert resolved.output_rate_plan.host_api == "MME"
+    assert resolved.input_rate_plan.extra_settings_type == "None"
+    assert resolved.output_rate_plan.extra_settings_type == "None"
     assert resolved.input_extra_settings is None
     assert resolved.output_extra_settings is None
 

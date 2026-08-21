@@ -461,10 +461,13 @@ def test_audio_rate_plan_metadata_is_conclusive_and_bounded(tmp_path: Path) -> N
     assert isinstance(input_details, dict)
     assert isinstance(output_details, dict)
     assert input_details["logical_device_id"] == "dream-input"
+    assert input_details["selected_persistent_endpoint_id"] == "dream-input"
+    assert input_details["direction"] == "INPUT"
     assert input_details["persisted_identity"] == "input-identity"
     assert input_details["host_api_index"] == 1
     assert input_details["path"] == "FALLBACK_RESAMPLED"
     assert input_details["extra_settings_mode"] == "wasapi_shared"
+    assert input_details["extra_settings_type"] == "None"
     assert input_details["attempted_rates"] == [32_000, 48_000]
     assert input_details["rejected_rates"] == [
         {

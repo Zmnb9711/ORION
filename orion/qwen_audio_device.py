@@ -33,6 +33,7 @@ class AudioDeviceRatePlan:
     rejected_rates: tuple[AudioRateRejection, ...]
     physical_rate: int
     protocol_rate: int
+    extra_settings_type: str = "None"
 
     @property
     def resampling_required(self) -> bool:
@@ -190,6 +191,9 @@ def negotiate_audio_device_rate(
             rejected_rates=tuple(rejected),
             physical_rate=rate,
             protocol_rate=protocol_rate,
+            extra_settings_type=(
+                "None" if extra_settings is None else type(extra_settings).__name__
+            ),
         )
 
     raise AudioDeviceRateError(

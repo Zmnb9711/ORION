@@ -178,6 +178,21 @@ def resolve_portaudio_endpoint(
         return next((item for item in candidates if item.is_default), candidates[0])
 
     if identity is not None:
+        if identity.direction is not direction:
+            raise PortAudioEndpointResolutionError(
+                f"Selected PortAudio endpoint direction mismatch: persisted "
+                f"{identity.direction.value}, requested {direction.value}"
+            )
+        expected_selector = portaudio_device_id(
+            direction,
+            identity.host_api_index,
+            identity.device_index,
+        )
+        if selector != expected_selector:
+            raise PortAudioEndpointResolutionError(
+                f"Selected PortAudio {direction.value} endpoint ID does not match "
+                f"its persisted identity: {selector} != {expected_selector}"
+            )
         indexed = next(
             (
                 item
@@ -188,22 +203,19 @@ def resolve_portaudio_endpoint(
         )
         if indexed is not None and identity.matches(indexed):
             return indexed
-        recovered = [
-            item
-            for item in candidates
-            if identity.matches(item, include_device_index=False)
-        ]
-        if len(recovered) == 1:
-            return recovered[0]
-        if not recovered:
+        if indexed is None:
             raise PortAudioEndpointResolutionError(
-                f"Selected PortAudio {direction.value} endpoint is unavailable: "
-                f"{identity.device_name} — {identity.host_api_name}"
+                f"Selected PortAudio {direction.value} endpoint index is stale or "
+                f"unavailable: #{identity.device_index} "
+                f"{identity.device_name} [{identity.host_api_name}]; "
+                "refresh devices and select it again"
             )
         raise PortAudioEndpointResolutionError(
-            f"Selected PortAudio {direction.value} endpoint is ambiguous after "
-            f"device re-enumeration: {identity.device_name} — "
-            f"{identity.host_api_name} ({len(recovered)} exact identity matches)"
+            f"Selected PortAudio {direction.value} endpoint identity no longer "
+            f"matches index #{identity.device_index}: expected "
+            f"{identity.device_name} [{identity.host_api_name}]; "
+            f"found {indexed.device_name} [{indexed.host_api_name}]; "
+            "refresh devices and select it again"
         )
 
     exact = next((item for item in candidates if item.device_id == selector), None)
