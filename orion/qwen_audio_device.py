@@ -6,6 +6,7 @@ from typing import Any, Literal
 
 
 AudioDirection = Literal["input", "output"]
+AudioRatePath = Literal["direct_protocol_rate", "fallback_resampled"]
 
 
 @dataclass(slots=True, frozen=True)
@@ -19,9 +20,14 @@ class AudioRateRejection:
 class AudioDeviceRatePlan:
     direction: AudioDirection
     logical_device_id: str
+    persisted_identity: str
     device_index: int
     device_name: str
+    host_api_index: int
     host_api: str
+    max_input_channels: int
+    max_output_channels: int
+    extra_settings_mode: str
     default_rate: int | None
     attempted_rates: tuple[int, ...]
     rejected_rates: tuple[AudioRateRejection, ...]
@@ -31,6 +37,14 @@ class AudioDeviceRatePlan:
     @property
     def resampling_required(self) -> bool:
         return self.physical_rate != self.protocol_rate
+
+    @property
+    def path(self) -> AudioRatePath:
+        return (
+            "fallback_resampled"
+            if self.resampling_required
+            else "direct_protocol_rate"
+        )
 
 
 class AudioDeviceRateError(RuntimeError):
@@ -77,13 +91,18 @@ def _reported_rate(value: object) -> int | None:
 def _candidate_rates(
     default_rate: int | None,
     direction: AudioDirection,
+    protocol_rate: int,
 ) -> tuple[int, ...]:
     fallbacks = (
-        (48_000, 44_100, 16_000)
+        (48_000, 44_100)
         if direction == "input"
-        else (48_000, 44_100, 24_000)
+        else (48_000, 44_100)
     )
-    ordered = (() if default_rate is None else (default_rate,)) + fallbacks
+    ordered = (
+        (protocol_rate,)
+        + (() if default_rate is None else (default_rate,))
+        + fallbacks
+    )
     return tuple(dict.fromkeys(ordered))
 
 
@@ -92,9 +111,11 @@ def negotiate_audio_device_rate(
     *,
     direction: AudioDirection,
     logical_device_id: str,
+    persisted_identity: str = "",
     device_index: int,
     protocol_rate: int,
     extra_settings: object,
+    extra_settings_mode: str = "host_default",
 ) -> AudioDeviceRatePlan:
     try:
         device = dict(sd.query_devices(device_index))
@@ -106,6 +127,8 @@ def negotiate_audio_device_rate(
         ) from exc
 
     device_name = str(device.get("name") or logical_device_id)
+    max_input_channels = int(device.get("max_input_channels", 0) or 0)
+    max_output_channels = int(device.get("max_output_channels", 0) or 0)
     channel_key = (
         "max_input_channels" if direction == "input" else "max_output_channels"
     )
@@ -115,16 +138,16 @@ def negotiate_audio_device_rate(
             f"{device_name} [index={device_index}, id={logical_device_id}]"
         )
 
+    host_api_index = int(device.get("hostapi", -1))
     host_api = "unknown"
     try:
-        host_api_index = int(device.get("hostapi", -1))
         host_api_info = sd.query_hostapis(host_api_index)
         host_api = str(host_api_info.get("name") or host_api_index)
     except Exception:
         host_api = str(device.get("hostapi", "unknown"))
 
     default_rate = _reported_rate(device.get("default_samplerate"))
-    candidates = _candidate_rates(default_rate, direction)
+    candidates = _candidate_rates(default_rate, direction, protocol_rate)
     checker = (
         sd.check_input_settings
         if direction == "input"
@@ -154,9 +177,14 @@ def negotiate_audio_device_rate(
         return AudioDeviceRatePlan(
             direction=direction,
             logical_device_id=logical_device_id,
+            persisted_identity=persisted_identity,
             device_index=device_index,
             device_name=device_name,
+            host_api_index=host_api_index,
             host_api=host_api,
+            max_input_channels=max_input_channels,
+            max_output_channels=max_output_channels,
+            extra_settings_mode=extra_settings_mode,
             default_rate=default_rate,
             attempted_rates=tuple(attempted),
             rejected_rates=tuple(rejected),

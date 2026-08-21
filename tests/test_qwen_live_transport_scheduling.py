@@ -12,8 +12,9 @@ from types import SimpleNamespace
 import pytest
 
 import orion.qwen_live_audio_core as core
+from orion.portaudio_devices import PortAudioEndpoint
 from orion.qwen_live_diagnostics import QwenLiveDiagnostics
-from orion.windows_wasapi_backend import WasapiDirection, WasapiEndpoint
+from orion.windows_wasapi_backend import WasapiDirection
 
 
 class FakeWebSocketTimeoutException(Exception):
@@ -22,21 +23,42 @@ class FakeWebSocketTimeoutException(Exception):
 
 def _resolved_audio() -> core._ResolvedAudio:
     return core._ResolvedAudio(
-        WasapiEndpoint(
-            device_id="test-input",
+        PortAudioEndpoint(
+            device_id="sounddevice:portaudio:input:0:1",
             name="Test microphone",
+            device_name="Test microphone",
             direction=WasapiDirection.INPUT,
+            device_index=1,
+            host_api_index=0,
+            host_api_name="MME",
+            max_input_channels=1,
+            max_output_channels=0,
+            default_samplerate=48_000,
         ),
-        WasapiEndpoint(
-            device_id="test-output",
+        PortAudioEndpoint(
+            device_id="sounddevice:portaudio:output:0:2",
             name="Test speakers",
+            device_name="Test speakers",
             direction=WasapiDirection.OUTPUT,
+            device_index=2,
+            host_api_index=0,
+            host_api_name="MME",
+            max_input_channels=0,
+            max_output_channels=2,
+            default_samplerate=48_000,
         ),
         1,
         2,
         48_000,
         48_000,
     )
+
+
+def _direct_resolved_audio() -> core._ResolvedAudio:
+    audio = _resolved_audio()
+    audio.input_native_rate = core.QWEN_INPUT_RATE
+    audio.output_native_rate = core.QWEN_OUTPUT_RATE
+    return audio
 
 
 def _diagnostics(tmp_path: Path) -> QwenLiveDiagnostics:
@@ -198,6 +220,67 @@ def test_audio_capture_send_and_playback_continue_while_recv_is_blocked(
     )
 
 
+def test_protocol_native_capture_reaches_qwen_append_bit_identical(
+    tmp_path: Path,
+) -> None:
+    stop_event = threading.Event()
+    recv_release = threading.Event()
+    recv_entered = threading.Event()
+    captured_pcm = array("h", range(640)).tobytes()
+    sent_messages: list[str] = []
+
+    class BlockingProvider:
+        def _receive_json(self, _ws: object) -> dict[str, object]:
+            recv_entered.set()
+            recv_release.wait(timeout=2.0)
+            raise FakeWebSocketTimeoutException()
+
+    class FakeWebSocket:
+        def send(self, message: str) -> None:
+            sent_messages.append(message)
+            stop_event.set()
+
+        def close(self) -> None:
+            recv_release.set()
+
+    class OneReadStream:
+        def __enter__(self) -> OneReadStream:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def read(self, frames: int) -> tuple[bytes, bool]:
+            assert recv_entered.wait(timeout=1.0)
+            assert frames == 640
+            return captured_pcm, False
+
+        def write(self, _pcm: bytes) -> bool:
+            raise AssertionError("No provider audio was supplied")
+
+    stream = OneReadStream()
+    core.QwenLiveAudioService()._run_transport(
+        sd=SimpleNamespace(
+            RawInputStream=lambda **kwargs: stream,
+            RawOutputStream=lambda **kwargs: stream,
+        ),
+        websocket=SimpleNamespace(
+            WebSocketTimeoutException=FakeWebSocketTimeoutException
+        ),
+        ws=FakeWebSocket(),
+        provider=BlockingProvider(),  # type: ignore[arg-type]
+        audio=_direct_resolved_audio(),
+        frames=640,
+        stop_event=stop_event,
+        diagnostics=_diagnostics(tmp_path),
+    )
+
+    assert len(sent_messages) == 1
+    event = json.loads(sent_messages[0])
+    assert event["type"] == "input_audio_buffer.append"
+    assert base64.b64decode(event["audio"], validate=True) == captured_pcm
+
+
 @pytest.mark.parametrize("completion_event", ["response.audio.done", "response.done"])
 def test_receive_completion_does_not_discard_queued_deltas(
     completion_event: str, tmp_path: Path,
@@ -270,16 +353,13 @@ def test_receive_completion_does_not_discard_queued_deltas(
         ),
         ws=FakeWebSocket(),
         provider=BurstProvider(),  # type: ignore[arg-type]
-        audio=_resolved_audio(),
-        frames=1_920,
+        audio=_direct_resolved_audio(),
+        frames=640,
         stop_event=stop_event,
         diagnostics=diagnostics,
     )
 
-    assert stream.written == [
-        core._resample_pcm16_mono(delta, core.QWEN_OUTPUT_RATE, 48_000)
-        for delta in source_deltas
-    ]
+    assert stream.written == source_deltas
     summary = diagnostics.summary()
     assert summary["audio_delta_count"] == 3
     assert summary["partial_zero_padded_write_count"] == 0

@@ -3,6 +3,9 @@ from __future__ import annotations
 from array import array
 from pathlib import Path
 
+import orion.qwen_live_audio_core as qwen_live_audio_core
+from orion.audio_device_config import AudioEndpointSelection, AudioEndpointState
+from orion.portaudio_devices import enumerate_portaudio_endpoints
 from orion.qwen_live_audio_core import (
     QWEN_INPUT_RATE,
     QWEN_OUTPUT_RATE,
@@ -10,10 +13,19 @@ from orion.qwen_live_audio_core import (
     _audio_session_update,
     _resample_pcm16_mono,
 )
-from orion.windows_wasapi_backend import WasapiDirection, WasapiEndpoint
+from orion.windows_wasapi_backend import WasapiDirection
 
 
 class FakeSoundDevice:
+    class _Default:
+        device = (0, 2)
+
+    default = _Default()
+
+    class WasapiSettings:
+        def __init__(self, *, exclusive: bool) -> None:
+            self.exclusive = exclusive
+
     def query_hostapis(self):
         return [
             {"name": "Windows WDM-KS"},
@@ -28,23 +40,57 @@ class FakeSoundDevice:
         ]
         return devices if index is None else devices[index]
 
+    def check_input_settings(self, **kwargs: object) -> None:
+        assert kwargs["device"] == 1
 
-def test_qwen_live_resolves_selected_device_only_inside_core_process() -> None:
+    def check_output_settings(self, **kwargs: object) -> None:
+        assert kwargs["device"] == 2
+
+
+def test_qwen_live_resolves_exact_persisted_identity_inside_core_process(
+    monkeypatch,
+) -> None:
     sd = FakeSoundDevice()
     service = QwenLiveAudioService()
-    microphone = WasapiEndpoint(
-        device_id="sounddevice:wasapi:input:99",
-        name="Microphone (Logitech PRO X Gaming Headset)",
-        direction=WasapiDirection.INPUT,
+    endpoints = enumerate_portaudio_endpoints(sd)
+    microphone = next(
+        item
+        for item in endpoints
+        if item.direction is WasapiDirection.INPUT and item.device_index == 1
     )
-    speakers = WasapiEndpoint(
-        device_id="sounddevice:wasapi:output:88",
-        name="Speakers (Logitech PRO X Gaming Headset)",
-        direction=WasapiDirection.OUTPUT,
+    speakers = next(
+        item
+        for item in endpoints
+        if item.direction is WasapiDirection.OUTPUT and item.device_index == 2
+    )
+    selection = AudioEndpointSelection(
+        input_device_id=microphone.device_id,
+        output_device_id=speakers.device_id,
+        input_identity=microphone.identity(),
+        output_identity=speakers.identity(),
+    )
+    state = AudioEndpointState(
+        selection=selection,
+        resolved_input=microphone,
+        resolved_output=speakers,
+        endpoint_count=len(endpoints),
+    )
+    monkeypatch.setattr(
+        qwen_live_audio_core.audio_device_config,
+        "state",
+        lambda: state,
     )
 
-    assert service._resolve_device(sd, microphone, WasapiDirection.INPUT) == 1
-    assert service._resolve_device(sd, speakers, WasapiDirection.OUTPUT) == 2
+    resolved = service._resolve_audio(sd)
+
+    assert resolved.input_index == 1
+    assert resolved.output_index == 2
+    assert resolved.input_endpoint.identity() == microphone.identity()
+    assert resolved.output_endpoint.identity() == speakers.identity()
+    assert resolved.input_rate_plan is not None
+    assert resolved.output_rate_plan is not None
+    assert resolved.input_rate_plan.physical_rate == QWEN_INPUT_RATE
+    assert resolved.output_rate_plan.physical_rate == QWEN_OUTPUT_RATE
 
 
 def test_qwen_live_resamples_native_48k_microphone_to_required_16k_pcm() -> None:

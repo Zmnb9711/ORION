@@ -5,6 +5,7 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException
 
 from orion.audio_device_config import AudioEndpointSelection, AudioEndpointState, audio_device_config
+from orion.portaudio_devices import PortAudioEndpoint, portaudio_endpoint_catalog
 from orion.windows_audio_worker import AudioDevice, AudioPlaybackRequest, AudioPlaybackStatus, windows_audio_worker
 from orion.windows_wasapi_backend import WasapiDirection, WasapiEndpoint, wasapi_endpoint_catalog
 
@@ -30,6 +31,21 @@ def list_wasapi_inputs() -> list[WasapiEndpoint]:
 @router.get("/wasapi/outputs", response_model=list[WasapiEndpoint])
 def list_wasapi_outputs() -> list[WasapiEndpoint]:
     return wasapi_endpoint_catalog.endpoints(WasapiDirection.OUTPUT)
+
+
+@router.get("/portaudio/endpoints", response_model=list[PortAudioEndpoint])
+def list_portaudio_endpoints() -> list[PortAudioEndpoint]:
+    return portaudio_endpoint_catalog.endpoints()
+
+
+@router.get("/portaudio/inputs", response_model=list[PortAudioEndpoint])
+def list_portaudio_inputs() -> list[PortAudioEndpoint]:
+    return portaudio_endpoint_catalog.inputs()
+
+
+@router.get("/portaudio/outputs", response_model=list[PortAudioEndpoint])
+def list_portaudio_outputs() -> list[PortAudioEndpoint]:
+    return portaudio_endpoint_catalog.outputs()
 
 
 @router.get("/wasapi/vr-candidates", response_model=list[WasapiEndpoint])

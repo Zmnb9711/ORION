@@ -249,9 +249,19 @@ class QwenLiveDiagnostics:
                 "logical_device_id": str(
                     getattr(plan, "logical_device_id", "")
                 ),
+                "persisted_identity": str(
+                    getattr(plan, "persisted_identity", "")
+                ),
                 "device_index": getattr(plan, "device_index", None),
                 "device_name": str(getattr(plan, "device_name", "")),
+                "host_api_index": getattr(plan, "host_api_index", None),
                 "host_api": str(getattr(plan, "host_api", "")),
+                "max_input_channels": getattr(
+                    plan, "max_input_channels", None
+                ),
+                "max_output_channels": getattr(
+                    plan, "max_output_channels", None
+                ),
                 "reported_default_samplerate": getattr(
                     plan, "default_rate", None
                 ),
@@ -261,8 +271,17 @@ class QwenLiveDiagnostics:
                 "rejected_rates": rejected,
                 "selected_native_rate": getattr(plan, "physical_rate", None),
                 "protocol_rate": getattr(plan, "protocol_rate", None),
+                "path": str(getattr(plan, "path", "")).upper(),
                 "resampling_required": bool(
                     getattr(plan, "resampling_required", False)
+                ),
+                "stream_class": (
+                    "RawInputStream"
+                    if direction == "input"
+                    else "RawOutputStream"
+                ),
+                "extra_settings_mode": str(
+                    getattr(plan, "extra_settings_mode", "")
                 ),
             }
         self._metadata.update(

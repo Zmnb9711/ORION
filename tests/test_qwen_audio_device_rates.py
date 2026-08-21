@@ -10,7 +10,7 @@ from orion.qwen_audio_device import (
     AudioDeviceRateError,
     negotiate_audio_device_rate,
 )
-from orion.windows_wasapi_backend import WasapiDirection, WasapiEndpoint
+from orion.portaudio_devices import enumerate_portaudio_endpoints
 
 
 class FakeSoundDevice:
@@ -39,10 +39,14 @@ class FakeSoundDevice:
             },
         ]
         self.accepted_input = (
-            {input_default} if accepted_input is None else accepted_input
+            {input_default, core.QWEN_INPUT_RATE}
+            if accepted_input is None
+            else accepted_input
         )
         self.accepted_output = (
-            {output_default} if accepted_output is None else accepted_output
+            {output_default, core.QWEN_OUTPUT_RATE}
+            if accepted_output is None
+            else accepted_output
         )
         self.input_checks: list[dict[str, object]] = []
         self.output_checks: list[dict[str, object]] = []
@@ -52,7 +56,7 @@ class FakeSoundDevice:
         return dict(kwargs)
 
     def query_hostapis(self, index: int | None = None):  # noqa: ANN201
-        hosts = [{"name": "Windows WASAPI"}]
+        hosts = [{"name": "MME"}]
         return hosts if index is None else hosts[index]
 
     def query_devices(self, index: int | None = None):  # noqa: ANN201
@@ -76,34 +80,36 @@ class FakeSoundDevice:
         ("output", 1, 48_000, core.QWEN_OUTPUT_RATE),
     ],
 )
-def test_reported_default_rate_is_used_when_valid(
+def test_protocol_rate_is_used_before_reported_default(
     direction: str,
     index: int,
     default_rate: int,
     protocol_rate: int,
 ) -> None:
     sd = FakeSoundDevice()
-    settings = sd.WasapiSettings(exclusive=False)
     plan = negotiate_audio_device_rate(
         sd,
         direction=direction,  # type: ignore[arg-type]
         logical_device_id=f"selected-{direction}",
         device_index=index,
         protocol_rate=protocol_rate,
-        extra_settings=settings,
+        extra_settings=None,
+        extra_settings_mode="host_default",
     )
 
     assert plan.default_rate == default_rate
-    assert plan.physical_rate == default_rate
-    assert plan.attempted_rates == (default_rate,)
+    assert plan.physical_rate == protocol_rate
+    assert plan.attempted_rates == (protocol_rate,)
+    assert plan.path == "direct_protocol_rate"
+    assert not plan.resampling_required
     checks = sd.input_checks if direction == "input" else sd.output_checks
     assert checks == [
         {
             "device": index,
             "channels": 1,
             "dtype": "int16",
-            "samplerate": default_rate,
-            "extra_settings": settings,
+            "samplerate": protocol_rate,
+            "extra_settings": None,
         }
     ]
 
@@ -132,19 +138,21 @@ def test_rejected_default_uses_first_valid_bounded_fallback(
         logical_device_id=f"selected-{direction}",
         device_index=index,
         protocol_rate=protocol_rate,
-        extra_settings=sd.WasapiSettings(exclusive=False),
+        extra_settings=None,
+        extra_settings_mode="host_default",
     )
 
     assert plan.physical_rate == 48_000
-    assert plan.attempted_rates == (32_000, 48_000)
-    assert [item.rate for item in plan.rejected_rates] == [32_000]
+    assert plan.attempted_rates == (protocol_rate, 32_000, 48_000)
+    assert [item.rate for item in plan.rejected_rates] == [protocol_rate, 32_000]
+    assert plan.path == "fallback_resampled"
 
 
 @pytest.mark.parametrize(
     ("direction", "index", "protocol_rate", "expected_rates"),
     [
-        ("input", 0, core.QWEN_INPUT_RATE, (32_000, 48_000, 44_100, 16_000)),
-        ("output", 1, core.QWEN_OUTPUT_RATE, (32_000, 48_000, 44_100, 24_000)),
+        ("input", 0, core.QWEN_INPUT_RATE, (16_000, 32_000, 48_000, 44_100)),
+        ("output", 1, core.QWEN_OUTPUT_RATE, (24_000, 32_000, 48_000, 44_100)),
     ],
 )
 def test_all_candidates_rejected_has_direction_and_device_details(
@@ -167,7 +175,8 @@ def test_all_candidates_rejected_has_direction_and_device_details(
             logical_device_id=f"logical-{direction}",
             device_index=index,
             protocol_rate=protocol_rate,
-            extra_settings=sd.WasapiSettings(exclusive=False),
+            extra_settings=None,
+            extra_settings_mode="host_default",
         )
 
     error = caught.value
@@ -185,23 +194,16 @@ def test_core_resolves_input_and_output_rates_independently(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     sd = FakeSoundDevice(input_default=44_100, output_default=48_000)
-    microphone = WasapiEndpoint(
-        device_id="logical-input",
-        name="Dream Air Microphone",
-        direction=WasapiDirection.INPUT,
-    )
-    output = WasapiEndpoint(
-        device_id="logical-output",
-        name="Dream Air Output",
-        direction=WasapiDirection.OUTPUT,
-    )
+    microphone, output = enumerate_portaudio_endpoints(sd)
     monkeypatch.setattr(
         core.audio_device_config,
         "state",
         lambda: SimpleNamespace(
             selection=SimpleNamespace(
-                input_device_id="logical-input",
-                output_device_id="logical-output",
+                input_device_id=microphone.device_id,
+                output_device_id=output.device_id,
+                input_identity=microphone.identity(),
+                output_identity=output.identity(),
             ),
             resolved_input=microphone,
             resolved_output=output,
@@ -210,12 +212,14 @@ def test_core_resolves_input_and_output_rates_independently(
 
     resolved = core.QwenLiveAudioService()._resolve_audio(sd)
 
-    assert resolved.input_native_rate == 44_100
-    assert resolved.output_native_rate == 48_000
+    assert resolved.input_native_rate == core.QWEN_INPUT_RATE
+    assert resolved.output_native_rate == core.QWEN_OUTPUT_RATE
     assert resolved.input_rate_plan is not None
     assert resolved.output_rate_plan is not None
-    assert resolved.input_rate_plan.logical_device_id == "logical-input"
-    assert resolved.output_rate_plan.logical_device_id == "logical-output"
+    assert resolved.input_rate_plan.logical_device_id == microphone.device_id
+    assert resolved.output_rate_plan.logical_device_id == output.device_id
+    assert resolved.input_extra_settings is None
+    assert resolved.output_extra_settings is None
 
 
 def test_independent_resampling_preserves_approximate_duration() -> None:

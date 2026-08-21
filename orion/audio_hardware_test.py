@@ -9,6 +9,12 @@ from types import ModuleType
 from uuid import uuid4
 
 from orion.native_wasapi_player import NativeWasapiPlayer
+from orion.portaudio_devices import (
+    PortAudioEndpoint,
+    enumerate_portaudio_endpoints,
+    portaudio_extra_settings,
+    resolve_portaudio_endpoint,
+)
 from orion.tts_audio import AudioRenderRequest, TtsBackend, VoiceProfile
 from orion.voice_core import VoiceAgent
 from orion.windows_sapi_backend import WindowsSapiBackend
@@ -36,26 +42,56 @@ class AudioHardwareTester:
             self._sd = importlib.import_module("sounddevice")
         return self._sd
 
-    def _resolve(self, endpoint: WasapiEndpoint, direction: WasapiDirection) -> int:
+    def _resolve(
+        self,
+        endpoint: PortAudioEndpoint | WasapiEndpoint,
+        direction: WasapiDirection,
+    ) -> int:
         sd = self._sounddevice()
-        hostapis = sd.query_hostapis()
-        wasapi = {i for i, item in enumerate(hostapis) if "wasapi" in str(item.get("name", "")).casefold()}
-        target = endpoint.name.casefold()
-        channel_key = "max_input_channels" if direction is WasapiDirection.INPUT else "max_output_channels"
-        candidates: list[tuple[int, str]] = []
-        for index, item in enumerate(sd.query_devices()):
-            if int(item.get(channel_key, 0)) <= 0:
-                continue
-            if wasapi and int(item.get("hostapi", -1)) not in wasapi:
-                continue
-            candidates.append((index, str(item.get("name", ""))))
-        exact = next((i for i, name in candidates if name.casefold() == target), None)
-        if exact is not None:
-            return exact
-        partial = next((i for i, name in candidates if target in name.casefold() or name.casefold() in target), None)
-        if partial is not None:
-            return partial
-        raise RuntimeError(f"WASAPI {direction.value} device not found for endpoint: {endpoint.name}")
+        if isinstance(endpoint, WasapiEndpoint):
+            hostapis = sd.query_hostapis()
+            wasapi = {
+                i
+                for i, item in enumerate(hostapis)
+                if "wasapi" in str(item.get("name", "")).casefold()
+            }
+            channel_key = (
+                "max_input_channels"
+                if direction is WasapiDirection.INPUT
+                else "max_output_channels"
+            )
+            candidates = [
+                (index, str(item.get("name", "")))
+                for index, item in enumerate(sd.query_devices())
+                if int(item.get(channel_key, 0)) > 0
+                and (not wasapi or int(item.get("hostapi", -1)) in wasapi)
+            ]
+            target = endpoint.name.casefold()
+            exact = next(
+                (index for index, name in candidates if name.casefold() == target),
+                None,
+            )
+            if exact is not None:
+                return exact
+            partial = next(
+                (
+                    index
+                    for index, name in candidates
+                    if target in name.casefold() or name.casefold() in target
+                ),
+                None,
+            )
+            if partial is not None:
+                return partial
+            raise RuntimeError(
+                f"WASAPI {direction.value} device not found for endpoint: {endpoint.name}"
+            )
+        return resolve_portaudio_endpoint(
+            enumerate_portaudio_endpoints(sd),
+            endpoint.device_id,
+            direction,
+            identity=endpoint.identity(),
+        ).device_index
 
     def _native_samplerate(self, device: int, fallback: int = 48000) -> int:
         sd = self._sounddevice()
@@ -66,17 +102,31 @@ class AudioHardwareTester:
             samplerate = fallback
         return samplerate if samplerate > 0 else fallback
 
-    def test_input(self, endpoint: WasapiEndpoint, duration_seconds: float = 1.5) -> AudioHardwareTestResult:
+    def test_input(
+        self,
+        endpoint: PortAudioEndpoint | WasapiEndpoint,
+        duration_seconds: float = 1.5,
+    ) -> AudioHardwareTestResult:
         sd = self._sounddevice()
         device = self._resolve(endpoint, WasapiDirection.INPUT)
         samplerate = self._native_samplerate(device)
         frames = max(1, int(duration_seconds * samplerate))
+        if isinstance(endpoint, PortAudioEndpoint):
+            extra_settings, _mode = portaudio_extra_settings(sd, endpoint)
+        else:
+            extra_settings = None
         try:
-            with sd.RawInputStream(samplerate=samplerate, device=device, channels=1, dtype="int16") as stream:
+            with sd.RawInputStream(
+                samplerate=samplerate,
+                device=device,
+                channels=1,
+                dtype="int16",
+                extra_settings=extra_settings,
+            ) as stream:
                 data, _overflowed = stream.read(frames)
         except Exception as exc:
             raise RuntimeError(
-                f"Microphone could not be opened at its Windows/WASAPI sample rate ({samplerate} Hz): {exc}"
+                f"Microphone could not be opened at its PortAudio sample rate ({samplerate} Hz): {exc}"
             ) from exc
         peak_sample = 0
         for (sample,) in struct.iter_unpack("<h", bytes(data)):
@@ -88,7 +138,11 @@ class AudioHardwareTester:
             message = f"Microphone WARNING — no useful signal detected (peak {peak:.3f}, {samplerate} Hz)"
         return AudioHardwareTestResult(ok=peak > 0.001, peak=peak, samplerate=samplerate, message=message)
 
-    def test_output(self, endpoint: WasapiEndpoint, duration_seconds: float = 0.45) -> AudioHardwareTestResult:
+    def test_output(
+        self,
+        endpoint: PortAudioEndpoint | WasapiEndpoint,
+        duration_seconds: float = 0.45,
+    ) -> AudioHardwareTestResult:
         del duration_seconds
         try:
             with tempfile.TemporaryDirectory(prefix="orion-output-test-") as tmp:

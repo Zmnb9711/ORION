@@ -8,7 +8,7 @@ from tkinter import ttk
 from typing import Any
 
 from orion.audio_hardware_test import AudioHardwareTester
-from orion.windows_wasapi_backend import WasapiEndpoint
+from orion.portaudio_devices import PortAudioEndpoint
 
 
 class LauncherAudioSectionsMixin:
@@ -52,8 +52,8 @@ class LauncherAudioSectionsMixin:
             raise RuntimeError(f"Core audio API unavailable: {exc}") from exc
 
     def _audio_snapshot(self) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
-        inputs = self._core_json("/v1/windows-audio/wasapi/inputs")
-        outputs = self._core_json("/v1/windows-audio/wasapi/outputs")
+        inputs = self._core_json("/v1/windows-audio/portaudio/inputs")
+        outputs = self._core_json("/v1/windows-audio/portaudio/outputs")
         state = self._core_json("/v1/windows-audio/selection")
         return list(inputs), list(outputs), dict(state)
 
@@ -149,7 +149,7 @@ class LauncherAudioSectionsMixin:
         if endpoint_payload is None:
             messagebox.showwarning("ORION Test", f"No active {direction} endpoint is resolved by Core", parent=self.root)
             return
-        endpoint = WasapiEndpoint.model_validate(endpoint_payload)
+        endpoint = PortAudioEndpoint.model_validate(endpoint_payload)
         tester = AudioHardwareTester()
         try:
             result = tester.test_input(endpoint) if direction == "input" else tester.test_output(endpoint)
@@ -212,7 +212,11 @@ class LauncherAudioSectionsMixin:
             if not device_id:
                 continue
             name = str(item.get("name", "Audio endpoint"))
-            result[f"{name}  [{device_id[-18:]}]"] = device_id
+            host_api = str(item.get("host_api_name", "PortAudio"))
+            label = f"{name} — {host_api}"
+            if label in result:
+                label = f"{label} [PortAudio {item.get('device_index', '?')}]"
+            result[label] = device_id
         return result
 
     def _apply_audio_selection(self, input_device_id: str, output_device_id: str) -> None:

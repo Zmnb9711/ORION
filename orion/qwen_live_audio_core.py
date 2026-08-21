@@ -13,6 +13,12 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from orion.audio_device_config import audio_device_config
+from orion.portaudio_devices import (
+    PortAudioEndpoint,
+    enumerate_portaudio_endpoints,
+    portaudio_extra_settings,
+    resolve_portaudio_endpoint,
+)
 from orion.qwen_audio_device import (
     AudioDeviceRateError,
     AudioDeviceRatePlan,
@@ -21,7 +27,7 @@ from orion.qwen_audio_device import (
 from orion.qwen_live_diagnostics import QwenLiveDiagnostics
 from orion.qwen_realtime_provider import QwenRealtimeConfig, QwenRealtimeProvider
 from orion.realtime_tools import RealtimeToolCall, qwen_live_tool_definition, realtime_tools
-from orion.windows_wasapi_backend import WasapiDirection, WasapiEndpoint
+from orion.windows_wasapi_backend import WasapiDirection
 
 QWEN_INPUT_RATE = 16_000
 QWEN_OUTPUT_RATE = 24_000
@@ -75,14 +81,16 @@ class QwenLiveStatus(BaseModel):
 
 @dataclass(slots=True)
 class _ResolvedAudio:
-    input_endpoint: WasapiEndpoint
-    output_endpoint: WasapiEndpoint
+    input_endpoint: PortAudioEndpoint
+    output_endpoint: PortAudioEndpoint
     input_index: int
     output_index: int
     input_native_rate: int
     output_native_rate: int
     input_rate_plan: AudioDeviceRatePlan | None = None
     output_rate_plan: AudioDeviceRatePlan | None = None
+    input_extra_settings: object | None = None
+    output_extra_settings: object | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -510,55 +518,60 @@ class QwenLiveAudioService:
             payload.update(changes)
             self._status = QwenLiveStatus.model_validate(payload)
 
-    @staticmethod
-    def _resolve_device(sd: Any, endpoint: WasapiEndpoint, direction: WasapiDirection) -> int:
-        hostapis = list(sd.query_hostapis())
-        devices = list(sd.query_devices())
-        wasapi_hosts = {i for i, item in enumerate(hostapis) if "wasapi" in str(item.get("name", "")).casefold()}
-        channel_key = "max_input_channels" if direction is WasapiDirection.INPUT else "max_output_channels"
-        target = endpoint.name.casefold()
-        candidates = [(i, str(item.get("name", ""))) for i, item in enumerate(devices)
-                      if int(item.get(channel_key, 0)) > 0 and (not wasapi_hosts or int(item.get("hostapi", -1)) in wasapi_hosts)]
-        exact = next((i for i, name in candidates if name.casefold() == target), None)
-        if exact is not None:
-            return exact
-        partial = next((i for i, name in candidates if target in name.casefold() or name.casefold() in target), None)
-        if partial is not None:
-            return partial
-        raise RuntimeError(f"Selected WASAPI {direction.value} endpoint is unavailable: {endpoint.name}")
-
     def _resolve_audio(self, sd: Any) -> _ResolvedAudio:
         state = audio_device_config.state()
         if state.resolved_input is None or state.resolved_output is None:
-            raise RuntimeError("ORION Core audio input/output selection is not ready")
-        input_index = self._resolve_device(sd, state.resolved_input, WasapiDirection.INPUT)
-        output_index = self._resolve_device(sd, state.resolved_output, WasapiDirection.OUTPUT)
-        settings = sd.WasapiSettings(exclusive=False)
+            raise RuntimeError(state.message or "ORION Core audio input/output selection is not ready")
+        runtime_endpoints = enumerate_portaudio_endpoints(sd)
+        input_endpoint = resolve_portaudio_endpoint(
+            runtime_endpoints,
+            state.selection.input_device_id,
+            WasapiDirection.INPUT,
+            identity=state.selection.input_identity,
+        )
+        output_endpoint = resolve_portaudio_endpoint(
+            runtime_endpoints,
+            state.selection.output_device_id,
+            WasapiDirection.OUTPUT,
+            identity=state.selection.output_identity,
+        )
+        input_settings, input_settings_mode = portaudio_extra_settings(
+            sd, input_endpoint
+        )
+        output_settings, output_settings_mode = portaudio_extra_settings(
+            sd, output_endpoint
+        )
         input_plan = negotiate_audio_device_rate(
             sd,
             direction="input",
             logical_device_id=state.selection.input_device_id,
-            device_index=input_index,
+            persisted_identity=input_endpoint.identity().model_dump_json(),
+            device_index=input_endpoint.device_index,
             protocol_rate=QWEN_INPUT_RATE,
-            extra_settings=settings,
+            extra_settings=input_settings,
+            extra_settings_mode=input_settings_mode,
         )
         output_plan = negotiate_audio_device_rate(
             sd,
             direction="output",
             logical_device_id=state.selection.output_device_id,
-            device_index=output_index,
+            persisted_identity=output_endpoint.identity().model_dump_json(),
+            device_index=output_endpoint.device_index,
             protocol_rate=QWEN_OUTPUT_RATE,
-            extra_settings=settings,
+            extra_settings=output_settings,
+            extra_settings_mode=output_settings_mode,
         )
         return _ResolvedAudio(
-            state.resolved_input,
-            state.resolved_output,
-            input_index,
-            output_index,
+            input_endpoint,
+            output_endpoint,
+            input_endpoint.device_index,
+            output_endpoint.device_index,
             input_plan.physical_rate,
             output_plan.physical_rate,
             input_plan,
             output_plan,
+            input_settings,
+            output_settings,
         )
 
     @staticmethod
@@ -581,14 +594,23 @@ class QwenLiveAudioService:
             "audio_device_rate_selected",
             direction=plan.direction.upper(),
             logical_device_id=plan.logical_device_id,
+            persisted_identity=plan.persisted_identity,
             device_index=plan.device_index,
             device_name=plan.device_name,
+            host_api_index=plan.host_api_index,
             host_api=plan.host_api,
+            max_input_channels=plan.max_input_channels,
+            max_output_channels=plan.max_output_channels,
             reported_default_samplerate=plan.default_rate,
             attempted_rates=",".join(str(rate) for rate in plan.attempted_rates),
             selected_native_rate=plan.physical_rate,
             protocol_rate=plan.protocol_rate,
+            path=plan.path.upper(),
             resampling_required=plan.resampling_required,
+            stream_class=(
+                "RawInputStream" if plan.direction == "input" else "RawOutputStream"
+            ),
+            extra_settings_mode=plan.extra_settings_mode,
         )
 
     @staticmethod
@@ -621,7 +643,7 @@ class QwenLiveAudioService:
     def _audio_stream_open_error(
         *,
         direction: str,
-        endpoint: WasapiEndpoint,
+        endpoint: PortAudioEndpoint,
         device_index: int,
         native_rate: int,
         plan: AudioDeviceRatePlan | None,
@@ -757,7 +779,6 @@ class QwenLiveAudioService:
         failures: queue.Queue[_WorkerFailure],
     ) -> None:
         diagnostics.record("worker_started", stage="audio_playback")
-        settings = sd.WasapiSettings(exclusive=False)
         try:
             try:
                 output_stream = sd.RawOutputStream(
@@ -765,7 +786,7 @@ class QwenLiveAudioService:
                     device=audio.output_index,
                     channels=CHANNELS,
                     dtype="int16",
-                    extra_settings=settings,
+                    extra_settings=getattr(audio, "output_extra_settings", None),
                 )
             except Exception as exc:
                 raise self._audio_stream_open_error(
@@ -1077,10 +1098,18 @@ class QwenLiveAudioService:
                     event.get("delta"), str
                 ):
                     encoded_delta = event["delta"]
-                    decoded_delta = base64.b64decode(encoded_delta)
+                    decoded_delta = base64.b64decode(encoded_delta, validate=True)
                     response_resample_start_ns = time.perf_counter_ns()
-                    resampled_delta = _resample_pcm16_mono(
-                        decoded_delta, QWEN_OUTPUT_RATE, audio.output_native_rate
+                    # The reference path writes protocol-native provider PCM
+                    # unchanged. Resampling is only a compatibility fallback.
+                    resampled_delta = (
+                        decoded_delta
+                        if audio.output_native_rate == QWEN_OUTPUT_RATE
+                        else _resample_pcm16_mono(
+                            decoded_delta,
+                            QWEN_OUTPUT_RATE,
+                            audio.output_native_rate,
+                        )
                     )
                     if not monitor.audio_delta(recv_end_ns):
                         diagnostics.record_websocket_event(
@@ -1216,7 +1245,6 @@ class QwenLiveAudioService:
         failures: queue.Queue[_WorkerFailure] = queue.Queue(maxsize=1)
         send_lock = threading.Lock()
         workers: list[threading.Thread] = []
-        settings = sd.WasapiSettings(exclusive=False)
         transport_error: Exception | None = None
 
         try:
@@ -1229,7 +1257,7 @@ class QwenLiveAudioService:
                     device=audio.input_index,
                     channels=CHANNELS,
                     dtype="int16",
-                    extra_settings=settings,
+                    extra_settings=getattr(audio, "input_extra_settings", None),
                 )
             except Exception as exc:
                 raise self._audio_stream_open_error(
@@ -1307,7 +1335,7 @@ class QwenLiveAudioService:
                 self._set(
                     state=QwenLiveState.STREAMING,
                     phase=QwenAudioPhase.LISTENING,
-                    message="Qwen live audio streaming through blocking WASAPI input/output streams",
+                    message="Qwen live audio streaming through blocking PortAudio input/output streams",
                 )
 
                 while not stop_event.is_set():
@@ -1323,10 +1351,19 @@ class QwenLiveAudioService:
                         overflow=bool(overflowed),
                     )
                     input_resample_start_ns = time.perf_counter_ns()
-                    qwen_pcm = _resample_pcm16_mono(
-                        bytes(raw), audio.input_native_rate, QWEN_INPUT_RATE
+                    physical_pcm = bytes(raw)
+                    # Preserve captured bytes on the protocol-native reference
+                    # path. The existing resampler remains fallback-only.
+                    qwen_pcm = (
+                        physical_pcm
+                        if audio.input_native_rate == QWEN_INPUT_RATE
+                        else _resample_pcm16_mono(
+                            physical_pcm,
+                            audio.input_native_rate,
+                            QWEN_INPUT_RATE,
+                        )
                     )
-                    input_rms, input_peak = _pcm16_mono_levels(bytes(raw))
+                    input_rms, input_peak = _pcm16_mono_levels(physical_pcm)
                     input_resample_end_ns = time.perf_counter_ns()
                     diagnostics.record_input_levels(
                         t_ns=input_resample_end_ns,
@@ -1641,7 +1678,7 @@ class QwenLiveAudioService:
 
             self._set(
                 state=QwenLiveState.CONNECTED,
-                message="Qwen connected; opening independent WASAPI audio streams",
+                message="Qwen connected; opening independent PortAudio audio streams",
             )
             try:
                 self._run_transport(

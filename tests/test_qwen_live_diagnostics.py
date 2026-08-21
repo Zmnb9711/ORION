@@ -17,7 +17,8 @@ import orion.qwen_live_audio_core as core
 from orion.app import app
 from orion.qwen_audio_device import AudioDeviceRatePlan, AudioRateRejection
 from orion.qwen_live_diagnostics import QwenLiveDiagnostics
-from orion.windows_wasapi_backend import WasapiDirection, WasapiEndpoint
+from orion.portaudio_devices import PortAudioEndpoint
+from orion.windows_wasapi_backend import WasapiDirection
 
 
 START_NS = 1_000_000_000
@@ -407,9 +408,14 @@ def test_audio_rate_plan_metadata_is_conclusive_and_bounded(tmp_path: Path) -> N
     input_plan = AudioDeviceRatePlan(
         direction="input",
         logical_device_id="dream-input",
+        persisted_identity="input-identity",
         device_index=4,
         device_name="Dream Air Microphone",
+        host_api_index=1,
         host_api="Windows WASAPI",
+        max_input_channels=2,
+        max_output_channels=0,
+        extra_settings_mode="wasapi_shared",
         default_rate=32_000,
         attempted_rates=(32_000, 48_000),
         rejected_rates=(
@@ -421,9 +427,14 @@ def test_audio_rate_plan_metadata_is_conclusive_and_bounded(tmp_path: Path) -> N
     output_plan = AudioDeviceRatePlan(
         direction="output",
         logical_device_id="dream-output",
+        persisted_identity="output-identity",
         device_index=5,
         device_name="Dream Air Output",
+        host_api_index=1,
         host_api="Windows WASAPI",
+        max_input_channels=0,
+        max_output_channels=2,
+        extra_settings_mode="wasapi_shared",
         default_rate=44_100,
         attempted_rates=(44_100,),
         rejected_rates=(),
@@ -450,6 +461,10 @@ def test_audio_rate_plan_metadata_is_conclusive_and_bounded(tmp_path: Path) -> N
     assert isinstance(input_details, dict)
     assert isinstance(output_details, dict)
     assert input_details["logical_device_id"] == "dream-input"
+    assert input_details["persisted_identity"] == "input-identity"
+    assert input_details["host_api_index"] == 1
+    assert input_details["path"] == "FALLBACK_RESAMPLED"
+    assert input_details["extra_settings_mode"] == "wasapi_shared"
     assert input_details["attempted_rates"] == [32_000, 48_000]
     assert input_details["rejected_rates"] == [
         {
@@ -552,15 +567,29 @@ def test_instrumented_transport_preserves_pcm_with_independent_workers(
                 stop_event.set()
             return False
 
-    microphone = WasapiEndpoint(
-        device_id="test-input",
+    microphone = PortAudioEndpoint(
+        device_id="sounddevice:portaudio:input:0:1",
         name="Test microphone",
+        device_name="Test microphone",
         direction=WasapiDirection.INPUT,
+        device_index=1,
+        host_api_index=0,
+        host_api_name="MME",
+        max_input_channels=1,
+        max_output_channels=0,
+        default_samplerate=44_100,
     )
-    speakers = WasapiEndpoint(
-        device_id="test-output",
+    speakers = PortAudioEndpoint(
+        device_id="sounddevice:portaudio:output:0:2",
         name="Test speakers",
+        device_name="Test speakers",
         direction=WasapiDirection.OUTPUT,
+        device_index=2,
+        host_api_index=0,
+        host_api_name="MME",
+        max_input_channels=0,
+        max_output_channels=2,
+        default_samplerate=48_000,
     )
     resolved = core._ResolvedAudio(
         microphone,

@@ -6,7 +6,16 @@ import wave
 from pathlib import Path
 from types import ModuleType
 
-from orion.windows_wasapi_backend import WasapiEndpoint
+from orion.portaudio_devices import (
+    PortAudioEndpoint,
+    enumerate_portaudio_endpoints,
+    portaudio_extra_settings,
+    resolve_portaudio_endpoint,
+)
+from orion.windows_wasapi_backend import (
+    WasapiDirection,
+    WasapiEndpoint,
+)
 
 
 class NativeWasapiPlayer:
@@ -31,7 +40,12 @@ class NativeWasapiPlayer:
         except (ImportError, OSError):
             return False
 
-    def play(self, path: Path, endpoint: WasapiEndpoint, volume: float = 1.0) -> None:
+    def play(
+        self,
+        path: Path,
+        endpoint: PortAudioEndpoint | WasapiEndpoint,
+        volume: float = 1.0,
+    ) -> None:
         if not path.exists():
             raise FileNotFoundError(path)
         if not 0.0 <= volume <= 1.0:
@@ -49,7 +63,10 @@ class NativeWasapiPlayer:
                 raise RuntimeError(f"Unsupported WAV sample width: {sample_width}")
 
             target_rate = self._native_samplerate(sd, device_index, fallback=source_rate)
-            extra_settings = sd.WasapiSettings(exclusive=False)
+            if isinstance(endpoint, PortAudioEndpoint):
+                extra_settings, _mode = portaudio_extra_settings(sd, endpoint)
+            else:
+                extra_settings = sd.WasapiSettings(exclusive=False)
             with sd.RawOutputStream(
                 samplerate=target_rate,
                 blocksize=self._chunk_frames,
@@ -190,32 +207,46 @@ class NativeWasapiPlayer:
         return sample.to_bytes(sample_width, "little", signed=True)
 
     @staticmethod
-    def _resolve_device(sd, endpoint: WasapiEndpoint) -> int:
-        hostapis = sd.query_hostapis()
+    def _resolve_device(
+        sd: object,
+        endpoint: PortAudioEndpoint | WasapiEndpoint,
+    ) -> int:
+        if isinstance(endpoint, PortAudioEndpoint):
+            return resolve_portaudio_endpoint(
+                enumerate_portaudio_endpoints(sd),
+                endpoint.device_id,
+                WasapiDirection.OUTPUT,
+                identity=endpoint.identity(),
+            ).device_index
+
+        hostapis = sd.query_hostapis()  # type: ignore[attr-defined]
         wasapi_hostapis = {
-            index for index, item in enumerate(hostapis)
+            index
+            for index, item in enumerate(hostapis)
             if "wasapi" in str(item.get("name", "")).casefold()
         }
-        devices = sd.query_devices()
-        endpoint_name = endpoint.name.casefold()
-
-        candidates: list[tuple[int, str]] = []
-        for index, item in enumerate(devices):
-            if int(item.get("max_output_channels", 0)) <= 0:
-                continue
-            if wasapi_hostapis and int(item.get("hostapi", -1)) not in wasapi_hostapis:
-                continue
-            name = str(item.get("name", ""))
-            candidates.append((index, name))
-
-        if not candidates:
-            raise RuntimeError("No WASAPI output devices are available")
-
-        exact = next((index for index, name in candidates if name.casefold() == endpoint_name), None)
+        candidates = [
+            (index, str(item.get("name", "")))
+            for index, item in enumerate(sd.query_devices())  # type: ignore[attr-defined]
+            if int(item.get("max_output_channels", 0)) > 0
+            and (
+                not wasapi_hostapis
+                or int(item.get("hostapi", -1)) in wasapi_hostapis
+            )
+        ]
+        target = endpoint.name.casefold()
+        exact = next(
+            (index for index, name in candidates if name.casefold() == target),
+            None,
+        )
         if exact is not None:
             return exact
         partial = next(
-            (index for index, name in candidates if endpoint_name in name.casefold() or name.casefold() in endpoint_name),
+            (
+                index
+                for index, name in candidates
+                if target in name.casefold() or name.casefold() in target
+            ),
             None,
         )
         if partial is not None:
