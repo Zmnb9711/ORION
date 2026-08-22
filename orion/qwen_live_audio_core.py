@@ -460,6 +460,11 @@ def _audio_session_update(model: str, voice: str) -> dict[str, Any]:
             ),
             "input_audio_format": "pcm",
             "output_audio_format": "pcm",
+            # Provider-side ASR is observational: it exposes what Qwen heard
+            # without changing VAD, response triggering, or audio transport.
+            "input_audio_transcription": {
+                "model": "qwen3-asr-flash-realtime"
+            },
             "turn_detection": {"type": vad_type, "threshold": 0.5, "silence_duration_ms": 800},
             "tools": [qwen_live_tool_definition()],
         },
@@ -693,6 +698,43 @@ class QwenLiveAudioService:
             stop_event_after=stop_event.is_set(),
         )
 
+    @staticmethod
+    def _record_turn_event_safely(
+        diagnostics: QwenLiveDiagnostics,
+        event: dict[str, Any],
+        *,
+        t_ns: int,
+    ) -> None:
+        try:
+            diagnostics.record_turn_event(event, t_ns=t_ns)
+        except Exception as exc:
+            try:
+                diagnostics.record_turn_forensics_failure(t_ns=t_ns, error=exc)
+            except Exception:
+                pass
+
+    @staticmethod
+    def _record_playback_write_start_safely(
+        diagnostics: QwenLiveDiagnostics,
+        *,
+        t_ns: int,
+        buffer_after_bytes: int,
+        response_audio_bytes: int,
+        sample_rate: int,
+    ) -> None:
+        try:
+            diagnostics.record_playback_write_start(
+                t_ns=t_ns,
+                buffer_after_bytes=buffer_after_bytes,
+                response_audio_bytes=response_audio_bytes,
+                sample_rate=sample_rate,
+            )
+        except Exception as exc:
+            try:
+                diagnostics.record_turn_forensics_failure(t_ns=t_ns, error=exc)
+            except Exception:
+                pass
+
     def _send_worker(
         self,
         ws: Any,
@@ -817,6 +859,13 @@ class QwenLiveAudioService:
                     if pcm is None or stop_event.is_set():
                         return
                     write_start_ns = time.perf_counter_ns()
+                    self._record_playback_write_start_safely(
+                        diagnostics,
+                        t_ns=write_start_ns,
+                        buffer_after_bytes=after_bytes,
+                        response_audio_bytes=len(pcm),
+                        sample_rate=audio.output_native_rate,
+                    )
                     underflowed = stream.write(pcm)
                     write_end_ns = time.perf_counter_ns()
                     with self._lock:
@@ -1078,6 +1127,11 @@ class QwenLiveAudioService:
                     timeout=False,
                     event_type=event_type,
                 )
+                self._record_turn_event_safely(
+                    diagnostics,
+                    event,
+                    t_ns=recv_end_ns,
+                )
                 processing_start_ns = time.perf_counter_ns()
                 if event_type == "error":
                     diagnostics.record_websocket_event(
@@ -1131,6 +1185,8 @@ class QwenLiveAudioService:
                         resample_end_ns=response_resample_end_ns,
                         resampled_bytes=len(resampled_delta),
                         target_rate=audio.output_native_rate,
+                        response_id=str(event.get("response_id") or ""),
+                        item_id=str(event.get("item_id") or ""),
                     )
                     playback.mark_response_active(True)
                     before_bytes, after_bytes = playback.put(resampled_delta)

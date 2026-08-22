@@ -13,13 +13,17 @@ from collections import defaultdict, deque
 from datetime import UTC, datetime, timedelta
 from functools import wraps
 from pathlib import Path
-from typing import Any, Callable, Concatenate, ParamSpec, TypeVar
+from typing import Any, Callable, Concatenate, Mapping, ParamSpec, TypeVar
 
 
 DEFAULT_MAX_EVENTS = 20_000
 DEFAULT_MAX_TIMING_SAMPLES = 10_000
 DEFAULT_WEBSOCKET_RING_EVENTS = 100
 EFFECTIVE_SILENCE_PEAK = 0.001
+TURN_FORENSICS_LEVEL_WINDOW_NS = 1_000_000_000
+TURN_FORENSICS_POST_PLAYBACK_WINDOW_MS = 1_500.0
+TURN_FORENSICS_MAX_TURNS = 200
+TURN_FORENSICS_MAX_RESPONSES = 200
 
 _P = ParamSpec("_P")
 _R = TypeVar("_R")
@@ -134,6 +138,9 @@ class QwenLiveDiagnostics:
         self._input_rms_sum = 0.0
         self._input_rms_max = 0.0
         self._input_peak_max = 0.0
+        self._input_level_window: deque[tuple[int, float, float, bool]] = deque(
+            maxlen=100
+        )
         self._output_underflow_count = 0
         self._recv_call_count = 0
         self._recv_timeout_count = 0
@@ -180,6 +187,19 @@ class QwenLiveDiagnostics:
         self._queue_dropped_bytes: dict[str, int] = defaultdict(int)
         self._queue_dropped_audio_ms: dict[str, float] = defaultdict(float)
         self._duplex_rate = 0
+        self._turns: list[dict[str, object]] = []
+        self._turns_by_item_id: dict[str, dict[str, object]] = {}
+        self._active_speech_turn: dict[str, object] | None = None
+        self._responses: list[dict[str, object]] = []
+        self._responses_by_id: dict[str, dict[str, object]] = {}
+        self._current_response_id = ""
+        self._turn_forensics_failure_count = 0
+        self._playback_queue_depth_bytes = 0
+        self._playback_sample_rate = qwen_output_rate
+        self._playback_bytes_written = 0
+        self._playback_write_in_progress = False
+        self._last_playback_write_start_ns: int | None = None
+        self._last_playback_write_end_ns: int | None = None
         self.record("session_start", t_ns=self.start_ns)
 
     @property
@@ -309,10 +329,25 @@ class QwenLiveDiagnostics:
     def record_input_levels(self, *, t_ns: int, rms: float, peak: float) -> None:
         self._input_level_blocks += 1
         silent = peak < EFFECTIVE_SILENCE_PEAK
+        self._input_level_window.append((t_ns, rms, peak, silent))
         self._input_silent_blocks += int(silent)
         self._input_rms_sum += rms
         self._input_rms_max = max(self._input_rms_max, rms)
         self._input_peak_max = max(self._input_peak_max, peak)
+        turn = self._active_speech_turn
+        if turn is not None and turn.get("speech_stopped_ns") is None:
+            count = self._count(turn.get("_signal_block_count")) + 1
+            turn["_signal_block_count"] = count
+            turn["_signal_rms_sum"] = self._number(turn.get("_signal_rms_sum")) + rms
+            turn["_signal_rms_max"] = max(
+                self._number(turn.get("_signal_rms_max")), rms
+            )
+            turn["_signal_peak_max"] = max(
+                self._number(turn.get("_signal_peak_max")), peak
+            )
+            turn["_signal_silent_blocks"] = self._count(
+                turn.get("_signal_silent_blocks")
+            ) + int(silent)
         if self._input_level_blocks == 1 or self._input_level_blocks % 25 == 0:
             self.record(
                 "input_level_aggregate",
@@ -323,6 +358,491 @@ class QwenLiveDiagnostics:
                 effectively_silent=silent,
                 silent_block_count=self._input_silent_blocks,
             )
+
+    @staticmethod
+    def _mapping(value: object) -> Mapping[str, object]:
+        return value if isinstance(value, Mapping) else {}
+
+    @staticmethod
+    def _text(value: object) -> str:
+        return value if isinstance(value, str) else ""
+
+    @staticmethod
+    def _integer(value: object) -> int | None:
+        return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+    @staticmethod
+    def _count(value: object) -> int:
+        return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+    @staticmethod
+    def _number(value: object) -> float:
+        return (
+            float(value)
+            if isinstance(value, (int, float)) and not isinstance(value, bool)
+            else 0.0
+        )
+
+    def _session_seconds(self, t_ns: int) -> float:
+        return max(0, t_ns - self.start_ns) / 1_000_000_000
+
+    def _recent_input_levels(self, t_ns: int) -> dict[str, object]:
+        floor_ns = t_ns - TURN_FORENSICS_LEVEL_WINDOW_NS
+        samples = [
+            (rms, peak, silent)
+            for sample_ns, rms, peak, silent in self._input_level_window
+            if sample_ns >= floor_ns
+        ]
+        if not samples:
+            return {
+                "window_ms": TURN_FORENSICS_LEVEL_WINDOW_NS / 1_000_000,
+                "block_count": 0,
+                "average_rms": None,
+                "maximum_rms": None,
+                "maximum_peak": None,
+                "silent_block_ratio": None,
+            }
+        return {
+            "window_ms": TURN_FORENSICS_LEVEL_WINDOW_NS / 1_000_000,
+            "block_count": len(samples),
+            "average_rms": sum(sample[0] for sample in samples) / len(samples),
+            "maximum_rms": max(sample[0] for sample in samples),
+            "maximum_peak": max(sample[1] for sample in samples),
+            "silent_block_ratio": sum(int(sample[2]) for sample in samples)
+            / len(samples),
+        }
+
+    def _playback_snapshot(self, t_ns: int) -> dict[str, object]:
+        rate = self._playback_sample_rate
+        backlog_bytes = self._playback_queue_depth_bytes
+        recent_write_ns = (
+            self._last_playback_write_start_ns
+            if self._playback_write_in_progress
+            else self._last_playback_write_end_ns
+        )
+        return {
+            "playback_active": (
+                self._playback_write_in_progress or backlog_bytes > 0
+            ),
+            "provider_response_active": self._response_active,
+            "current_or_recent_response_id": self._current_response_id,
+            "provider_audio_received_bytes": self._provider_delta_bytes,
+            "playback_bytes_written": self._playback_bytes_written,
+            "playback_backlog_bytes": backlog_bytes,
+            "playback_backlog_ms": (
+                self.playback_ms(backlog_bytes, rate) if rate > 0 else None
+            ),
+            "previous_response_audio_still_queued": backlog_bytes > 0,
+            "write_in_progress": self._playback_write_in_progress,
+            "most_recent_stream_write_start_ns": self._last_playback_write_start_ns,
+            "most_recent_stream_write_end_ns": self._last_playback_write_end_ns,
+            "time_since_most_recent_stream_write_ms": (
+                self._optional_elapsed_ms(recent_write_ns, t_ns)
+            ),
+        }
+
+    def _new_turn(self, *, t_ns: int, item_id: str = "") -> dict[str, object]:
+        if len(self._turns) >= TURN_FORENSICS_MAX_TURNS:
+            return self._turns[-1]
+        sequence = len(self._turns) + 1
+        turn: dict[str, object] = {
+            "turn_sequence": sequence,
+            "turn_id": f"turn_{sequence:03d}",
+            "provider_item_id": item_id,
+            "correlation_confidence": "provider_item_id" if item_id else "temporal_only",
+            "diagnostic_flags": [],
+            "created_for_diagnostics_ns": t_ns,
+            "_signal_block_count": 0,
+            "_signal_rms_sum": 0.0,
+            "_signal_rms_max": 0.0,
+            "_signal_peak_max": 0.0,
+            "_signal_silent_blocks": 0,
+        }
+        self._turns.append(turn)
+        if item_id:
+            self._turns_by_item_id[item_id] = turn
+        return turn
+
+    def _turn_for_item(
+        self, *, item_id: str, t_ns: int, allow_active: bool = True
+    ) -> dict[str, object]:
+        if item_id and item_id in self._turns_by_item_id:
+            return self._turns_by_item_id[item_id]
+        if allow_active and self._active_speech_turn is not None:
+            turn = self._active_speech_turn
+            existing_id = self._text(turn.get("provider_item_id"))
+            if not existing_id or not item_id or existing_id == item_id:
+                if item_id and not existing_id:
+                    turn["provider_item_id"] = item_id
+                    turn["correlation_confidence"] = "provider_item_id"
+                    self._turns_by_item_id[item_id] = turn
+                return turn
+        return self._new_turn(t_ns=t_ns, item_id=item_id)
+
+    @staticmethod
+    def _append_flag(target: dict[str, object], flag: str) -> None:
+        flags = target.get("diagnostic_flags")
+        if not isinstance(flags, list):
+            flags = []
+            target["diagnostic_flags"] = flags
+        if flag not in flags:
+            flags.append(flag)
+
+    @staticmethod
+    def _has_flag(target: dict[str, object], flag: str) -> bool:
+        flags = target.get("diagnostic_flags")
+        return isinstance(flags, list) and flag in flags
+
+    def _finalize_turn_signal(self, turn: dict[str, object]) -> None:
+        count = self._count(turn.get("_signal_block_count"))
+        turn["speech_interval_signal"] = {
+            "block_count": count,
+            "average_rms": (
+                None
+                if count == 0
+                else self._number(turn.get("_signal_rms_sum")) / count
+            ),
+            "maximum_rms": (
+                None if count == 0 else self._number(turn.get("_signal_rms_max"))
+            ),
+            "maximum_peak": (
+                None if count == 0 else self._number(turn.get("_signal_peak_max"))
+            ),
+            "silent_block_ratio": (
+                None
+                if count == 0
+                else self._count(turn.get("_signal_silent_blocks")) / count
+            ),
+        }
+
+    @staticmethod
+    def _normalized_transcript(text: str) -> str:
+        return " ".join(
+            "".join(character.casefold() if character.isalnum() else " " for character in text).split()
+        )
+
+    @classmethod
+    def _transcripts_similar(cls, user_text: str, assistant_text: str) -> bool:
+        user = cls._normalized_transcript(user_text)
+        assistant = cls._normalized_transcript(assistant_text)
+        if not user or not assistant:
+            return False
+        if user == assistant:
+            return True
+        shorter, longer = sorted((user, assistant), key=len)
+        return len(shorter) >= 12 and len(shorter) / len(longer) >= 0.8 and shorter in longer
+
+    def _response_for_turn_similarity(
+        self, turn: dict[str, object]
+    ) -> dict[str, object] | None:
+        own_response_id = self._text(turn.get("response_id"))
+        start_ns = turn.get("speech_started_ns")
+        playback = turn.get("playback_at_speech_started")
+        playback_response_id = (
+            self._text(playback.get("current_or_recent_response_id"))
+            if isinstance(playback, Mapping)
+            else ""
+        )
+        if playback_response_id and playback_response_id != own_response_id:
+            response = self._responses_by_id.get(playback_response_id)
+            if response is not None and self._text(response.get("assistant_transcript")):
+                return response
+        if not isinstance(start_ns, int):
+            return None
+        for response in reversed(self._responses):
+            response_id = self._text(response.get("response_id"))
+            created_ns = response.get("response_created_ns")
+            if (
+                response_id != own_response_id
+                and isinstance(created_ns, int)
+                and created_ns <= start_ns
+                and self._text(response.get("assistant_transcript"))
+            ):
+                return response
+        return None
+
+    def _refresh_similarity_flags(self) -> None:
+        for turn in self._turns:
+            transcript = self._text(turn.get("transcript"))
+            if not transcript:
+                continue
+            response = self._response_for_turn_similarity(turn)
+            if response is None:
+                continue
+            assistant_text = self._text(response.get("assistant_transcript"))
+            similar = self._transcripts_similar(transcript, assistant_text)
+            turn["transcript_similarity"] = {
+                "compared_user_transcript": transcript,
+                "compared_assistant_transcript": assistant_text,
+                "assistant_response_id": self._text(response.get("response_id")),
+                "normalized_exact_or_containment_match": similar,
+            }
+            if similar:
+                self._append_flag(turn, "TRANSCRIPT_SIMILAR_TO_RECENT_ASSISTANT_OUTPUT")
+
+    def _response_for_event(
+        self, *, response_id: str, t_ns: int, create: bool = True
+    ) -> dict[str, object] | None:
+        if response_id and response_id in self._responses_by_id:
+            return self._responses_by_id[response_id]
+        if not create:
+            return None
+        if len(self._responses) >= TURN_FORENSICS_MAX_RESPONSES:
+            return self._responses[-1] if self._responses else None
+        sequence = len(self._responses) + 1
+        response: dict[str, object] = {
+            "response_sequence": sequence,
+            "response_id": response_id,
+            "response_created_ns": t_ns,
+            "diagnostic_flags": [],
+            "provider_audio_delta_count": 0,
+            "provider_audio_bytes": 0,
+        }
+        self._responses.append(response)
+        if response_id:
+            self._responses_by_id[response_id] = response
+        return response
+
+    @_synchronized
+    def record_turn_event(self, event: Mapping[str, object], *, t_ns: int) -> None:
+        """Observe provider turn evidence without changing conversation behavior."""
+        event_type = self._text(event.get("type"))
+        event_id = self._text(event.get("event_id"))
+        item_id = self._text(event.get("item_id"))
+        event_response = self._mapping(event.get("response"))
+        event_response_id = (
+            self._text(event.get("response_id"))
+            or self._text(event_response.get("id"))
+            or self._current_response_id
+        )
+        snapshot_events = {
+            "input_audio_buffer.speech_started",
+            "input_audio_buffer.speech_stopped",
+            "conversation.item.input_audio_transcription.completed",
+            "conversation.item.input_audio_transcription.failed",
+            "response.created",
+            "response.done",
+        }
+        if event_type == "input_audio_buffer.speech_started":
+            turn = self._turn_for_item(item_id=item_id, t_ns=t_ns, allow_active=False)
+            turn.update(
+                {
+                    "speech_started_ns": t_ns,
+                    "speech_started_s": self._session_seconds(t_ns),
+                    "speech_started_wall_time": self._utc_timestamp(t_ns),
+                    "speech_started_event_id": event_id,
+                    "provider_audio_start_ms": self._integer(event.get("audio_start_ms")),
+                    "signal_around_speech_start": self._recent_input_levels(t_ns),
+                    "playback_at_speech_started": self._playback_snapshot(t_ns),
+                }
+            )
+            self._active_speech_turn = turn
+            playback = turn["playback_at_speech_started"]
+            if isinstance(playback, Mapping) and playback.get("playback_active") is True:
+                self._append_flag(turn, "SUSPECTED_PLAYBACK_OVERLAP")
+            elif isinstance(playback, Mapping):
+                age_ms = playback.get("time_since_most_recent_stream_write_ms")
+                if isinstance(age_ms, (int, float)) and 0 <= age_ms <= TURN_FORENSICS_POST_PLAYBACK_WINDOW_MS:
+                    self._append_flag(turn, "SUSPECTED_POST_PLAYBACK_TRIGGER")
+        elif event_type == "input_audio_buffer.speech_stopped":
+            turn = self._turn_for_item(item_id=item_id, t_ns=t_ns)
+            turn.update(
+                {
+                    "speech_stopped_ns": t_ns,
+                    "speech_stopped_s": self._session_seconds(t_ns),
+                    "speech_stopped_wall_time": self._utc_timestamp(t_ns),
+                    "speech_stopped_event_id": event_id,
+                    "provider_audio_end_ms": self._integer(event.get("audio_end_ms")),
+                    "provider_stop_reason": self._text(event.get("reason")),
+                    "playback_at_speech_stopped": self._playback_snapshot(t_ns),
+                }
+            )
+            self._finalize_turn_signal(turn)
+            if self._active_speech_turn is turn:
+                self._active_speech_turn = None
+        elif event_type == "input_audio_buffer.committed":
+            turn = self._turn_for_item(item_id=item_id, t_ns=t_ns)
+            turn["input_committed_ns"] = t_ns
+            turn["input_committed_event_id"] = event_id
+            turn["previous_item_id"] = self._text(event.get("previous_item_id"))
+        elif event_type == "conversation.item.created":
+            item = self._mapping(event.get("item"))
+            created_item_id = self._text(item.get("id"))
+            role = self._text(item.get("role"))
+            if role == "user":
+                turn = self._turn_for_item(item_id=created_item_id, t_ns=t_ns)
+                turn["input_item_created_ns"] = t_ns
+                turn["input_item_created_event_id"] = event_id
+            elif role == "assistant" and self._current_response_id:
+                response = self._response_for_event(
+                    response_id=self._current_response_id, t_ns=t_ns
+                )
+                if response is not None:
+                    response["assistant_item_id"] = created_item_id
+                    response["assistant_item_created_event_id"] = event_id
+        elif event_type in {
+            "conversation.item.input_audio_transcription.completed",
+            "conversation.item.input_audio_transcription.failed",
+        }:
+            turn = self._turn_for_item(item_id=item_id, t_ns=t_ns)
+            completed = event_type.endswith(".completed")
+            turn.update(
+                {
+                    "transcription_event_type": event_type,
+                    "transcription_event_id": event_id,
+                    "transcription_ns": t_ns,
+                    "transcription_s": self._session_seconds(t_ns),
+                    "transcription_wall_time": self._utc_timestamp(t_ns),
+                    "transcription_success": completed,
+                    "content_index": self._integer(event.get("content_index")),
+                    "playback_at_transcription": self._playback_snapshot(t_ns),
+                }
+            )
+            if completed:
+                turn["transcript"] = self._text(event.get("transcript"))
+            else:
+                error = self._mapping(event.get("error"))
+                turn["transcription_error"] = {
+                    "type": self._text(error.get("type")),
+                    "code": self._text(error.get("code")),
+                    "message": self._text(error.get("message")),
+                }
+            transcription_error = turn.get("transcription_error")
+            self.record(
+                "input_audio_transcription",
+                t_ns=t_ns,
+                timestamp=self._utc_timestamp(t_ns),
+                event_type=event_type,
+                event_id=event_id,
+                item_id=item_id,
+                content_index=self._integer(event.get("content_index")),
+                transcript=self._text(event.get("transcript")),
+                success=completed,
+                error_type=(
+                    self._text(transcription_error.get("type"))
+                    if isinstance(transcription_error, Mapping)
+                    else ""
+                ),
+                error_code=(
+                    self._text(transcription_error.get("code"))
+                    if isinstance(transcription_error, Mapping)
+                    else ""
+                ),
+                error_message=(
+                    self._text(transcription_error.get("message"))
+                    if isinstance(transcription_error, Mapping)
+                    else ""
+                ),
+            )
+            self._refresh_similarity_flags()
+        elif event_type == "response.created":
+            response_id = self._text(event_response.get("id"))
+            response = self._response_for_event(response_id=response_id, t_ns=t_ns)
+            if response is not None:
+                response["response_created_event_id"] = event_id
+                response["playback_at_response_created"] = self._playback_snapshot(t_ns)
+                correlated_turn = next(
+                    (
+                        turn
+                        for turn in reversed(self._turns)
+                        if not self._text(turn.get("response_id"))
+                        and (
+                            isinstance(turn.get("speech_stopped_ns"), int)
+                            or isinstance(turn.get("transcription_ns"), int)
+                            or isinstance(turn.get("input_item_created_ns"), int)
+                        )
+                    ),
+                    None,
+                )
+                if correlated_turn is None:
+                    self._append_flag(response, "UNEXPECTED_RESPONSE_WITHOUT_CORRELATED_INPUT")
+                    response["input_correlation"] = "none_observed"
+                else:
+                    correlated_turn["response_id"] = response_id
+                    correlated_turn["response_created_ns"] = t_ns
+                    correlated_turn["response_created_s"] = self._session_seconds(t_ns)
+                    correlated_turn["response_correlation"] = (
+                        "temporal_nearest_unassigned_turn; provider_direct_link_unavailable"
+                    )
+                    response["correlated_turn_id"] = correlated_turn["turn_id"]
+                    response["input_correlation"] = (
+                        "temporal_nearest_unassigned_turn; provider_direct_link_unavailable"
+                    )
+            self._current_response_id = response_id
+        elif event_type in {
+            "response.audio_transcript.delta",
+            "response.audio_transcript.done",
+            "response.audio.delta",
+            "response.audio.done",
+            "response.done",
+        }:
+            response_id = self._text(event.get("response_id")) or self._current_response_id
+            response = self._response_for_event(response_id=response_id, t_ns=t_ns)
+            if response is not None:
+                response_item_id = self._text(event.get("item_id"))
+                if response_item_id:
+                    response["assistant_item_id"] = response_item_id
+                output_index = self._integer(event.get("output_index"))
+                content_index = self._integer(event.get("content_index"))
+                if output_index is not None:
+                    response["output_index"] = output_index
+                if content_index is not None:
+                    response["content_index"] = content_index
+                if event_type == "response.audio_transcript.delta":
+                    response["assistant_transcript_delta"] = (
+                        self._text(response.get("assistant_transcript_delta"))
+                        + self._text(event.get("delta"))
+                    )
+                elif event_type == "response.audio_transcript.done":
+                    response["assistant_transcript"] = self._text(event.get("transcript"))
+                    response["assistant_transcript_done_ns"] = t_ns
+                    response["assistant_transcript_event_id"] = event_id
+                    self.record(
+                        "assistant_audio_transcription",
+                        t_ns=t_ns,
+                        timestamp=self._utc_timestamp(t_ns),
+                        event_type=event_type,
+                        event_id=event_id,
+                        response_id=response_id,
+                        item_id=self._text(event.get("item_id")),
+                        transcript=self._text(event.get("transcript")),
+                    )
+                    self._refresh_similarity_flags()
+                elif event_type == "response.audio.delta":
+                    response["provider_audio_delta_count"] = self._count(
+                        response.get("provider_audio_delta_count")
+                    ) + 1
+                    response.setdefault("first_audio_delta_ns", t_ns)
+                    response.setdefault("first_audio_delta_event_id", event_id)
+                    response["last_audio_delta_ns"] = t_ns
+                    response["last_audio_delta_event_id"] = event_id
+                elif event_type == "response.audio.done":
+                    response["response_audio_done_ns"] = t_ns
+                    response["response_audio_done_event_id"] = event_id
+                elif event_type == "response.done":
+                    response["response_done_ns"] = t_ns
+                    response["response_done_s"] = self._session_seconds(t_ns)
+                    response["response_done_event_id"] = event_id
+                    response["playback_at_response_done"] = self._playback_snapshot(t_ns)
+        if event_type in snapshot_events:
+            self.record(
+                "turn_forensics_event",
+                t_ns=t_ns,
+                event_type=event_type,
+                event_id=event_id,
+                item_id=item_id,
+                response_id=event_response_id,
+            )
+
+    @_synchronized
+    def record_turn_forensics_failure(self, *, t_ns: int, error: Exception) -> None:
+        self._turn_forensics_failure_count += 1
+        self.record(
+            "turn_forensics_observation_failed",
+            t_ns=t_ns,
+            error_type=type(error).__name__,
+            error_message=str(error),
+        )
 
     @_synchronized
     def record(self, kind: str, *, t_ns: int | None = None, **fields: object) -> None:
@@ -869,6 +1389,8 @@ class QwenLiveDiagnostics:
         resample_end_ns: int,
         resampled_bytes: int,
         target_rate: int,
+        response_id: str = "",
+        item_id: str = "",
     ) -> int:
         if not self._response_active:
             self._response_index += 1
@@ -891,6 +1413,20 @@ class QwenLiveDiagnostics:
         self._last_audio_delta_session_ns = receive_ns
         self._audio_delta_count += 1
         self._provider_delta_bytes += decoded_bytes
+        response = self._response_for_event(
+            response_id=response_id or self._current_response_id,
+            t_ns=receive_ns,
+        )
+        if response is not None:
+            provider_audio_bytes = self._count(
+                response.get("provider_audio_bytes")
+            ) + decoded_bytes
+            response["provider_audio_bytes"] = provider_audio_bytes
+            response["provider_audio_duration_ms"] = self.playback_ms(
+                provider_audio_bytes, source_rate
+            )
+            if item_id:
+                response["assistant_item_id"] = item_id
         duration_ms = self._elapsed_ms(resample_start_ns, resample_end_ns)
         self._timing("response_resample", duration_ms)
         decoded_audio_ms = self.playback_ms(decoded_bytes, source_rate)
@@ -944,6 +1480,8 @@ class QwenLiveDiagnostics:
             else max(0, added_bytes)
         )
         added_ms = self.playback_ms(accepted_bytes, sample_rate)
+        self._playback_queue_depth_bytes = after_bytes
+        self._playback_sample_rate = sample_rate
         self._enqueued_response_audio_ms += added_ms
         self._track_playback_backlog(after_ms, active=True)
         self.record(
@@ -959,6 +1497,27 @@ class QwenLiveDiagnostics:
             playback_queue_depth_bytes=after_bytes,
             playback_queue_depth_ms=after_ms,
         )
+
+    @_synchronized
+    def record_playback_write_start(
+        self,
+        *,
+        t_ns: int,
+        buffer_after_bytes: int,
+        response_audio_bytes: int,
+        sample_rate: int,
+    ) -> None:
+        """Mark a physical write interval without retaining its PCM payload."""
+        self._playback_write_in_progress = response_audio_bytes > 0
+        self._last_playback_write_start_ns = t_ns
+        self._playback_queue_depth_bytes = max(0, buffer_after_bytes)
+        self._playback_sample_rate = sample_rate
+        response = self._responses_by_id.get(self._current_response_id)
+        if response is not None and response_audio_bytes > 0:
+            response.setdefault("playback_start_ns", t_ns)
+            response["playback_correlation"] = (
+                "provider_order_current_response_estimate; FIFO chunks carry no IDs"
+            )
 
     @_synchronized
     def record_playback_wait_start(
@@ -1065,6 +1624,22 @@ class QwenLiveDiagnostics:
         preceding_recv_timeout: bool = False,
         preceding_recv_wait_ms: float = 0.0,
     ) -> None:
+        self._playback_write_in_progress = False
+        self._last_playback_write_start_ns = write_start_ns
+        self._last_playback_write_end_ns = write_end_ns
+        self._playback_queue_depth_bytes = max(0, buffer_after_bytes)
+        self._playback_sample_rate = sample_rate
+        self._playback_bytes_written += max(0, response_audio_frames * 2)
+        response = self._responses_by_id.get(self._current_response_id)
+        if response is not None and response_audio_frames > 0:
+            response["playback_last_write_end_ns"] = write_end_ns
+            playback_bytes_written = self._count(
+                response.get("playback_bytes_written_estimate")
+            ) + response_audio_frames * 2
+            response["playback_bytes_written_estimate"] = playback_bytes_written
+            response["playback_duration_ms_estimate"] = self.playback_ms(
+                playback_bytes_written, sample_rate
+            )
         duration_ms = self._elapsed_ms(write_start_ns, write_end_ns)
         self._timing("stream_write", duration_ms)
         written_audio_ms = self.playback_ms(response_audio_frames * 2, sample_rate)
@@ -1255,6 +1830,59 @@ class QwenLiveDiagnostics:
             maximum_ns = max(maximum_ns, open_ns)
         return count, total_ns / 1_000_000, maximum_ns / 1_000_000
 
+    @classmethod
+    def _public_forensics_value(cls, value: object) -> object:
+        if isinstance(value, Mapping):
+            return {
+                str(key): cls._public_forensics_value(item)
+                for key, item in value.items()
+                if not str(key).startswith("_")
+            }
+        if isinstance(value, list):
+            return [cls._public_forensics_value(item) for item in value]
+        return value
+
+    def _turn_forensics_summary(self) -> dict[str, object]:
+        turns = [
+            self._public_forensics_value(turn)
+            for turn in self._turns
+        ]
+        responses = [
+            self._public_forensics_value(response)
+            for response in self._responses
+        ]
+        return {
+            "speech_started_count": sum(
+                int(isinstance(turn.get("speech_started_ns"), int))
+                for turn in self._turns
+            ),
+            "speech_started_during_playback_count": sum(
+                int(self._has_flag(turn, "SUSPECTED_PLAYBACK_OVERLAP"))
+                for turn in self._turns
+            ),
+            "transcription_completed_count": sum(
+                int(turn.get("transcription_success") is True)
+                for turn in self._turns
+            ),
+            "transcription_failed_count": sum(
+                int(turn.get("transcription_success") is False)
+                for turn in self._turns
+            ),
+            "unexpected_response_without_correlated_input_count": sum(
+                int(self._has_flag(response, "UNEXPECTED_RESPONSE_WITHOUT_CORRELATED_INPUT"))
+                for response in self._responses
+            ),
+            "turn_forensics_failure_count": self._turn_forensics_failure_count,
+            "post_playback_window_ms": TURN_FORENSICS_POST_PLAYBACK_WINDOW_MS,
+            "correlation_limitations": (
+                "Provider item_id is authoritative within input events; response.created "
+                "does not expose a direct input item_id, so response-to-turn mapping is "
+                "explicitly temporal when used."
+            ),
+            "turns": turns,
+            "responses": responses,
+        }
+
     @_synchronized
     def summary(self, *, end_ns: int | None = None) -> dict[str, object]:
         final_ns = self._clock_ns() if end_ns is None else end_ns
@@ -1405,6 +2033,7 @@ class QwenLiveDiagnostics:
             ),
             "response_done_ns": self._first_markers.get("response_done_ns"),
         }
+        turn_forensics = self._turn_forensics_summary()
         return {
             "session_id": self.session_id,
             "session_duration_ms": self._elapsed_ms(self.start_ns, final_ns),
@@ -1514,6 +2143,9 @@ class QwenLiveDiagnostics:
             ),
             "latency_timeline": latency_timeline,
             "playback_timeline": playback_timeline,
+            "false_turn_forensics": turn_forensics,
+            "turn_timeline": turn_forensics["turns"],
+            "response_timeline": turn_forensics["responses"],
             "event_count_retained": len(self._events),
             "event_count_dropped": self._dropped_events,
             "websocket_lifecycle": self.websocket_forensics(),
@@ -1631,6 +2263,44 @@ class QwenLiveDiagnostics:
             if isinstance(timeline, dict):
                 lines.extend(
                     f"  {name}: {value}" for name, value in timeline.items()
+                )
+        forensics = summary.get("false_turn_forensics")
+        lines.append("FALSE-TURN FORENSICS:")
+        if isinstance(forensics, dict):
+            lines.extend(
+                f"  {name}: {value}"
+                for name, value in forensics.items()
+                if name not in {"turns", "responses"}
+            )
+        lines.append("TURN TIMELINE:")
+        turns = summary.get("turn_timeline")
+        if isinstance(turns, list):
+            for turn in turns:
+                if not isinstance(turn, dict):
+                    continue
+                lines.append(
+                    f"TURN {turn.get('turn_sequence')} ({turn.get('turn_id')})"
+                )
+                lines.extend(
+                    f"  {name}: {value}"
+                    for name, value in turn.items()
+                    if name not in {"turn_sequence", "turn_id"}
+                )
+        lines.append("RESPONSE TIMELINE:")
+        responses = summary.get("response_timeline")
+        if isinstance(responses, list):
+            for response in responses:
+                if not isinstance(response, dict):
+                    continue
+                lines.append(
+                    "RESPONSE "
+                    f"{response.get('response_sequence')} "
+                    f"({response.get('response_id')})"
+                )
+                lines.extend(
+                    f"  {name}: {value}"
+                    for name, value in response.items()
+                    if name not in {"response_sequence", "response_id"}
                 )
         lines.append("timings:")
         timings = summary.get("timings")
