@@ -1,0 +1,6 @@
+.venv/
+build/
+YandexRealtimeTester/
+logs/
+__pycache__/
+.pytest_cache/
