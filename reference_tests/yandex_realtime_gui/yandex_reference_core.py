@@ -28,7 +28,7 @@ import aiohttp
 import sounddevice as sd
 
 APP_NAME = "Yandex Realtime Reference Tester"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.1.0"
 ENDPOINT = "wss://ai.api.cloud.yandex.net/v1/realtime"
 DEFAULT_MODEL = "speech-realtime-260528"
 DEFAULT_VOICE = "dasha"
@@ -47,6 +47,9 @@ SAMPLE_BYTES = 2
 DTYPE = "int16"
 BLOCK_MS = 20
 INPUT_FRAMES = INPUT_RATE * BLOCK_MS // 1000
+PLAYBACK_SLICE_MS = 20
+PLAYBACK_SLICE_FRAMES = OUTPUT_RATE * PLAYBACK_SLICE_MS // 1000
+PLAYBACK_SLICE_BYTES = PLAYBACK_SLICE_FRAMES * CHANNELS * SAMPLE_BYTES
 VAD_THRESHOLD = 0.5
 VAD_SILENCE_MS = 400
 SILENT_RMS_THRESHOLD = 50.0
@@ -260,6 +263,17 @@ def audio_duration_ms(byte_count: int, rate: int = OUTPUT_RATE) -> float:
     return round(byte_count / (rate * CHANNELS * SAMPLE_BYTES) * 1000, 2)
 
 
+def split_playback_pcm(pcm: bytes) -> tuple[bytes, ...]:
+    """Split provider PCM into exact frame-aligned playback slices."""
+
+    if len(pcm) % (CHANNELS * SAMPLE_BYTES):
+        raise ValueError("Provider output PCM is not aligned to complete int16 frames.")
+    return tuple(
+        pcm[offset : offset + PLAYBACK_SLICE_BYTES]
+        for offset in range(0, len(pcm), PLAYBACK_SLICE_BYTES)
+    )
+
+
 @dataclass(slots=True)
 class SessionConfig:
     api_key: str
@@ -396,9 +410,65 @@ class AiohttpTransport:
 
 
 @dataclass(frozen=True, slots=True)
-class PlaybackChunk:
+class PlaybackSlice:
+    response_id: str
     epoch: int
+    sequence: int
     pcm: bytes
+
+
+@dataclass(slots=True)
+class ResponsePlaybackState:
+    response_id: str
+    epoch: int | None
+    provider_audio_bytes: int = 0
+    slices_created: int = 0
+    slices_written: int = 0
+    slices_removed: int = 0
+    removed_bytes: int = 0
+    slices_discarded_stale: int = 0
+    stale_bytes: int = 0
+    playback_invalidated: bool = False
+    provider_response_status: str | None = None
+    provider_done: bool = False
+
+    @property
+    def terminal_slices(self) -> int:
+        return self.slices_written + self.slices_removed + self.slices_discarded_stale
+
+    @property
+    def outstanding_slices(self) -> int:
+        return max(0, self.slices_created - self.terminal_slices)
+
+    def local_completion_state(self, current: PlaybackSlice | None) -> str:
+        is_current = current is not None and current.response_id == self.response_id
+        if is_current and self.playback_invalidated:
+            return "invalidated_current_write_finishing"
+        if is_current:
+            return "playing"
+        if self.outstanding_slices:
+            return "invalidated_pending_discard" if self.playback_invalidated else "queued"
+        if self.playback_invalidated:
+            return "invalidated"
+        if self.provider_done and self.slices_created == 0:
+            return "provider_completed_no_audio"
+        if self.provider_done:
+            return "fully_submitted"
+        return "receiving_audio" if self.slices_created else "created"
+
+    def summary(self, current: PlaybackSlice | None) -> dict[str, object]:
+        return {
+            "response_id": self.response_id,
+            "playback_epoch": self.epoch,
+            "provider_audio_bytes": self.provider_audio_bytes,
+            "slices_created": self.slices_created,
+            "slices_written": self.slices_written,
+            "slices_removed": self.slices_removed,
+            "slices_discarded_stale": self.slices_discarded_stale,
+            "playback_invalidated": self.playback_invalidated,
+            "provider_response_status": self.provider_response_status,
+            "local_playback_completion_state": self.local_completion_state(current),
+        }
 
 
 class YandexReferenceSession:
@@ -421,7 +491,7 @@ class YandexReferenceSession:
         self.clock = clock
         self.stop_event = threading.Event()
         self.session_ready = threading.Event()
-        self.playback_queue: queue.Queue[PlaybackChunk | object] = queue.Queue(maxsize=0)
+        self.playback_queue: queue.Queue[PlaybackSlice | object] = queue.Queue(maxsize=0)
         self._playback_sentinel = object()
         self.thread: threading.Thread | None = None
         self.capture_thread: threading.Thread | None = None
@@ -464,7 +534,33 @@ class YandexReferenceSession:
         self.playback_bytes = 0
         self.playback_interruption_count = 0
         self.playback_epoch = 0
-        self.active_response_epoch: int | None = None
+        self.active_playback_response_id: str | None = None
+        self.response_playback: dict[str, ResponsePlaybackState] = {}
+        self.total_slices_created = 0
+        self.total_slices_written = 0
+        self.short_final_slices = 0
+        self.max_slice_bytes = 0
+        self.speech_started_seen_count = 0
+        self.playback_invalidation_request_count = 0
+        self.active_response_invalidation_count = 0
+        self.queued_slices_removed_count = 0
+        self.queued_bytes_removed = 0
+        self.stale_slices_discarded_count = 0
+        self.stale_bytes_discarded = 0
+        self.current_write_active_at_interrupt_count = 0
+        self.current_write_completed_after_interrupt_count = 0
+        self.max_current_write_duration_ms = 0.0
+        self.application_stop_latency_estimate_ms: float | None = None
+        self.current_write_response_id: str | None = None
+        self.current_write_epoch: int | None = None
+        self.current_write_sequence: int | None = None
+        self.current_write_bytes = 0
+        self.current_write_started_at: str | None = None
+        self.current_write_completed_at: str | None = None
+        self.current_write_completed_after_interrupt = False
+        self._current_write: PlaybackSlice | None = None
+        self._current_write_started_monotonic: float | None = None
+        self._current_write_interrupted_at: float | None = None
         self._error_seen = False
 
     def start(self) -> None:
@@ -712,17 +808,112 @@ class YandexReferenceSession:
                     queued = self.playback_queue.get()
                     if queued is self._playback_sentinel:
                         return
-                    assert isinstance(queued, PlaybackChunk)
-                    if queued.epoch != self.playback_epoch:
+                    assert isinstance(queued, PlaybackSlice)
+                    if not self._commit_playback_slice(queued):
+                        self._emit(
+                            "audio.playback.stale_slice_discarded",
+                            response_id=queued.response_id,
+                            playback_epoch=queued.epoch,
+                            slice_sequence=queued.sequence,
+                            bytes=len(queued.pcm),
+                        )
                         continue
-                    stream.write(queued.pcm)
-                    with self._lock:
-                        self.playback_writes += 1
-                        self.playback_bytes += len(queued.pcm)
+                    try:
+                        stream.write(queued.pcm)
+                    except Exception:
+                        self._abandon_current_write(queued)
+                        raise
+                    completed_after_interrupt = self._complete_playback_slice(queued)
+                    if completed_after_interrupt:
+                        self._emit(
+                            "audio.playback.current_write_completed_after_interrupt",
+                            response_id=queued.response_id,
+                            playback_epoch=queued.epoch,
+                            slice_sequence=queued.sequence,
+                            bytes=len(queued.pcm),
+                            application_stop_latency_estimate_ms=(
+                                self.application_stop_latency_estimate_ms
+                            ),
+                        )
         except Exception as exc:
             if not self.stop_event.is_set():
                 self._terminal_error("OUTPUT DEVICE ERROR", exc)
                 self._request_transport_close()
+
+    def _commit_playback_slice(self, playback_slice: PlaybackSlice) -> bool:
+        with self._lock:
+            state = self.response_playback.get(playback_slice.response_id)
+            valid = (
+                state is not None
+                and state.epoch == playback_slice.epoch
+                and not state.playback_invalidated
+            )
+            if not valid:
+                self._record_stale_slice(playback_slice, state)
+                return False
+            self._current_write = playback_slice
+            self._current_write_started_monotonic = self.clock()
+            self._current_write_interrupted_at = None
+            self.current_write_response_id = playback_slice.response_id
+            self.current_write_epoch = playback_slice.epoch
+            self.current_write_sequence = playback_slice.sequence
+            self.current_write_bytes = len(playback_slice.pcm)
+            self.current_write_started_at = utc_now()
+            self.current_write_completed_at = None
+            self.current_write_completed_after_interrupt = False
+            return True
+
+    def _complete_playback_slice(self, playback_slice: PlaybackSlice) -> bool:
+        completed_at = self.clock()
+        with self._lock:
+            started_at = self._current_write_started_monotonic
+            duration_ms = (
+                max(0.0, (completed_at - started_at) * 1000)
+                if started_at is not None
+                else 0.0
+            )
+            self.max_current_write_duration_ms = max(
+                self.max_current_write_duration_ms, duration_ms
+            )
+            state = self.response_playback.get(playback_slice.response_id)
+            if state is not None:
+                state.slices_written += 1
+            self.playback_writes += 1
+            self.playback_bytes += len(playback_slice.pcm)
+            self.total_slices_written += 1
+            completed_after_interrupt = self._current_write_interrupted_at is not None
+            if completed_after_interrupt:
+                self.current_write_completed_after_interrupt_count += 1
+                assert self._current_write_interrupted_at is not None
+                self.application_stop_latency_estimate_ms = round(
+                    max(0.0, (completed_at - self._current_write_interrupted_at) * 1000),
+                    2,
+                )
+            self.current_write_completed_at = utc_now()
+            self.current_write_completed_after_interrupt = completed_after_interrupt
+            self._current_write = None
+            self._current_write_started_monotonic = None
+            self._current_write_interrupted_at = None
+            return completed_after_interrupt
+
+    def _abandon_current_write(self, playback_slice: PlaybackSlice) -> None:
+        with self._lock:
+            if self._current_write == playback_slice:
+                self._current_write = None
+                self._current_write_started_monotonic = None
+                self._current_write_interrupted_at = None
+
+    def _record_stale_slice(
+        self,
+        playback_slice: PlaybackSlice,
+        state: ResponsePlaybackState | None,
+    ) -> None:
+        byte_count = len(playback_slice.pcm)
+        self.stale_slices_discarded_count += 1
+        self.stale_bytes_discarded += byte_count
+        if state is not None:
+            state.slices_discarded_stale += 1
+            state.stale_bytes += byte_count
 
     def _request_transport_close(self) -> None:
         loop = self.loop
@@ -731,21 +922,80 @@ class YandexReferenceSession:
             asyncio.run_coroutine_threadsafe(transport.close(), loop)
 
     def _interrupt_playback(self) -> None:
-        self.playback_epoch += 1
-        self.active_response_epoch = None
-        removed = 0
-        while True:
-            try:
-                item = self.playback_queue.get_nowait()
-            except queue.Empty:
-                break
-            if item is self._playback_sentinel:
+        invalidated_ids: list[str] = []
+        removed_slices = 0
+        removed_bytes = 0
+        current_write_active = False
+        with self._lock:
+            self.playback_invalidation_request_count += 1
+            states_to_invalidate = [
+                state
+                for state in self.response_playback.values()
+                if not state.playback_invalidated
+                and (
+                    state.outstanding_slices > 0
+                    or state.response_id == self.active_playback_response_id
+                )
+            ]
+            had_active_playback = any(
+                state.outstanding_slices > 0 for state in states_to_invalidate
+            )
+            for state in states_to_invalidate:
+                state.playback_invalidated = True
+                invalidated_ids.append(state.response_id)
+            if had_active_playback:
+                self.active_response_invalidation_count += 1
+                self.playback_interruption_count += 1
+            if self.active_playback_response_id in invalidated_ids:
+                self.active_playback_response_id = None
+            current = self._current_write
+            if current is not None and current.response_id in invalidated_ids:
+                current_write_active = True
+                self.current_write_active_at_interrupt_count += 1
+                if self._current_write_interrupted_at is None:
+                    self._current_write_interrupted_at = self.clock()
+
+            retained: list[PlaybackSlice | object] = []
+            while True:
+                try:
+                    item = self.playback_queue.get_nowait()
+                except queue.Empty:
+                    break
+                if item is self._playback_sentinel:
+                    retained.append(item)
+                    continue
+                assert isinstance(item, PlaybackSlice)
+                if item.response_id in invalidated_ids:
+                    byte_count = len(item.pcm)
+                    removed_slices += 1
+                    removed_bytes += byte_count
+                    state = self.response_playback.get(item.response_id)
+                    if state is not None:
+                        state.slices_removed += 1
+                        state.removed_bytes += byte_count
+                else:
+                    retained.append(item)
+            for item in retained:
                 self.playback_queue.put(item)
-                break
-            removed += 1
-        if removed or self.latest_response_id is not None:
-            self.playback_interruption_count += 1
-        self._emit("audio.playback.interrupted", queued_chunks_removed=removed)
+
+            self.queued_slices_removed_count += removed_slices
+            self.queued_bytes_removed += removed_bytes
+            if not current_write_active:
+                self.application_stop_latency_estimate_ms = 0.0
+
+        fields: dict[str, object] = {
+            "response_ids": invalidated_ids,
+            "queued_slices_removed": removed_slices,
+            "queued_bytes_removed": removed_bytes,
+            "current_write_active": current_write_active,
+        }
+        self._emit("audio.playback.invalidated", **fields)
+        self._emit(
+            "audio.playback.interrupted",
+            queued_chunks_removed=removed_slices,
+            queued_bytes_removed=removed_bytes,
+            current_write_active=current_write_active,
+        )
 
     def handle_event(self, event: dict[str, Any]) -> None:
         now = self.clock()
@@ -762,6 +1012,7 @@ class YandexReferenceSession:
             self._status("Connected")
         elif kind == "input_audio_buffer.speech_started":
             self.speech_started_count += 1
+            self.speech_started_seen_count += 1
             self._emit(
                 kind,
                 item_id=event.get("item_id"),
@@ -788,7 +1039,13 @@ class YandexReferenceSession:
             self.responses[response_id] = ResponseMetric(response_id, now)
             self.latest_response_id = response_id
             self.response_count += 1
-            self.active_response_epoch = self.playback_epoch
+            with self._lock:
+                self.playback_epoch += 1
+                self.response_playback[response_id] = ResponsePlaybackState(
+                    response_id=response_id,
+                    epoch=self.playback_epoch,
+                )
+                self.active_playback_response_id = response_id
             self._emit(kind, response_id=response_id, status=response.get("status"))
         elif kind == "response.output_audio.delta":
             self._handle_audio_delta(event, now)
@@ -808,7 +1065,13 @@ class YandexReferenceSession:
             metric = self.responses.setdefault(response_id, ResponseMetric(response_id, now))
             metric.status = str(response.get("status") or "")
             metric.response_completed = metric.status == "completed"
-            self.active_response_epoch = None
+            with self._lock:
+                playback = self.response_playback.get(response_id)
+                if playback is not None:
+                    playback.provider_response_status = metric.status
+                    playback.provider_done = True
+                if self.active_playback_response_id == response_id:
+                    self.active_playback_response_id = None
             self._emit(kind, **metric.summary())
         elif kind == "error":
             error = event.get("error") or {}
@@ -835,10 +1098,53 @@ class YandexReferenceSession:
         metric = self.responses.setdefault(response_id, ResponseMetric(response_id, now))
         self.latest_response_id = response_id
         metric.add_audio(len(pcm), now, self.last_speech_stopped)
-        epoch = self.active_response_epoch
-        queued = epoch is not None and epoch == self.playback_epoch
-        if epoch is not None and epoch == self.playback_epoch:
-            self.playback_queue.put(PlaybackChunk(epoch, pcm))
+        pcm_slices = split_playback_pcm(pcm)
+        with self._lock:
+            playback = self.response_playback.get(response_id)
+            if playback is None:
+                playback = ResponsePlaybackState(
+                    response_id=response_id,
+                    epoch=None,
+                    playback_invalidated=True,
+                )
+                self.response_playback[response_id] = playback
+            playback.provider_audio_bytes += len(pcm)
+            first_sequence = playback.slices_created + 1
+            playback.slices_created += len(pcm_slices)
+            self.total_slices_created += len(pcm_slices)
+            if pcm_slices and len(pcm_slices[-1]) < PLAYBACK_SLICE_BYTES:
+                self.short_final_slices += 1
+            if pcm_slices:
+                self.max_slice_bytes = max(
+                    self.max_slice_bytes, max(len(item) for item in pcm_slices)
+                )
+            queued = (
+                playback.epoch is not None
+                and not playback.playback_invalidated
+                and not playback.provider_done
+            )
+            if queued:
+                assert playback.epoch is not None
+                for offset, item in enumerate(pcm_slices):
+                    self.playback_queue.put(
+                        PlaybackSlice(
+                            response_id=response_id,
+                            epoch=playback.epoch,
+                            sequence=first_sequence + offset,
+                            pcm=item,
+                        )
+                    )
+            else:
+                for offset, item in enumerate(pcm_slices):
+                    self._record_stale_slice(
+                        PlaybackSlice(
+                            response_id=response_id,
+                            epoch=playback.epoch if playback.epoch is not None else -1,
+                            sequence=first_sequence + offset,
+                            pcm=item,
+                        ),
+                        playback,
+                    )
         first_latency = metric.first_audio_latency_ms
         self._emit(
             "response.output_audio.delta",
@@ -846,6 +1152,7 @@ class YandexReferenceSession:
             delta_index=metric.delta_count,
             bytes=len(pcm),
             queued=queued,
+            playback_slice_count=len(pcm_slices),
             first_audio_latency_ms=(
                 round(first_latency, 2)
                 if metric.delta_count == 1 and first_latency is not None
@@ -853,6 +1160,22 @@ class YandexReferenceSession:
             ),
             latency_basis=metric.latency_basis if metric.delta_count == 1 else None,
         )
+        if queued and pcm_slices:
+            self._emit(
+                "audio.playback.slices_enqueued",
+                response_id=response_id,
+                playback_epoch=playback.epoch,
+                slices=len(pcm_slices),
+                bytes=len(pcm),
+            )
+        elif pcm_slices:
+            self._emit(
+                "audio.playback.stale_delta_discarded",
+                response_id=response_id,
+                playback_epoch=playback.epoch,
+                slices=len(pcm_slices),
+                bytes=len(pcm),
+            )
 
     def latest_response_summary(self) -> dict[str, object]:
         metric = self.responses.get(self.latest_response_id or "")
@@ -878,6 +1201,54 @@ class YandexReferenceSession:
             )
             silent_ratio = self.silent_blocks / captured_blocks if captured_blocks else 0.0
             timeline = list(self.timeline)
+            current_write = self._current_write
+            playback_summaries = [
+                state.summary(current_write) for state in self.response_playback.values()
+            ]
+            slicing_report = {
+                "slice_duration_target_ms": PLAYBACK_SLICE_MS,
+                "slice_target_bytes": PLAYBACK_SLICE_BYTES,
+                "total_slices_created": self.total_slices_created,
+                "total_slices_written": self.total_slices_written,
+                "short_final_slices": self.short_final_slices,
+                "max_slice_bytes": self.max_slice_bytes,
+                "max_slice_duration_ms": audio_duration_ms(self.max_slice_bytes),
+            }
+            interruption_report = {
+                "speech_started_seen_count": self.speech_started_seen_count,
+                "playback_invalidation_request_count": (
+                    self.playback_invalidation_request_count
+                ),
+                "active_response_invalidation_count": (
+                    self.active_response_invalidation_count
+                ),
+                "queued_slices_removed_count": self.queued_slices_removed_count,
+                "queued_bytes_removed": self.queued_bytes_removed,
+                "stale_slices_discarded_count": self.stale_slices_discarded_count,
+                "stale_bytes_discarded": self.stale_bytes_discarded,
+                "current_write_active_at_interrupt_count": (
+                    self.current_write_active_at_interrupt_count
+                ),
+                "current_write_completed_after_interrupt_count": (
+                    self.current_write_completed_after_interrupt_count
+                ),
+                "max_current_write_duration_ms": round(
+                    self.max_current_write_duration_ms, 2
+                ),
+                "application_stop_latency_estimate_ms": (
+                    self.application_stop_latency_estimate_ms
+                ),
+                "current_write_active": current_write is not None,
+                "current_write_response_id": self.current_write_response_id,
+                "current_write_epoch": self.current_write_epoch,
+                "current_write_sequence": self.current_write_sequence,
+                "current_write_bytes": self.current_write_bytes,
+                "current_write_started_at": self.current_write_started_at,
+                "current_write_completed_at": self.current_write_completed_at,
+                "current_write_completed_after_interrupt": (
+                    self.current_write_completed_after_interrupt
+                ),
+            }
         latest = self.latest_response_summary()
         report = {
             "APPLICATION": {
@@ -921,6 +1292,7 @@ class YandexReferenceSession:
                 "peak_pcm16": self.input_peak,
                 "silent_block_ratio": round(silent_ratio, 4),
                 "speech_started_count": self.speech_started_count,
+                "speech_started_seen_count": self.speech_started_seen_count,
                 "speech_stopped_count": self.speech_stopped_count,
                 "transcription_count": self.transcription_count,
                 "transcription_failures": self.transcription_failures,
@@ -942,6 +1314,11 @@ class YandexReferenceSession:
                 "playback_bytes": self.playback_bytes,
                 "playback_interruption_count": self.playback_interruption_count,
                 "all_responses": [metric.summary() for metric in self.responses.values()],
+            },
+            "PLAYBACK SLICING": slicing_report,
+            "INTERRUPTION": interruption_report,
+            "RESPONSE-SCOPED PLAYBACK": {
+                "responses": playback_summaries,
             },
             "EVENT TIMELINE": timeline,
         }

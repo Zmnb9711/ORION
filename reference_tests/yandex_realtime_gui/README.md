@@ -1,4 +1,4 @@
-# Yandex Realtime Reference Tester v1
+# Yandex Realtime Reference Tester v1.1
 
 `YandexRealtimeTester` is a standalone Windows reference application for
 speech-to-speech testing with Yandex AI Studio Realtime API and deterministic
@@ -66,17 +66,22 @@ and clears a stale selection instead of substituting another endpoint.
 
 Before a WebSocket connection is attempted, both selected devices are checked
 for mono PCM16 at 44,100 Hz. An incompatible device produces
-`UNSUPPORTED AUDIO FORMAT`; v1 does not resample or alter PCM. Capture and
-playback use persistent blocking streams, an unbounded provider-order output
-FIFO, and one provider audio delta per queue item. No WAV, PCM dump, or audio
-file is created.
+`UNSUPPORTED AUDIO FORMAT`; v1.1 does not resample or alter PCM. Capture and
+playback use persistent blocking streams and an unbounded provider-order output
+FIFO. Each decoded provider delta is split into exact response-scoped 20 ms
+slices (at most 882 frames / 1,764 bytes). The final short slice is written
+without padding. Concatenating uninterrupted writes therefore reproduces the
+decoded provider PCM byte-for-byte. No WAV, PCM dump, or audio file is created.
 
 `START SESSION` and `STOP SESSION` use a background network event loop and
 bounded shutdown. A new session object is created for every Start, so repeated
 Start → Stop cycles do not reuse a closed WebSocket. Server VAD automatically
-creates turns. Following the official example, `speech_started` invalidates and
-clears only queued playback from the interrupted response; normal provider
-audio is never reordered, padded, or dropped.
+creates turns. Following the official example, `speech_started` invalidates the
+response-owned playback epoch and removes its queued slices. One already
+committed short write may finish; no subsequent stale slice can start. The
+persistent output stream remains open, and normal provider audio is never
+reordered, padded, or dropped. This generic path does not inspect transcript
+text.
 
 ## Diagnostic export
 
@@ -86,7 +91,8 @@ does not reconnect, open an audio device, or consume API quota. It includes
 application/runtime versions, safe session configuration, exact PortAudio
 device/Host API details, input aggregate RMS/peak/silence metrics, VAD and
 transcription counts, connection/close state, response latency and delta
-cadence, playback counters, sanitized errors, and a compact event timeline.
+cadence, response-scoped slicing/invalidation and current-write counters,
+sanitized errors, and a compact event timeline.
 It never includes credentials, Base64 audio, or raw PCM.
 
 ## Build the standalone executable
@@ -98,7 +104,17 @@ It never includes credentials, Base64 audio, or raw PCM.
 The output is `YandexRealtimeTester\YandexRealtimeTester.exe`. PyInstaller
 packages Python, Tkinter, aiohttp, sounddevice, and their runtime dependencies.
 
-## Dream Air field test
+## Logitech v1.1 field gate
+
+Keep ORION, DCS, and Qwen closed. Select the currently enumerated Logitech PRO X
+Gaming MME input and output endpoints; do not rely on historical indices. First
+verify uninterrupted normal playback. Then request a long response and say
+`стоп` once while it is clearly playing. The audible old response should stop
+promptly, the session should remain alive, the new response should play, and old
+PCM must not resume. Repeat with a generic phrase such as
+`подожди, я хочу спросить другое`. Stop normally and export only after Stop.
+
+## Dream Air observation after Logitech passes
 
 Keep ORION, DCS, and Qwen closed. Connect Dream Air normally, select
 `REFRESH DEVICES`, then choose the currently enumerated endpoints matching:
@@ -108,12 +124,11 @@ Keep ORION, DCS, and Qwen closed. Connect Dream Air normally, select
 
 Do not rely on historical indices. Enter the API key and Folder ID, keep model
 `speech-realtime-260528`, voice `dasha`, and language `Russian (ru-RU)`, then
-start. Say `Привет. Как дела?` and converse in Russian for at least 30 seconds.
-Verify VAD events, any provider transcription, audio deltas and latency, clear
-playback, Stop, a second Start, and a clean close. Stop and export the report.
-Only after Dream Air passes, repeat with Logitech endpoints.
+start and observe existing false speech starts. v1.1 intentionally contains no
+echo suppression; Dream Air may therefore interrupt itself more quickly. Stop
+and export the report for the separate correlation-probe tranche.
 
-## v1 limitations
+## v1.1 limitations
 
 - No resampling, echo cancellation, or custom DSP.
 - No function calling, MCP, web/file tools, ATC, DCS, or ORION integration.
