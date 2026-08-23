@@ -15,6 +15,11 @@ from functools import wraps
 from pathlib import Path
 from typing import Any, Callable, Concatenate, Mapping, ParamSpec, TypeVar
 
+from .qwen_audio_correlation import (
+    PlaybackMicCorrelationProbe,
+    unavailable_correlation_result,
+)
+
 
 DEFAULT_MAX_EVENTS = 20_000
 DEFAULT_MAX_TIMING_SAMPLES = 10_000
@@ -194,12 +199,19 @@ class QwenLiveDiagnostics:
         self._responses_by_id: dict[str, dict[str, object]] = {}
         self._current_response_id = ""
         self._turn_forensics_failure_count = 0
+        self._correlation_probe = PlaybackMicCorrelationProbe()
+        self._correlation_targets: dict[
+            int, tuple[dict[str, object], str, str]
+        ] = {}
         self._playback_queue_depth_bytes = 0
         self._playback_sample_rate = qwen_output_rate
         self._playback_bytes_written = 0
         self._playback_write_in_progress = False
         self._last_playback_write_start_ns: int | None = None
         self._last_playback_write_end_ns: int | None = None
+        self._playback_observations: deque[dict[str, object]] = deque()
+        self._active_playback_observation: dict[str, object] | None = None
+        self._playback_write_sequence = 0
         self.record("session_start", t_ns=self.start_ns)
 
     @property
@@ -371,6 +383,49 @@ class QwenLiveDiagnostics:
     def _integer(value: object) -> int | None:
         return value if isinstance(value, int) and not isinstance(value, bool) else None
 
+    @classmethod
+    def _provider_status_details(cls, value: object) -> dict[str, object]:
+        details = cls._mapping(value)
+        result: dict[str, object] = {}
+        for key in ("type", "reason", "code", "message"):
+            if key not in details:
+                continue
+            scalar = details.get(key)
+            if scalar is None or isinstance(scalar, (str, int, float, bool)):
+                result[key] = scalar
+        error = cls._mapping(details.get("error"))
+        if error:
+            result["error"] = {
+                key: error.get(key)
+                for key in ("type", "code", "message")
+                if key in error
+                and (error.get(key) is None
+                or isinstance(error.get(key), (str, int, float, bool))
+                )
+            }
+        return result
+
+    @classmethod
+    def _provider_output_items(cls, value: object) -> list[dict[str, object]]:
+        if not isinstance(value, list):
+            return []
+        items: list[dict[str, object]] = []
+        for item_value in value:
+            item = cls._mapping(item_value)
+            if not item:
+                continue
+            items.append(
+                {
+                    key: item.get(key)
+                    for key in ("id", "type", "status", "role")
+                    if key in item
+                    and (item.get(key) is None
+                    or isinstance(item.get(key), (str, int, float, bool))
+                    )
+                }
+            )
+        return items
+
     @staticmethod
     def _count(value: object) -> int:
         return value if isinstance(value, int) and not isinstance(value, bool) else 0
@@ -415,6 +470,20 @@ class QwenLiveDiagnostics:
     def _playback_snapshot(self, t_ns: int) -> dict[str, object]:
         rate = self._playback_sample_rate
         backlog_bytes = self._playback_queue_depth_bytes
+        write_observation = self._active_playback_observation or (
+            self._playback_observations[0]
+            if self._playback_observations
+            else {}
+        )
+        observed_response_id = self._text(write_observation.get("response_id"))
+        recent_response_id = observed_response_id or self._current_response_id
+        response = self._responses_by_id.get(recent_response_id)
+        observed_item_id = self._text(write_observation.get("item_id"))
+        recent_item_id = observed_item_id or (
+            self._text(response.get("assistant_item_id"))
+            if response is not None
+            else ""
+        )
         recent_write_ns = (
             self._last_playback_write_start_ns
             if self._playback_write_in_progress
@@ -425,7 +494,8 @@ class QwenLiveDiagnostics:
                 self._playback_write_in_progress or backlog_bytes > 0
             ),
             "provider_response_active": self._response_active,
-            "current_or_recent_response_id": self._current_response_id,
+            "current_or_recent_response_id": recent_response_id,
+            "current_or_recent_output_item_id": recent_item_id,
             "provider_audio_received_bytes": self._provider_delta_bytes,
             "playback_bytes_written": self._playback_bytes_written,
             "playback_backlog_bytes": backlog_bytes,
@@ -440,6 +510,82 @@ class QwenLiveDiagnostics:
                 self._optional_elapsed_ms(recent_write_ns, t_ns)
             ),
         }
+
+    def _apply_correlation_results(
+        self,
+        results: list[tuple[int, dict[str, object]]] | None = None,
+    ) -> None:
+        completed = self._correlation_probe.collect() if results is None else results
+        for request_id, metrics in completed:
+            target_info = self._correlation_targets.pop(request_id, None)
+            if target_info is None:
+                continue
+            turn, field_name, event_type = target_info
+            turn[field_name] = metrics
+            if field_name == "playback_microphone_correlation_at_speech_started":
+                turn["playback_microphone_correlation"] = metrics
+            self.record(
+                "playback_microphone_correlation",
+                event_type=event_type,
+                turn_id=self._text(turn.get("turn_id")),
+                analysis_valid=metrics.get("analysis_valid"),
+                availability_reason=metrics.get("availability_reason"),
+                analysis_rate_hz=metrics.get("analysis_rate_hz"),
+                analysis_window_ms=metrics.get("analysis_window_ms"),
+                lag_search_min_ms=metrics.get("lag_search_min_ms"),
+                lag_search_max_ms=metrics.get("lag_search_max_ms"),
+                valid_sample_count=metrics.get("valid_sample_count"),
+                valid_window_ms=metrics.get("valid_window_ms"),
+                mic_rms=metrics.get("mic_rms"),
+                mic_peak=metrics.get("mic_peak"),
+                playback_ref_rms=metrics.get("playback_ref_rms"),
+                playback_ref_peak=metrics.get("playback_ref_peak"),
+                max_normalized_correlation=metrics.get(
+                    "max_normalized_correlation"
+                ),
+                best_lag_ms=metrics.get("best_lag_ms"),
+                mic_to_playback_energy_ratio=metrics.get(
+                    "mic_to_playback_energy_ratio"
+                ),
+                optimal_playback_gain=metrics.get("optimal_playback_gain"),
+                residual_double_talk_score=metrics.get(
+                    "residual_double_talk_score"
+                ),
+            )
+
+    def _submit_correlation_analysis(
+        self,
+        turn: dict[str, object],
+        *,
+        field_name: str,
+        event_type: str,
+        t_ns: int,
+    ) -> None:
+        self._apply_correlation_results()
+        request_id = self._correlation_probe.submit(event_ns=t_ns)
+        if request_id is None:
+            metrics = unavailable_correlation_result("analysis queue full")
+            turn[field_name] = metrics
+            if field_name == "playback_microphone_correlation_at_speech_started":
+                turn["playback_microphone_correlation"] = metrics
+            return
+        self._correlation_targets[request_id] = (turn, field_name, event_type)
+
+    @_synchronized
+    def record_microphone_analysis_pcm(
+        self,
+        *,
+        pcm: bytes,
+        sample_rate: int,
+        end_ns: int,
+    ) -> None:
+        """Retain a bounded diagnostic copy without changing live input PCM."""
+
+        self._correlation_probe.record_microphone(
+            pcm,
+            sample_rate=sample_rate,
+            end_ns=end_ns,
+        )
 
     def _new_turn(self, *, t_ns: int, item_id: str = "") -> dict[str, object]:
         if len(self._turns) >= TURN_FORENSICS_MAX_TURNS:
@@ -636,6 +782,12 @@ class QwenLiveDiagnostics:
                     "playback_at_speech_started": self._playback_snapshot(t_ns),
                 }
             )
+            self._submit_correlation_analysis(
+                turn,
+                field_name="playback_microphone_correlation_at_speech_started",
+                event_type=event_type,
+                t_ns=t_ns,
+            )
             self._active_speech_turn = turn
             playback = turn["playback_at_speech_started"]
             if isinstance(playback, Mapping) and playback.get("playback_active") is True:
@@ -656,6 +808,12 @@ class QwenLiveDiagnostics:
                     "provider_stop_reason": self._text(event.get("reason")),
                     "playback_at_speech_stopped": self._playback_snapshot(t_ns),
                 }
+            )
+            self._submit_correlation_analysis(
+                turn,
+                field_name="playback_microphone_correlation_at_speech_stopped",
+                event_type=event_type,
+                t_ns=t_ns,
             )
             self._finalize_turn_signal(turn)
             if self._active_speech_turn is turn:
@@ -680,6 +838,10 @@ class QwenLiveDiagnostics:
                 if response is not None:
                     response["assistant_item_id"] = created_item_id
                     response["assistant_item_created_event_id"] = event_id
+                    response["assistant_item_type"] = self._text(item.get("type"))
+                    response["assistant_item_status"] = self._text(
+                        item.get("status")
+                    )
         elif event_type in {
             "conversation.item.input_audio_transcription.completed",
             "conversation.item.input_audio_transcription.failed",
@@ -700,6 +862,12 @@ class QwenLiveDiagnostics:
             )
             if completed:
                 turn["transcript"] = self._text(event.get("transcript"))
+                self._submit_correlation_analysis(
+                    turn,
+                    field_name="playback_microphone_correlation_at_transcription",
+                    event_type=event_type,
+                    t_ns=t_ns,
+                )
             else:
                 error = self._mapping(event.get("error"))
                 turn["transcription_error"] = {
@@ -740,6 +908,9 @@ class QwenLiveDiagnostics:
             response = self._response_for_event(response_id=response_id, t_ns=t_ns)
             if response is not None:
                 response["response_created_event_id"] = event_id
+                response["response_status_at_created"] = self._text(
+                    event_response.get("status")
+                )
                 response["playback_at_response_created"] = self._playback_snapshot(t_ns)
                 correlated_turn = next(
                     (
@@ -823,6 +994,17 @@ class QwenLiveDiagnostics:
                     response["response_done_ns"] = t_ns
                     response["response_done_s"] = self._session_seconds(t_ns)
                     response["response_done_event_id"] = event_id
+                    response["response_status"] = self._text(
+                        event_response.get("status")
+                    )
+                    response["response_status_details"] = (
+                        self._provider_status_details(
+                            event_response.get("status_details")
+                        )
+                    )
+                    response["output_items"] = self._provider_output_items(
+                        event_response.get("output")
+                    )
                     response["playback_at_response_done"] = self._playback_snapshot(t_ns)
         if event_type in snapshot_events:
             self.record(
@@ -1417,6 +1599,8 @@ class QwenLiveDiagnostics:
             response_id=response_id or self._current_response_id,
             t_ns=receive_ns,
         )
+        observed_response_id = response_id or self._current_response_id
+        delta_sequence = self._audio_delta_count
         if response is not None:
             provider_audio_bytes = self._count(
                 response.get("provider_audio_bytes")
@@ -1425,8 +1609,28 @@ class QwenLiveDiagnostics:
             response["provider_audio_duration_ms"] = self.playback_ms(
                 provider_audio_bytes, source_rate
             )
+            queued_audio_bytes = self._count(
+                response.get("playback_bytes_queued")
+            ) + resampled_bytes
+            response["playback_bytes_queued"] = queued_audio_bytes
+            response["playback_queued_duration_ms"] = self.playback_ms(
+                queued_audio_bytes, target_rate
+            )
             if item_id:
                 response["assistant_item_id"] = item_id
+            delta_sequence = self._count(
+                response.get("provider_audio_delta_count")
+            )
+        self._playback_observations.append(
+            {
+                "response_id": observed_response_id,
+                "item_id": item_id,
+                "provider_delta_sequence": delta_sequence,
+                "pcm_bytes": resampled_bytes,
+                "sample_rate": target_rate,
+                "receive_ns": receive_ns,
+            }
+        )
         duration_ms = self._elapsed_ms(resample_start_ns, resample_end_ns)
         self._timing("response_resample", duration_ms)
         decoded_audio_ms = self.playback_ms(decoded_bytes, source_rate)
@@ -1506,18 +1710,64 @@ class QwenLiveDiagnostics:
         buffer_after_bytes: int,
         response_audio_bytes: int,
         sample_rate: int,
+        pcm: bytes | None = None,
     ) -> None:
         """Mark a physical write interval without retaining its PCM payload."""
         self._playback_write_in_progress = response_audio_bytes > 0
         self._last_playback_write_start_ns = t_ns
         self._playback_queue_depth_bytes = max(0, buffer_after_bytes)
         self._playback_sample_rate = sample_rate
-        response = self._responses_by_id.get(self._current_response_id)
+        self._playback_write_sequence += 1
+        observation = (
+            self._playback_observations.popleft()
+            if self._playback_observations
+            else {
+                "response_id": self._current_response_id,
+                "item_id": "",
+                "provider_delta_sequence": 0,
+                "pcm_bytes": response_audio_bytes,
+                "sample_rate": sample_rate,
+            }
+        )
+        observation["stream_write_sequence"] = self._playback_write_sequence
+        observation["observed_write_bytes"] = response_audio_bytes
+        observation["byte_count_matches_fifo_chunk"] = (
+            self._count(observation.get("pcm_bytes")) == response_audio_bytes
+        )
+        self._active_playback_observation = observation
+        response_id = self._text(observation.get("response_id"))
+        response = self._responses_by_id.get(response_id)
         if response is not None and response_audio_bytes > 0:
             response.setdefault("playback_start_ns", t_ns)
             response["playback_correlation"] = (
-                "provider_order_current_response_estimate; FIFO chunks carry no IDs"
+                "diagnostic provider-order ledger; FIFO payload remains bytes-only"
             )
+            response["playback_last_stream_write_sequence"] = (
+                self._playback_write_sequence
+            )
+        if pcm is not None and response_audio_bytes > 0:
+            self._correlation_probe.record_playback(
+                pcm,
+                sample_rate=sample_rate,
+                start_ns=t_ns,
+            )
+        self.record(
+            "playback_write_observation_start",
+            t_ns=t_ns,
+            stream_write_sequence=self._playback_write_sequence,
+            response_id=response_id,
+            item_id=self._text(observation.get("item_id")),
+            provider_delta_sequence=self._count(
+                observation.get("provider_delta_sequence")
+            ),
+            response_audio_bytes=response_audio_bytes,
+            byte_count_matches_fifo_chunk=bool(
+                observation.get("byte_count_matches_fifo_chunk")
+            ),
+            playback_backlog_ms=self.playback_ms(
+                buffer_after_bytes, sample_rate
+            ),
+        )
 
     @_synchronized
     def record_playback_wait_start(
@@ -1624,22 +1874,29 @@ class QwenLiveDiagnostics:
         preceding_recv_timeout: bool = False,
         preceding_recv_wait_ms: float = 0.0,
     ) -> None:
+        observation = self._active_playback_observation or {}
+        self._active_playback_observation = None
         self._playback_write_in_progress = False
         self._last_playback_write_start_ns = write_start_ns
         self._last_playback_write_end_ns = write_end_ns
         self._playback_queue_depth_bytes = max(0, buffer_after_bytes)
         self._playback_sample_rate = sample_rate
         self._playback_bytes_written += max(0, response_audio_frames * 2)
-        response = self._responses_by_id.get(self._current_response_id)
+        response_id = self._text(observation.get("response_id"))
+        response = self._responses_by_id.get(response_id)
         if response is not None and response_audio_frames > 0:
             response["playback_last_write_end_ns"] = write_end_ns
             playback_bytes_written = self._count(
-                response.get("playback_bytes_written_estimate")
+                response.get("playback_bytes_physically_written")
             ) + response_audio_frames * 2
-            response["playback_bytes_written_estimate"] = playback_bytes_written
-            response["playback_duration_ms_estimate"] = self.playback_ms(
+            response["playback_bytes_physically_written"] = playback_bytes_written
+            response["playback_duration_ms"] = self.playback_ms(
                 playback_bytes_written, sample_rate
             )
+            response["playback_bytes_written_estimate"] = playback_bytes_written
+            response["playback_duration_ms_estimate"] = response[
+                "playback_duration_ms"
+            ]
         duration_ms = self._elapsed_ms(write_start_ns, write_end_ns)
         self._timing("stream_write", duration_ms)
         written_audio_ms = self.playback_ms(response_audio_frames * 2, sample_rate)
@@ -1734,6 +1991,17 @@ class QwenLiveDiagnostics:
             active_response_write_gap_ms=active_write_gap_ms,
             non_silent_write_gap_ms=non_silent_write_gap_ms,
             non_silent_write_idle_gap_ms=non_silent_write_idle_gap_ms,
+            stream_write_sequence=self._count(
+                observation.get("stream_write_sequence")
+            ),
+            response_id=response_id,
+            item_id=self._text(observation.get("item_id")),
+            provider_delta_sequence=self._count(
+                observation.get("provider_delta_sequence")
+            ),
+            byte_count_matches_fifo_chunk=bool(
+                observation.get("byte_count_matches_fifo_chunk")
+            ),
         )
         if first_non_silent_write:
             self.record(
@@ -1885,6 +2153,7 @@ class QwenLiveDiagnostics:
 
     @_synchronized
     def summary(self, *, end_ns: int | None = None) -> dict[str, object]:
+        self._apply_correlation_results()
         final_ns = self._clock_ns() if end_ns is None else end_ns
         captured_audio_ms = self.playback_ms(self._captured_frames * 2, self._capture_rate)
         sent_audio_ms = self.playback_ms(self._sent_frames * 2, self._send_rate)
@@ -2155,6 +2424,7 @@ class QwenLiveDiagnostics:
     @_synchronized
     def finish(self, *, end_ns: int | None = None) -> tuple[Path, Path] | None:
         final_ns = self._clock_ns() if end_ns is None else end_ns
+        self._apply_correlation_results(self._correlation_probe.close())
         self._close_starvation(final_ns)
         self._close_response_period(final_ns)
         self.record("session_end", t_ns=final_ns)
@@ -2197,6 +2467,11 @@ class QwenLiveDiagnostics:
                 handle.write(self._human_summary(summary))
         except OSError:
             return None
+        finally:
+            self._correlation_probe.reset()
+            self._correlation_targets.clear()
+            self._playback_observations.clear()
+            self._active_playback_observation = None
         return jsonl_path, summary_path
 
     @staticmethod
@@ -2286,6 +2561,37 @@ class QwenLiveDiagnostics:
                     for name, value in turn.items()
                     if name not in {"turn_sequence", "turn_id"}
                 )
+                correlation = turn.get("playback_microphone_correlation")
+                playback = turn.get("playback_at_speech_started")
+                lines.append("  PLAYBACK/MIC CORRELATION AT SPEECH START:")
+                if isinstance(playback, dict):
+                    for name in (
+                        "playback_active",
+                        "provider_response_active",
+                        "playback_backlog_ms",
+                        "current_or_recent_response_id",
+                        "current_or_recent_output_item_id",
+                    ):
+                        lines.append(f"    {name}: {playback.get(name)}")
+                if isinstance(correlation, dict):
+                    for name in (
+                        "mic_rms",
+                        "mic_peak",
+                        "playback_ref_rms",
+                        "playback_ref_peak",
+                        "max_normalized_correlation",
+                        "best_lag_ms",
+                        "lag_search_min_ms",
+                        "lag_search_max_ms",
+                        "mic_to_playback_energy_ratio",
+                        "optimal_playback_gain",
+                        "residual_double_talk_score",
+                        "valid_sample_count",
+                        "analysis_window_ms",
+                        "analysis_valid",
+                        "availability_reason",
+                    ):
+                        lines.append(f"    {name}: {correlation.get(name)}")
         lines.append("RESPONSE TIMELINE:")
         responses = summary.get("response_timeline")
         if isinstance(responses, list):

@@ -721,6 +721,7 @@ class QwenLiveAudioService:
         buffer_after_bytes: int,
         response_audio_bytes: int,
         sample_rate: int,
+        pcm: bytes | None = None,
     ) -> None:
         try:
             diagnostics.record_playback_write_start(
@@ -728,10 +729,34 @@ class QwenLiveAudioService:
                 buffer_after_bytes=buffer_after_bytes,
                 response_audio_bytes=response_audio_bytes,
                 sample_rate=sample_rate,
+                pcm=pcm,
             )
         except Exception as exc:
             try:
                 diagnostics.record_turn_forensics_failure(t_ns=t_ns, error=exc)
+            except Exception:
+                pass
+
+    @staticmethod
+    def _record_microphone_analysis_pcm_safely(
+        diagnostics: QwenLiveDiagnostics,
+        *,
+        pcm: bytes,
+        sample_rate: int,
+        end_ns: int,
+    ) -> None:
+        try:
+            diagnostics.record_microphone_analysis_pcm(
+                pcm=pcm,
+                sample_rate=sample_rate,
+                end_ns=end_ns,
+            )
+        except Exception as exc:
+            try:
+                diagnostics.record_turn_forensics_failure(
+                    t_ns=end_ns,
+                    error=exc,
+                )
             except Exception:
                 pass
 
@@ -865,6 +890,7 @@ class QwenLiveAudioService:
                         buffer_after_bytes=after_bytes,
                         response_audio_bytes=len(pcm),
                         sample_rate=audio.output_native_rate,
+                        pcm=pcm,
                     )
                     underflowed = stream.write(pcm)
                     write_end_ns = time.perf_counter_ns()
@@ -1445,6 +1471,14 @@ class QwenLiveAudioService:
                             depth=capture_depth,
                             capacity=CAPTURE_QUEUE_BLOCKS,
                         )
+                    # Correlation is a side channel: enqueue the exact live PCM
+                    # first so diagnostic history cannot delay this send block.
+                    self._record_microphone_analysis_pcm_safely(
+                        diagnostics,
+                        pcm=qwen_pcm,
+                        sample_rate=QWEN_INPUT_RATE,
+                        end_ns=read_end_ns,
+                    )
                     with self._lock:
                         self._status.input_chunks += 1
 
