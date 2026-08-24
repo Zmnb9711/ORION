@@ -47,6 +47,8 @@ def test_build_workflows_assign_srs_native_runtime_to_core_not_launcher() -> Non
         assert "--exclude-module samplerate" in launcher_line
         assert "--exclude-module numpy" in launcher_line
         assert "--srs-control-smoke" in source
+        assert "--integrated-product-smoke" in source
+        assert "dist-product/Launcher/ORION-Launcher.exe" in source
 
 
 def test_orion_distribution_never_contains_external_srs_applications() -> None:
@@ -63,3 +65,13 @@ def test_launcher_entrypoint_has_offline_srs_control_smoke() -> None:
     source = (ROOT / "orion/launcher_main.py").read_text(encoding="utf-8")
     assert "--srs-control-smoke" in source
     assert "launcher_srs_offline_smoke" in source
+    assert "--integrated-product-smoke" in source
+    assert '"ORION-Launcher.exe"' in source
+    assert '"ORION-Core.exe"' in source
+
+
+def test_project_memory_requires_exact_integrated_field_artifact() -> None:
+    source = (ROOT / "docs/ORION_PROJECT_MEMORY.md").read_text(encoding="utf-8")
+    assert "complete normal ORION product" in source
+    assert "exact delivered Launcher/Core pair" in source
+    assert "Stage/Test/Smoke-named" in source

@@ -54,6 +54,20 @@ jobs:
           Copy-Item "dist/ORION-Launcher/*" "dist-product/Launcher" -Recurse -Force
           Copy-Item "dcs-export/*" "dist-product/Integration/DCS/Export" -Recurse -Force
           if(Test-Path "dist-product/Voice"){throw "Legacy Voice directory must not exist"}
+      - name: Prove exact assembled Launcher starts and shuts down exact Core
+        shell: pwsh
+        run: |
+          $resultPath = Join-Path $env:RUNNER_TEMP "orion-integrated-product-smoke.json"
+          $runtime = Join-Path $env:RUNNER_TEMP "orion-integrated-product-runtime"
+          New-Item -ItemType Directory -Force $runtime | Out-Null
+          $env:ORION_RUNTIME_DIR = $runtime
+          $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
+          $listener.Start(); $port = $listener.LocalEndpoint.Port; $listener.Stop()
+          $launcher = "dist-product/Launcher/ORION-Launcher.exe"
+          $process = Start-Process $launcher -ArgumentList @("--host","127.0.0.1","--port",$port,"--integrated-product-smoke",$resultPath) -Wait -PassThru -WindowStyle Hidden
+          if ($process.ExitCode) { throw "Integrated product smoke exited $($process.ExitCode)" }
+          $result = Get-Content $resultPath -Raw | ConvertFrom-Json
+          if (-not $result.ok -or -not $result.core_health_ok -or -not $result.shutdown_ok -or $result.orphan_core_process) { throw "Integrated product smoke failed" }
       - name: Locate Inno Setup
         id: inno
         shell: pwsh

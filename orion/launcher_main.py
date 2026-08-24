@@ -3,6 +3,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
+import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 
@@ -20,6 +24,90 @@ def _runtime_root() -> Path:
     return runtime
 
 
+def _integrated_product_smoke(result_path: Path, host: str, port: int) -> int:
+    """Prove the frozen canonical Launcher -> Core product contract."""
+
+    from orion.core_process import CoreProcessManager
+
+    launcher = Path(sys.executable).resolve()
+    expected_core = launcher.parent.parent / "Core" / "ORION-Core.exe"
+    runtime = _runtime_root()
+    core = CoreProcessManager(host, port, runtime)
+    spawned = None
+    result: dict[str, object] = {
+        "ok": False,
+        "launcher_path": str(launcher),
+        "core_path": str(expected_core),
+        "canonical_launcher_name": launcher.name == "ORION-Launcher.exe",
+        "canonical_core_name": expected_core.name == "ORION-Core.exe",
+        "canonical_relative_layout": expected_core.is_file(),
+        "core_started_by_launcher": False,
+        "core_health_ok": False,
+        "realtime_status_ok": False,
+        "launcher_remained_operational": False,
+        "shutdown_ok": False,
+        "orphan_core_process": False,
+        "network_scope": "loopback-only",
+        "audio_devices_opened": False,
+        "external_srs_process_started": False,
+    }
+    try:
+        if not getattr(sys, "frozen", False):
+            raise RuntimeError("Integrated product smoke requires a frozen Launcher")
+        if launcher.name != "ORION-Launcher.exe" or not expected_core.is_file():
+            raise RuntimeError("Canonical Launcher/Core product layout is incomplete")
+        if core.healthy(timeout=0.2):
+            raise RuntimeError("Integrated smoke port is already occupied by a healthy Core")
+
+        core.start()
+        spawned = core._process  # Exact child handle owned by this Launcher smoke.
+        if spawned is None or not core.owns_process:
+            raise RuntimeError("Launcher did not create the delivered Core process")
+        result["core_pid"] = spawned.pid
+        result["core_started_by_launcher"] = True
+
+        deadline = time.monotonic() + 20.0
+        while time.monotonic() < deadline and not core.healthy(timeout=0.5):
+            if spawned.poll() is not None:
+                raise RuntimeError(f"Delivered Core exited during startup: {spawned.returncode}")
+            time.sleep(0.1)
+        if not core.healthy(timeout=0.5):
+            raise RuntimeError("Delivered Core did not become healthy")
+        result["core_health_ok"] = True
+
+        with urllib.request.urlopen(
+            f"{core.base_url}/v1/realtime/live/status",
+            timeout=2.0,
+        ) as response:
+            status = json.loads(response.read().decode("utf-8"))
+        result["realtime_status_ok"] = (
+            status.get("state") == "stopped" and status.get("provider") is None
+        )
+        result["launcher_remained_operational"] = True
+    except (OSError, RuntimeError, urllib.error.URLError, json.JSONDecodeError) as exc:
+        result["error"] = f"{type(exc).__name__}: {exc}"[:500]
+    finally:
+        core.shutdown()
+        if spawned is not None:
+            result["orphan_core_process"] = spawned.poll() is None
+        result["shutdown_ok"] = not bool(result["orphan_core_process"])
+        result["ok"] = all(
+            bool(result[key])
+            for key in (
+                "canonical_launcher_name",
+                "canonical_core_name",
+                "canonical_relative_layout",
+                "core_started_by_launcher",
+                "core_health_ok",
+                "realtime_status_ok",
+                "launcher_remained_operational",
+                "shutdown_ok",
+            )
+        ) and not bool(result["orphan_core_process"])
+        result_path.write_text(json.dumps(result, sort_keys=True), encoding="utf-8")
+    return 0 if result["ok"] else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run the ORION Launcher UI only.
 
@@ -32,6 +120,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--srs-control-smoke", metavar="RESULT_JSON")
+    parser.add_argument("--integrated-product-smoke", metavar="RESULT_JSON")
     args = parser.parse_args(argv)
 
     if args.srs_control_smoke:
@@ -42,6 +131,13 @@ def main(argv: list[str] | None = None) -> int:
             encoding="utf-8",
         )
         return 0
+
+    if args.integrated_product_smoke:
+        return _integrated_product_smoke(
+            Path(args.integrated_product_smoke),
+            args.host,
+            args.port,
+        )
 
     os.environ["ORION_PROCESS_ROLE"] = "launcher"
     os.environ["ORION_CORE_BASE_URL"] = f"http://{args.host}:{args.port}"

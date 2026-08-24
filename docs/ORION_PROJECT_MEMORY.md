@@ -508,4 +508,13 @@ separately reprioritized.
 - The QWEN READY/ON VR status indicator is deferred from the first ATC integration; preferred later design is a minimal OpenXR API layer + `XrCompositionLayerQuad` with graceful degradation.
 - Installer module selection is user-controlled, with all modules selected by default; Launcher runtime module selection is also user-controlled, with all installed modules enabled by default.
 - Core must remain independent of Launcher.
+- All user-facing ORION field-test builds must be delivered and validated as
+  the complete normal ORION product. The user launches the standard
+  `ORION-Launcher.exe`, which controls the standard `ORION-Core.exe` through
+  the production installation/layout contract. Stage/Test/Smoke-named
+  executables may be created internally for CI validation, but must never be
+  delivered as the user field-test artifact. A field-test artifact is accepted
+  only after the exact delivered Launcher/Core pair passes an integrated
+  Launcher -> Core startup, health, and shutdown smoke with the same filenames
+  and relative layout that the user will run.
 - Real Windows/DCS smoke evidence outranks optimistic progress estimates.
