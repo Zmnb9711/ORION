@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Protocol
+from typing import Any, Protocol
+
+from pydantic import BaseModel
 
 
 class RealtimeProviderState(StrEnum):
@@ -43,3 +45,32 @@ class RealtimeProvider(Protocol):
 
     def test_tool_call(self) -> RealtimeSmokeResult:
         ...
+
+
+class RealtimeLiveStatus(BaseModel):
+    """Provider-neutral, credential-free view of one live voice session."""
+
+    provider: str | None = None
+    state: str = "stopped"
+    phase: str = "idle"
+    message: str = "Realtime voice is stopped"
+    session_id: str | None = None
+    input_name: str | None = None
+    output_name: str | None = None
+    input_rate: int | None = None
+    output_rate: int | None = None
+    input_chunks: int = 0
+    output_chunks: int = 0
+    last_error: str | None = None
+
+
+class RealtimeLiveProvider(Protocol):
+    """Minimal lifecycle boundary; transport and PCM remain provider-specific."""
+
+    provider_id: str
+
+    def start_live(self, payload: dict[str, Any]) -> RealtimeLiveStatus: ...
+
+    def live_status(self) -> RealtimeLiveStatus: ...
+
+    def stop_live(self) -> RealtimeLiveStatus: ...

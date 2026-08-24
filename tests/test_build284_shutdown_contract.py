@@ -32,21 +32,21 @@ class _Recorder:
         self.events.append(self.name)
 
 
-def test_full_exit_stops_qwen_before_core_before_launcher() -> None:
+def test_full_exit_stops_realtime_provider_before_core_before_launcher() -> None:
     events: list[str] = []
     launcher = object.__new__(FieldFixedAudioLauncher)
     launcher._really_exiting = False
     launcher._tray = _Recorder(events, "tray")
-    launcher._stop_qwen_before_exit = lambda: events.append("qwen-stop")
+    launcher._stop_realtime_before_exit = lambda: events.append("realtime-stop")
     launcher.core = _Recorder(events, "core")
     launcher.root = _Recorder(events, "launcher")
 
     launcher.exit_application()
 
-    assert events == ["tray", "qwen-stop", "core", "launcher"]
+    assert events == ["tray", "realtime-stop", "core", "launcher"]
     assert launcher._really_exiting is True
     launcher.exit_application()
-    assert events == ["tray", "qwen-stop", "core", "launcher"]
+    assert events == ["tray", "realtime-stop", "core", "launcher"]
 
 
 def test_window_close_to_tray_does_not_shutdown_runtime() -> None:

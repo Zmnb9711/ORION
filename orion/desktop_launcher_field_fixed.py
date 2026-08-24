@@ -25,14 +25,14 @@ class FieldFixedAudioLauncher(
         Closing the window is handled by ``WindowsOrionDesktopLauncher.close``
         and only withdraws it to the tray.  This method is reserved for the
         explicit tray Exit action and therefore owns the full runtime shutdown:
-        An active Qwen session is stopped through Core first, followed by Core
+        An active realtime provider is stopped through Core first, followed by Core
         and Launcher teardown.  If Core is unavailable, shutdown continues.
         """
         if getattr(self, "_really_exiting", False):
             return
         self._really_exiting = True
         self._tray.stop()
-        self._stop_qwen_before_exit()
+        self._stop_realtime_before_exit()
         self.core.shutdown()
         self.root.destroy()
 

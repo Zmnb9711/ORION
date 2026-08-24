@@ -39,13 +39,13 @@ jobs:
 
       - name: Run Qwen and legacy-removal regression tests
         shell: pwsh
-        run: python -m pytest -q tests/test_qwen_live_audio_core.py tests/test_qwen_live_audio_architecture.py tests/test_legacy_voice_removal.py
+        run: python -m pytest -q tests/test_qwen_live_audio_core.py tests/test_qwen_live_audio_architecture.py tests/test_realtime_live_core.py tests/test_realtime_session_control.py tests/test_yandex_realtime_provider.py tests/test_yandex_live_audio_core.py tests/test_yandex_live_lifecycle.py tests/test_yandex_playback_interrupt.py tests/test_yandex_credentials.py tests/test_legacy_voice_removal.py
 
       - name: Build Core and Launcher
         shell: pwsh
         run: |
-          python -m PyInstaller --noconfirm --clean --onedir --windowed --name ORION-Core --collect-submodules orion --collect-submodules uvicorn --collect-submodules websocket --add-data "dcs-export;dcs-export" --add-data "dcs-mission-pack;dcs-mission-pack" --add-data "dcs-mission-template;dcs-mission-template" --icon branding/orion.ico orion/core_main.py
-          python -m PyInstaller --noconfirm --clean --onedir --windowed --name ORION-Launcher --collect-submodules orion --collect-submodules uvicorn --collect-submodules websocket --add-data "dcs-export;dcs-export" --icon branding/orion.ico --add-data "branding/orion.ico;branding" orion/launcher_main.py
+          python -m PyInstaller --noconfirm --clean --onedir --windowed --name ORION-Core --collect-submodules orion --collect-submodules uvicorn --collect-submodules websocket --collect-submodules aiohttp --add-data "dcs-export;dcs-export" --add-data "dcs-mission-pack;dcs-mission-pack" --add-data "dcs-mission-template;dcs-mission-template" --icon branding/orion.ico orion/core_main.py
+          python -m PyInstaller --noconfirm --clean --onedir --windowed --name ORION-Launcher --collect-submodules orion --collect-submodules uvicorn --collect-submodules websocket --collect-submodules aiohttp --add-data "dcs-export;dcs-export" --icon branding/orion.ico --add-data "branding/orion.ico;branding" orion/launcher_main.py
 
       - name: Assemble canonical installer payload
         shell: pwsh

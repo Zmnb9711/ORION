@@ -30,24 +30,24 @@ def test_legacy_voice_text_endpoint_is_absent() -> None:
     assert response.status_code == 404
 
 
-def test_qwen_stop_is_requested_synchronously_before_exit() -> None:
+def test_active_realtime_provider_stop_is_requested_synchronously_before_exit() -> None:
     calls: list[tuple[str, str]] = []
     launcher = object.__new__(FieldFixedAudioLauncher)
     launcher._realtime_core_json = lambda path, *, method="GET", payload=None: calls.append((method, path)) or {}
 
-    launcher._stop_qwen_before_exit()
+    launcher._stop_realtime_before_exit()
 
-    assert calls == [("POST", "/v1/realtime/qwen/live/stop")]
+    assert calls == [("POST", "/v1/realtime/live/stop")]
 
 
-def test_qwen_stop_failure_does_not_block_core_shutdown_boundary() -> None:
+def test_realtime_stop_failure_does_not_block_core_shutdown_boundary() -> None:
     launcher = object.__new__(FieldFixedAudioLauncher)
 
     def unavailable(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
         raise OSError("Core unavailable")
 
     launcher._realtime_core_json = unavailable
-    launcher._stop_qwen_before_exit()
+    launcher._stop_realtime_before_exit()
 
 
 def test_build_definitions_have_no_legacy_voice_payload() -> None:

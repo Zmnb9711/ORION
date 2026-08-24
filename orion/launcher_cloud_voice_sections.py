@@ -20,6 +20,7 @@ from orion.controller_input import (
 )
 from orion.qwen_realtime_provider import QwenRealtimeConfig, QwenRealtimeProvider
 from orion.qwen_session_control import QwenControlResult, QwenSessionController
+from orion.realtime_session_control import RealtimeSessionController
 
 
 @dataclass(slots=True)
@@ -28,6 +29,7 @@ class CloudVoiceConfig:
     qwen_region: str = "singapore"
     qwen_workspace_id: str = ""
     qwen_model: str = "qwen3.5-omni-flash-realtime"
+    yandex_folder_id: str = ""
 
 
 class CloudVoiceConfigStore:
@@ -139,7 +141,7 @@ class QwenControlsViewLifecycle:
 
 
 class LauncherCloudVoiceSectionsMixin:
-    """Qwen-only Settings → Voice surface layered onto the Launcher."""
+    """Provider-selectable Settings → Voice surface layered onto the Launcher."""
 
     root: Any
     runtime_dir: Path
@@ -152,6 +154,7 @@ class LauncherCloudVoiceSectionsMixin:
         super().__init__(root, runtime_dir, core)  # type: ignore[misc]
         self._qwen_control_diagnostics = BoundedControlDiagnostics()
         self._qwen_session_controller = QwenSessionController(self._realtime_core_json)
+        self._realtime_session_controller = RealtimeSessionController(self._realtime_core_json)
         self._qwen_controller_monitor = QwenControllerMonitor(
             backend=PygameJoystickBackend(),
             store=ControllerBindingStore(runtime_dir),
@@ -175,6 +178,12 @@ class LauncherCloudVoiceSectionsMixin:
         """Keep the edited key for the lifetime of this Launcher process."""
         self._qwen_api_key = value.strip()
 
+    def _current_yandex_api_key(self) -> str:
+        return str(getattr(self, "_yandex_api_key", "")).strip()
+
+    def _remember_yandex_api_key(self, value: str) -> None:
+        self._yandex_api_key = value.strip()
+
     def _page_settings(self) -> None:
         super()._page_settings()  # type: ignore[misc]
         config = self._cloud_voice_store().load()
@@ -184,15 +193,15 @@ class LauncherCloudVoiceSectionsMixin:
         ttk.Label(
             self.content,
             text=(
-                "ORION conversational voice requires Qwen Realtime. If the provider, network, or API key "
-                "is unavailable, voice mode is unavailable."
+                "Select Qwen Realtime or Yandex Realtime. Provider transports and audio paths remain "
+                "independent; only one provider can own the selected devices at a time."
             ),
             style="Muted.TLabel",
             wraplength=820,
             justify="left",
         ).pack(anchor="w", pady=(4, 12))
 
-        provider_labels = {"Qwen Realtime": "qwen_realtime"}
+        provider_labels = {"Qwen Realtime": "qwen_realtime", "Yandex Realtime": "yandex"}
         region_labels = {"Singapore": "singapore", "China (Beijing)": "beijing"}
         reverse_provider = {value: label for label, value in provider_labels.items()}
         reverse_region = {value: label for label, value in region_labels.items()}
@@ -202,33 +211,47 @@ class LauncherCloudVoiceSectionsMixin:
         workspace = StringVar(value=config.qwen_workspace_id)
         model = StringVar(value=config.qwen_model)
         api_key = StringVar(value=self._current_qwen_api_key())
+        yandex_api_key = StringVar(value=self._current_yandex_api_key())
+        yandex_folder_id = StringVar(value=config.yandex_folder_id)
         # Settings pages are destroyed/recreated during navigation. Mirror every
         # edit immediately into Launcher session memory, not only on SAVE.
         api_key.trace_add("write", lambda *_: self._remember_qwen_api_key(api_key.get()))
-        live_status = StringVar(value="STOPPED — Qwen live audio is not active")
+        yandex_api_key.trace_add("write", lambda *_: self._remember_yandex_api_key(yandex_api_key.get()))
+        live_status = StringVar(value="STOPPED — Realtime voice is not active")
 
         box = ttk.Frame(self.content, style="Card.TFrame", padding=16)
         box.pack(fill=X)
         ttk.Label(box, text="CLOUD PROVIDER", style="CardTitle.TLabel").pack(anchor="w")
         ttk.Combobox(box, textvariable=provider, values=tuple(provider_labels), state="readonly", width=42).pack(anchor="w", pady=(6, 12))
-        ttk.Label(box, text="REGION", style="CardTitle.TLabel").pack(anchor="w")
-        ttk.Combobox(box, textvariable=region, values=tuple(region_labels), state="readonly", width=42).pack(anchor="w", pady=(6, 12))
-        ttk.Label(box, text="WORKSPACE ID", style="CardTitle.TLabel").pack(anchor="w")
-        ttk.Entry(box, textvariable=workspace, width=72).pack(anchor="w", fill=X, pady=(6, 12))
-        ttk.Label(box, text="MODEL", style="CardTitle.TLabel").pack(anchor="w")
-        ttk.Entry(box, textvariable=model, width=72).pack(anchor="w", fill=X, pady=(6, 12))
-        ttk.Label(box, text="API KEY", style="CardTitle.TLabel").pack(anchor="w")
-        ttk.Entry(box, textvariable=api_key, show="*", width=72).pack(anchor="w", fill=X, pady=(6, 12))
+        qwen_fields = ttk.Frame(box, style="Card.TFrame")
+        ttk.Label(qwen_fields, text="REGION", style="CardTitle.TLabel").pack(anchor="w")
+        ttk.Combobox(qwen_fields, textvariable=region, values=tuple(region_labels), state="readonly", width=42).pack(anchor="w", pady=(6, 12))
+        ttk.Label(qwen_fields, text="WORKSPACE ID", style="CardTitle.TLabel").pack(anchor="w")
+        ttk.Entry(qwen_fields, textvariable=workspace, width=72).pack(anchor="w", fill=X, pady=(6, 12))
+        ttk.Label(qwen_fields, text="MODEL", style="CardTitle.TLabel").pack(anchor="w")
+        ttk.Entry(qwen_fields, textvariable=model, width=72).pack(anchor="w", fill=X, pady=(6, 12))
+        ttk.Label(qwen_fields, text="QWEN API KEY", style="CardTitle.TLabel").pack(anchor="w")
+        ttk.Entry(qwen_fields, textvariable=api_key, show="*", width=72).pack(anchor="w", fill=X, pady=(6, 12))
+        yandex_fields = ttk.Frame(box, style="Card.TFrame")
+        ttk.Label(yandex_fields, text="YANDEX API KEY", style="CardTitle.TLabel").pack(anchor="w")
+        ttk.Entry(yandex_fields, textvariable=yandex_api_key, show="*", width=72).pack(anchor="w", fill=X, pady=(6, 12))
+        ttk.Label(yandex_fields, text="FOLDER ID", style="CardTitle.TLabel").pack(anchor="w")
+        ttk.Entry(yandex_fields, textvariable=yandex_folder_id, width=72).pack(anchor="w", fill=X, pady=(6, 12))
+        ttk.Label(
+            yandex_fields,
+            text="Model: speech-realtime-260528  |  Voice: dasha  |  Language: ru-RU",
+            style="CardText.TLabel",
+        ).pack(anchor="w", pady=(0, 12))
         ttk.Label(
             box,
-            text="The API key is kept in memory for this Launcher session and is not written to cloud-voice.json.",
+            text="Provider API keys are kept separately in memory and are never written to cloud-voice.json.",
             style="CardText.TLabel",
         ).pack(anchor="w", pady=(0, 12))
         ttk.Label(
             box,
             text=(
-                "Selected microphone → ORION Core → Qwen Realtime → selected output. "
-                "Start Qwen from the Launcher or an assigned controller toggle; no local or text fallback is available."
+                "Selected microphone → ORION Core → selected realtime provider → selected output. "
+                "Stop the active provider before switching."
             ),
             style="CardText.TLabel",
             wraplength=780,
@@ -244,11 +267,13 @@ class LauncherCloudVoiceSectionsMixin:
                 qwen_region=region_labels[region.get()],
                 qwen_workspace_id=workspace.get().strip(),
                 qwen_model=model.get().strip() or "qwen3.5-omni-flash-realtime",
+                yandex_folder_id=yandex_folder_id.get().strip(),
             )
 
         def save() -> None:
             self._cloud_voice_store().save(selected_config())
             self._remember_qwen_api_key(api_key.get())
+            self._remember_yandex_api_key(yandex_api_key.get())
             messagebox.showinfo("ORION Voice", "Voice settings saved. API key kept in memory only.", parent=self.root)
 
         ttk.Button(buttons, text="SAVE VOICE SETTINGS", style="Primary.TButton", command=save).pack(side=LEFT, padx=(0, 8))
@@ -256,35 +281,57 @@ class LauncherCloudVoiceSectionsMixin:
             buttons,
             text="TEST CONNECTION",
             style="Secondary.TButton",
-            command=lambda: self._qwen_smoke_async(selected_config(), api_key.get(), tool=False),
+            command=lambda: self._provider_smoke_async(
+                selected_config(), api_key.get(), yandex_api_key.get(), tool=False
+            ),
         ).pack(side=LEFT, padx=(0, 8))
-        ttk.Button(
+        tool_button = ttk.Button(
             buttons,
             text="TEST TOOL CALL",
             style="Secondary.TButton",
-            command=lambda: self._qwen_smoke_async(selected_config(), api_key.get(), tool=True),
-        ).pack(side=LEFT)
+            command=lambda: self._provider_smoke_async(
+                selected_config(), api_key.get(), yandex_api_key.get(), tool=True
+            ),
+        )
+        tool_button.pack(side=LEFT)
 
         ttk.Separator(box, orient="horizontal").pack(fill=X, pady=(18, 14))
-        ttk.Label(box, text="QWEN LIVE REALTIME AUDIO", style="CardTitle.TLabel").pack(anchor="w")
+        ttk.Label(box, text="LIVE REALTIME AUDIO", style="CardTitle.TLabel").pack(anchor="w")
         ttk.Label(box, textvariable=live_status, style="CardText.TLabel", wraplength=780, justify="left").pack(anchor="w", pady=(6, 10))
         live_buttons = ttk.Frame(box, style="Card.TFrame")
         live_buttons.pack(fill=X)
         ttk.Button(
             live_buttons,
-            text="START LIVE QWEN",
+            text="START LIVE",
             style="Primary.TButton",
-            command=lambda: self._qwen_live_async(selected_config(), api_key.get(), live_status, start=True),
+            command=lambda: self._realtime_live_async(
+                selected_config(), api_key.get(), yandex_api_key.get(), live_status, start=True
+            ),
         ).pack(side=LEFT, padx=(0, 8))
         ttk.Button(
             live_buttons,
-            text="STOP LIVE QWEN",
+            text="STOP LIVE",
             style="Secondary.TButton",
-            command=lambda: self._qwen_live_async(selected_config(), api_key.get(), live_status, start=False),
+            command=lambda: self._realtime_live_async(
+                selected_config(), api_key.get(), yandex_api_key.get(), live_status, start=False
+            ),
         ).pack(side=LEFT)
 
+        def refresh_provider_fields(*_args: object) -> None:
+            selected = provider_labels[provider.get()]
+            if selected == "yandex":
+                qwen_fields.pack_forget()
+                yandex_fields.pack(fill=X, before=buttons)
+                tool_button.state(["disabled"])
+            else:
+                yandex_fields.pack_forget()
+                qwen_fields.pack(fill=X, before=buttons)
+                tool_button.state(["!disabled"])
+
+        provider.trace_add("write", refresh_provider_fields)
+        refresh_provider_fields()
         generation = self._build_qwen_controls(box)
-        self._qwen_live_poll(live_status, generation)
+        self._realtime_live_poll(live_status, generation)
 
     @staticmethod
     def _qwen_start_payload(config: CloudVoiceConfig, api_key: str) -> dict[str, object]:
@@ -304,6 +351,25 @@ class LauncherCloudVoiceSectionsMixin:
             self._cloud_voice_store().load(),
             self._current_qwen_api_key(),
         )
+
+    @staticmethod
+    def _realtime_start_payload(
+        config: CloudVoiceConfig,
+        qwen_api_key: str,
+        yandex_api_key: str,
+    ) -> dict[str, object]:
+        if config.cloud_provider == "yandex":
+            key = yandex_api_key.strip()
+            if not key:
+                raise ValueError("Yandex API key is required")
+            if not config.yandex_folder_id.strip():
+                raise ValueError("Yandex Folder ID is required")
+            return {
+                "provider": "yandex",
+                "api_key": key,
+                "folder_id": config.yandex_folder_id,
+            }
+        return {"provider": "qwen", **LauncherCloudVoiceSectionsMixin._qwen_start_payload(config, qwen_api_key)}
 
     def _hardware_qwen_toggle(self) -> None:
         try:
@@ -552,10 +618,13 @@ class LauncherCloudVoiceSectionsMixin:
             monitor.stop()
 
     def _stop_qwen_before_exit(self) -> None:
+        self._stop_realtime_before_exit()
+
+    def _stop_realtime_before_exit(self) -> None:
         """Best-effort graceful stop while Core is still available."""
         self._shutdown_qwen_controls()
         try:
-            self._realtime_core_json("/v1/realtime/qwen/live/stop", method="POST")
+            self._realtime_core_json("/v1/realtime/live/stop", method="POST")
         except Exception:
             # Explicit application exit must still shut down a stopped or
             # unreachable Core.  Core process shutdown is the final boundary.
@@ -674,3 +743,107 @@ class LauncherCloudVoiceSectionsMixin:
             self.root.after(0, show)
 
         threading.Thread(target=worker, name="orion-qwen-smoke", daemon=True).start()
+
+    def _realtime_live_async(
+        self,
+        config: CloudVoiceConfig,
+        qwen_api_key: str,
+        yandex_api_key: str,
+        live_status: StringVar,
+        *,
+        start: bool,
+    ) -> None:
+        self._qwen_live_status_var = live_status
+        generation = self._qwen_view_generation
+
+        def worker() -> None:
+            try:
+                control = (
+                    self._realtime_session_controller.request_start(
+                        lambda: self._realtime_start_payload(config, qwen_api_key, yandex_api_key)
+                    )
+                    if start
+                    else self._realtime_session_controller.request_stop()
+                )
+                self._schedule_qwen_ui(
+                    0,
+                    lambda: live_status.set(f"{control.state.upper()} — {control.message}"),
+                    generation,
+                )
+            except (OSError, ValueError, RuntimeError, urllib.error.URLError) as exc:
+                self._schedule_qwen_ui(
+                    0,
+                    lambda exc=exc: live_status.set(f"ERROR — {type(exc).__name__}: {exc}"),
+                    generation,
+                )
+
+        threading.Thread(target=worker, name="orion-realtime-live-control", daemon=True).start()
+
+    def _realtime_live_poll(self, live_status: StringVar, generation: int) -> None:
+        if not self._qwen_view_lifecycle.is_alive(generation):
+            return
+        self._qwen_live_status_var = live_status
+
+        def worker() -> None:
+            try:
+                result = self._realtime_core_json("/v1/realtime/live/status")
+            except Exception:
+                return
+            state = str(result.get("state", "unknown")).upper()
+            provider = str(result.get("provider") or "")
+            message = str(result.get("message", ""))
+            input_chunks = int(str(result.get("input_chunks", 0) or 0))
+            output_chunks = int(str(result.get("output_chunks", 0) or 0))
+            suffix = "" if not (input_chunks or output_chunks) else f" | mic={input_chunks} audio={output_chunks}"
+            prefix = f"{provider.upper()} " if provider else ""
+            self._schedule_qwen_ui(
+                0, lambda: live_status.set(f"{prefix}{state} — {message}{suffix}"), generation
+            )
+
+        threading.Thread(target=worker, name="orion-realtime-live-status", daemon=True).start()
+        self._schedule_qwen_ui(
+            750, lambda: self._realtime_live_poll(live_status, generation), generation
+        )
+
+    def _provider_smoke_async(
+        self,
+        config: CloudVoiceConfig,
+        qwen_api_key: str,
+        yandex_api_key: str,
+        *,
+        tool: bool,
+    ) -> None:
+        if config.cloud_provider != "yandex":
+            self._qwen_smoke_async(config, qwen_api_key, tool=tool)
+            return
+        if tool:
+            messagebox.showinfo(
+                "ORION Yandex Realtime",
+                "Yandex tool-call integration not implemented yet",
+                parent=self.root,
+            )
+            return
+
+        def worker() -> None:
+            try:
+                key = yandex_api_key.strip() or self._current_yandex_api_key()
+                if not key:
+                    raise ValueError("Yandex API key is required")
+                result = self._realtime_core_json(
+                    "/v1/realtime/yandex/test-connection",
+                    method="POST",
+                    payload={"api_key": key, "folder_id": config.yandex_folder_id},
+                )
+                ok = bool(result.get("ok"))
+                message = str(result.get("message", ""))
+            except Exception as exc:
+                ok = False
+                message = f"{type(exc).__name__}: {exc}"
+
+            def show() -> None:
+                dialog = messagebox.showinfo if ok else messagebox.showerror
+                dialog("ORION Yandex Realtime", message, parent=self.root)
+
+            self.root.after(0, show)
+
+        threading.Thread(target=worker, name="orion-yandex-smoke", daemon=True).start()

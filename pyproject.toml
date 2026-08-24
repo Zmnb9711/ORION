@@ -33,6 +33,7 @@ windows-audio = [
   "sounddevice>=0.5,<1.0",
 ]
 cloud-realtime = [
+  "aiohttp>=3.9,<4.0",
   "websocket-client>=1.8,<2.0",
 ]
 

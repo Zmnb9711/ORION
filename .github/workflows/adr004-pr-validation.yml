@@ -28,4 +28,4 @@ jobs:
         run: python -m compileall -q orion/qwen_realtime_provider.py orion/qwen_live_audio_core.py orion/realtime_tool_api.py orion/launcher_cloud_voice_sections.py orion/launcher_audio_sections.py
       - name: Build Core with realtime dependencies
         shell: pwsh
-        run: python -m PyInstaller --noconfirm --clean --onedir --windowed --name ORION-Core-ADR004 --collect-submodules orion --collect-submodules uvicorn --collect-submodules websocket --add-data "dcs-export;dcs-export" --icon branding/orion.ico orion/core_main.py
+        run: python -m PyInstaller --noconfirm --clean --onedir --windowed --name ORION-Core-ADR004 --collect-submodules orion --collect-submodules uvicorn --collect-submodules websocket --collect-submodules aiohttp --add-data "dcs-export;dcs-export" --icon branding/orion.ico orion/core_main.py
