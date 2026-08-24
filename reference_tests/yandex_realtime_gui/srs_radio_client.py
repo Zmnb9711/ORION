@@ -17,6 +17,7 @@ from srs_protocol import (
     MessageType,
     JsonLineParser,
     SRS_VERSION,
+    SrsRadioState,
     SrsProtocolError,
     base_client,
     build_eam_disconnect_message,
@@ -29,6 +30,7 @@ from srs_protocol import (
     encode_tcp_message,
     generate_client_guid,
     mask_guid,
+    radio_info_matches_state,
     validate_guid,
 )
 
@@ -97,6 +99,11 @@ class SrsRadioClient:
         self.event_callback = event_callback
         self.client_guid = client_guid or generate_client_guid()
         validate_guid(self.client_guid)
+        self.radio_state = SrsRadioState(
+            config.frequency_hz,
+            config.modulation,
+            config.unit_id,
+        )
         self.tcp_connector = tcp_connector
         self.udp_socket_factory = udp_socket_factory
         self.clock = clock
@@ -107,6 +114,7 @@ class SrsRadioClient:
         self.server_version: str | None = None
         self.server_settings: dict[str, object] = {}
         self.clients: dict[str, dict[str, object]] = {}
+        self.radio_registered = False
         self.tcp_socket: socket.socket | None = None
         self.udp_socket: socket.socket | None = None
         self.tcp_thread: threading.Thread | None = None
@@ -143,12 +151,19 @@ class SrsRadioClient:
             raise RuntimeError("SRS client is already started.")
         self.stop_event.clear()
         self.ready_event.clear()
+        self.radio_registered = False
         try:
             self._set_state(SrsState.CONNECTING_TCP)
             self.tcp_socket = self._open_tcp()
             self.tcp_socket.settimeout(0.2)
             self._set_state(SrsState.SYNCING)
-            self._send_tcp(build_sync_message(self.client_guid, self.config.bot_name))
+            self._send_tcp(
+                build_sync_message(
+                    self.client_guid,
+                    self.config.bot_name,
+                    radio_state=self.radio_state,
+                )
+            )
             sync = self._wait_for_message(MessageType.SYNC, HANDSHAKE_TIMEOUT_SECONDS)
             self.server_version = str(sync.get("Version") or "")
             if not compatible_server_version(self.server_version):
@@ -191,8 +206,11 @@ class SrsRadioClient:
                     self.config.frequency_hz,
                     self.config.modulation,
                     self.config.unit_id,
+                    radio_state=self.radio_state,
                 )
             )
+            self._wait_for_radio_registration(HANDSHAKE_TIMEOUT_SECONDS)
+            self.radio_registered = True
             self._set_state(SrsState.REGISTERING_UDP)
             self._register_udp()
             if self.stop_event.is_set():
@@ -318,6 +336,34 @@ class SrsRadioClient:
             self.messages_received += len(messages)
             self._pending_tcp.extend(messages)
         raise InterruptedError("SRS TCP receive stopped.")
+
+    def _wait_for_radio_registration(self, timeout: float) -> None:
+        """Wait for SRS's multicast of our stored canonical radio state."""
+
+        deadline = self.clock() + timeout
+        while not self.stop_event.is_set():
+            message = self._recv_tcp_message(deadline)
+            raw_type = message.get("MsgType")
+            if not isinstance(raw_type, (int, str)):
+                raise SrsProtocolError(f"Unexpected SRS message type {raw_type!r}.")
+            try:
+                kind = MessageType(int(raw_type))
+            except (TypeError, ValueError) as exc:
+                raise SrsProtocolError(f"Unexpected SRS message type {raw_type!r}.") from exc
+            if kind is MessageType.VERSION_MISMATCH:
+                raise SrsProtocolError("SRS server reported VERSION_MISMATCH.")
+            client = message.get("Client")
+            if (
+                kind is MessageType.RADIO_UPDATE
+                and isinstance(client, dict)
+                and client.get("ClientGuid") == self.client_guid
+                and client.get("Coalition") == self.coalition
+                and radio_info_matches_state(client.get("RadioInfo"), self.radio_state)
+            ):
+                self._handle_tcp_message(message, during_handshake=True)
+                return
+            self._handle_tcp_message(message, during_handshake=True)
+        raise InterruptedError("SRS radio registration stopped.")
 
     def _register_udp(self) -> None:
         udp = self.udp_socket_factory(socket.AF_INET, socket.SOCK_DGRAM)
@@ -473,7 +519,7 @@ class SrsRadioClient:
 
     def send_voice(self, datagram: bytes) -> None:
         if not self.ready_event.is_set() or self.state is not SrsState.READY:
-            raise RuntimeError("SRS UDP voice TX is not allowed before GUID echo readiness.")
+            raise RuntimeError("SRS UDP voice TX is not allowed before radio and UDP readiness.")
         udp = self.udp_socket
         if udp is None:
             raise ConnectionError("SRS UDP socket is unavailable.")
@@ -536,6 +582,7 @@ class SrsRadioClient:
             "modulation": self.config.modulation,
             "eam_enabled": eam_enabled(self.server_settings),
             "coalition": self.coalition,
+            "radio_registered": self.radio_registered,
             "own_client_guid": mask_guid(self.client_guid),
             "tcp_messages_sent": self.messages_sent,
             "tcp_messages_received": self.messages_received,

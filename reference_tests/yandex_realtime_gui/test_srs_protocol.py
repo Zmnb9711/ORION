@@ -9,9 +9,12 @@ import pytest
 from srs_protocol import (
     FIXED_TAIL_LENGTH,
     GUID_LENGTH,
+    SRS_EXTERNAL_AUDIO_RADIO_INDEX,
+    SRS_MAX_RADIOS,
     JsonLineParser,
     MessageType,
     Frequency,
+    SrsRadioState,
     SrsProtocolError,
     VoicePacket,
     build_eam_password_message,
@@ -142,20 +145,38 @@ def test_json_line_parser_fragmentation_coalescing_malformed_and_eof() -> None:
 
 
 def test_tcp_builders_use_current_numeric_schema_and_never_serialize_password_elsewhere() -> None:
-    sync = build_sync_message(GUID, "BOT")
+    state = SrsRadioState(251_000_000.0, 0, 100_000)
+    sync = build_sync_message(GUID, "BOT", radio_state=state)
     assert sync["MsgType"] == int(MessageType.SYNC)
     assert sync["Client"]["ClientGuid"] == GUID  # type: ignore[index]
+    sync_radio_info = sync["Client"]["RadioInfo"]  # type: ignore[index]
+    assert sync_radio_info is not None
     eam = build_eam_password_message(GUID, "BOT", "secret-eam")
     assert eam["ExternalAWACSModePassword"] == "secret-eam"
     encoded = json.loads(encode_tcp_message(eam))
     assert encoded["Version"] == "2.4.0.0"
-    radio = build_radio_update_message(GUID, "BOT", 2, 251_000_000.0)
+    radio = build_radio_update_message(
+        GUID,
+        "BOT",
+        2,
+        251_000_000.0,
+        radio_state=state,
+    )
     assert radio["MsgType"] == int(MessageType.RADIO_UPDATE)
     radios = radio["Client"]["RadioInfo"]["radios"]  # type: ignore[index]
-    assert len(radios) == 1
-    assert radios[0]["freq"] == 251_000_000.0
-    assert radios[0]["modulation"] == 0
-    assert radios[0]["encKey"] == 0
+    assert len(radios) == SRS_MAX_RADIOS == 11
+    active = radios[SRS_EXTERNAL_AUDIO_RADIO_INDEX]
+    assert active["freq"] == 251_000_000.0
+    assert active["modulation"] == 0
+    assert active["enc"] is False
+    assert active["encKey"] == 0
+    assert active["retransmit"] is False
+    assert all(
+        item["freq"] == 1.0 and item["modulation"] == 3
+        for index, item in enumerate(radios)
+        if index != SRS_EXTERNAL_AUDIO_RADIO_INDEX
+    )
+    assert sync_radio_info == radio["Client"]["RadioInfo"]  # type: ignore[index]
 
 
 def test_version_eam_and_generated_guid_policy() -> None:

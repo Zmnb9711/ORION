@@ -6,9 +6,15 @@ DCS-SimpleRadioStandalone 2.4.0.0 at commit
 
 No GPL-licensed SRS source code is copied into this application. The reference
 was used to verify numeric TCP message types, EAM response nesting, the UDP GUID
-echo readiness gate, and the current 6-byte header + dynamic segments + 57-byte
-fixed-tail packet layout. The deterministic 79-byte and 99-byte packet tests are
-independently expressed protocol compatibility vectors.
+echo, server multicast behavior, and the current 6-byte header + dynamic
+segments + 57-byte fixed-tail packet layout. `PlayerRadioInfoBase` constructs
+exactly 11 radio slots (`Constants.MAX_RADIOS`), and the official 2.4.0.0
+ExternalAudioClient tunes slot 1 while retaining the other `RadioBase` defaults.
+The tester therefore uses that same representation in both initial `SYNC` and
+subsequent `RADIO_UPDATE`, and treats a matching own server-broadcast
+`RADIO_UPDATE` as radio-registration confirmation before UDP registration. The
+deterministic 79-byte and 99-byte packet tests are independently expressed
+protocol compatibility vectors.
 
 ## Bundled Opus binary
 

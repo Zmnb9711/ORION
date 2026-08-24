@@ -24,9 +24,12 @@ FIXED_TAIL_LENGTH = 57
 MIN_VOICE_PACKET_LENGTH = PACKET_HEADER_LENGTH + FIXED_TAIL_LENGTH + 1
 MAX_TCP_LINE_BYTES = 1_048_576
 AM = 0
+DISABLED = 3
 ENCRYPTION_OFF = 0
 TARGET_FREQUENCY_HZ = 251_000_000.0
 FREQUENCY_TOLERANCE_HZ = 500.0
+SRS_MAX_RADIOS = 11
+SRS_EXTERNAL_AUDIO_RADIO_INDEX = 1
 
 _GUID_RE = re.compile(r"[A-Za-z0-9_-]{22}\Z")
 
@@ -55,6 +58,20 @@ class Frequency:
     hz: float
     modulation: int
     encryption: int = ENCRYPTION_OFF
+
+
+@dataclass(frozen=True, slots=True)
+class SrsRadioState:
+    """Canonical SRS 2.4.0 ExternalAudio-compatible receive state."""
+
+    frequency_hz: float = TARGET_FREQUENCY_HZ
+    modulation: int = AM
+    unit_id: int = 100_000
+
+    def __post_init__(self) -> None:
+        _validate_frequency(Frequency(self.frequency_hz, self.modulation, ENCRYPTION_OFF))
+        if not 0 <= self.unit_id <= 0xFFFFFFFF:
+            raise SrsProtocolError("SRS UnitID is outside uint32 range.")
 
 
 @dataclass(frozen=True, slots=True)
@@ -254,8 +271,71 @@ def base_client(client_guid: str, name: str, coalition: int = 0) -> dict[str, ob
     }
 
 
-def build_sync_message(client_guid: str, name: str) -> dict[str, object]:
-    return {"Client": base_client(client_guid, name), "MsgType": int(MessageType.SYNC)}
+def _disabled_radio() -> dict[str, object]:
+    """Return the serialized defaults from SRS 2.4.0 RadioBase."""
+
+    return {
+        "enc": False,
+        "encKey": 0,
+        "freq": 1.0,
+        "modulation": DISABLED,
+        "retransmit": False,
+        "secFreq": 1.0,
+        "IntercomUnitId": 0,
+        "Model": "",
+        "Name": "",
+    }
+
+
+def build_radio_info(state: SrsRadioState) -> dict[str, object]:
+    """Build the exact 11-slot PlayerRadioInfoBase shape used by SRS 2.4.0.
+
+    SRS allocates ten radios plus intercom. Its ExternalAudioClient tunes slot 1,
+    leaving slot 0 and all unused slots at RadioBase defaults.
+    """
+
+    radios = [_disabled_radio() for _ in range(SRS_MAX_RADIOS)]
+    radios[SRS_EXTERNAL_AUDIO_RADIO_INDEX].update(
+        {
+            "freq": state.frequency_hz,
+            "modulation": state.modulation,
+        }
+    )
+    return {
+        "ambient": {"vol": 0.0, "abType": ""},
+        "iff": {
+            "control": 2,
+            "mic": -1,
+            "mode1": -1,
+            "mode2": -1,
+            "mode3": -1,
+            "mode4": False,
+            "status": 0,
+        },
+        "radios": radios,
+        "unit": "",
+        "unitId": state.unit_id,
+    }
+
+
+def radio_info_matches_state(value: object, state: SrsRadioState) -> bool:
+    """Return whether a server-broadcast RadioInfo confirms canonical state."""
+
+    if not isinstance(value, dict):
+        return False
+    expected = build_radio_info(state)
+    return all(value.get(key) == expected[key] for key in expected)
+
+
+def build_sync_message(
+    client_guid: str,
+    name: str,
+    *,
+    radio_state: SrsRadioState | None = None,
+) -> dict[str, object]:
+    client = base_client(client_guid, name)
+    client["RadioInfo"] = build_radio_info(radio_state or SrsRadioState())
+    return {"Client": client, "MsgType": int(MessageType.SYNC)}
 
 
 def build_eam_password_message(client_guid: str, name: str, password: str) -> dict[str, object]:
@@ -287,29 +367,12 @@ def build_radio_update_message(
     frequency_hz: float,
     modulation: int = AM,
     unit_id: int = 100_000,
+    *,
+    radio_state: SrsRadioState | None = None,
 ) -> dict[str, object]:
-    frequency = Frequency(frequency_hz, modulation, ENCRYPTION_OFF)
-    _validate_frequency(frequency)
+    state = radio_state or SrsRadioState(frequency_hz, modulation, unit_id)
     client = base_client(client_guid, name, coalition)
-    client["RadioInfo"] = {
-        "ambient": {"vol": 0.0, "abType": ""},
-        "iff": {},
-        "radios": [
-            {
-                "enc": False,
-                "encKey": 0,
-                "freq": frequency_hz,
-                "modulation": modulation,
-                "retransmit": False,
-                "secFreq": 1.0,
-                "IntercomUnitId": 0,
-                "Model": "",
-                "Name": "srsradio",
-            }
-        ],
-        "unit": "SRS Radio Reference",
-        "unitId": unit_id,
-    }
+    client["RadioInfo"] = build_radio_info(state)
     return {"Client": client, "MsgType": int(MessageType.RADIO_UPDATE)}
 
 

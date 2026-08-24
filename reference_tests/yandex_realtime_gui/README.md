@@ -162,8 +162,13 @@ SRS Opus mono 16 kHz / 40 ms
 The current compatibility target is SRS 2.4.x, tested against 2.4.0.0. TCP is
 UTF-8 newline-delimited JSON. Start requires `SYNC`, server version validation,
 enabled External AWACS Mode, successful password authentication yielding
-coalition 1 or 2, one 251.000 MHz AM radio update, then an exact 22-byte UDP
-ClientGuid echo. Voice is not accepted or transmitted before that echo.
+coalition 1 or 2, server multicast confirmation of the bot's own radio state,
+then an exact 22-byte UDP ClientGuid echo. Voice is not accepted or transmitted
+before both confirmations. The initial `SYNC` and subsequent `RADIO_UPDATE`
+carry equivalent non-null `PlayerRadioInfoBase` state: the official 11-slot
+SRS 2.4.0 layout, with 251.000 MHz AM in ExternalAudio slot 1 and every other
+slot disabled; encryption and retransmission are off. This avoids the SRS
+2.4.0 null-sensitive first-radio-update failure.
 
 The strict UDP codec uses a 6-byte header, Opus/frequency dynamic segments, and
 the current 57-byte fixed tail: uint32 UnitID, uint64 PacketID, one hop byte,
@@ -204,7 +209,8 @@ The first live test is manual. Do not run it from automated validation.
    password, frequency `251.000`, and `AM`.
 4. Press Start and require the sequence `CONNECTING_TCP`, `SYNCING`,
    `AUTHENTICATING_EAM`, `REGISTERING_RADIO`, `REGISTERING_UDP`, `READY`.
-   Any coalition 0, version rejection, or missing UDP echo is a failure.
+   Any coalition 0, version rejection, missing matching own `RADIO_UPDATE`, or
+   missing UDP echo is a failure.
 5. From the human SRS client transmit: `Орион, проверка связи. Как меня слышно?`
    Release PTT. The tester itself must remain silent locally; the reply must be
    heard only through the human SRS client.
