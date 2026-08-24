@@ -27,8 +27,10 @@ from urllib.parse import quote
 import aiohttp
 import sounddevice as sd
 
+from yandex_audio_correlation import CorrelationProbe
+
 APP_NAME = "Yandex Realtime Reference Tester"
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.1A"
 ENDPOINT = "wss://ai.api.cloud.yandex.net/v1/realtime"
 DEFAULT_MODEL = "speech-realtime-260528"
 DEFAULT_VOICE = "dasha"
@@ -86,7 +88,7 @@ def sanitize_text(value: object, api_key: str = "") -> str:
     text = str(value)
     if api_key:
         text = text.replace(api_key, "[REDACTED]")
-    text = _AUTH_PATTERNS[0].sub(r"\1[REDACTED]", text)
+    text = _AUTH_PATTERNS[0].sub("[REDACTED]", text)
     text = _AUTH_PATTERNS[1].sub(r"\1 [REDACTED]", text)
     text = _AUTH_PATTERNS[2].sub(r"\1[REDACTED]", text)
     return text
@@ -561,6 +563,7 @@ class YandexReferenceSession:
         self._current_write: PlaybackSlice | None = None
         self._current_write_started_monotonic: float | None = None
         self._current_write_interrupted_at: float | None = None
+        self.correlation_probe = CorrelationProbe(clock=clock)
         self._error_seen = False
 
     def start(self) -> None:
@@ -569,6 +572,7 @@ class YandexReferenceSession:
         if self.thread is not None:
             raise RuntimeError("A session object cannot be restarted; create a new session.")
         self.started_at = utc_now()
+        self.correlation_probe.start()
         self.thread = threading.Thread(
             target=self._thread_main,
             name="yandex-reference-network",
@@ -586,6 +590,8 @@ class YandexReferenceSession:
             asyncio.run_coroutine_threadsafe(transport.close(), loop)
         if wait and self.thread is not None and self.thread is not threading.current_thread():
             self.thread.join(timeout)
+        if self.thread is None:
+            self.correlation_probe.close()
 
     def _thread_main(self) -> None:
         try:
@@ -666,6 +672,7 @@ class YandexReferenceSession:
             for worker in (self.capture_thread, self.playback_thread):
                 if worker is not None and worker.is_alive():
                     await asyncio.to_thread(worker.join, 1.5)
+            self.correlation_probe.close()
             self.stopped_at = utc_now()
             self.close_time = self.stopped_at
             if clean is None and close_code is not None:
@@ -744,6 +751,7 @@ class YandexReferenceSession:
                 )
                 while not self.stop_event.is_set():
                     pcm_buffer, overflowed = stream.read(INPUT_FRAMES)
+                    capture_timestamp = self.clock()
                     pcm = bytes(pcm_buffer)
                     self._record_input_signal(pcm)
                     if overflowed:
@@ -754,6 +762,9 @@ class YandexReferenceSession:
                         return
                     future = asyncio.run_coroutine_threadsafe(
                         transport.send_json(encode_input_audio_event(pcm)), loop
+                    )
+                    self.correlation_probe.submit_microphone(
+                        pcm, timestamp=capture_timestamp
                     )
                     future.result(timeout=5)
         except Exception as exc:
@@ -818,6 +829,13 @@ class YandexReferenceSession:
                             bytes=len(queued.pcm),
                         )
                         continue
+                    self.correlation_probe.submit_playback(
+                        queued.pcm,
+                        timestamp=self.clock(),
+                        response_id=queued.response_id,
+                        epoch=queued.epoch,
+                        sequence=queued.sequence,
+                    )
                     try:
                         stream.write(queued.pcm)
                     except Exception:
@@ -1018,6 +1036,14 @@ class YandexReferenceSession:
                 item_id=event.get("item_id"),
                 audio_start_ms=event.get("audio_start_ms"),
             )
+            response_id, epoch = self._current_probe_playback_identity()
+            self.correlation_probe.submit_speech_start(
+                timestamp=now,
+                wall_timestamp=utc_now(),
+                item_id=str(event.get("item_id")) if event.get("item_id") else None,
+                current_response_id=response_id,
+                current_epoch=epoch,
+            )
             self._interrupt_playback()
         elif kind == "input_audio_buffer.speech_stopped":
             self.speech_stopped_count += 1
@@ -1177,6 +1203,22 @@ class YandexReferenceSession:
                 bytes=len(pcm),
             )
 
+    def _current_probe_playback_identity(self) -> tuple[str | None, int | None]:
+        """Observe response ownership without changing playback state."""
+
+        with self._lock:
+            if self._current_write is not None:
+                return self._current_write.response_id, self._current_write.epoch
+            candidates = [
+                state
+                for state in self.response_playback.values()
+                if not state.playback_invalidated and state.outstanding_slices > 0
+            ]
+            if not candidates:
+                return None, None
+            newest = max(candidates, key=lambda state: state.epoch or -1)
+            return newest.response_id, newest.epoch
+
     def latest_response_summary(self) -> dict[str, object]:
         metric = self.responses.get(self.latest_response_id or "")
         return metric.summary() if metric is not None else {
@@ -1250,6 +1292,7 @@ class YandexReferenceSession:
                 ),
             }
         latest = self.latest_response_summary()
+        correlation_report = self.correlation_probe.report()
         report = {
             "APPLICATION": {
                 "app_name": APP_NAME,
@@ -1320,6 +1363,7 @@ class YandexReferenceSession:
             "RESPONSE-SCOPED PLAYBACK": {
                 "responses": playback_summaries,
             },
+            "PLAYBACK/MIC CORRELATION PROBE": correlation_report,
             "EVENT TIMELINE": timeline,
         }
         return sanitize_value(report, self.config.api_key)  # type: ignore[return-value]

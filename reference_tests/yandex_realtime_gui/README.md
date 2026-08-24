@@ -1,4 +1,4 @@
-# Yandex Realtime Reference Tester v1.1
+# Yandex Realtime Reference Tester v1.1A
 
 `YandexRealtimeTester` is a standalone Windows reference application for
 speech-to-speech testing with Yandex AI Studio Realtime API and deterministic
@@ -66,7 +66,7 @@ and clears a stale selection instead of substituting another endpoint.
 
 Before a WebSocket connection is attempted, both selected devices are checked
 for mono PCM16 at 44,100 Hz. An incompatible device produces
-`UNSUPPORTED AUDIO FORMAT`; v1.1 does not resample or alter PCM. Capture and
+`UNSUPPORTED AUDIO FORMAT`; v1.1A does not resample or alter PCM. Capture and
 playback use persistent blocking streams and an unbounded provider-order output
 FIFO. Each decoded provider delta is split into exact response-scoped 20 ms
 slices (at most 882 frames / 1,764 bytes). The final short slice is written
@@ -83,6 +83,30 @@ persistent output stream remains open, and normal provider audio is never
 reordered, padded, or dropped. This generic path does not inspect transcript
 text.
 
+## Analysis-only playback/microphone correlation probe
+
+v1.1A copies the exact microphone blocks and only the response-scoped slices
+that are committed immediately before `RawOutputStream.write()` into a bounded
+diagnostic queue. Queue submission is non-blocking: if analysis falls behind,
+only the diagnostic job is dropped and counted. The microphone send, playback
+write, 20 ms slicing, VAD, and interruption paths never consult probe results.
+
+The worker keeps at most 1,000 ms of recent playback reference in memory and
+searches playback-to-microphone lag from 0 through 500 ms. Correlation operates
+on a diagnostic-only 4,900 Hz feature copy made by retaining every ninth sample
+from the 44,100 Hz PCM; live audio is never resampled. Each candidate pair is
+mean-centered. The signed normalized correlation preserves possible polarity
+inversion, while its absolute value measures gain-independent similarity. At
+the best lag, least-squares scalar gain is fitted and the residual RMS divided
+by centered microphone RMS is recorded as an observational double-talk metric.
+
+Every server `speech_started` event receives a scalar snapshot aggregated over
+200 ms before through 300 ms after the event. Playback-active and idle controls
+are sampled every 100 ms. Results are response/epoch-associated scalar values,
+not behavioral echo classifications. No result gates, delays, suppresses, or
+changes audio. Raw and decimated audio exist only in bounded memory and are
+released at session shutdown; exports contain derived scalars only.
+
 ## Diagnostic export
 
 `EXPORT DIAGNOSTIC REPORT` writes a human-readable UTF-8 text report for the
@@ -92,6 +116,7 @@ application/runtime versions, safe session configuration, exact PortAudio
 device/Host API details, input aggregate RMS/peak/silence metrics, VAD and
 transcription counts, connection/close state, response latency and delta
 cadence, response-scoped slicing/invalidation and current-write counters,
+playback/microphone correlation distributions and speech-start snapshots,
 sanitized errors, and a compact event timeline.
 It never includes credentials, Base64 audio, or raw PCM.
 
@@ -114,7 +139,7 @@ promptly, the session should remain alive, the new response should play, and old
 PCM must not resume. Repeat with a generic phrase such as
 `подожди, я хочу спросить другое`. Stop normally and export only after Stop.
 
-## Dream Air observation after Logitech passes
+## Dream Air v1.1A controlled observation
 
 Keep ORION, DCS, and Qwen closed. Connect Dream Air normally, select
 `REFRESH DEVICES`, then choose the currently enumerated endpoints matching:
@@ -124,13 +149,19 @@ Keep ORION, DCS, and Qwen closed. Connect Dream Air normally, select
 
 Do not rely on historical indices. Enter the API key and Folder ID, keep model
 `speech-realtime-260528`, voice `dasha`, and language `Russian (ru-RU)`, then
-start and observe existing false speech starts. v1.1 intentionally contains no
-echo suppression; Dream Air may therefore interrupt itself more quickly. Stop
-and export the report for the separate correlation-probe tranche.
+start and preserve the Windows microphone level for every phase. Collect, in
+order: playback-only while completely silent; normal `стоп` during playback;
+generic `подожди, я хочу спросить другое` during playback; quiet `стоп` during
+playback; `проверка микрофона без воспроизведения` while Yandex is silent; then
+20–30 seconds of silence. v1.1A intentionally contains no echo suppression, so
+existing Dream Air false interruptions remain expected. Stop normally and
+export only after the UI reports stopped/disconnected.
 
-## v1.1 limitations
+## v1.1A limitations
 
 - No resampling, echo cancellation, or custom DSP.
+- Correlation and residual measurements are forensic observations only; no
+  threshold or label controls runtime behavior.
 - No function calling, MCP, web/file tools, ATC, DCS, or ORION integration.
 - No credential persistence.
 - Input transcription and output transcript are displayed only when the

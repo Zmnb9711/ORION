@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+from array import array
 import base64
 import importlib
+import math
 import queue
 import sys
 import threading
@@ -18,6 +20,7 @@ sys.path.insert(0, str(REFERENCE_DIR))
 
 core = importlib.import_module("yandex_reference_core")
 gui = importlib.import_module("yandex_realtime_tester")
+correlation = importlib.import_module("yandex_audio_correlation")
 
 
 def device(
@@ -258,6 +261,20 @@ def queued_slices(session: Any) -> list[Any]:
         result.append(item)
 
 
+def pcm16(values: list[int]) -> bytes:
+    samples = array("h", values)
+    if sys.byteorder != "little":
+        samples.byteswap()
+    return samples.tobytes()
+
+
+def sine_signal(cycles: int, amplitude: int = 12_000) -> list[int]:
+    return [
+        round(amplitude * math.sin(2 * math.pi * cycles * index / core.INPUT_FRAMES))
+        for index in range(core.INPUT_FRAMES)
+    ]
+
+
 def new_tk() -> tk.Tk:
     try:
         root = tk.Tk()
@@ -269,7 +286,7 @@ def new_tk() -> tk.Tk:
 
 def test_modules_import_and_current_constants() -> None:
     assert core.APP_NAME == "Yandex Realtime Reference Tester"
-    assert core.APP_VERSION == "1.1.0"
+    assert core.APP_VERSION == "1.1A"
     assert core.ENDPOINT == "wss://ai.api.cloud.yandex.net/v1/realtime"
     assert core.DEFAULT_MODEL == "speech-realtime-260528"
     assert core.INPUT_RATE == core.OUTPUT_RATE == 44_100
@@ -278,7 +295,177 @@ def test_modules_import_and_current_constants() -> None:
     assert core.PLAYBACK_SLICE_MS == 20
     assert core.PLAYBACK_SLICE_FRAMES == 882
     assert core.PLAYBACK_SLICE_BYTES == 1764
+    assert correlation.ANALYSIS_RATE == 4_900
+    assert correlation.PLAYBACK_REFERENCE_HISTORY_MS == 1_000
+    assert correlation.MAX_LAG_SEARCH_MS == 500
     assert gui.LANGUAGE_LABEL == "Russian (ru-RU)"
+
+
+@pytest.mark.parametrize("gain", [1.0, 0.5, 1.75])
+def test_correlation_is_gain_invariant_for_identical_signal(gain: float) -> None:
+    reference = [((index * 242) % 20_000) - 10_000 for index in range(200)]
+    microphone = [round(value * gain) for value in reference]
+    fit = correlation.analyze_signal_pair(reference, microphone)
+    assert fit.signed_correlation == pytest.approx(1.0, abs=1e-6)
+    assert fit.absolute_correlation == pytest.approx(1.0, abs=1e-6)
+
+
+def test_correlation_preserves_polarity_sign_and_absolute_strength() -> None:
+    reference = [((index * 137) % 12_000) - 6_000 for index in range(200)]
+    fit = correlation.analyze_signal_pair(reference, [-value for value in reference])
+    assert fit.signed_correlation == pytest.approx(-1.0, abs=1e-6)
+    assert fit.absolute_correlation == pytest.approx(1.0, abs=1e-6)
+
+
+def test_correlation_recovers_known_block_lag_and_response_ownership() -> None:
+    probe = correlation.CorrelationProbe()
+    signal = pcm16(sine_signal(7))
+    probe.start()
+    assert probe.submit_playback(
+        signal, timestamp=10.0, response_id="response-a", epoch=4, sequence=1
+    )
+    assert probe.submit_microphone(signal, timestamp=10.08)
+    probe.wait_until_processed()
+    latest = probe.latest_analysis()
+    assert latest is not None
+    assert latest["best_abs_corr"] == pytest.approx(1.0, abs=1e-6)
+    assert latest["best_lag_ms"] == pytest.approx(80.0, abs=0.001)
+    assert latest["matched_response_id"] == "response-a"
+    assert latest["matched_epoch"] == 4
+    probe.close()
+
+
+def test_unrelated_deterministic_signals_have_low_correlation() -> None:
+    first = sine_signal(7)
+    second = sine_signal(19)
+    fit = correlation.analyze_signal_pair(first, second)
+    assert fit.absolute_correlation is not None
+    assert fit.absolute_correlation < 0.05
+
+
+def test_silence_correlation_is_unavailable_without_division_by_zero() -> None:
+    fit = correlation.analyze_signal_pair([0] * 200, [0] * 200)
+    assert fit.signed_correlation is None
+    assert fit.absolute_correlation is None
+    assert fit.energy_ratio is None
+    assert fit.echo_fit_gain is None
+    assert fit.residual_ratio is None
+    near_silent = correlation.analyze_signal_pair([1, -1] * 100, [1, -1] * 100)
+    assert near_silent.signed_correlation is None
+
+
+def test_residual_distinguishes_scaled_echo_from_independent_double_talk() -> None:
+    reference = [2 * (((index * 83) % 12_000) - 6_000) for index in range(300)]
+    pure_echo = [value // 2 for value in reference]
+    independent = sine_signal(23)[:300]
+    double_talk = [echo + speech for echo, speech in zip(pure_echo, independent)]
+    pure_fit = correlation.analyze_signal_pair(reference, pure_echo)
+    double_fit = correlation.analyze_signal_pair(reference, double_talk)
+    assert pure_fit.echo_fit_gain == pytest.approx(0.5, abs=1e-6)
+    assert pure_fit.residual_ratio == pytest.approx(0.0, abs=1e-6)
+    assert double_fit.residual_ratio is not None
+    assert double_fit.residual_ratio > 0.3
+
+
+def test_playback_reference_ring_evicts_old_audio_and_releases_raw_on_close() -> None:
+    probe = correlation.CorrelationProbe()
+    signal = pcm16(sine_signal(5))
+    expected_samples = len(correlation.pcm16_analysis_samples(signal))
+    probe.start()
+    probe.submit_playback(
+        signal, timestamp=1.0, response_id="old", epoch=1, sequence=1
+    )
+    probe.submit_playback(
+        signal, timestamp=2.1, response_id="new", epoch=2, sequence=1
+    )
+    probe.wait_until_processed()
+    assert probe.report()["raw_reference_samples_retained_in_memory"] == expected_samples
+    probe.close()
+    assert probe.report()["raw_reference_samples_retained_in_memory"] == 0
+
+
+def test_speech_start_without_playback_records_unavailable_snapshot() -> None:
+    probe = correlation.CorrelationProbe()
+    signal = pcm16(sine_signal(7))
+    probe.start()
+    probe.submit_microphone(signal, timestamp=1.0)
+    probe.submit_speech_start(
+        timestamp=1.01,
+        wall_timestamp="2026-01-01T00:00:00Z",
+        item_id="user-idle",
+        current_response_id=None,
+        current_epoch=None,
+    )
+    probe.submit_microphone(signal, timestamp=1.32)
+    probe.wait_until_processed()
+    snapshot = probe.report()["speech_start_snapshots"][0]
+    assert snapshot["playback_active"] is False
+    assert snapshot["correlation_available"] is False
+    assert snapshot["matched_response_id"] is None
+    probe.close()
+
+
+def test_speech_start_keeps_matched_old_tail_distinct_from_current_response() -> None:
+    probe = correlation.CorrelationProbe()
+    old_signal = pcm16(sine_signal(7))
+    new_signal = pcm16(sine_signal(19))
+    probe.start()
+    probe.submit_playback(
+        old_signal, timestamp=1.0, response_id="old", epoch=10, sequence=1
+    )
+    probe.submit_playback(
+        new_signal, timestamp=1.1, response_id="new", epoch=11, sequence=1
+    )
+    probe.submit_microphone(old_signal, timestamp=1.12)
+    probe.submit_speech_start(
+        timestamp=1.13,
+        wall_timestamp="2026-01-01T00:00:01Z",
+        item_id="user-barge-in",
+        current_response_id="new",
+        current_epoch=11,
+    )
+    probe.submit_microphone(old_signal, timestamp=1.44)
+    probe.wait_until_processed()
+    snapshot = probe.report()["speech_start_snapshots"][0]
+    assert snapshot["playback_active"] is True
+    assert snapshot["current_response_id"] == "new"
+    assert snapshot["current_playback_epoch"] == 11
+    assert snapshot["matched_response_id"] == "old"
+    assert snapshot["matched_epoch"] == 10
+    assert snapshot["best_abs_corr"] == pytest.approx(1.0, abs=1e-6)
+    probe.close()
+
+
+def test_diagnostic_queue_overflow_drops_only_probe_work() -> None:
+    started = threading.Event()
+    release = threading.Event()
+
+    class BlockingProbe(correlation.CorrelationProbe):
+        def _process_playback(self, job: Any) -> None:
+            started.set()
+            assert release.wait(1)
+            super()._process_playback(job)
+
+    probe = BlockingProbe(queue_size=1)
+    signal = pcm16(sine_signal(3))
+    probe.start()
+    assert probe.submit_playback(
+        signal, timestamp=1.0, response_id="r1", epoch=1, sequence=1
+    )
+    assert started.wait(1)
+    assert probe.submit_playback(
+        signal, timestamp=1.02, response_id="r1", epoch=1, sequence=2
+    )
+    assert not probe.submit_playback(
+        signal, timestamp=1.04, response_id="r1", epoch=1, sequence=3
+    )
+    release.set()
+    probe.wait_until_processed()
+    report = probe.report()
+    assert report["diagnostic_jobs_enqueued"] == 2
+    assert report["diagnostic_jobs_processed"] == 2
+    assert report["diagnostic_jobs_dropped"] == 1
+    probe.close()
 
 
 def test_model_url_uses_folder_model_uri_and_no_legacy_model() -> None:
@@ -448,9 +635,21 @@ def test_fake_transport_lifecycle_uses_exact_stream_indices_and_clean_close() ->
     assert backend.input_stream_args[0]["device"] == 1
     assert backend.output_stream_args[0]["device"] == 6
     assert transport.sent[0]["type"] == "session.update"
+    microphone_events = [
+        event for event in transport.sent if event["type"] == "input_audio_buffer.append"
+    ]
+    assert microphone_events
+    assert all(
+        base64.b64decode(str(event["audio"]), validate=True)
+        == b"\x01\x00" * core.INPUT_FRAMES
+        for event in microphone_events
+    )
     assert transport.headers == {"Authorization": "Api-Key secret-reference-key"}
     assert session.websocket_close["code"] == 1000
     assert session.websocket_close["clean"] is True
+    assert session.report()["PLAYBACK/MIC CORRELATION PROBE"][
+        "raw_reference_samples_retained_in_memory"
+    ] == 0
 
 
 def test_start_stop_start_stop_with_fresh_fake_sessions() -> None:
@@ -558,6 +757,7 @@ def test_uninterrupted_worker_writes_every_slice_exactly_once_in_order() -> None
     session = core.YandexReferenceSession(
         config(), lambda *_args: None, audio_backend=backend
     )
+    session.correlation_probe.start()
     session.session_ready.set()
     session.handle_event({"type": "response.created", "response": {"id": "r1"}})
     deltas = [b"\x01\x02" * 1200, b"\x03\x04" * 950]
@@ -578,6 +778,10 @@ def test_uninterrupted_worker_writes_every_slice_exactly_once_in_order() -> None
     assert session.total_slices_written == expected_slices
     assert session.playback_bytes == sum(map(len, deltas))
     assert backend.output_open_count == 1
+    session.correlation_probe.wait_until_processed()
+    probe_report = session.report()["PLAYBACK/MIC CORRELATION PROBE"]
+    assert probe_report["diagnostic_jobs_processed"] == expected_slices
+    session.correlation_probe.close()
 
 
 def test_barge_in_during_committed_short_write_allows_only_that_write_to_finish() -> None:
@@ -802,6 +1006,9 @@ def test_diagnostic_report_redacts_all_credentials_and_never_contains_audio_payl
     assert "slice_target_bytes: 1764" in text
     assert "[INTERRUPTION]" in text
     assert "[RESPONSE-SCOPED PLAYBACK]" in text
+    assert "[PLAYBACK/MIC CORRELATION PROBE]" in text
+    assert "analysis_only: True" in text
+    assert "Authorization" not in text
 
     report = session.report()
     playback = report["RESPONSE-SCOPED PLAYBACK"]["responses"][0]
@@ -809,6 +1016,11 @@ def test_diagnostic_report_redacts_all_credentials_and_never_contains_audio_payl
     assert playback["provider_audio_bytes"] == len(raw_pcm)
     assert playback["slices_created"] == 1
     assert all("pcm" not in key.casefold() for key in playback)
+    probe = report["PLAYBACK/MIC CORRELATION PROBE"]
+    assert probe["probe_enabled"] is True
+    assert probe["analysis_only"] is True
+    assert probe["input_rate_hz"] == probe["output_rate_hz"] == 44_100
+    assert all("pcm" not in key.casefold() for key in probe)
 
 
 def test_diagnostic_metrics_distinguish_queue_removal_from_current_write() -> None:
