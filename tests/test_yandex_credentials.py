@@ -25,10 +25,10 @@ def test_provider_payloads_keep_keys_and_fields_separate() -> None:
     yandex = CloudVoiceConfig(cloud_provider="yandex", yandex_folder_id="folder")
     qwen = CloudVoiceConfig(qwen_workspace_id="workspace")
     assert LauncherCloudVoiceSectionsMixin._realtime_start_payload(yandex, "qwen-key", "yandex-key") == {
-        "provider": "yandex", "api_key": "yandex-key", "folder_id": "folder"
+        "provider": "yandex", "transport": "direct", "api_key": "yandex-key", "folder_id": "folder"
     }
     qwen_payload = LauncherCloudVoiceSectionsMixin._realtime_start_payload(qwen, "qwen-key", "yandex-key")
-    assert qwen_payload["provider"] == "qwen"
+    assert qwen_payload["provider"] == "qwen" and qwen_payload["transport"] == "direct"
     assert qwen_payload["api_key"] == "qwen-key"
     assert "folder_id" not in qwen_payload
 

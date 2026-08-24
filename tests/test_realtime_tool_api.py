@@ -57,6 +57,7 @@ def test_provider_neutral_status_does_not_start_a_session(monkeypatch) -> None: 
     assert response.status_code == 200
     assert response.json() == {
         "provider": None,
+        "transport": None,
         "state": "stopped",
         "phase": "idle",
         "message": "Realtime voice is stopped",

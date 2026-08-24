@@ -203,3 +203,15 @@ def test_response_state_table_has_a_hard_bound(tmp_path) -> None:  # noqa: ANN00
         f"response-{index}" for index in range(5, MAX_RESPONSE_STATES + 5)
     }
     endpoint.stop()
+
+
+def test_radio_registration_events_forward_real_launcher_phases(tmp_path) -> None:  # noqa: ANN001
+    endpoint, _radio, status = make_endpoint(tmp_path, Clock())
+
+    endpoint._on_radio_event("srs.state", {"value": "REGISTERING_RADIO"})
+    assert status["phase"] == "registering_radio"
+    endpoint._on_radio_event("srs.state", {"value": "REGISTERING_UDP"})
+    assert status["phase"] == "registering_udp"
+    endpoint._on_radio_event("srs.state", {"value": "READY"})
+    assert status["phase"] == "provider_connecting"
+    endpoint.stop()

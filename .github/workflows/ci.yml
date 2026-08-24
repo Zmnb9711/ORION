@@ -63,6 +63,8 @@ jobs:
           orion/windows_sapi_backend.py
           orion/airport_departure_runtime.py
           orion/airport_departure_control.py
+          orion/srs_process_control.py
+          orion/launcher_main.py
 
       - name: Run test suite with coverage
         run: python -m pytest -q --cov=orion --cov-report=term-missing

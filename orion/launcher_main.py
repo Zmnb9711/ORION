@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 from pathlib import Path
 
@@ -30,7 +31,17 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="ORION Launcher")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument("--srs-control-smoke", metavar="RESULT_JSON")
     args = parser.parse_args(argv)
+
+    if args.srs_control_smoke:
+        from orion.srs_process_control import launcher_srs_offline_smoke
+
+        Path(args.srs_control_smoke).write_text(
+            json.dumps(launcher_srs_offline_smoke(), sort_keys=True),
+            encoding="utf-8",
+        )
+        return 0
 
     os.environ["ORION_PROCESS_ROLE"] = "launcher"
     os.environ["ORION_CORE_BASE_URL"] = f"http://{args.host}:{args.port}"

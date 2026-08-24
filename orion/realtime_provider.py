@@ -51,6 +51,7 @@ class RealtimeLiveStatus(BaseModel):
     """Provider-neutral, credential-free view of one live voice session."""
 
     provider: str | None = None
+    transport: str | None = None
     state: str = "stopped"
     phase: str = "idle"
     message: str = "Realtime voice is stopped"

@@ -48,6 +48,7 @@ class _QwenLiveAdapter:
     def _normalize(self, status: Any) -> RealtimeLiveStatus:
         return RealtimeLiveStatus(
             provider=self.provider_id,
+            transport=self.transport_id,
             state=str(status.state),
             phase=str(status.phase),
             message=status.message,
@@ -78,6 +79,7 @@ class _YandexLiveAdapter:
     def _normalize(self, status: Any) -> RealtimeLiveStatus:
         return RealtimeLiveStatus(
             provider=self.provider_id,
+            transport=self.transport_id,
             state=str(status.state),
             phase=status.phase,
             message=status.message,
@@ -121,6 +123,7 @@ class _YandexSrsLiveAdapter:
     def _normalize(self, status: Any) -> RealtimeLiveStatus:
         return RealtimeLiveStatus(
             provider=self.provider_id,
+            transport=self.transport_id,
             state=str(status.state),
             phase=str(status.phase),
             message=status.message,

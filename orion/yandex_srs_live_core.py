@@ -187,6 +187,21 @@ class SrsYandexPcmEndpoint:
     def _on_radio_event(self, event: str, fields: dict[str, object]) -> None:
         safe = {key: value for key, value in fields.items() if "guid" not in key.casefold()}
         self.diagnostics.record(event, **safe)
+        if event != "srs.state":
+            return
+        state = str(fields.get("value") or "")
+        phase_by_state = {
+            "CONNECTING_TCP": "srs_connecting",
+            "SYNCING": "srs_connecting",
+            "AUTHENTICATING_EAM": "srs_connecting",
+            "REGISTERING_RADIO": "registering_radio",
+            "RADIO_REGISTERED": "registering_udp",
+            "REGISTERING_UDP": "registering_udp",
+            "READY": "provider_connecting",
+        }
+        phase = phase_by_state.get(state)
+        if phase is not None:
+            self._status(phase=phase)
 
     def _on_radio_datagram(self, datagram: bytes) -> None:
         try:

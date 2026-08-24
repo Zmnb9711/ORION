@@ -1,0 +1,171 @@
+from __future__ import annotations
+
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any, cast
+
+import pytest
+
+from orion.desktop_app_windows import WindowsOrionDesktopLauncher
+from orion.desktop_launcher_field_fixed import FieldFixedAudioLauncher
+from orion.launcher_cloud_voice_sections import (
+    SRS_CONNECT_INSTRUCTION,
+    CloudVoiceConfig,
+    CloudVoiceConfigStore,
+    LauncherCloudVoiceSectionsMixin,
+    format_orion_srs_status,
+    format_srs_process_status,
+)
+from orion.srs_process_control import (
+    SrsProcessKind,
+    SrsProcessState,
+    SrsProcessStatus,
+    launcher_srs_offline_smoke,
+)
+
+
+def test_transport_default_and_supported_payload_matrix() -> None:
+    qwen = CloudVoiceConfig(cloud_provider="qwen_realtime")
+    yandex = CloudVoiceConfig(cloud_provider="yandex", yandex_folder_id="folder")
+    yandex_srs = CloudVoiceConfig(
+        cloud_provider="yandex",
+        voice_transport="srs",
+        yandex_folder_id="folder",
+        srs_host="radio.local",
+        srs_port=5002,
+    )
+
+    assert qwen.voice_transport == "direct"
+    assert LauncherCloudVoiceSectionsMixin._realtime_start_payload(
+        qwen, "qwen-key", "yandex-key"
+    )["transport"] == "direct"
+    assert LauncherCloudVoiceSectionsMixin._realtime_start_payload(
+        yandex, "qwen-key", "yandex-key"
+    )["transport"] == "direct"
+    payload = LauncherCloudVoiceSectionsMixin._realtime_start_payload(
+        yandex_srs,
+        "qwen-key",
+        "yandex-key",
+        "eam-memory-only",
+    )
+    assert payload["provider"] == "yandex" and payload["transport"] == "srs"
+    assert payload["srs"] == {
+        "host": "radio.local",
+        "port": 5002,
+        "eam_password": "eam-memory-only",
+    }
+
+
+def test_qwen_srs_is_rejected_without_fallback() -> None:
+    config = CloudVoiceConfig(cloud_provider="qwen_realtime", voice_transport="srs")
+    with pytest.raises(ValueError, match=r"Qwen \+ SRS"):
+        LauncherCloudVoiceSectionsMixin._realtime_start_payload(
+            config,
+            "qwen-key",
+            "yandex-key",
+            "eam",
+        )
+
+
+def test_eam_password_is_memory_only_and_never_persisted(tmp_path) -> None:  # noqa: ANN001
+    store = CloudVoiceConfigStore(tmp_path)
+    config = CloudVoiceConfig(
+        cloud_provider="yandex",
+        voice_transport="srs",
+        srs_server_path=r"C:\SRS\Server\SRS-Server.exe",
+        srs_client_path=r"C:\SRS\Client\SR-ClientRadio.exe",
+    )
+    launcher = cast(Any, object.__new__(LauncherCloudVoiceSectionsMixin))
+    launcher._remember_srs_eam_password("eam-never-persist")
+    store.save(config)
+    raw = store.path.read_text(encoding="utf-8")
+
+    assert store.load() == config
+    assert launcher._current_srs_eam_password() == "eam-never-persist"
+    assert "eam-never-persist" not in raw
+    assert "password" not in raw.casefold()
+    assert "eam-never-persist" not in repr(config)
+
+
+def test_official_process_and_orion_radio_statuses_cannot_be_confused() -> None:
+    client = SrsProcessStatus(
+        SrsProcessKind.CLIENT,
+        SrsProcessState.RUNNING,
+        executable_path=r"C:\SRS\Client\SR-ClientRadio.exe",
+        pid=42,
+    )
+    assert format_srs_process_status(client).startswith("SRS CLIENT: RUNNING")
+    assert format_orion_srs_status({"transport": "srs", "state": "stopped", "phase": "idle"}) == (
+        "ORION SRS: NOT CONNECTED"
+    )
+    assert format_orion_srs_status(
+        {"transport": "srs", "state": "starting", "phase": "registering_radio"}
+    ) == (
+        "ORION SRS: REGISTERING RADIO"
+    )
+    assert format_orion_srs_status(
+        {"transport": "srs", "state": "starting", "phase": "registering_udp"}
+    ) == (
+        "ORION SRS: REGISTERING UDP"
+    )
+    assert format_orion_srs_status(
+        {"transport": "srs", "state": "streaming", "phase": "listening"}
+    ) == (
+        "ORION SRS: READY"
+    )
+    assert format_orion_srs_status(
+        {"transport": "direct", "state": "streaming", "phase": "listening"}
+    ) == "ORION SRS: NOT CONNECTED"
+
+
+def test_launcher_ui_contains_ordered_commands_and_manual_connect_instruction() -> None:
+    source = Path(LauncherCloudVoiceSectionsMixin.__module__.replace(".", "/") + ".py")
+    text = (Path(__file__).resolve().parents[1] / source).read_text(encoding="utf-8")
+    assert text.index("START SRS SERVER") < text.index("START SRS CLIENT")
+    assert SRS_CONNECT_INSTRUCTION in text
+    for forbidden_control in (
+        "RADIO 1 FREQUENCY",
+        "RADIO 2",
+        "SRS AUDIO DEVICE",
+        "SRS PTT",
+        "ENCRYPTION CONTROL",
+    ):
+        assert forbidden_control not in text
+
+
+def test_voice_and_tray_shutdown_do_not_own_external_srs_processes() -> None:
+    events: list[str] = []
+    launcher = cast(Any, object.__new__(FieldFixedAudioLauncher))
+    launcher._really_exiting = False
+    launcher._tray = SimpleNamespace(stop=lambda: events.append("tray_stop"))
+    launcher._stop_realtime_before_exit = lambda: events.append("realtime_stop")
+    launcher.core = SimpleNamespace(shutdown=lambda: events.append("core_shutdown"))
+    launcher.root = SimpleNamespace(destroy=lambda: events.append("root_destroy"))
+    launcher._srs_process_controller = SimpleNamespace(
+        terminate=lambda: events.append("forbidden_srs_terminate")
+    )
+
+    FieldFixedAudioLauncher.exit_application(launcher)
+
+    assert events == ["tray_stop", "realtime_stop", "core_shutdown", "root_destroy"]
+
+    tray_launcher = cast(Any, object.__new__(WindowsOrionDesktopLauncher))
+    tray_launcher._really_exiting = False
+    tray_launcher.config = SimpleNamespace(minimize_to_tray=True)
+    tray_launcher._tray = SimpleNamespace(start=lambda: events.append("tray_start"))
+    tray_launcher.root = SimpleNamespace(withdraw=lambda: events.append("withdraw"))
+    tray_launcher._srs_process_controller = launcher._srs_process_controller
+    WindowsOrionDesktopLauncher.close(tray_launcher)
+    assert events[-2:] == ["tray_start", "withdraw"]
+    assert "forbidden_srs_terminate" not in events
+
+
+def test_launcher_frozen_smoke_has_no_side_effects() -> None:
+    result = launcher_srs_offline_smoke()
+    assert result == {
+        "ok": True,
+        "candidate_count_without_environment": 0,
+        "external_process_started": False,
+        "network_used": False,
+        "audio_devices_opened": False,
+    }

@@ -22,7 +22,12 @@ class _Provider:
         return self.live_status()
 
     def live_status(self) -> RealtimeLiveStatus:
-        return RealtimeLiveStatus(provider=self.provider_id, state=self.state, message=self.state)
+        return RealtimeLiveStatus(
+            provider=self.provider_id,
+            transport=self.transport_id,
+            state=self.state,
+            message=self.state,
+        )
 
     def stop_live(self) -> RealtimeLiveStatus:
         self.stops += 1
@@ -95,6 +100,7 @@ def test_provider_transport_matrix_and_legacy_direct_default() -> None:
     )
     coordinator.start(srs)
     assert yandex_srs.starts == 1
+    assert coordinator.status().transport == "srs"
     coordinator.stop()
 
 

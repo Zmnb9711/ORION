@@ -37,6 +37,15 @@ jobs:
       - name: Build ORION Launcher
         shell: pwsh
         run: python -m PyInstaller --noconfirm --clean --onedir --windowed --name ORION-Launcher --collect-submodules orion --collect-submodules uvicorn --collect-submodules websocket --collect-submodules aiohttp --exclude-module samplerate --exclude-module numpy --exclude-module orion.srs_opus --exclude-module orion.srs_resampler --exclude-module orion.srs_protocol --exclude-module orion.srs_transmission --exclude-module orion.srs_radio_transport --exclude-module orion.srs_diagnostics --exclude-module orion.yandex_srs_live_core --add-data "dcs-export;dcs-export" --icon branding/orion.ico --add-data "branding/orion.ico;branding" orion/launcher_main.py
+      - name: Run offline frozen Launcher SRS control smoke
+        shell: pwsh
+        run: |
+          $resultPath = Join-Path $env:RUNNER_TEMP "orion-launcher-srs-control-smoke.json"
+          $process = Start-Process "dist/ORION-Launcher/ORION-Launcher.exe" -ArgumentList @("--srs-control-smoke", $resultPath) -Wait -PassThru
+          if ($process.ExitCode) { throw "Frozen Launcher SRS control smoke exited $($process.ExitCode)" }
+          $result = Get-Content $resultPath -Raw | ConvertFrom-Json
+          if (-not $result.ok -or $result.external_process_started -or $result.network_used -or $result.audio_devices_opened) { throw "Frozen Launcher SRS control smoke failed" }
+          if (Get-ChildItem "dist/ORION-Launcher" -Recurse -File | Where-Object { $_.Name -match "^(SRS-Server\.exe|SR-ClientRadio\.exe|opus\.dll|_samplerate.*|numpy.*)$" }) { throw "Launcher unexpectedly contains SRS external/native runtime" }
       - name: Assemble canonical product layout
         shell: pwsh
         run: |

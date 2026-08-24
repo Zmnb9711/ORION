@@ -46,3 +46,20 @@ def test_build_workflows_assign_srs_native_runtime_to_core_not_launcher() -> Non
         )
         assert "--exclude-module samplerate" in launcher_line
         assert "--exclude-module numpy" in launcher_line
+        assert "--srs-control-smoke" in source
+
+
+def test_orion_distribution_never_contains_external_srs_applications() -> None:
+    for root in (ROOT / "orion", ROOT / "packaging"):
+        packaged = {
+            path.name.casefold()
+            for path in root.rglob("*.exe")
+        }
+        assert "srs-server.exe" not in packaged
+        assert "sr-clientradio.exe" not in packaged
+
+
+def test_launcher_entrypoint_has_offline_srs_control_smoke() -> None:
+    source = (ROOT / "orion/launcher_main.py").read_text(encoding="utf-8")
+    assert "--srs-control-smoke" in source
+    assert "launcher_srs_offline_smoke" in source

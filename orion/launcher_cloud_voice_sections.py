@@ -5,11 +5,12 @@ import os
 import threading
 import urllib.error
 import urllib.request
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from tkinter import LEFT, X, StringVar, TclError, messagebox
+from tkinter import LEFT, X, StringVar, TclError, filedialog, messagebox
 from tkinter import ttk
-from typing import Any
+from typing import Any, Callable
 
 from orion.controller_input import (
     BoundedControlDiagnostics,
@@ -21,15 +22,53 @@ from orion.controller_input import (
 from orion.qwen_realtime_provider import QwenRealtimeConfig, QwenRealtimeProvider
 from orion.qwen_session_control import QwenControlResult, QwenSessionController
 from orion.realtime_session_control import RealtimeSessionController
+from orion.srs_process_control import (
+    SrsExternalProcessController,
+    SrsProcessKind,
+    SrsProcessState,
+    SrsProcessStatus,
+)
+
+SRS_CONNECT_INSTRUCTION = "In SRS Client press CONNECT, then CONNECT EAM."
 
 
 @dataclass(slots=True)
 class CloudVoiceConfig:
     cloud_provider: str = "qwen_realtime"
+    voice_transport: str = "direct"
     qwen_region: str = "singapore"
     qwen_workspace_id: str = ""
     qwen_model: str = "qwen3.5-omni-flash-realtime"
     yandex_folder_id: str = ""
+    srs_host: str = "127.0.0.1"
+    srs_port: int = 5002
+    srs_server_path: str = ""
+    srs_client_path: str = ""
+
+
+def format_srs_process_status(status: SrsProcessStatus) -> str:
+    label = "SRS SERVER" if status.kind is SrsProcessKind.SERVER else "SRS CLIENT"
+    pid = f" (PID {status.pid})" if status.pid is not None else ""
+    detail = f" — {status.message}" if status.message else ""
+    return f"{label}: {status.state.value}{pid}{detail}"
+
+
+def format_orion_srs_status(result: Mapping[str, object]) -> str:
+    if str(result.get("transport") or "").casefold() != "srs":
+        return "ORION SRS: NOT CONNECTED"
+    state = str(result.get("state") or "stopped").casefold()
+    phase = str(result.get("phase") or "idle").casefold()
+    if state == "error":
+        return f"ORION SRS: ERROR — {result.get('message') or 'SRS session failed'}"
+    if state == "streaming":
+        return "ORION SRS: READY"
+    if phase == "registering_radio":
+        return "ORION SRS: REGISTERING RADIO"
+    if phase == "registering_udp":
+        return "ORION SRS: REGISTERING UDP"
+    if state in {"starting", "connected"} or phase in {"srs_connecting", "provider_connecting"}:
+        return "ORION SRS: CONNECTING"
+    return "ORION SRS: NOT CONNECTED"
 
 
 class CloudVoiceConfigStore:
@@ -155,6 +194,7 @@ class LauncherCloudVoiceSectionsMixin:
         self._qwen_control_diagnostics = BoundedControlDiagnostics()
         self._qwen_session_controller = QwenSessionController(self._realtime_core_json)
         self._realtime_session_controller = RealtimeSessionController(self._realtime_core_json)
+        self._srs_process_controller = SrsExternalProcessController()
         self._qwen_controller_monitor = QwenControllerMonitor(
             backend=PygameJoystickBackend(),
             store=ControllerBindingStore(runtime_dir),
@@ -184,6 +224,22 @@ class LauncherCloudVoiceSectionsMixin:
     def _remember_yandex_api_key(self, value: str) -> None:
         self._yandex_api_key = value.strip()
 
+    def _current_srs_eam_password(self) -> str:
+        return str(getattr(self, "_srs_eam_password", "") or "")
+
+    def _remember_srs_eam_password(self, value: str) -> None:
+        self._srs_eam_password = value
+
+    @staticmethod
+    def _validated_srs_port(value: str) -> int:
+        try:
+            port = int(value.strip())
+        except ValueError as exc:
+            raise ValueError("SRS Server Port must be a number") from exc
+        if not 1 <= port <= 65_535:
+            raise ValueError("SRS Server Port must be between 1 and 65535")
+        return port
+
     def _page_settings(self) -> None:
         super()._page_settings()  # type: ignore[misc]
         config = self._cloud_voice_store().load()
@@ -202,22 +258,37 @@ class LauncherCloudVoiceSectionsMixin:
         ).pack(anchor="w", pady=(4, 12))
 
         provider_labels = {"Qwen Realtime": "qwen_realtime", "Yandex Realtime": "yandex"}
+        transport_labels = {"Direct Audio": "direct", "SRS Radio": "srs"}
         region_labels = {"Singapore": "singapore", "China (Beijing)": "beijing"}
         reverse_provider = {value: label for label, value in provider_labels.items()}
+        reverse_transport = {value: label for label, value in transport_labels.items()}
         reverse_region = {value: label for label, value in region_labels.items()}
 
         provider = StringVar(value=reverse_provider.get(config.cloud_provider, "Qwen Realtime"))
+        transport = StringVar(value=reverse_transport.get(config.voice_transport, "Direct Audio"))
         region = StringVar(value=reverse_region.get(config.qwen_region, "Singapore"))
         workspace = StringVar(value=config.qwen_workspace_id)
         model = StringVar(value=config.qwen_model)
         api_key = StringVar(value=self._current_qwen_api_key())
         yandex_api_key = StringVar(value=self._current_yandex_api_key())
         yandex_folder_id = StringVar(value=config.yandex_folder_id)
+        srs_host = StringVar(value=config.srs_host)
+        srs_port = StringVar(value=str(config.srs_port))
+        srs_server_path = StringVar(value=config.srs_server_path)
+        srs_client_path = StringVar(value=config.srs_client_path)
+        srs_eam_password = StringVar(value=self._current_srs_eam_password())
         # Settings pages are destroyed/recreated during navigation. Mirror every
         # edit immediately into Launcher session memory, not only on SAVE.
         api_key.trace_add("write", lambda *_: self._remember_qwen_api_key(api_key.get()))
         yandex_api_key.trace_add("write", lambda *_: self._remember_yandex_api_key(yandex_api_key.get()))
+        srs_eam_password.trace_add(
+            "write", lambda *_: self._remember_srs_eam_password(srs_eam_password.get())
+        )
         live_status = StringVar(value="STOPPED — Realtime voice is not active")
+        compatibility_status = StringVar()
+        srs_server_status = StringVar(value="SRS SERVER: STOPPED")
+        srs_client_status = StringVar(value="SRS CLIENT: STOPPED")
+        orion_srs_status = StringVar(value="ORION SRS: NOT CONNECTED")
 
         box = ttk.Frame(self.content, style="Card.TFrame", padding=16)
         box.pack(fill=X)
@@ -242,9 +313,123 @@ class LauncherCloudVoiceSectionsMixin:
             text="Model: speech-realtime-260528  |  Voice: dasha  |  Language: ru-RU",
             style="CardText.TLabel",
         ).pack(anchor="w", pady=(0, 12))
+
+        transport_fields = ttk.Frame(box, style="Card.TFrame")
+        transport_fields.pack(fill=X, pady=(4, 0))
+        ttk.Label(transport_fields, text="VOICE TRANSPORT", style="CardTitle.TLabel").pack(
+            anchor="w"
+        )
+        ttk.Combobox(
+            transport_fields,
+            textvariable=transport,
+            values=tuple(transport_labels),
+            state="readonly",
+            width=42,
+        ).pack(anchor="w", pady=(6, 8))
+        ttk.Label(
+            transport_fields,
+            textvariable=compatibility_status,
+            style="CardText.TLabel",
+            wraplength=780,
+            justify="left",
+        ).pack(anchor="w", pady=(0, 8))
+
+        srs_fields = ttk.Frame(box, style="Card.TFrame")
+        ttk.Label(srs_fields, text="SRS CONNECTION", style="CardTitle.TLabel").pack(anchor="w")
+        ttk.Label(
+            srs_fields,
+            text=(
+                "ORION uses a validated 251.000 MHz AM radio profile. Configure radios, PTT, "
+                "audio devices and volume only in the official SRS Client."
+            ),
+            style="CardText.TLabel",
+            wraplength=780,
+            justify="left",
+        ).pack(anchor="w", pady=(6, 10))
+
+        connection_row = ttk.Frame(srs_fields, style="Card.TFrame")
+        connection_row.pack(fill=X, pady=(0, 10))
+        ttk.Label(connection_row, text="SERVER HOST", style="CardTitle.TLabel").pack(side=LEFT)
+        ttk.Entry(connection_row, textvariable=srs_host, width=30).pack(side=LEFT, padx=(8, 18))
+        ttk.Label(connection_row, text="PORT", style="CardTitle.TLabel").pack(side=LEFT)
+        ttk.Entry(connection_row, textvariable=srs_port, width=10).pack(side=LEFT, padx=(8, 0))
+
+        ttk.Label(srs_fields, text="EAM PASSWORD (MEMORY ONLY)", style="CardTitle.TLabel").pack(
+            anchor="w"
+        )
+        ttk.Entry(srs_fields, textvariable=srs_eam_password, show="*", width=72).pack(
+            anchor="w", fill=X, pady=(6, 12)
+        )
+
+        ttk.Label(srs_fields, textvariable=srs_server_status, style="CardText.TLabel").pack(
+            anchor="w"
+        )
+        server_row = ttk.Frame(srs_fields, style="Card.TFrame")
+        server_row.pack(fill=X, pady=(6, 12))
+        ttk.Entry(server_row, textvariable=srs_server_path, width=58).pack(
+            side=LEFT, fill=X, expand=True
+        )
+        ttk.Button(
+            server_row,
+            text="SELECT",
+            style="Secondary.TButton",
+            command=lambda: self._select_srs_executable(SrsProcessKind.SERVER, srs_server_path),
+        ).pack(side=LEFT, padx=(8, 0))
+        ttk.Button(
+            server_row,
+            text="START SRS SERVER",
+            style="Secondary.TButton",
+            command=lambda: self._start_srs_process_async(
+                SrsProcessKind.SERVER,
+                srs_server_path.get(),
+                srs_client_path.get(),
+                srs_server_status,
+                srs_client_status,
+            ),
+        ).pack(side=LEFT, padx=(8, 0))
+
+        ttk.Label(srs_fields, textvariable=srs_client_status, style="CardText.TLabel").pack(
+            anchor="w"
+        )
+        client_row = ttk.Frame(srs_fields, style="Card.TFrame")
+        client_row.pack(fill=X, pady=(6, 10))
+        ttk.Entry(client_row, textvariable=srs_client_path, width=58).pack(
+            side=LEFT, fill=X, expand=True
+        )
+        ttk.Button(
+            client_row,
+            text="SELECT",
+            style="Secondary.TButton",
+            command=lambda: self._select_srs_executable(SrsProcessKind.CLIENT, srs_client_path),
+        ).pack(side=LEFT, padx=(8, 0))
+        ttk.Button(
+            client_row,
+            text="START SRS CLIENT",
+            style="Secondary.TButton",
+            command=lambda: self._start_srs_process_async(
+                SrsProcessKind.CLIENT,
+                srs_server_path.get(),
+                srs_client_path.get(),
+                srs_server_status,
+                srs_client_status,
+            ),
+        ).pack(side=LEFT, padx=(8, 0))
+        ttk.Label(
+            srs_fields,
+            text=SRS_CONNECT_INSTRUCTION,
+            style="CardText.TLabel",
+            wraplength=780,
+            justify="left",
+        ).pack(anchor="w", pady=(0, 8))
+        ttk.Label(srs_fields, textvariable=orion_srs_status, style="CardText.TLabel").pack(
+            anchor="w", pady=(0, 10)
+        )
         ttk.Label(
             box,
-            text="Provider API keys are kept separately in memory and are never written to cloud-voice.json.",
+            text=(
+                "Provider API keys and the EAM password are kept separately in memory and are never "
+                "written to cloud-voice.json."
+            ),
             style="CardText.TLabel",
         ).pack(anchor="w", pady=(0, 12))
         ttk.Label(
@@ -262,19 +447,39 @@ class LauncherCloudVoiceSectionsMixin:
         buttons.pack(fill=X, pady=(16, 0))
 
         def selected_config() -> CloudVoiceConfig:
+            selected_transport = transport_labels[transport.get()]
+            selected_srs_port = (
+                self._validated_srs_port(srs_port.get())
+                if selected_transport == "srs"
+                else config.srs_port
+            )
             return CloudVoiceConfig(
                 cloud_provider=provider_labels[provider.get()],
+                voice_transport=selected_transport,
                 qwen_region=region_labels[region.get()],
                 qwen_workspace_id=workspace.get().strip(),
                 qwen_model=model.get().strip() or "qwen3.5-omni-flash-realtime",
                 yandex_folder_id=yandex_folder_id.get().strip(),
+                srs_host=srs_host.get().strip() or "127.0.0.1",
+                srs_port=selected_srs_port,
+                srs_server_path=srs_server_path.get().strip(),
+                srs_client_path=srs_client_path.get().strip(),
             )
 
         def save() -> None:
-            self._cloud_voice_store().save(selected_config())
+            try:
+                self._cloud_voice_store().save(selected_config())
+            except ValueError as exc:
+                messagebox.showerror("ORION Voice", str(exc), parent=self.root)
+                return
             self._remember_qwen_api_key(api_key.get())
             self._remember_yandex_api_key(yandex_api_key.get())
-            messagebox.showinfo("ORION Voice", "Voice settings saved. API key kept in memory only.", parent=self.root)
+            self._remember_srs_eam_password(srs_eam_password.get())
+            messagebox.showinfo(
+                "ORION Voice",
+                "Voice settings saved. Credentials remain in memory only.",
+                parent=self.root,
+            )
 
         ttk.Button(buttons, text="SAVE VOICE SETTINGS", style="Primary.TButton", command=save).pack(side=LEFT, padx=(0, 8))
         ttk.Button(
@@ -300,25 +505,38 @@ class LauncherCloudVoiceSectionsMixin:
         ttk.Label(box, textvariable=live_status, style="CardText.TLabel", wraplength=780, justify="left").pack(anchor="w", pady=(6, 10))
         live_buttons = ttk.Frame(box, style="Card.TFrame")
         live_buttons.pack(fill=X)
-        ttk.Button(
+        def control_live(*, start: bool) -> None:
+            try:
+                live_config = selected_config() if start else config
+            except ValueError as exc:
+                messagebox.showerror("ORION Voice", str(exc), parent=self.root)
+                return
+            self._realtime_live_async(
+                live_config,
+                api_key.get(),
+                yandex_api_key.get(),
+                srs_eam_password.get(),
+                live_status,
+                start=start,
+            )
+
+        live_start_button = ttk.Button(
             live_buttons,
             text="START LIVE",
             style="Primary.TButton",
-            command=lambda: self._realtime_live_async(
-                selected_config(), api_key.get(), yandex_api_key.get(), live_status, start=True
-            ),
-        ).pack(side=LEFT, padx=(0, 8))
+            command=lambda: control_live(start=True),
+        )
+        live_start_button.pack(side=LEFT, padx=(0, 8))
         ttk.Button(
             live_buttons,
             text="STOP LIVE",
             style="Secondary.TButton",
-            command=lambda: self._realtime_live_async(
-                selected_config(), api_key.get(), yandex_api_key.get(), live_status, start=False
-            ),
+            command=lambda: control_live(start=False),
         ).pack(side=LEFT)
 
         def refresh_provider_fields(*_args: object) -> None:
             selected = provider_labels[provider.get()]
+            selected_transport = transport_labels[transport.get()]
             if selected == "yandex":
                 qwen_fields.pack_forget()
                 yandex_fields.pack(fill=X, before=buttons)
@@ -326,12 +544,41 @@ class LauncherCloudVoiceSectionsMixin:
             else:
                 yandex_fields.pack_forget()
                 qwen_fields.pack(fill=X, before=buttons)
-                tool_button.state(["!disabled"])
+                tool_button.state(["!disabled"] if selected_transport == "direct" else ["disabled"])
+
+            if selected_transport == "srs":
+                srs_fields.pack(fill=X, before=buttons, pady=(8, 4))
+            else:
+                srs_fields.pack_forget()
+
+            if selected == "qwen_realtime" and selected_transport == "srs":
+                compatibility_status.set(
+                    "Qwen + SRS Radio is not available in v0.1. Select Direct Audio or Yandex."
+                )
+                live_start_button.state(["disabled"])
+            else:
+                compatibility_status.set(
+                    "SUPPORTED — provider and transport are selected independently."
+                )
+                live_start_button.state(["!disabled"])
 
         provider.trace_add("write", refresh_provider_fields)
+        transport.trace_add("write", refresh_provider_fields)
         refresh_provider_fields()
         generation = self._build_qwen_controls(box)
-        self._realtime_live_poll(live_status, generation)
+        self._realtime_live_poll(
+            live_status,
+            orion_srs_status,
+            lambda: transport_labels[transport.get()],
+            generation,
+        )
+        self._srs_process_poll(
+            srs_server_path,
+            srs_client_path,
+            srs_server_status,
+            srs_client_status,
+            generation,
+        )
 
     @staticmethod
     def _qwen_start_payload(config: CloudVoiceConfig, api_key: str) -> dict[str, object]:
@@ -347,29 +594,52 @@ class LauncherCloudVoiceSectionsMixin:
         }
 
     def _hardware_start_payload(self) -> dict[str, object]:
-        return self._qwen_start_payload(
-            self._cloud_voice_store().load(),
-            self._current_qwen_api_key(),
-        )
+        config = self._cloud_voice_store().load()
+        if config.voice_transport != "direct":
+            raise ValueError("Qwen + SRS Radio is not available in v0.1")
+        return self._qwen_start_payload(config, self._current_qwen_api_key())
 
     @staticmethod
     def _realtime_start_payload(
         config: CloudVoiceConfig,
         qwen_api_key: str,
         yandex_api_key: str,
+        srs_eam_password: str = "",
     ) -> dict[str, object]:
+        transport = config.voice_transport.strip().casefold()
+        if transport not in {"direct", "srs"}:
+            raise ValueError(f"Unsupported voice transport: {config.voice_transport}")
+        if config.cloud_provider != "yandex" and transport == "srs":
+            raise ValueError("Qwen + SRS Radio is not available in v0.1")
         if config.cloud_provider == "yandex":
             key = yandex_api_key.strip()
             if not key:
                 raise ValueError("Yandex API key is required")
             if not config.yandex_folder_id.strip():
                 raise ValueError("Yandex Folder ID is required")
-            return {
+            payload: dict[str, object] = {
                 "provider": "yandex",
+                "transport": transport,
                 "api_key": key,
                 "folder_id": config.yandex_folder_id,
             }
-        return {"provider": "qwen", **LauncherCloudVoiceSectionsMixin._qwen_start_payload(config, qwen_api_key)}
+            if transport == "srs":
+                password = srs_eam_password.strip()
+                if not password:
+                    raise ValueError("SRS EAM password is required")
+                if not config.srs_host.strip():
+                    raise ValueError("SRS Server Host is required")
+                payload["srs"] = {
+                    "host": config.srs_host.strip(),
+                    "port": config.srs_port,
+                    "eam_password": password,
+                }
+            return payload
+        return {
+            "provider": "qwen",
+            "transport": "direct",
+            **LauncherCloudVoiceSectionsMixin._qwen_start_payload(config, qwen_api_key),
+        }
 
     def _hardware_qwen_toggle(self) -> None:
         try:
@@ -744,11 +1014,102 @@ class LauncherCloudVoiceSectionsMixin:
 
         threading.Thread(target=worker, name="orion-qwen-smoke", daemon=True).start()
 
+    def _select_srs_executable(self, kind: SrsProcessKind, variable: Any) -> None:
+        executable = "SRS-Server.exe" if kind is SrsProcessKind.SERVER else "SR-ClientRadio.exe"
+        selected = filedialog.askopenfilename(
+            parent=self.root,
+            title=f"Select {executable}",
+            filetypes=((executable, executable), ("Executable", "*.exe")),
+        )
+        if selected:
+            variable.set(selected)
+
+    def _start_srs_process_async(
+        self,
+        kind: SrsProcessKind,
+        server_path: str,
+        client_path: str,
+        server_status: StringVar,
+        client_status: StringVar,
+    ) -> None:
+        generation = self._qwen_view_generation
+
+        def publish(status: SrsProcessStatus) -> None:
+            variable = server_status if status.kind is SrsProcessKind.SERVER else client_status
+            self._schedule_qwen_ui(
+                0,
+                lambda: variable.set(format_srs_process_status(status)),
+                generation,
+            )
+
+        def worker() -> None:
+            if kind is SrsProcessKind.SERVER:
+                self._srs_process_controller.start_server(server_path, on_status=publish)
+            else:
+                self._srs_process_controller.start_client(
+                    client_path,
+                    server_path=server_path,
+                    on_status=publish,
+                )
+
+        threading.Thread(
+            target=worker,
+            name=f"orion-srs-{kind.value}-start",
+            daemon=True,
+        ).start()
+
+    def _srs_process_poll(
+        self,
+        server_path: StringVar,
+        client_path: StringVar,
+        server_status: StringVar,
+        client_status: StringVar,
+        generation: int,
+    ) -> None:
+        if not self._qwen_view_lifecycle.is_alive(generation):
+            return
+        configured_server = server_path.get()
+        configured_client = client_path.get()
+
+        def worker() -> None:
+            server = self._srs_process_controller.status(
+                SrsProcessKind.SERVER,
+                configured_server,
+            )
+            client = self._srs_process_controller.status(
+                SrsProcessKind.CLIENT,
+                configured_client,
+            )
+
+            def apply() -> None:
+                server_status.set(format_srs_process_status(server))
+                client_status.set(format_srs_process_status(client))
+                if not server_path.get().strip() and server.executable_path:
+                    server_path.set(server.executable_path)
+                if not client_path.get().strip() and client.executable_path:
+                    client_path.set(client.executable_path)
+
+            self._schedule_qwen_ui(0, apply, generation)
+
+        threading.Thread(target=worker, name="orion-srs-process-status", daemon=True).start()
+        self._schedule_qwen_ui(
+            2500,
+            lambda: self._srs_process_poll(
+                server_path,
+                client_path,
+                server_status,
+                client_status,
+                generation,
+            ),
+            generation,
+        )
+
     def _realtime_live_async(
         self,
         config: CloudVoiceConfig,
         qwen_api_key: str,
         yandex_api_key: str,
+        srs_eam_password: str,
         live_status: StringVar,
         *,
         start: bool,
@@ -760,7 +1121,12 @@ class LauncherCloudVoiceSectionsMixin:
             try:
                 control = (
                     self._realtime_session_controller.request_start(
-                        lambda: self._realtime_start_payload(config, qwen_api_key, yandex_api_key)
+                        lambda: self._realtime_start_payload(
+                            config,
+                            qwen_api_key,
+                            yandex_api_key,
+                            srs_eam_password,
+                        )
                     )
                     if start
                     else self._realtime_session_controller.request_stop()
@@ -779,7 +1145,13 @@ class LauncherCloudVoiceSectionsMixin:
 
         threading.Thread(target=worker, name="orion-realtime-live-control", daemon=True).start()
 
-    def _realtime_live_poll(self, live_status: StringVar, generation: int) -> None:
+    def _realtime_live_poll(
+        self,
+        live_status: StringVar,
+        orion_srs_status: StringVar,
+        selected_transport: Callable[[], str],
+        generation: int,
+    ) -> None:
         if not self._qwen_view_lifecycle.is_alive(generation):
             return
         self._qwen_live_status_var = live_status
@@ -796,13 +1168,30 @@ class LauncherCloudVoiceSectionsMixin:
             output_chunks = int(str(result.get("output_chunks", 0) or 0))
             suffix = "" if not (input_chunks or output_chunks) else f" | mic={input_chunks} audio={output_chunks}"
             prefix = f"{provider.upper()} " if provider else ""
+
+            def apply() -> None:
+                live_status.set(f"{prefix}{state} — {message}{suffix}")
+                if selected_transport() == "srs":
+                    orion_srs_status.set(format_orion_srs_status(result))
+                else:
+                    orion_srs_status.set("ORION SRS: NOT CONNECTED")
+
             self._schedule_qwen_ui(
-                0, lambda: live_status.set(f"{prefix}{state} — {message}{suffix}"), generation
+                0,
+                apply,
+                generation,
             )
 
         threading.Thread(target=worker, name="orion-realtime-live-status", daemon=True).start()
         self._schedule_qwen_ui(
-            750, lambda: self._realtime_live_poll(live_status, generation), generation
+            750,
+            lambda: self._realtime_live_poll(
+                live_status,
+                orion_srs_status,
+                selected_transport,
+                generation,
+            ),
+            generation,
         )
 
     def _provider_smoke_async(
