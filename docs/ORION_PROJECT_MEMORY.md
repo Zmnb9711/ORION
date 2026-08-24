@@ -1,6 +1,6 @@
 # ORION Project Memory
 
-> Canonical long-term project context. Updated: 2026-08-13.
+> Canonical long-term project context. Updated: 2026-08-24.
 >
 > Purpose: preserve approved product requirements, architectural invariants, milestone history, real-world test evidence, known risks, and the next agreed action across chats and development sessions.
 >
@@ -117,6 +117,19 @@ Important invariants:
 - `main` plus automated tests/build gates remain the implementation source of truth.
 
 These invariants are also reflected in the #65.5 hardening baseline.
+
+### Voice transport / AI provider separation — 2026-08-17/24
+
+ADR-004 approved the cloud-first, provider-separated voice direction and a Qwen-first realtime vertical slice. ADR-005 extends that direction by adding SRS as an optional second Voice Transport without replacing Direct Voice.
+
+The two independent axes are:
+
+- **Voice Transport:** Direct/WASAPI for private ORION interaction; SRS for Virtual ATC, AWACS/GCI, JTAC/FAC, Tanker/AAR and multiplayer radio.
+- **AI Provider:** Qwen Realtime first; Yandex Realtime or another future provider without coupling the provider to SRS or WASAPI.
+
+`OrionSrsTransport` must preserve radio frequency, AM/FM modulation, sender GUID/UnitID, coalition/encryption context and transmission/PTT boundaries. It must implement busy-channel scheduling, an explicit simultaneous RX/TX policy and identity-based self-transmission filtering. SRS remains optional: its absence or failure must not prevent ORION Core or Direct Voice from operating.
+
+Implementation order is fixed: complete the `QwenRealtimeProvider <-> ORION Core` vertical slice first, then add SRS as the second transport. Do not destabilize the current Qwen work with premature SRS runtime changes.
 
 ### DCS telemetry architecture — audit decision, 2026-08-13
 
