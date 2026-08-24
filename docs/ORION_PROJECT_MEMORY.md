@@ -518,3 +518,94 @@ separately reprioritized.
   Launcher -> Core startup, health, and shutdown smoke with the same filenames
   and relative layout that the user will run.
 - Real Windows/DCS smoke evidence outranks optimistic progress estimates.
+
+## 14. AI Voice Session control model — approved 2026-08-24
+
+**Status: APPROVED PRODUCT / ARCHITECTURE INVARIANTS**
+
+This decision generalizes the earlier Qwen-specific activation model. Where an
+older decision describes a `QWEN SESSION TOGGLE` or a provider-specific session
+lifecycle, the provider-neutral model below supersedes that naming and lifecycle
+policy. It does not alter the field-validated provider audio transports or the
+protected SRS wire/readiness baseline.
+
+### One provider-neutral, Core-owned realtime session
+
+- The control is named **AI SESSION TOGGLE**. It controls the currently selected
+  Core-owned realtime AI session and belongs to neither Qwen nor Yandex.
+- HOTAS behavior is a short-press toggle: the first button-down edge changes
+  `OFF -> ON`, and the next short press changes `ON -> OFF`. It is not
+  hold-to-talk. Preserve the existing assign, change, reset/clear, and current
+  binding UI, generalized to the provider-neutral name and state.
+- Launcher controls, HOTAS input, and future automatic DCS lifecycle hooks all
+  act on the same session. They must not create parallel provider sessions.
+  `RealtimeLiveCoordinator` is the single lifecycle and exclusivity authority.
+- `START LIVE` and `STOP LIVE` remain available as manual, test, and diagnostic
+  controls for that same production session; they are not a separate test-only
+  implementation. The Launcher must show actual Core state regardless of
+  whether Launcher, HOTAS, or future DCS automation initiated the transition.
+- The future normal DCS lifecycle is automatic: valid current mission/telemetry
+  authority starts the selected realtime AI session, and mission end stops it.
+  A normal user should not need to press `START LIVE`; the buttons remain for
+  manual and diagnostic use.
+- **AI SESSION TOGGLE** remains the manual override in DCS. Switching it off
+  ends only the AI provider session; it does not terminate SRS, DCS, or Core.
+  Automatic mission lifecycle logic must retain and respect this manual-off
+  state instead of immediately re-enabling the session while the same mission
+  remains active.
+
+### SRS PTT and receive behavior are independent of AI session lifecycle
+
+- SRS PTT remains a separate transmission boundary. PTT down/up starts and ends
+  one SRS speech transmission; it must not create or destroy the selected AI
+  provider session. The provider session stays alive between PTT transmissions.
+- SRS listening must not be gated by local PTT. ORION must be able to receive
+  relevant radio traffic while the player is silent; for example, a Mayday call
+  may update `FlightContext` and ATC state without any local transmission. PTT
+  defines transmission boundaries, not radio or AI lifecycle.
+
+### Operational authority boundaries
+
+- SRS is the communications nervous system. DCS telemetry and Mission World are
+  the senses. Core-owned `FlightContext` is durable operational memory. The
+  selected AI provider supplies language/reasoning. Core and ATC remain the
+  controller and authoritative source of operational truth.
+- Yandex or Qwen conversational memory is not authoritative `FlightContext` and
+  must not replace Core-owned mission, traffic, clearance, or ATC state.
+
+### Protected SRS baseline and current acceptance status
+
+- Preserve the proven SRS readiness sequence exactly: initial `SYNC` contains
+  non-null canonical `RadioInfo`; the client receives a matching own server
+  `RADIO_UPDATE`; UDP GUID echo then proves the UDP path; only then may the SRS
+  transport become `READY`. This checkpoint does not approve any SRS wire,
+  radio-model, codec, routing, or readiness change.
+- The integrated Stage 4.1 product plus the successful production no-DCS
+  SRS/Yandex field run is a **BASELINE CANDIDATE**, not a final baseline. Final
+  status requires the Stage 5 evidence to be captured formally and the Stage
+  5.1 lifecycle/persistence tranche to be resolved.
+
+### Next proposed tranche: STAGE 5.1 — PERSISTENCE & AI VOICE LIFECYCLE
+
+Stage 5.1 is the next proposed tranche; it is not implemented by this
+documentation checkpoint. Its bounded scope is:
+
+- persist normal non-secret Voice configuration across restart;
+- securely persist Yandex/API credentials and any SRS credentials that ORION
+  genuinely needs across restart;
+- rename/generalize the session toggle and expose one common Core-owned state;
+- prepare future DCS automatic start/stop hooks without adding DCS radio context;
+- retain `START LIVE` / `STOP LIVE` as controls of the same session;
+- perform a read-only audit of official SRS Client/Server 2.4.0.0 configuration
+  persistence, including why user-visible values may not survive restart.
+
+Non-secret settings belong in normal ORION configuration. Secrets must not be
+stored as plaintext in `cloud-voice.json`; Stage 5.1 must evaluate an appropriate
+Windows-protected store such as Credential Manager or DPAPI and explicitly
+define credential cleanup/preservation behavior during uninstall.
+
+The official SRS applications remain authoritative for radios/frequencies,
+AM/FM, encryption, PTT, audio devices, volumes, and ordinary SRS settings.
+ORION persists only its own genuinely required integration settings. Stage 5.1
+must audit official SRS Client/Server 2.4.0.0 persistence read-only before
+assigning ownership or attempting any correction.
