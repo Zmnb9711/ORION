@@ -1,9 +1,11 @@
-# Yandex Realtime Reference Tester v1.1A
+# Yandex Realtime Reference Tester v1.1A + SRS Radio v0.1
 
 `YandexRealtimeTester` is a standalone Windows reference application for
 speech-to-speech testing with Yandex AI Studio Realtime API and deterministic
 PortAudio endpoints. It does not import ORION modules and is not part of the
-ORION production runtime. It does not contain ATC, DCS, HOTAS, tools, function
+ORION production runtime. Direct Audio remains the validated v1.1A path. The
+isolated experimental SRS Radio v0.1 path is a sibling session and does not
+import or modify ORION production. The tester does not contain ATC, DCS, HOTAS, tools, function
 calling, provider selection, or ORION credential storage.
 
 ## Current provider contract
@@ -128,6 +130,95 @@ It never includes credentials, Base64 audio, or raw PCM.
 
 The output is `YandexRealtimeTester\YandexRealtimeTester.exe`. PyInstaller
 packages Python, Tkinter, aiohttp, sounddevice, and their runtime dependencies.
+It also packages the pinned x64 `libopus 1.6.1` DLL, `samplerate==0.2.4`, NumPy,
+and the native/license material required by those components. The frozen
+offline codec/resampler check is available as:
+
+```powershell
+YandexRealtimeTester\YandexRealtimeTester.exe --srs-offline-smoke-test
+```
+
+That switch creates and destroys one Opus encoder/decoder and performs a short
+in-memory resample. It opens no SRS/Yandex connection and no PortAudio stream.
+
+## SRS Radio v0.1 architecture
+
+Select `Audio Mode: SRS Radio` to replace the Direct Audio device panel with
+SRS host, port, bot name, EAM password, frequency, and modulation controls.
+SRS Start does not enumerate or validate devices, call PortAudio format checks,
+or open a Windows input/output stream. All bot audio follows this path:
+
+```text
+SRS Opus mono 16 kHz / 40 ms
+→ strict SRS packet decode and original-sender arbitration
+→ stateful 16 kHz → 44.1 kHz resampling
+→ exact 20 ms Yandex input blocks
+→ complete response-scoped Yandex output buffer
+→ stateful 44.1 kHz → 16 kHz resampling
+→ Opus mono 16 kHz / 40 ms
+→ absolute-deadline paced SRS UDP TX
+```
+
+The current compatibility target is SRS 2.4.x, tested against 2.4.0.0. TCP is
+UTF-8 newline-delimited JSON. Start requires `SYNC`, server version validation,
+enabled External AWACS Mode, successful password authentication yielding
+coalition 1 or 2, one 251.000 MHz AM radio update, then an exact 22-byte UDP
+ClientGuid echo. Voice is not accepted or transmitted before that echo.
+
+The strict UDP codec uses a 6-byte header, Opus/frequency dynamic segments, and
+the current 57-byte fixed tail: uint32 UnitID, uint64 PacketID, one hop byte,
+22-byte OriginalClientGuid, and 22-byte current/final sender Guid. Malformed
+lengths, offsets, frequencies, modulation, or GUIDs are rejected before Opus.
+The original GUID identifies the human through the TCP registry. Packets whose
+original or current sender is the bot are dropped before decode, so bot TX
+cannot become Yandex input.
+
+v0.1 accepts one human origin at a time. A transmission ends after a 400 ms
+packet gap. The bridge then sends exactly 400 ms of bounded zero PCM to Yandex
+input so the existing server VAD can observe end-of-speech; it sends no infinite
+idle stream. Provider output is kept in one bounded response-scoped buffer and
+is eligible for radio only after both `response.output_audio.done` and a
+completed `response.done`. A failed/cancelled/oversized response is not sent.
+
+Bot TX waits for the 400 ms RX end plus a 250 ms guard. Frames are sent every
+40 ms against absolute monotonic deadlines with monotonically increasing
+PacketID. If a human begins after bot TX has already started, v0.1 records the
+collision, drops those packets from Yandex input, and finishes the current
+bounded bot transmission. Mid-TX cancellation, auto-reconnect, multiple radios,
+encryption, retransmit, radio effects, DCS radio state, and direct streaming of
+provider deltas are deliberately deferred.
+
+## Controlled no-DCS SRS field test
+
+The first live test is manual. Do not run it from automated validation.
+
+1. Start an isolated SRS Server 2.4.0.0 on port 5002. Enable External AWACS
+   Mode with a temporary test password, disable LOS and distance, leave
+   encryption off, and do not configure 251.000 as an echo/test frequency.
+2. Keep DCS, ORION, and Qwen closed. Start the official SRS Client manually,
+   connect to the same server in External AWACS Mode, authenticate into the
+   intended coalition, tune one radio to 251.000 AM, and select the desired
+   human microphone/output devices in that human client only.
+3. Start the packaged tester, select `SRS Radio`, enter Yandex credentials,
+   `127.0.0.1`, port `5002`, bot name `ORION YANDEX TEST`, the same EAM
+   password, frequency `251.000`, and `AM`.
+4. Press Start and require the sequence `CONNECTING_TCP`, `SYNCING`,
+   `AUTHENTICATING_EAM`, `REGISTERING_RADIO`, `REGISTERING_UDP`, `READY`.
+   Any coalition 0, version rejection, or missing UDP echo is a failure.
+5. From the human SRS client transmit: `Орион, проверка связи. Как меня слышно?`
+   Release PTT. The tester itself must remain silent locally; the reply must be
+   heard only through the human SRS client.
+6. Repeat with `Расскажи коротко, что ты умеешь.` Verify a distinct second
+   turn, no stale audio, and no self-generated Yandex turn.
+7. Before a later bot answer starts, make one more short human transmission.
+   The bot must extend the busy wait and begin only after the final 400+250 ms.
+8. Press Stop, require bounded `STOPPED`, then Start again and verify a fresh
+   GUID/session/PacketID state with another turn.
+
+Export diagnostics only after Stop. Reports contain scalar counters, masked
+GUIDs, timing, response sizes, pacing jitter, and close status. They never
+persist the EAM password, API key, Authorization header, raw TCP auth message,
+Opus, PCM, Base64 audio, packet hex, or SRS-mode transcript text.
 
 ## Logitech v1.1 field gate
 

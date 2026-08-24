@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
-from typing import Callable
+from typing import Any, Callable
 
 from yandex_reference_core import (
     APP_NAME,
@@ -24,8 +24,14 @@ from yandex_reference_core import (
     list_audio_devices,
     write_diagnostic_report,
 )
+from srs_opus import OpusDecoder, OpusEncoder, OpusLibrary
+from srs_radio_client import SrsRadioConfig
+from srs_resampler import offline_smoke as resampler_offline_smoke
+from yandex_srs_session import SrsSessionConfig, YandexSrsReferenceSession
 
 LANGUAGE_LABEL = "Russian (ru-RU)"
+DIRECT_AUDIO_MODE = "Direct Audio"
+SRS_RADIO_MODE = "SRS Radio"
 
 
 def app_root() -> Path:
@@ -41,6 +47,7 @@ class TesterApp:
         *,
         device_lister: Callable[[], tuple[list[AudioDevice], list[AudioDevice]]] = list_audio_devices,
         session_factory: Callable[..., YandexReferenceSession] = YandexReferenceSession,
+        srs_session_factory: Callable[..., YandexSrsReferenceSession] = YandexSrsReferenceSession,
         poll_events: bool = True,
     ) -> None:
         self.root = root
@@ -48,8 +55,9 @@ class TesterApp:
         self.logs_dir = self.base_dir / "logs"
         self.device_lister = device_lister
         self.session_factory = session_factory
+        self.srs_session_factory = srs_session_factory
         self.ui_events: queue.Queue[tuple[str, dict[str, object]]] = queue.Queue()
-        self.session: YandexReferenceSession | None = None
+        self.session: Any | None = None
         self.inputs: list[AudioDevice] = []
         self.outputs: list[AudioDevice] = []
         self._poll_after_id: str | None = None
@@ -82,14 +90,36 @@ class TesterApp:
         self.voice.insert(0, DEFAULT_VOICE)
         self.language = self._row_combo(connection, 4, "Language:", [LANGUAGE_LABEL])
         self.language.set(LANGUAGE_LABEL)
+        self.audio_mode = self._row_combo(
+            connection, 5, "Audio Mode:", [DIRECT_AUDIO_MODE, SRS_RADIO_MODE]
+        )
+        self.audio_mode.set(DIRECT_AUDIO_MODE)
+        self.audio_mode.bind("<<ComboboxSelected>>", self._mode_changed)
 
-        audio = ttk.LabelFrame(outer, text="Audio devices", padding=10)
-        audio.pack(fill="x", pady=(10, 0))
-        self.input_device = self._row_combo(audio, 0, "Input device:", [])
-        self.output_device = self._row_combo(audio, 1, "Output device:", [])
-        ttk.Button(audio, text="REFRESH DEVICES", command=self.refresh_devices).grid(
+        self.audio_frame = ttk.LabelFrame(outer, text="Audio devices", padding=10)
+        self.audio_frame.pack(fill="x", pady=(10, 0))
+        self.input_device = self._row_combo(self.audio_frame, 0, "Input device:", [])
+        self.output_device = self._row_combo(self.audio_frame, 1, "Output device:", [])
+        ttk.Button(self.audio_frame, text="REFRESH DEVICES", command=self.refresh_devices).grid(
             row=2, column=1, sticky="w", pady=(6, 0)
         )
+
+        self.srs_frame = ttk.LabelFrame(outer, text="SRS Radio (headless / no PortAudio)", padding=10)
+        self.srs_host = self._row_entry(self.srs_frame, 0, "SRS Server Host:")
+        self.srs_host.insert(0, "127.0.0.1")
+        self.srs_port = self._row_entry(self.srs_frame, 1, "SRS Server Port:")
+        self.srs_port.insert(0, "5002")
+        self.srs_bot_name = self._row_entry(self.srs_frame, 2, "Bot Name:")
+        self.srs_bot_name.insert(0, "ORION YANDEX TEST")
+        self.srs_eam_password = self._row_entry(self.srs_frame, 3, "EAM Password:", show="•")
+        self.srs_frequency = self._row_entry(self.srs_frame, 4, "Target Frequency MHz:")
+        self.srs_frequency.insert(0, "251.000")
+        self.srs_modulation = self._row_combo(self.srs_frame, 5, "Modulation:", ["AM"])
+        self.srs_modulation.set("AM")
+        ttk.Label(self.srs_frame, text="Encryption:").grid(
+            row=6, column=0, sticky="w", padx=(0, 10), pady=3
+        )
+        ttk.Label(self.srs_frame, text="OFF (fixed 0)").grid(row=6, column=1, sticky="w", pady=3)
 
         actions = ttk.Frame(outer)
         actions.pack(fill="x", pady=10)
@@ -138,6 +168,14 @@ class TesterApp:
         ttk.Button(
             outer, text="EXPORT DIAGNOSTIC REPORT", command=self.export_report
         ).pack(anchor="w", pady=(10, 0))
+
+    def _mode_changed(self, _event: object | None = None) -> None:
+        if self.audio_mode.get() == SRS_RADIO_MODE:
+            self.audio_frame.pack_forget()
+            self.srs_frame.pack(fill="x", pady=(10, 0), before=self.start_button.master)
+        else:
+            self.srs_frame.pack_forget()
+            self.audio_frame.pack(fill="x", pady=(10, 0), before=self.start_button.master)
 
     @staticmethod
     def _row_entry(parent: ttk.Widget, row: int, label: str, show: str | None = None) -> ttk.Entry:
@@ -230,7 +268,8 @@ class TesterApp:
         if self.session and self.session.thread and self.session.thread.is_alive():
             return
         try:
-            config = self._current_config()
+            srs_mode = self.audio_mode.get() == SRS_RADIO_MODE
+            config = self._current_srs_config() if srs_mode else self._current_config()
         except ValueError as exc:
             self.status.set("SESSION CONFIG ERROR")
             self._append_event(
@@ -238,7 +277,8 @@ class TesterApp:
             )
             return
         self._clear_metrics()
-        self.session = self.session_factory(config, self._queue_event)
+        factory = self.srs_session_factory if srs_mode else self.session_factory
+        self.session = factory(config, self._queue_event)
         self.session.start()
         self.start_button.configure(state="disabled")
         self.stop_button.configure(state="normal")
@@ -258,6 +298,34 @@ class TesterApp:
             language=DEFAULT_LANGUAGE,
             input_device=input_device,
             output_device=output_device,
+        )
+        config.validate()
+        return config
+
+    def _current_srs_config(self) -> SrsSessionConfig:
+        try:
+            port = int(self.srs_port.get().strip())
+        except ValueError as exc:
+            raise ValueError("SRS Server Port must be an integer.") from exc
+        try:
+            frequency_hz = float(self.srs_frequency.get().strip()) * 1_000_000
+        except ValueError as exc:
+            raise ValueError("Target Frequency MHz must be numeric.") from exc
+        radio = SrsRadioConfig(
+            host=self.srs_host.get().strip(),
+            port=port,
+            bot_name=self.srs_bot_name.get().strip(),
+            eam_password=self.srs_eam_password.get(),
+            frequency_hz=frequency_hz,
+            modulation=0,
+        )
+        config = SrsSessionConfig(
+            api_key=self.api_key.get().strip(),
+            folder_id=self.folder_id.get().strip(),
+            model=self.model.get().strip() or DEFAULT_MODEL,
+            voice=self.voice.get().strip() or DEFAULT_VOICE,
+            language=DEFAULT_LANGUAGE,
+            srs=radio,
         )
         config.validate()
         return config
@@ -314,6 +382,10 @@ class TesterApp:
                         "OUTPUT DEVICE ERROR",
                         "UNSUPPORTED AUDIO FORMAT",
                         "SERVER ERROR",
+                        "ERROR",
+                        "SRS SESSION ERROR",
+                        "SRS TX ERROR",
+                        "YANDEX WEBSOCKET ERROR",
                     }:
                         self.start_button.configure(state="normal")
                         self.stop_button.configure(state="disabled")
@@ -406,6 +478,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=APP_NAME)
     parser.add_argument("--smoke-test", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--gui-smoke-test", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--srs-offline-smoke-test", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.smoke_test:
         inputs, outputs = list_audio_devices()
@@ -416,10 +489,31 @@ def main() -> None:
             )
         )
         return
+    if args.srs_offline_smoke_test:
+        library = OpusLibrary()
+        with OpusEncoder(), OpusDecoder():
+            codec_smoke = "encoder/decoder create/destroy passed"
+        print(
+            json.dumps(
+                {
+                    "libopus": library.version,
+                    "codec": codec_smoke,
+                    "resampler": resampler_offline_smoke(),
+                    "network": "not opened",
+                    "portaudio_stream": "not opened",
+                },
+                ensure_ascii=False,
+            )
+        )
+        return
     root = tk.Tk()
     app = TesterApp(root)
     if args.gui_smoke_test:
         root.withdraw()
+        app.audio_mode.set(SRS_RADIO_MODE)
+        app._mode_changed()
+        app.audio_mode.set(DIRECT_AUDIO_MODE)
+        app._mode_changed()
         root.after(200, app.close)
     root.mainloop()
 

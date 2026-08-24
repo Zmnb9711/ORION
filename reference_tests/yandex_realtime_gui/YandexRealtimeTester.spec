@@ -1,15 +1,25 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 from pathlib import Path
+from PyInstaller.utils.hooks import get_module_file_attribute
 
 HERE = Path(SPEC).resolve().parent
+samplerate_binary = get_module_file_attribute('samplerate')
+license_datas = [
+    (str(path), 'licenses')
+    for path in (HERE / 'licenses').glob('*')
+    if path.is_file()
+]
 
 a = Analysis(
     [str(HERE / 'yandex_realtime_tester.py')],
     pathex=[str(HERE)],
-    binaries=[],
-    datas=[],
-    hiddenimports=[],
+    binaries=[
+        (str(HERE / 'native' / 'win_amd64' / 'opus.dll'), 'native/win_amd64'),
+        (samplerate_binary, '.'),
+    ],
+    datas=license_datas,
+    hiddenimports=['samplerate'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

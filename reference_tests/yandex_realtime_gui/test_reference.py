@@ -1144,3 +1144,78 @@ def test_clean_app_shutdown_stops_active_session_with_bounded_destroy() -> None:
     fake = app.session
     app.close()
     assert fake.stop_calls == 1
+
+
+def test_explicit_direct_mode_keeps_original_exact_portaudio_config_path() -> None:
+    root = new_tk()
+    created: list[Any] = []
+
+    class FakeSession:
+        thread = None
+
+        def __init__(self, session_config: Any, _callback: Any) -> None:
+            created.append(session_config)
+
+        def start(self) -> None:
+            return None
+
+        def stop(self) -> None:
+            return None
+
+    app = gui.TesterApp(
+        root,
+        device_lister=lambda: ([INPUT], [OUTPUT]),
+        session_factory=FakeSession,
+        poll_events=False,
+    )
+    app.api_key.insert(0, "key")
+    app.folder_id.insert(0, "folder")
+    assert app.audio_mode.get() == gui.DIRECT_AUDIO_MODE
+    app.start()
+    assert len(created) == 1
+    assert isinstance(created[0], core.SessionConfig)
+    assert created[0].input_device.index == INPUT.index
+    assert created[0].output_device.index == OUTPUT.index
+    assert core.INPUT_RATE == core.OUTPUT_RATE == 44_100
+    app.close()
+
+
+def test_srs_mode_start_uses_sibling_config_and_does_not_reenumerate_devices() -> None:
+    root = new_tk()
+    created: list[Any] = []
+
+    class FakeSrsSession:
+        thread = None
+
+        def __init__(self, session_config: Any, _callback: Any) -> None:
+            created.append(session_config)
+
+        def start(self) -> None:
+            return None
+
+        def stop(self) -> None:
+            return None
+
+    app = gui.TesterApp(
+        root,
+        device_lister=lambda: ([INPUT], [OUTPUT]),
+        srs_session_factory=FakeSrsSession,
+        poll_events=False,
+    )
+    app.api_key.insert(0, "key")
+    app.folder_id.insert(0, "folder")
+    app.srs_eam_password.insert(0, "eam")
+    app.audio_mode.set(gui.SRS_RADIO_MODE)
+    app._mode_changed()
+
+    def forbidden_lister() -> Any:
+        raise AssertionError("SRS Start must not enumerate PortAudio devices")
+
+    app.device_lister = forbidden_lister
+    app.start()
+    assert len(created) == 1
+    assert created[0].srs.host == "127.0.0.1"
+    assert created[0].srs.port == 5002
+    assert created[0].srs.frequency_hz == 251_000_000.0
+    assert created[0].srs.modulation == 0
+    app.close()

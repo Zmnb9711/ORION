@@ -98,7 +98,15 @@ def sanitize_value(value: object, api_key: str = "") -> object:
     if isinstance(value, dict):
         safe: dict[str, object] = {}
         for key, item in value.items():
-            if key.casefold() in {"authorization", "api_key", "apikey", "iam_token", "token"}:
+            if key.casefold() in {
+                "authorization",
+                "api_key",
+                "apikey",
+                "iam_token",
+                "token",
+                "password",
+                "eam_password",
+            }:
                 safe[str(key)] = "[REDACTED]"
             else:
                 safe[str(key)] = sanitize_value(item, api_key)

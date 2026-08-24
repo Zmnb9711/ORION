@@ -26,4 +26,13 @@ try {
 
 $Output = Join-Path $Here 'YandexRealtimeTester'
 New-Item -ItemType Directory -Force -Path (Join-Path $Output 'logs') | Out-Null
-Write-Host "Built: $(Join-Path $Output 'YandexRealtimeTester.exe')"
+$Exe = Join-Path $Output 'YandexRealtimeTester.exe'
+& $Exe --srs-offline-smoke-test
+if ($LASTEXITCODE -ne 0) {
+    throw "Frozen SRS codec/resampler smoke failed with exit code $LASTEXITCODE"
+}
+& $Exe --gui-smoke-test
+if ($LASTEXITCODE -ne 0) {
+    throw "Frozen hidden Tk Direct/SRS mode smoke failed with exit code $LASTEXITCODE"
+}
+Write-Host "Built and smoke-tested: $Exe"
