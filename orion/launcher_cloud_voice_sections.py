@@ -20,13 +20,17 @@ from orion.controller_input import (
     QwenControllerMonitor,
 )
 from orion.qwen_realtime_provider import QwenRealtimeConfig, QwenRealtimeProvider
-from orion.qwen_session_control import QwenControlResult, QwenSessionController
 from orion.realtime_session_control import RealtimeSessionController
 from orion.srs_process_control import (
     SrsExternalProcessController,
     SrsProcessKind,
     SrsProcessState,
     SrsProcessStatus,
+)
+from orion.windows_credentials import (
+    CredentialStoreError,
+    VoiceCredential,
+    default_voice_credential_store,
 )
 
 SRS_CONNECT_INSTRUCTION = "In SRS Client press CONNECT, then CONNECT EAM."
@@ -192,13 +196,13 @@ class LauncherCloudVoiceSectionsMixin:
         self._qwen_view_generation = 0
         super().__init__(root, runtime_dir, core)  # type: ignore[misc]
         self._qwen_control_diagnostics = BoundedControlDiagnostics()
-        self._qwen_session_controller = QwenSessionController(self._realtime_core_json)
         self._realtime_session_controller = RealtimeSessionController(self._realtime_core_json)
+        self._voice_credential_store = default_voice_credential_store()
         self._srs_process_controller = SrsExternalProcessController()
         self._qwen_controller_monitor = QwenControllerMonitor(
             backend=PygameJoystickBackend(),
             store=ControllerBindingStore(runtime_dir),
-            on_toggle=self._hardware_qwen_toggle,
+            on_toggle=self._hardware_ai_session_toggle,
             diagnostics=self._qwen_control_diagnostics,
         )
         self._qwen_controller_monitor.start()
@@ -211,21 +215,31 @@ class LauncherCloudVoiceSectionsMixin:
         return CloudVoiceConfigStore(self.runtime_dir)
 
     def _current_qwen_api_key(self) -> str:
-        """Return the session key without losing it when Tk pages are rebuilt."""
-        return str(getattr(self, "_qwen_api_key", "") or os.environ.get("DASHSCOPE_API_KEY", "")).strip()
+        """Return the protected key without losing edits when Tk pages rebuild."""
+        if hasattr(self, "_qwen_api_key"):
+            return str(self._qwen_api_key).strip()
+        store = getattr(self, "_voice_credential_store", None)
+        saved = store.load(VoiceCredential.QWEN_API_KEY) if store is not None else ""
+        return str(saved or os.environ.get("DASHSCOPE_API_KEY", "")).strip()
 
     def _remember_qwen_api_key(self, value: str) -> None:
         """Keep the edited key for the lifetime of this Launcher process."""
         self._qwen_api_key = value.strip()
 
     def _current_yandex_api_key(self) -> str:
-        return str(getattr(self, "_yandex_api_key", "")).strip()
+        if hasattr(self, "_yandex_api_key"):
+            return str(self._yandex_api_key).strip()
+        store = getattr(self, "_voice_credential_store", None)
+        return str(store.load(VoiceCredential.YANDEX_API_KEY) if store is not None else "").strip()
 
     def _remember_yandex_api_key(self, value: str) -> None:
         self._yandex_api_key = value.strip()
 
     def _current_srs_eam_password(self) -> str:
-        return str(getattr(self, "_srs_eam_password", "") or "")
+        if hasattr(self, "_srs_eam_password"):
+            return str(self._srs_eam_password)
+        store = getattr(self, "_voice_credential_store", None)
+        return str(store.load(VoiceCredential.SRS_EAM_PASSWORD) if store is not None else "")
 
     def _remember_srs_eam_password(self, value: str) -> None:
         self._srs_eam_password = value
@@ -354,7 +368,7 @@ class LauncherCloudVoiceSectionsMixin:
         ttk.Label(connection_row, text="PORT", style="CardTitle.TLabel").pack(side=LEFT)
         ttk.Entry(connection_row, textvariable=srs_port, width=10).pack(side=LEFT, padx=(8, 0))
 
-        ttk.Label(srs_fields, text="EAM PASSWORD (MEMORY ONLY)", style="CardTitle.TLabel").pack(
+        ttk.Label(srs_fields, text="ORION EAM PASSWORD", style="CardTitle.TLabel").pack(
             anchor="w"
         )
         ttk.Entry(srs_fields, textvariable=srs_eam_password, show="*", width=72).pack(
@@ -427,8 +441,8 @@ class LauncherCloudVoiceSectionsMixin:
         ttk.Label(
             box,
             text=(
-                "Provider API keys and the EAM password are kept separately in memory and are never "
-                "written to cloud-voice.json."
+                "Provider API keys and the ORION EAM password are stored in Windows Credential "
+                "Manager and are never written to cloud-voice.json."
             ),
             style="CardText.TLabel",
         ).pack(anchor="w", pady=(0, 12))
@@ -468,8 +482,14 @@ class LauncherCloudVoiceSectionsMixin:
 
         def save() -> None:
             try:
-                self._cloud_voice_store().save(selected_config())
-            except ValueError as exc:
+                selected = selected_config()
+                self._cloud_voice_store().save(selected)
+                self._voice_credential_store.save_all(
+                    qwen_api_key=api_key.get(),
+                    yandex_api_key=yandex_api_key.get(),
+                    srs_eam_password=srs_eam_password.get(),
+                )
+            except (CredentialStoreError, ValueError) as exc:
                 messagebox.showerror("ORION Voice", str(exc), parent=self.root)
                 return
             self._remember_qwen_api_key(api_key.get())
@@ -477,11 +497,35 @@ class LauncherCloudVoiceSectionsMixin:
             self._remember_srs_eam_password(srs_eam_password.get())
             messagebox.showinfo(
                 "ORION Voice",
-                "Voice settings saved. Credentials remain in memory only.",
+                "Voice settings saved. Credentials are protected by Windows Credential Manager.",
+                parent=self.root,
+            )
+
+        def clear_saved_credentials() -> None:
+            try:
+                self._voice_credential_store.clear_all()
+            except CredentialStoreError as exc:
+                messagebox.showerror("ORION Voice", str(exc), parent=self.root)
+                return
+            self._remember_qwen_api_key("")
+            self._remember_yandex_api_key("")
+            self._remember_srs_eam_password("")
+            api_key.set("")
+            yandex_api_key.set("")
+            srs_eam_password.set("")
+            messagebox.showinfo(
+                "ORION Voice",
+                "Saved Voice credentials cleared.",
                 parent=self.root,
             )
 
         ttk.Button(buttons, text="SAVE VOICE SETTINGS", style="Primary.TButton", command=save).pack(side=LEFT, padx=(0, 8))
+        ttk.Button(
+            buttons,
+            text="CLEAR SAVED CREDENTIALS",
+            style="Secondary.TButton",
+            command=clear_saved_credentials,
+        ).pack(side=LEFT, padx=(0, 8))
         ttk.Button(
             buttons,
             text="TEST CONNECTION",
@@ -595,9 +639,12 @@ class LauncherCloudVoiceSectionsMixin:
 
     def _hardware_start_payload(self) -> dict[str, object]:
         config = self._cloud_voice_store().load()
-        if config.voice_transport != "direct":
-            raise ValueError("Qwen + SRS Radio is not available in v0.1")
-        return self._qwen_start_payload(config, self._current_qwen_api_key())
+        return self._realtime_start_payload(
+            config,
+            self._current_qwen_api_key(),
+            self._current_yandex_api_key(),
+            self._current_srs_eam_password(),
+        )
 
     @staticmethod
     def _realtime_start_payload(
@@ -641,9 +688,9 @@ class LauncherCloudVoiceSectionsMixin:
             **LauncherCloudVoiceSectionsMixin._qwen_start_payload(config, qwen_api_key),
         }
 
-    def _hardware_qwen_toggle(self) -> None:
+    def _hardware_ai_session_toggle(self) -> None:
         try:
-            result = self._qwen_session_controller.toggle(self._hardware_start_payload)
+            result = self._realtime_session_controller.toggle(self._hardware_start_payload)
         except (OSError, ValueError, RuntimeError, urllib.error.URLError) as exc:
             self._qwen_control_diagnostics.record(
                 "toggle_failed",
@@ -738,7 +785,7 @@ class LauncherCloudVoiceSectionsMixin:
             justify="left",
         ).pack(anchor="w", pady=(0, 12))
 
-        ttk.Label(controls, text="QWEN SESSION TOGGLE", style="CardTitle.TLabel").pack(anchor="w")
+        ttk.Label(controls, text="AI SESSION TOGGLE", style="CardTitle.TLabel").pack(anchor="w")
         control_row = ttk.Frame(controls, style="Card.TFrame")
         control_row.pack(fill=X, pady=(6, 0))
         ttk.Label(
@@ -919,71 +966,6 @@ class LauncherCloudVoiceSectionsMixin:
         if not isinstance(result, dict):
             raise RuntimeError("ORION Core returned an invalid realtime response")
         return result
-
-    def _qwen_live_async(
-        self,
-        config: CloudVoiceConfig,
-        api_key: str,
-        live_status: StringVar,
-        *,
-        start: bool,
-    ) -> None:
-        key = api_key.strip() or self._current_qwen_api_key()
-        self._qwen_live_status_var = live_status
-        generation = self._qwen_view_generation
-
-        def worker() -> None:
-            try:
-                if start:
-                    control = self._qwen_session_controller.request_start(
-                        lambda: self._qwen_start_payload(config, key)
-                    )
-                else:
-                    control = self._qwen_session_controller.request_stop()
-                state = control.state.upper()
-                message = control.message
-                self._schedule_qwen_ui(0, lambda: live_status.set(f"{state} — {message}"), generation)
-            except (OSError, ValueError, RuntimeError, urllib.error.URLError) as exc:
-                self._schedule_qwen_ui(
-                    0,
-                    lambda exc=exc: live_status.set(f"ERROR — {type(exc).__name__}: {exc}"),
-                    generation,
-                )
-
-        threading.Thread(target=worker, name="orion-qwen-live-control", daemon=True).start()
-
-    def _qwen_live_poll(self, live_status: StringVar, generation: int) -> None:
-        if not self._qwen_view_lifecycle.is_alive(generation):
-            return
-        self._qwen_live_status_var = live_status
-
-        def worker() -> None:
-            try:
-                result = self._realtime_core_json("/v1/realtime/qwen/live")
-            except Exception:
-                return
-            state = str(result.get("state", "unknown")).upper()
-            message = str(result.get("message", ""))
-            input_chunks = int(str(result.get("input_chunks", 0) or 0))
-            output_chunks = int(str(result.get("output_chunks", 0) or 0))
-            suffix = "" if not (input_chunks or output_chunks) else f" | mic={input_chunks} qwen_audio={output_chunks}"
-
-            def apply() -> None:
-                live_status.set(f"{state} — {message}{suffix}")
-                self._refresh_qwen_control_ui(generation)
-
-            self._schedule_qwen_ui(
-                0,
-                apply,
-                generation,
-            )
-
-        threading.Thread(target=worker, name="orion-qwen-live-status", daemon=True).start()
-        self._schedule_qwen_ui(
-            750,
-            lambda: self._qwen_live_poll(live_status, generation),
-            generation,
-        )
 
     def _qwen_smoke_async(self, config: CloudVoiceConfig, api_key: str, *, tool: bool) -> None:
         key = api_key.strip() or self._current_qwen_api_key()

@@ -3,6 +3,9 @@
 #define MyAppPublisher "ORION"
 #define MyLauncherExe "Launcher\ORION-Launcher.exe"
 #define MyCoreExe "Core\ORION-Core.exe"
+#ifndef ProductSourceDir
+#define ProductSourceDir "..\dist-product"
+#endif
 
 [Setup]
 AppId={{6E4CA1C5-4E77-42CE-9E6B-A6D1124B09E7}
@@ -28,9 +31,9 @@ SetupIconFile=..\branding\orion.ico
 #endif
 
 [Files]
-Source: "..\dist-product\Core\*"; DestDir: "{app}\Core"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "..\dist-product\Launcher\*"; DestDir: "{app}\Launcher"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "..\dist-product\Integration\*"; DestDir: "{app}\Integration"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#ProductSourceDir}\Core\*"; DestDir: "{app}\Core"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#ProductSourceDir}\Launcher\*"; DestDir: "{app}\Launcher"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#ProductSourceDir}\Integration\*"; DestDir: "{app}\Integration"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Dirs]
 Name: "{localappdata}\ORION\runtime"
@@ -58,6 +61,7 @@ Filename: "{app}\{#MyLauncherExe}"; WorkingDir: "{app}\Launcher"; Description: "
 [UninstallRun]
 Filename: "{cmd}"; Parameters: "/C taskkill /F /IM ORION-Launcher.exe >nul 2>&1 || exit /B 0"; Flags: runhidden waituntilterminated
 Filename: "{cmd}"; Parameters: "/C taskkill /F /IM ORION-Core.exe >nul 2>&1 || exit /B 0"; Flags: runhidden waituntilterminated
+Filename: "{app}\{#MyLauncherExe}"; Parameters: "--clear-voice-credentials"; Flags: runhidden waituntilterminated skipifdoesntexist
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{localappdata}\ORION\runtime"

@@ -66,8 +66,17 @@ def test_launcher_entrypoint_has_offline_srs_control_smoke() -> None:
     assert "--srs-control-smoke" in source
     assert "launcher_srs_offline_smoke" in source
     assert "--integrated-product-smoke" in source
+    assert "--credential-store-smoke" in source
+    assert "credential_store_ok" in source
     assert '"ORION-Launcher.exe"' in source
     assert '"ORION-Core.exe"' in source
+
+
+def test_installer_removes_orion_voice_credentials_without_touching_srs() -> None:
+    source = (ROOT / "packaging/orion-alpha.iss").read_text(encoding="utf-8")
+    assert "--clear-voice-credentials" in source
+    assert "SRS-Server.exe" not in source
+    assert "SR-ClientRadio.exe" not in source
 
 
 def test_project_memory_requires_exact_integrated_field_artifact() -> None:

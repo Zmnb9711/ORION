@@ -46,3 +46,34 @@ def test_launcher_controller_prevents_duplicate_active_start() -> None:
     assert result.executed is False
     assert result.ignored_reason == "already_active"
     assert all(path != "/v1/realtime/live/start" for _, path, _ in core.calls)
+
+
+def test_provider_neutral_toggle_starts_and_stops_actual_core_session() -> None:
+    core = _Core()
+    controller = RealtimeSessionController(core)
+    payload = lambda: {"provider": "yandex", "transport": "srs", "api_key": "key"}
+
+    started = controller.toggle(payload)
+    assert started.action == "start" and started.executed
+    core.status = {"provider": "yandex", "state": "streaming", "message": "live"}
+    stopped = controller.toggle(payload)
+
+    assert stopped.action == "stop" and stopped.executed
+    assert [path for method, path, _ in core.calls if method == "POST"] == [
+        "/v1/realtime/live/start",
+        "/v1/realtime/live/stop",
+    ]
+
+
+def test_toggle_stops_starting_or_errored_session_before_restart() -> None:
+    for state in ("starting", "error"):
+        core = _Core()
+        core.status = {"provider": "yandex", "state": state, "message": state}
+        controller = RealtimeSessionController(core)
+
+        result = controller.toggle(lambda: {"provider": "yandex", "api_key": "unused"})
+
+        assert result.action == "stop" and result.executed
+        assert all(path != "/v1/realtime/live/start" for _, path, _ in core.calls)
+        restarted = controller.toggle(lambda: {"provider": "yandex", "api_key": "key"})
+        assert restarted.action == "start" and restarted.executed

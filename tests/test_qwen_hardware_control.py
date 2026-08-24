@@ -13,7 +13,7 @@ from orion.controller_input import (
     PygameJoystickBackend,
     QwenControllerMonitor,
 )
-from orion.qwen_session_control import QwenSessionController
+from orion.realtime_session_control import RealtimeSessionController
 
 
 def _identity(name: str, guid: str) -> ControllerDeviceIdentity:
@@ -366,15 +366,15 @@ class _Core:
 
 
 def _payload() -> dict[str, object]:
-    return {"api_key": "secret"}
+    return {"provider": "qwen", "transport": "direct", "api_key": "secret"}
 
 
 def test_hardware_toggle_directly_starts_and_stops_same_core_service() -> None:
     core = _Core()
-    control = QwenSessionController(core.request)
+    control = RealtimeSessionController(core.request)
     first = control.toggle(_payload)
     assert first.executed and first.action == "start"
-    assert ("POST", "/v1/realtime/qwen/live/start") in core.calls
+    assert ("POST", "/v1/realtime/live/start") in core.calls
     core.state = "streaming"
     second = control.toggle(_payload)
     assert second.executed and second.action == "stop"
@@ -383,25 +383,25 @@ def test_hardware_toggle_directly_starts_and_stops_same_core_service() -> None:
 
 def test_launcher_start_and_hardware_stop_share_one_lifecycle() -> None:
     core = _Core()
-    control = QwenSessionController(core.request)
+    control = RealtimeSessionController(core.request)
     assert control.request_start(_payload).executed
     core.state = "connected"
     assert control.toggle(_payload).action == "stop"
     assert [path for method, path in core.calls if method == "POST"] == [
-        "/v1/realtime/qwen/live/start",
-        "/v1/realtime/qwen/live/stop",
+        "/v1/realtime/live/start",
+        "/v1/realtime/live/stop",
     ]
 
 
 def test_hardware_start_and_launcher_stop_share_one_lifecycle() -> None:
     core = _Core()
-    control = QwenSessionController(core.request)
+    control = RealtimeSessionController(core.request)
     assert control.toggle(_payload).action == "start"
     core.state = "streaming"
     assert control.request_stop().action == "stop"
     assert [path for method, path in core.calls if method == "POST"] == [
-        "/v1/realtime/qwen/live/start",
-        "/v1/realtime/qwen/live/stop",
+        "/v1/realtime/live/start",
+        "/v1/realtime/live/stop",
     ]
 
 
@@ -417,7 +417,7 @@ def test_overlapping_control_command_is_ignored() -> None:
             return super().request(path, method=method, payload=payload)
 
     core = BlockingCore()
-    control = QwenSessionController(core.request)
+    control = RealtimeSessionController(core.request)
     thread = threading.Thread(target=lambda: control.request_start(_payload))
     thread.start()
     assert entered.wait(1)

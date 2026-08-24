@@ -22,6 +22,7 @@ from orion.srs_process_control import (
     SrsProcessStatus,
     launcher_srs_offline_smoke,
 )
+from orion.windows_credentials import MemoryCredentialBackend, VoiceCredentialStore
 
 
 def test_transport_default_and_supported_payload_matrix() -> None:
@@ -67,7 +68,7 @@ def test_qwen_srs_is_rejected_without_fallback() -> None:
         )
 
 
-def test_eam_password_is_memory_only_and_never_persisted(tmp_path) -> None:  # noqa: ANN001
+def test_eam_password_uses_protected_store_and_never_enters_ordinary_config(tmp_path) -> None:  # noqa: ANN001
     store = CloudVoiceConfigStore(tmp_path)
     config = CloudVoiceConfig(
         cloud_provider="yandex",
@@ -75,8 +76,10 @@ def test_eam_password_is_memory_only_and_never_persisted(tmp_path) -> None:  # n
         srs_server_path=r"C:\SRS\Server\SRS-Server.exe",
         srs_client_path=r"C:\SRS\Client\SR-ClientRadio.exe",
     )
+    credentials = VoiceCredentialStore(MemoryCredentialBackend())
+    credentials.save_all(qwen_api_key="", yandex_api_key="", srs_eam_password="eam-never-persist")
     launcher = cast(Any, object.__new__(LauncherCloudVoiceSectionsMixin))
-    launcher._remember_srs_eam_password("eam-never-persist")
+    launcher._voice_credential_store = credentials
     store.save(config)
     raw = store.path.read_text(encoding="utf-8")
 
@@ -85,6 +88,35 @@ def test_eam_password_is_memory_only_and_never_persisted(tmp_path) -> None:  # n
     assert "eam-never-persist" not in raw
     assert "password" not in raw.casefold()
     assert "eam-never-persist" not in repr(config)
+
+
+def test_hardware_payload_uses_selected_yandex_srs_configuration_and_saved_credentials(tmp_path) -> None:  # noqa: ANN001
+    CloudVoiceConfigStore(tmp_path).save(
+        CloudVoiceConfig(
+            cloud_provider="yandex",
+            voice_transport="srs",
+            yandex_folder_id="folder",
+            srs_host="radio.local",
+            srs_port=5002,
+        )
+    )
+    credentials = VoiceCredentialStore(MemoryCredentialBackend())
+    credentials.save_all(
+        qwen_api_key="qwen-secret",
+        yandex_api_key="yandex-secret",
+        srs_eam_password="eam-secret",
+    )
+    launcher = cast(Any, object.__new__(LauncherCloudVoiceSectionsMixin))
+    launcher.runtime_dir = tmp_path
+    launcher._voice_credential_store = credentials
+
+    assert launcher._hardware_start_payload() == {
+        "provider": "yandex",
+        "transport": "srs",
+        "api_key": "yandex-secret",
+        "folder_id": "folder",
+        "srs": {"host": "radio.local", "port": 5002, "eam_password": "eam-secret"},
+    }
 
 
 def test_official_process_and_orion_radio_statuses_cannot_be_confused() -> None:
@@ -123,6 +155,10 @@ def test_launcher_ui_contains_ordered_commands_and_manual_connect_instruction() 
     text = (Path(__file__).resolve().parents[1] / source).read_text(encoding="utf-8")
     assert text.index("START SRS SERVER") < text.index("START SRS CLIENT")
     assert SRS_CONNECT_INSTRUCTION in text
+    assert "AI SESSION TOGGLE" in text
+    assert "QWEN SESSION TOGGLE" not in text
+    assert "START LIVE" in text and "STOP LIVE" in text
+    assert "CLEAR SAVED CREDENTIALS" in text
     for forbidden_control in (
         "RADIO 1 FREQUENCY",
         "RADIO 2",

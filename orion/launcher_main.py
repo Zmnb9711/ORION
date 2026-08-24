@@ -50,14 +50,26 @@ def _integrated_product_smoke(result_path: Path, host: str, port: int) -> int:
         "network_scope": "loopback-only",
         "audio_devices_opened": False,
         "external_srs_process_started": False,
+        "credential_store_ok": False,
+        "credential_persisted_after_smoke": False,
+        "credential_secret_exposed": False,
     }
     try:
+        from orion.windows_credentials import frozen_credential_store_smoke
+
         if not getattr(sys, "frozen", False):
             raise RuntimeError("Integrated product smoke requires a frozen Launcher")
         if launcher.name != "ORION-Launcher.exe" or not expected_core.is_file():
             raise RuntimeError("Canonical Launcher/Core product layout is incomplete")
         if core.healthy(timeout=0.2):
             raise RuntimeError("Integrated smoke port is already occupied by a healthy Core")
+
+        credential_result = frozen_credential_store_smoke()
+        result["credential_store_ok"] = bool(credential_result["ok"])
+        result["credential_persisted_after_smoke"] = bool(
+            credential_result["credential_persisted_after_smoke"]
+        )
+        result["credential_secret_exposed"] = bool(credential_result["secret_exposed"])
 
         core.start()
         spawned = core._process  # Exact child handle owned by this Launcher smoke.
@@ -102,10 +114,39 @@ def _integrated_product_smoke(result_path: Path, host: str, port: int) -> int:
                 "realtime_status_ok",
                 "launcher_remained_operational",
                 "shutdown_ok",
+                "credential_store_ok",
             )
-        ) and not bool(result["orphan_core_process"])
+        ) and not any(
+            bool(result[key])
+            for key in (
+                "orphan_core_process",
+                "credential_persisted_after_smoke",
+                "credential_secret_exposed",
+            )
+        )
         result_path.write_text(json.dumps(result, sort_keys=True), encoding="utf-8")
     return 0 if result["ok"] else 1
+
+
+def _credential_store_smoke(result_path: Path) -> int:
+    from orion.windows_credentials import CredentialStoreError, frozen_credential_store_smoke
+
+    try:
+        result = frozen_credential_store_smoke()
+    except CredentialStoreError as exc:
+        result = {"ok": False, "error": str(exc)}
+    result_path.write_text(json.dumps(result, sort_keys=True), encoding="utf-8")
+    return 0 if result.get("ok") else 1
+
+
+def _clear_voice_credentials() -> int:
+    from orion.windows_credentials import CredentialStoreError, clear_saved_voice_credentials
+
+    try:
+        clear_saved_voice_credentials()
+    except CredentialStoreError:
+        return 1
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -121,6 +162,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--srs-control-smoke", metavar="RESULT_JSON")
     parser.add_argument("--integrated-product-smoke", metavar="RESULT_JSON")
+    parser.add_argument("--credential-store-smoke", metavar="RESULT_JSON")
+    parser.add_argument("--clear-voice-credentials", action="store_true")
     args = parser.parse_args(argv)
 
     if args.srs_control_smoke:
@@ -138,6 +181,12 @@ def main(argv: list[str] | None = None) -> int:
             args.host,
             args.port,
         )
+
+    if args.credential_store_smoke:
+        return _credential_store_smoke(Path(args.credential_store_smoke))
+
+    if args.clear_voice_credentials:
+        return _clear_voice_credentials()
 
     os.environ["ORION_PROCESS_ROLE"] = "launcher"
     os.environ["ORION_CORE_BASE_URL"] = f"http://{args.host}:{args.port}"

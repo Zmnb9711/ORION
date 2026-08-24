@@ -59,7 +59,7 @@ class QwenAudioPhase(StrEnum):
 
 
 class QwenLiveStartRequest(BaseModel):
-    api_key: str = Field(min_length=1)
+    api_key: str = Field(min_length=1, repr=False)
     workspace_id: str = Field(min_length=1)
     region: str = "singapore"
     model: str = "qwen3.5-omni-flash-realtime"

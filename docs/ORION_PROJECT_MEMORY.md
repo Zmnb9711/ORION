@@ -609,3 +609,93 @@ AM/FM, encryption, PTT, audio devices, volumes, and ordinary SRS settings.
 ORION persists only its own genuinely required integration settings. Stage 5.1
 must audit official SRS Client/Server 2.4.0.0 persistence read-only before
 assigning ownership or attempting any correction.
+
+## 15. Stage 5.1 persistence and AI voice lifecycle — implemented 2026-08-25
+
+**Status: IMPLEMENTED; LOCAL AUTOMATED SUITES AND FROZEN COMPONENT SMOKES
+VALIDATED; EXACT INTEGRATED CI AND CONTROLLED FIELD REGRESSION PENDING. THE
+STAGE 4.1 PRODUCT REMAINS A BASELINE CANDIDATE, NOT A FINAL BASELINE.**
+
+This checkpoint implements the bounded Stage 5.1 tranche from section 14. It
+does not add DCS radio context, DCS lifecycle automation, ATC behavior, or any
+SRS wire/provider/audio changes.
+
+### Persistence ownership and credential lifecycle
+
+- `cloud-voice.json` remains the normal ORION store for non-secret Voice
+  configuration: provider, transport, Qwen region/workspace/model, Yandex
+  folder ID, ORION's SRS host/port, and the selected SRS Server/Client
+  executable paths.
+- Audio-device selection remains in `audio-device-selection.json`.
+- The existing `qwen-controller-binding.json` filename is retained for backward
+  compatibility, but its product meaning is now the provider-neutral **AI
+  SESSION TOGGLE** binding.
+- Qwen API key, Yandex API key, and the SRS EAM password used by ORION are
+  stored as user credentials in Windows Credential Manager under versioned
+  ORION target names. They are not written to `cloud-voice.json`, runtime
+  status, diagnostics, exception text, or model representations.
+- `CLEAR SAVED CREDENTIALS` deletes the three ORION Voice credentials without
+  deleting ordinary Voice configuration. Normal uninstall invokes the same
+  narrow credential cleanup before deleting ORION runtime files.
+- A frozen-product smoke performs an ephemeral Credential Manager write/read/
+  delete round trip and verifies that no smoke credential remains and no
+  credential value is exposed in its result.
+
+### One common session lifecycle
+
+- Launcher `START LIVE`, `STOP LIVE`, and the HOTAS **AI SESSION TOGGLE** now
+  use one `RealtimeSessionController`, one transition lock, and the generic
+  `/v1/realtime/live/*` Core API.
+- Core `RealtimeLiveCoordinator` remains the single provider/transport
+  lifecycle and exclusivity authority. The HOTAS start payload is built from
+  the same persisted provider and transport selection as the Launcher Voice
+  page, including Yandex + SRS.
+- A stopped Core state can start the selected session. Starting, connected,
+  streaming, and error states require a stop transition; error is never treated
+  as permission to create a second session. UI status continues to come from
+  the generic Core status endpoint.
+- The future DCS hook seam is deliberately the same generic Core start/stop/
+  status contract. No DCS hook is implemented in Stage 5.1. The approved future
+  manual-OFF rule is: once the user turns AI off during a mission, automatic
+  lifecycle logic must latch that override for that mission epoch and may not
+  start AI again until mission end or an explicit manual ON.
+
+### Read-only official SRS 2.4.0.0 persistence audit
+
+- The installed official SRS Server and Client report version 2.4.0.0. The
+  official implementation loads Server `server.cfg` relative to its working
+  directory; the Client likewise uses its selected/default configuration path
+  relative to its working directory when no explicit `-cfg` path is supplied.
+- ORION already starts each selected SRS executable with the executable's own
+  directory as its working directory. No SRS process-launch correction was
+  required. An old `C:\Windows\System32\server.cfg` is consistent with a
+  historical launch from that working directory; ORION did not modify or
+  remove it.
+- The official SRS applications remain authoritative for radios/frequencies,
+  modulation, encryption, PTT, audio devices, volumes, client profiles, EAM
+  enablement, and SRS Server settings. CONNECT and CONNECT EAM remain explicit
+  user actions. ORION persists only its integration host/port, executable paths,
+  and ORION's protected EAM credential.
+- The SRS protocol, canonical RadioInfo, readiness gate, Opus, resampling,
+  routing, transmission boundary, guard, and pacing implementation were not
+  changed in this tranche.
+
+### Automated and packaging checkpoint
+
+- The isolated full regression result is 1,194 passed with 80.60% coverage.
+  Isolation only avoids the already-running installed Core's UDP port and the
+  machine's real DCS Saved Games known folder; it does not replace product code.
+- The focused security/lifecycle result is 75 passed. Ruff, compileall, and
+  pyright over the changed production scope are clean.
+- Frozen Core SRS native smoke confirms libopus 1.6.1 and samplerate 0.2.4 with
+  no network or audio device. Frozen Launcher process-control and Credential
+  Manager smokes are also offline and leave no external process or credential.
+- The normal installer is `ORION-Alpha-0.2-Setup.exe`, 71,576,308 bytes,
+  SHA-256 `6518C349973464AF35EC996EE4B2E3D4EBC7B103E5D20AA9C8957E6F53848ABD`.
+  The clean Launcher bundle contains neither SRS codec dependencies nor
+  official SRS executables; those executables are never bundled by ORION.
+- A local exact-layout Launcher-to-Core smoke cannot bind the fixed DCS UDP
+  port while the user's already-installed Core remains active. That user
+  process was deliberately not stopped. The same exact smoke, including the
+  frozen credential round trip, remains a mandatory clean Windows CI gate
+  before this checkpoint can be called integrated-automation validated.

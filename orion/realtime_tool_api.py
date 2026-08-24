@@ -15,7 +15,7 @@ router = APIRouter(prefix="/v1/realtime", tags=["Realtime Voice"])
 
 
 class YandexConnectionTestRequest(BaseModel):
-    api_key: str = Field(min_length=1)
+    api_key: str = Field(min_length=1, repr=False)
     folder_id: str = Field(min_length=1)
 
 

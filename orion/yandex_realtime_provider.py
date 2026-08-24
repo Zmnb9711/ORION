@@ -4,7 +4,7 @@ import asyncio
 import base64
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import quote
 
@@ -96,7 +96,7 @@ def decode_yandex_output_audio(event: dict[str, Any]) -> bytes:
 
 @dataclass(slots=True, frozen=True)
 class YandexRealtimeConfig:
-    api_key: str
+    api_key: str = field(repr=False)
     folder_id: str
     timeout_s: float = 10.0
 

@@ -49,7 +49,7 @@ class YandexLiveState(StrEnum):
 
 
 class YandexLiveStartRequest(BaseModel):
-    api_key: str = Field(min_length=1)
+    api_key: str = Field(min_length=1, repr=False)
     folder_id: str = Field(min_length=1)
 
 

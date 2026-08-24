@@ -4,7 +4,7 @@ import json
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import quote
 
@@ -13,7 +13,7 @@ from orion.realtime_provider import RealtimeProviderState, RealtimeSmokeResult
 
 @dataclass(slots=True, frozen=True)
 class QwenRealtimeConfig:
-    api_key: str
+    api_key: str = field(repr=False)
     workspace_id: str
     core_base_url: str = "http://127.0.0.1:8000"
     region: str = "singapore"

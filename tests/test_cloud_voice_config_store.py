@@ -6,10 +6,16 @@ from orion.launcher_cloud_voice_sections import CloudVoiceConfig, CloudVoiceConf
 def test_cloud_voice_config_round_trip_contains_only_non_secret_settings(tmp_path) -> None:  # noqa: ANN001
     store = CloudVoiceConfigStore(tmp_path)
     config = CloudVoiceConfig(
-        cloud_provider="qwen_realtime",
+        cloud_provider="yandex",
+        voice_transport="srs",
         qwen_region="singapore",
         qwen_workspace_id="workspace-123",
         qwen_model="qwen3.5-omni-flash-realtime",
+        yandex_folder_id="folder-123",
+        srs_host="radio.local",
+        srs_port=5003,
+        srs_server_path=r"C:\SRS\Server\SRS-Server.exe",
+        srs_client_path=r"C:\SRS\Client\SR-ClientRadio.exe",
     )
 
     store.save(config)
