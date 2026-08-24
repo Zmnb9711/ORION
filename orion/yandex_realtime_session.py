@@ -1,0 +1,233 @@
+"""Provider-only Yandex Realtime PCM session.
+
+This module owns the Yandex WebSocket and provider event lifecycle. It has no
+PortAudio, SRS, codec, device, EAM, DCS, or tool dependency.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import threading
+import time
+from dataclasses import dataclass
+from typing import Any, Callable, Protocol
+
+from orion.realtime_audio_transport import RealtimePcmEndpoint
+from orion.yandex_realtime_provider import (
+    build_yandex_url,
+    decode_yandex_output_audio,
+    encode_yandex_input_audio,
+    sanitize_yandex_error,
+    yandex_authorization_headers,
+    yandex_session_update,
+)
+
+
+class SessionDiagnostics(Protocol):
+    def record(self, event: str, **fields: object) -> None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class YandexSessionResult:
+    close_code: int | None
+    clean_close: bool
+    local_close_owner: bool
+
+
+class YandexRealtimeSession:
+    """One bounded provider session over an injected provider-native PCM endpoint."""
+
+    def __init__(
+        self,
+        api_key: str,
+        folder_id: str,
+        endpoint: RealtimePcmEndpoint,
+        stop_event: threading.Event,
+        diagnostics: SessionDiagnostics,
+        *,
+        on_streaming: Callable[[], None] | None = None,
+    ) -> None:
+        self._api_key = api_key
+        self._folder_id = folder_id
+        self._endpoint = endpoint
+        self._stop = stop_event
+        self._diagnostics = diagnostics
+        self._on_streaming = on_streaming or (lambda: None)
+
+    async def run(self) -> YandexSessionResult:
+        import aiohttp
+
+        websocket: Any = None
+        send_task: asyncio.Task[None] | None = None
+        receive_task: asyncio.Task[None] | None = None
+        close_owned = False
+
+        async def send_worker() -> None:
+            while not self._stop.is_set():
+                pcm = await asyncio.to_thread(self._endpoint.read_input, 0.1)
+                if pcm is None:
+                    continue
+                if len(pcm) % 2:
+                    raise ValueError("Provider input PCM is not aligned to int16 samples")
+                await websocket.send_json(encode_yandex_input_audio(pcm))
+
+        async def receive_worker() -> None:
+            latest_response_id: str | None = None
+            while not self._stop.is_set():
+                message = await websocket.receive()
+                if message.type is aiohttp.WSMsgType.TEXT:
+                    event = message.json()
+                    kind = str(event.get("type") or "")
+                    if kind == "input_audio_buffer.speech_started":
+                        self._endpoint.input_speech_started()
+                        self._diagnostics.record("speech_started")
+                    elif kind == "input_audio_buffer.speech_stopped":
+                        self._diagnostics.record("speech_stopped")
+                    elif kind == "conversation.item.input_audio_transcription.completed":
+                        transcript = str(event.get("transcript") or "")
+                        self._diagnostics.record(
+                            "transcription_completed",
+                            characters=len(transcript),
+                            persisted=False,
+                        )
+                    elif kind == "conversation.item.input_audio_transcription.failed":
+                        self._diagnostics.record(
+                            "transcription_failed",
+                            error=sanitize_yandex_error(event.get("error") or "failed", self._api_key),
+                        )
+                    elif kind == "response.created":
+                        response = event.get("response") or {}
+                        response_id = str(
+                            response.get("id") or event.get("response_id") or "unknown"
+                        )
+                        latest_response_id = response_id
+                        self._endpoint.response_started(response_id)
+                        self._diagnostics.record("response_created", response_id=response_id)
+                    elif kind == "response.output_audio.delta":
+                        pcm = decode_yandex_output_audio(event)
+                        response_id = str(
+                            event.get("response_id") or latest_response_id or "unknown"
+                        )
+                        self._endpoint.response_audio(response_id, pcm)
+                        self._diagnostics.record(
+                            "audio_delta",
+                            response_id=response_id,
+                            byte_count=len(pcm),
+                        )
+                    elif kind == "response.output_audio.done":
+                        response_id = str(
+                            event.get("response_id") or latest_response_id or "unknown"
+                        )
+                        self._endpoint.response_audio_done(response_id)
+                        self._diagnostics.record("audio_done", response_id=response_id)
+                    elif kind == "response.done":
+                        response = event.get("response") or {}
+                        response_id = str(
+                            response.get("id")
+                            or event.get("response_id")
+                            or latest_response_id
+                            or "unknown"
+                        )
+                        status = str(response.get("status") or "")
+                        self._endpoint.response_done(response_id, status)
+                        self._diagnostics.record(
+                            "response_done",
+                            response_id=response_id,
+                            status=status,
+                        )
+                    elif kind == "error":
+                        raise RuntimeError(event.get("error") or "Yandex provider error")
+                    else:
+                        self._diagnostics.record(kind or "provider_event")
+                elif message.type in {
+                    aiohttp.WSMsgType.CLOSE,
+                    aiohttp.WSMsgType.CLOSED,
+                    aiohttp.WSMsgType.CLOSING,
+                }:
+                    if not self._stop.is_set():
+                        raise ConnectionError(
+                            f"Yandex WebSocket closed unexpectedly: {websocket.close_code}"
+                        )
+                    return
+                elif message.type is aiohttp.WSMsgType.ERROR:
+                    raise ConnectionError(websocket.exception() or "Yandex WebSocket error")
+
+        timeout = aiohttp.ClientTimeout(total=None, connect=4.0)
+        async with aiohttp.ClientSession(timeout=timeout) as client:
+            websocket = await client.ws_connect(
+                build_yandex_url(self._folder_id),
+                headers=yandex_authorization_headers(self._api_key),
+                heartbeat=20.0,
+                autoclose=True,
+            )
+            self._diagnostics.record("websocket_connected")
+            try:
+                await websocket.send_json(yandex_session_update())
+                deadline = time.monotonic() + 15.0
+                while not self._stop.is_set():
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError("Timed out waiting for Yandex session.updated")
+                    try:
+                        message = await asyncio.wait_for(websocket.receive(), timeout=0.2)
+                    except asyncio.TimeoutError:
+                        continue
+                    if message.type is aiohttp.WSMsgType.TEXT:
+                        event = message.json()
+                        kind = str(event.get("type") or "")
+                        self._diagnostics.record(kind or "handshake_event")
+                        if kind == "session.updated":
+                            break
+                        if kind == "error":
+                            raise RuntimeError(event.get("error") or "Yandex provider error")
+                    else:
+                        raise ConnectionError("Yandex closed before session.updated")
+                if not self._stop.is_set():
+                    self._endpoint.start()
+                    self._on_streaming()
+                    send_task = asyncio.create_task(send_worker(), name="orion-yandex-send")
+                    receive_task = asyncio.create_task(
+                        receive_worker(), name="orion-yandex-receive"
+                    )
+                    while True:
+                        failure = self._endpoint.failure()
+                        if failure is not None:
+                            raise failure
+                        if self._stop.is_set():
+                            break
+                        await asyncio.sleep(0.05)
+                        for task in (send_task, receive_task):
+                            if task.done():
+                                error = task.exception()
+                                if error is not None:
+                                    raise error
+                                if not self._stop.is_set():
+                                    raise ConnectionError(
+                                        f"{task.get_name()} stopped unexpectedly"
+                                    )
+            finally:
+                self._stop.set()
+                self._endpoint.stop()
+                if send_task is not None and not send_task.done():
+                    send_task.cancel()
+                    try:
+                        await send_task
+                    except (asyncio.CancelledError, Exception):
+                        pass
+                if not websocket.closed:
+                    close_owned = True
+                    await websocket.close(code=1000)
+                if receive_task is not None and not receive_task.done():
+                    receive_task.cancel()
+                    try:
+                        await receive_task
+                    except (asyncio.CancelledError, Exception):
+                        pass
+                code = websocket.close_code
+                clean = code == 1000
+                self._diagnostics.record(
+                    "websocket_closed",
+                    close_code=code,
+                    clean=clean,
+                    local_close_owner=close_owned,
+                )
+        return YandexSessionResult(websocket.close_code, websocket.close_code == 1000, close_owned)

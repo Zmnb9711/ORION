@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 import traceback
@@ -80,8 +81,26 @@ def main(argv: list[str] | None = None) -> int:
         parser = argparse.ArgumentParser(description="ORION Core")
         parser.add_argument("--host", default="127.0.0.1")
         parser.add_argument("--port", type=int, default=8000)
+        parser.add_argument(
+            "--srs-native-smoke",
+            type=Path,
+            metavar="RESULT_JSON",
+            help="run the offline Core-bundled SRS native smoke and exit",
+        )
         args = parser.parse_args(argv)
         _startup_log(runtime, "args_ready", f"host={args.host} port={args.port}")
+
+        if args.srs_native_smoke is not None:
+            from orion.srs_frozen_smoke import run_smoke
+
+            result_path = args.srs_native_smoke.expanduser().resolve()
+            result_path.parent.mkdir(parents=True, exist_ok=True)
+            result_path.write_text(
+                json.dumps(run_smoke(), sort_keys=True),
+                encoding="utf-8",
+            )
+            _startup_log(runtime, "srs_native_smoke_ok", str(result_path))
+            return 0
 
         _startup_log(runtime, "app_import_start")
         from orion.app import app

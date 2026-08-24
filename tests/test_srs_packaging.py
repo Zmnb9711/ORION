@@ -1,0 +1,48 @@
+from __future__ import annotations
+
+import hashlib
+import sys
+from pathlib import Path
+
+from orion.srs_frozen_smoke import run_smoke
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+import pytest
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Core native smoke is Windows-only")
+def test_source_offline_native_smoke_and_asset_provenance() -> None:
+    result = run_smoke()
+    assert result["ok"] is True
+    assert result["opus_version"] == "libopus 1.6.1"
+    assert result["decoded_bytes"] == 1280
+    assert result["network_used"] is False
+    assert result["audio_devices_opened"] is False
+    dll = ROOT / "orion/native/win_amd64/opus.dll"
+    assert hashlib.sha256(dll.read_bytes()).hexdigest() == (
+        "82b454192834e0afce0d5ce3c46f2deba653ac437f369d847ab8043a93157808"
+    )
+    for name in (
+        "opus-BSD-3-Clause.txt",
+        "python-samplerate-MIT.txt",
+        "libsamplerate-BSD-2-Clause.txt",
+        "SRS-reference-provenance.md",
+    ):
+        assert (ROOT / "orion/native/licenses" / name).is_file()
+
+
+def test_build_workflows_assign_srs_native_runtime_to_core_not_launcher() -> None:
+    for relative in (
+        ".github/workflows/alpha-build.yml",
+        ".github/workflows/installer-smoke.yml",
+    ):
+        source = (ROOT / relative).read_text(encoding="utf-8")
+        assert "orion/native/win_amd64/opus.dll;native/win_amd64" in source
+        assert "--srs-native-smoke" in source
+        launcher_line = next(
+            line for line in source.splitlines() if "--name ORION-Launcher" in line
+        )
+        assert "--exclude-module samplerate" in launcher_line
+        assert "--exclude-module numpy" in launcher_line

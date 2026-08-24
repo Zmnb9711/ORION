@@ -9,8 +9,9 @@ from orion.realtime_provider import RealtimeLiveStatus
 
 
 class _Provider:
-    def __init__(self, provider_id: str) -> None:
+    def __init__(self, provider_id: str, transport_id: str = "direct") -> None:
         self.provider_id = provider_id
+        self.transport_id = transport_id
         self.state = "stopped"
         self.starts = 0
         self.stops = 0
@@ -74,3 +75,53 @@ def test_error_provider_can_be_stopped_then_other_provider_started() -> None:
         coordinator.start(_request("yandex"))
     coordinator.stop()
     assert coordinator.start(_request("yandex")).provider == "yandex"
+
+
+def test_provider_transport_matrix_and_legacy_direct_default() -> None:
+    qwen_direct = _Provider("qwen")
+    yandex_direct = _Provider("yandex")
+    yandex_srs = _Provider("yandex", "srs")
+    coordinator = RealtimeLiveCoordinator([qwen_direct, yandex_direct, yandex_srs])
+    legacy = _request("yandex")
+    assert legacy.transport == "direct"
+    coordinator.start(legacy)
+    coordinator.stop()
+    srs = RealtimeLiveStartRequest(
+        provider="yandex",
+        transport="srs",
+        api_key="memory-only",
+        folder_id="folder",
+        srs={"eam_password": "eam-memory-only"},
+    )
+    coordinator.start(srs)
+    assert yandex_srs.starts == 1
+    coordinator.stop()
+
+
+def test_qwen_srs_is_explicitly_rejected_without_fallback() -> None:
+    qwen_direct = _Provider("qwen")
+    coordinator = RealtimeLiveCoordinator([qwen_direct])
+    request = RealtimeLiveStartRequest(
+        provider="qwen",
+        transport="srs",
+        api_key="key",
+        workspace_id="workspace",
+        srs={"eam_password": "secret"},
+    )
+    with pytest.raises(ValueError, match=r"Qwen \+ SRS"):
+        coordinator.start(request)
+    assert qwen_direct.starts == 0
+
+
+def test_secret_fields_are_redacted_from_request_repr() -> None:
+    request = RealtimeLiveStartRequest(
+        provider="yandex",
+        transport="srs",
+        api_key="api-visible-only-in-memory",
+        folder_id="folder",
+        srs={"eam_password": "eam-visible-only-in-memory"},
+    )
+    rendered = repr(request)
+    assert "api-visible-only-in-memory" not in rendered
+    assert "eam-visible-only-in-memory" not in rendered
+    assert "**********" in rendered

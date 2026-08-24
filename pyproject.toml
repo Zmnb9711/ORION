@@ -36,6 +36,10 @@ cloud-realtime = [
   "aiohttp>=3.9,<4.0",
   "websocket-client>=1.8,<2.0",
 ]
+srs-radio = [
+  "numpy>=1.23,<3.0",
+  "samplerate==0.2.4",
+]
 
 [tool.setuptools.packages.find]
 include = ["orion*"]

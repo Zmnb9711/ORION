@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import queue
 import threading
-import time
 import uuid
 from dataclasses import dataclass
 from enum import StrEnum
@@ -19,16 +18,13 @@ from orion.portaudio_devices import (
     resolve_portaudio_endpoint,
 )
 from orion.windows_wasapi_backend import WasapiDirection
+from orion.realtime_audio_transport import RealtimePcmFormat
 from orion.yandex_live_diagnostics import YandexLiveDiagnostics
+from orion.yandex_realtime_session import YandexRealtimeSession
 from orion.yandex_realtime_provider import (
     YANDEX_INPUT_RATE,
     YANDEX_OUTPUT_RATE,
-    build_yandex_url,
-    decode_yandex_output_audio,
-    encode_yandex_input_audio,
     sanitize_yandex_error,
-    yandex_authorization_headers,
-    yandex_session_update,
 )
 
 CHANNELS = 1
@@ -193,6 +189,171 @@ class ResponsePlaybackQueue:
         return item is self._stop_token
 
 
+class _DirectYandexPcmEndpoint:
+    """Existing PortAudio behavior behind the narrow provider PCM boundary."""
+
+    transport_id = "direct"
+    pcm_format = RealtimePcmFormat()
+
+    def __init__(
+        self,
+        service: "YandexLiveAudioService",
+        audio: ResolvedYandexAudio,
+        sd: Any,
+        stop_event: threading.Event,
+        diagnostics: YandexLiveDiagnostics,
+    ) -> None:
+        self.service = service
+        self.audio = audio
+        self.sd = sd
+        self.stop_event = stop_event
+        self.diagnostics = diagnostics
+        self.capture_queue: queue.Queue[bytes] = queue.Queue()
+        self.playback = ResponsePlaybackQueue()
+        self.worker_error: queue.Queue[BaseException] = queue.Queue(maxsize=1)
+        self._failure: BaseException | None = None
+        self.capture_thread: threading.Thread | None = None
+        self.playback_thread: threading.Thread | None = None
+
+    def _fail(self, exc: BaseException) -> None:
+        self._failure = exc
+        try:
+            self.worker_error.put_nowait(exc)
+        except queue.Full:
+            pass
+        self.stop_event.set()
+
+    def start(self) -> None:
+        self.capture_thread = threading.Thread(
+            target=self._capture_worker,
+            name="orion-yandex-capture",
+            daemon=True,
+        )
+        self.playback_thread = threading.Thread(
+            target=self._playback_worker,
+            name="orion-yandex-playback",
+            daemon=True,
+        )
+        self.capture_thread.start()
+        self.playback_thread.start()
+
+    def _capture_worker(self) -> None:
+        try:
+            with self.sd.RawInputStream(
+                samplerate=YANDEX_INPUT_RATE,
+                blocksize=INPUT_FRAMES,
+                device=self.audio.input_endpoint.device_index,
+                channels=CHANNELS,
+                dtype=DTYPE,
+                extra_settings=self.audio.input_extra_settings,
+            ) as stream:
+                while not self.stop_event.is_set():
+                    pcm, overflowed = stream.read(INPUT_FRAMES)
+                    if overflowed:
+                        self.diagnostics.record("capture_overflow")
+                    self.capture_queue.put(bytes(pcm))
+                    status = self.service.status()
+                    self.service._set(input_chunks=status.input_chunks + 1, phase="listening")
+        except BaseException as exc:
+            self._fail(exc)
+
+    def _playback_worker(self) -> None:
+        try:
+            with self.sd.RawOutputStream(
+                samplerate=YANDEX_OUTPUT_RATE,
+                blocksize=INPUT_FRAMES,
+                device=self.audio.output_endpoint.device_index,
+                channels=CHANNELS,
+                dtype=DTYPE,
+                extra_settings=self.audio.output_extra_settings,
+            ) as stream:
+                while not self.stop_event.is_set():
+                    try:
+                        item = self.playback.get()
+                    except queue.Empty:
+                        continue
+                    if self.playback.is_stop(item):
+                        return
+                    assert isinstance(item, PlaybackSlice)
+                    if not self.playback.is_current(item):
+                        status = self.service.status()
+                        self.service._set(
+                            stale_slices_discarded=status.stale_slices_discarded + 1
+                        )
+                        continue
+                    stream.write(item.pcm)
+                    status = self.service.status()
+                    self.service._set(
+                        output_chunks=status.output_chunks + 1,
+                        slices_written=status.slices_written + 1,
+                        phase="speaking",
+                    )
+        except BaseException as exc:
+            self._fail(exc)
+
+    def read_input(self, timeout: float = 0.1) -> bytes | None:
+        if not self.worker_error.empty():
+            raise self.worker_error.get_nowait()
+        try:
+            return self.capture_queue.get(timeout=timeout)
+        except queue.Empty:
+            if not self.worker_error.empty():
+                raise self.worker_error.get_nowait()
+            return None
+
+    def failure(self) -> BaseException | None:
+        return self._failure
+
+    def input_speech_started(self) -> None:
+        response_id, removed = self.playback.invalidate_active()
+        status = self.service.status()
+        self.service._set(slices_removed=status.slices_removed + removed)
+        self.diagnostics.record(
+            "direct_barge_in",
+            response_id=response_id,
+            slices_removed=removed,
+        )
+
+    def response_started(self, response_id: str) -> None:
+        epoch = self.playback.response_created(response_id)
+        self.diagnostics.record("direct_response_created", response_id=response_id, epoch=epoch)
+
+    def response_audio(self, response_id: str, pcm16le: bytes) -> None:
+        queued, stale = self.playback.enqueue_delta(response_id, pcm16le)
+        status = self.service.status()
+        self.service._set(
+            provider_audio_bytes=status.provider_audio_bytes + len(pcm16le),
+            stale_slices_discarded=status.stale_slices_discarded + stale,
+        )
+        self.diagnostics.record(
+            "direct_audio_delta",
+            response_id=response_id,
+            byte_count=len(pcm16le),
+            slices_queued=queued,
+            stale_slices=stale,
+        )
+
+    def response_audio_done(self, response_id: str) -> None:
+        self.diagnostics.record("direct_audio_done", response_id=response_id)
+
+    def response_done(self, response_id: str, status: str) -> None:
+        self.playback.response_done(response_id)
+        self.diagnostics.record("direct_response_done", response_id=response_id, status=status)
+
+    def stop(self) -> None:
+        self.stop_event.set()
+        self.playback.invalidate_active()
+        self.playback.stop()
+        for worker, name in (
+            (self.capture_thread, "capture"),
+            (self.playback_thread, "playback"),
+        ):
+            if worker is not None and worker.is_alive():
+                worker.join(WORKER_JOIN_TIMEOUT_S)
+            if worker is not None and worker.is_alive():
+                self.diagnostics.record(f"{name}_worker_shutdown_timeout")
+
+
 class YandexLiveAudioService:
     provider_id = "yandex"
 
@@ -346,214 +507,23 @@ class YandexLiveAudioService:
         stop_event: threading.Event,
         diagnostics: YandexLiveDiagnostics,
     ) -> None:
-        import aiohttp
+        endpoint = _DirectYandexPcmEndpoint(self, audio, sd, stop_event, diagnostics)
 
-        capture_queue: asyncio.Queue[bytes | None] = asyncio.Queue()
-        playback = ResponsePlaybackQueue()
-        loop = asyncio.get_running_loop()
-        capture_thread: threading.Thread | None = None
-        playback_thread: threading.Thread | None = None
-        send_task: asyncio.Task[None] | None = None
-        receive_task: asyncio.Task[None] | None = None
-        websocket: Any = None
-        close_owned = False
-        worker_error: queue.Queue[BaseException] = queue.Queue(maxsize=1)
-        latest_response_id: str | None = None
-
-        def fail(exc: BaseException) -> None:
-            try:
-                worker_error.put_nowait(exc)
-            except queue.Full:
-                pass
-            stop_event.set()
-
-        def capture_worker() -> None:
-            try:
-                with sd.RawInputStream(
-                    samplerate=YANDEX_INPUT_RATE,
-                    blocksize=INPUT_FRAMES,
-                    device=audio.input_endpoint.device_index,
-                    channels=CHANNELS,
-                    dtype=DTYPE,
-                    extra_settings=audio.input_extra_settings,
-                ) as stream:
-                    while not stop_event.is_set():
-                        pcm, overflowed = stream.read(INPUT_FRAMES)
-                        if overflowed:
-                            diagnostics.record("capture_overflow")
-                        exact = bytes(pcm)
-                        loop.call_soon_threadsafe(capture_queue.put_nowait, exact)
-                        status = self.status()
-                        self._set(input_chunks=status.input_chunks + 1, phase="listening")
-            except BaseException as exc:
-                fail(exc)
-
-        def playback_worker() -> None:
-            try:
-                with sd.RawOutputStream(
-                    samplerate=YANDEX_OUTPUT_RATE,
-                    blocksize=INPUT_FRAMES,
-                    device=audio.output_endpoint.device_index,
-                    channels=CHANNELS,
-                    dtype=DTYPE,
-                    extra_settings=audio.output_extra_settings,
-                ) as stream:
-                    while not stop_event.is_set():
-                        try:
-                            item = playback.get()
-                        except queue.Empty:
-                            continue
-                        if playback.is_stop(item):
-                            return
-                        assert isinstance(item, PlaybackSlice)
-                        if not playback.is_current(item):
-                            self._set(stale_slices_discarded=self.status().stale_slices_discarded + 1)
-                            continue
-                        stream.write(item.pcm)
-                        status = self.status()
-                        self._set(
-                            output_chunks=status.output_chunks + 1,
-                            slices_written=status.slices_written + 1,
-                            phase="speaking",
-                        )
-            except BaseException as exc:
-                fail(exc)
-
-        async def send_worker() -> None:
-            while True:
-                pcm = await capture_queue.get()
-                if pcm is None:
-                    return
-                if stop_event.is_set():
-                    continue
-                await websocket.send_json(encode_yandex_input_audio(pcm))
-
-        async def receive_worker() -> None:
-            nonlocal latest_response_id
-            while not stop_event.is_set():
-                message = await websocket.receive()
-                if message.type is aiohttp.WSMsgType.TEXT:
-                    event = message.json()
-                    kind = str(event.get("type") or "")
-                    if kind == "input_audio_buffer.speech_started":
-                        response_id, removed = playback.invalidate_active()
-                        status = self.status()
-                        self._set(slices_removed=status.slices_removed + removed)
-                        diagnostics.record("speech_started", response_id=response_id, slices_removed=removed)
-                    elif kind == "response.created":
-                        response = event.get("response") or {}
-                        response_id = str(response.get("id") or event.get("response_id") or "unknown")
-                        latest_response_id = response_id
-                        epoch = playback.response_created(response_id)
-                        diagnostics.record("response_created", response_id=response_id, epoch=epoch)
-                    elif kind == "response.output_audio.delta":
-                        pcm = decode_yandex_output_audio(event)
-                        response_id = str(event.get("response_id") or latest_response_id or "unknown")
-                        queued, stale = playback.enqueue_delta(response_id, pcm)
-                        status = self.status()
-                        self._set(
-                            provider_audio_bytes=status.provider_audio_bytes + len(pcm),
-                            stale_slices_discarded=status.stale_slices_discarded + stale,
-                        )
-                        diagnostics.record("audio_delta", response_id=response_id, byte_count=len(pcm), slices_queued=queued, stale_slices=stale)
-                    elif kind == "response.done":
-                        response = event.get("response") or {}
-                        response_id = str(response.get("id") or event.get("response_id") or "unknown")
-                        playback.response_done(response_id)
-                        diagnostics.record("response_done", response_id=response_id, status=response.get("status"))
-                    elif kind == "error":
-                        raise RuntimeError(event.get("error") or "Yandex provider error")
-                    else:
-                        diagnostics.record(kind or "provider_event")
-                elif message.type in {aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.CLOSING}:
-                    if not stop_event.is_set():
-                        raise ConnectionError(f"Yandex WebSocket closed unexpectedly: {websocket.close_code}")
-                    return
-                elif message.type is aiohttp.WSMsgType.ERROR:
-                    raise ConnectionError(websocket.exception() or "Yandex WebSocket error")
-
-        timeout = aiohttp.ClientTimeout(total=None, connect=4.0)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            websocket = await session.ws_connect(
-                build_yandex_url(request.folder_id),
-                headers=yandex_authorization_headers(request.api_key),
-                heartbeat=20.0,
-                autoclose=True,
+        def streaming() -> None:
+            self._set(
+                state=YandexLiveState.STREAMING,
+                message="Yandex live audio is running",
             )
-            diagnostics.record("websocket_connected")
-            try:
-                await websocket.send_json(yandex_session_update())
-                handshake_deadline = time.monotonic() + 15.0
-                while not stop_event.is_set():
-                    if time.monotonic() >= handshake_deadline:
-                        raise TimeoutError("Timed out waiting for Yandex session.updated")
-                    try:
-                        message = await asyncio.wait_for(websocket.receive(), timeout=0.2)
-                    except asyncio.TimeoutError:
-                        continue
-                    if message.type is aiohttp.WSMsgType.TEXT:
-                        event = message.json()
-                        kind = str(event.get("type") or "")
-                        diagnostics.record(kind or "handshake_event")
-                        if kind == "session.updated":
-                            break
-                        if kind == "error":
-                            raise RuntimeError(event.get("error") or "Yandex provider error")
-                    else:
-                        raise ConnectionError("Yandex closed before session.updated")
-                if stop_event.is_set():
-                    return
-                self._set(state=YandexLiveState.STREAMING, message="Yandex live audio is running")
-                capture_thread = threading.Thread(target=capture_worker, name="orion-yandex-capture", daemon=True)
-                playback_thread = threading.Thread(target=playback_worker, name="orion-yandex-playback", daemon=True)
-                capture_thread.start()
-                playback_thread.start()
-                send_task = asyncio.create_task(send_worker(), name="orion-yandex-send")
-                receive_task = asyncio.create_task(receive_worker(), name="orion-yandex-receive")
-                while not stop_event.is_set():
-                    await asyncio.sleep(0.05)
-                    if not worker_error.empty():
-                        raise worker_error.get_nowait()
-                    for task in (send_task, receive_task):
-                        if task.done():
-                            error = task.exception()
-                            if error is not None:
-                                raise error
-                            if not stop_event.is_set():
-                                raise ConnectionError(f"{task.get_name()} stopped unexpectedly")
-            finally:
-                # This coroutine is the single shutdown owner. Workers never close
-                # the WebSocket and cannot send after the capture/send barrier.
-                stop_event.set()
-                if capture_thread is not None:
-                    await asyncio.to_thread(capture_thread.join, WORKER_JOIN_TIMEOUT_S)
-                    if capture_thread.is_alive():
-                        diagnostics.record("capture_worker_shutdown_timeout")
-                capture_queue.put_nowait(None)
-                if send_task is not None:
-                    try:
-                        await asyncio.wait_for(send_task, timeout=1.0)
-                    except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
-                        send_task.cancel()
-                playback.invalidate_active()
-                playback.stop()
-                if playback_thread is not None:
-                    await asyncio.to_thread(playback_thread.join, WORKER_JOIN_TIMEOUT_S)
-                    if playback_thread.is_alive():
-                        diagnostics.record("playback_worker_shutdown_timeout")
-                if not websocket.closed:
-                    close_owned = True
-                    await websocket.close(code=1000)
-                if receive_task is not None and not receive_task.done():
-                    receive_task.cancel()
-                    try:
-                        await receive_task
-                    except (asyncio.CancelledError, Exception):
-                        pass
-                code = websocket.close_code
-                clean = code == 1000
-                self._set(close_code=code, clean_close=clean)
-                diagnostics.record("websocket_closed", close_code=code, clean=clean, local_close_owner=close_owned)
+
+        result = await YandexRealtimeSession(
+            request.api_key,
+            request.folder_id,
+            endpoint,
+            stop_event,
+            diagnostics,
+            on_streaming=streaming,
+        ).run()
+        self._set(close_code=result.close_code, clean_close=result.clean_close)
 
 
 yandex_live_audio = YandexLiveAudioService()

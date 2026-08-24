@@ -19,13 +19,21 @@ jobs:
           cache: pip
       - name: Install validation dependencies
         shell: pwsh
-        run: python -m pip install --upgrade pip; python -m pip install -e ".[dev,windows-audio,cloud-realtime]"
+        run: python -m pip install --upgrade pip; python -m pip install -e ".[dev,windows-audio,cloud-realtime,srs-radio]"
       - name: Run preserved Build 317 audio, Qwen tool-call and live-audio regressions
         shell: pwsh
-        run: python -m pytest -q tests/test_launcher_audio_sections.py tests/test_realtime_tool_api.py tests/test_qwen_realtime_provider.py tests/test_qwen_live_audio_core.py tests/test_cloud_voice_config_store.py tests/test_core_process_boundary.py
+        run: python -m pytest -q tests/test_launcher_audio_sections.py tests/test_realtime_tool_api.py tests/test_qwen_realtime_provider.py tests/test_qwen_live_audio_core.py tests/test_cloud_voice_config_store.py tests/test_core_process_boundary.py tests/test_realtime_live_core.py tests/test_yandex_live_audio_core.py tests/test_yandex_realtime_session.py tests/test_srs_protocol.py tests/test_srs_radio_transport.py tests/test_srs_codec_resampler.py tests/test_srs_transmission.py
       - name: Compile realtime modules
         shell: pwsh
-        run: python -m compileall -q orion/qwen_realtime_provider.py orion/qwen_live_audio_core.py orion/realtime_tool_api.py orion/launcher_cloud_voice_sections.py orion/launcher_audio_sections.py
+        run: python -m compileall -q orion/qwen_realtime_provider.py orion/qwen_live_audio_core.py orion/realtime_tool_api.py orion/launcher_cloud_voice_sections.py orion/launcher_audio_sections.py orion/realtime_live_core.py orion/yandex_realtime_session.py orion/srs_protocol.py orion/srs_radio_transport.py
       - name: Build Core with realtime dependencies
         shell: pwsh
-        run: python -m PyInstaller --noconfirm --clean --onedir --windowed --name ORION-Core-ADR004 --collect-submodules orion --collect-submodules uvicorn --collect-submodules websocket --collect-submodules aiohttp --add-data "dcs-export;dcs-export" --icon branding/orion.ico orion/core_main.py
+        run: python -m PyInstaller --noconfirm --clean --onedir --windowed --name ORION-Core-ADR004 --collect-submodules orion --collect-submodules uvicorn --collect-submodules websocket --collect-submodules aiohttp --collect-all samplerate --collect-all numpy --add-binary "orion/native/win_amd64/opus.dll;native/win_amd64" --add-data "orion/native/licenses;native/licenses" --add-data "dcs-export;dcs-export" --icon branding/orion.ico orion/core_main.py
+      - name: Run offline frozen Core SRS native smoke
+        shell: pwsh
+        run: |
+          $resultPath = Join-Path $env:RUNNER_TEMP "orion-core-srs-native-smoke.json"
+          $process = Start-Process "dist/ORION-Core-ADR004/ORION-Core-ADR004.exe" -ArgumentList @("--srs-native-smoke", $resultPath) -Wait -PassThru
+          if ($process.ExitCode) { throw "Frozen Core SRS smoke exited $($process.ExitCode)" }
+          $result = Get-Content $resultPath -Raw | ConvertFrom-Json
+          if (-not $result.ok -or $result.opus_version -ne "libopus 1.6.1") { throw "Frozen SRS native smoke failed" }
