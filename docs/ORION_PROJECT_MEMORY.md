@@ -1,6 +1,6 @@
 # ORION Project Memory
 
-> Canonical long-term project context. Updated: 2026-08-20.
+> Canonical long-term project context. Updated: 2026-08-24.
 >
 > Purpose: preserve approved product requirements, architectural invariants, milestone history, real-world test evidence, known risks, and the next agreed action across chats and development sessions.
 >
@@ -314,6 +314,57 @@ A future status-display concept was also reviewed, but is explicitly **deferred 
 
 Decision: **do not implement the QWEN READY/ON VR overlay in the first ATC integration. Preserve the design as a later milestone.**
 
+### SRS/Yandex no-DCS field-validated baseline — 2026-08-24
+
+**Status: FIELD TEST VALIDATED AND ARCHITECTURALLY FROZEN**
+
+Control point:
+
+- commit `1a06a093eb8e9b9efbf2f33793ed84f7e7b40040`;
+- subject `Fix SRS radio registration handshake`;
+- standalone proof component `reference_tests/yandex_realtime_gui/`;
+- detailed decision and protected invariants: ADR-007.
+
+The controlled test ran without DCS. A local SRS Server 2.4.0.0 connected an
+official SRS Client as the human participant and YandexRealtimeTester as the
+headless AI participant. Both used External AWACS Mode BLUE (`coalition = 2`)
+and 251.000 MHz AM with encryption off. The human heard two completed Yandex
+answers through the official SRS Client.
+
+Measured evidence: SRS reached `READY` with `radio_registered = True`; 125 UDP
+packets produced 78,720 decoded and 216,970 resampled samples; two human
+transmissions started and completed; Yandex received 286 input blocks and
+completed successful voice responses with first useful audio at approximately
+1,187 ms and 985 ms; SRS returned two transmissions / 382 frames. Maximum TX
+jitter was 15 ms and 14 ms, cumulative pacing drift 3 ms and 0 ms. Malformed
+packets, Opus errors, duplicates, out-of-order packets and sequence gaps were
+all zero.
+
+Two collisions and later `bot_tx_collision` drops prove the intentional v0.1
+half-duplex collision protection. They are not interpreted as a defect;
+barge-in remains a separate future policy.
+
+The root cause immediately preceding success is a protected integration
+checkpoint. Initial `SYNC` had omitted `Client.RadioInfo`, so SRS stored a null
+radio state and threw `NullReferenceException` in `HandleClientRadioUpdate` on
+the following `RADIO_UPDATE`. UDP GUID echo nevertheless caused false `READY`,
+while `udp_packets_received` remained zero. The fix requires non-null canonical
+radio state in initial `SYNC`, semantically identical state in the later
+`RADIO_UPDATE`, and readiness ordered as `matching own server RADIO_UPDATE ->
+UDP GUID echo -> READY`.
+
+The canonical model is the SRS 2.4.0 11-slot `PlayerRadioInfoBase`: active
+`radios[1]` at 251000000.0 / AM, encryption and retransmit off, secondary
+frequency 1.0, other slots disabled, `unitId = 100000`.
+
+Approved architecture: AI Provider and Voice Transport are independent
+selections. Qwen/Yandex remain providers; Direct Audio/SRS Radio are
+transports. Direct Audio remains the personal assistant/conversation and
+fallback path. SRS Radio is the future path for ATC, AWACS/GCI, JTAC, tanker,
+wingman and multiplayer radio participation. The reference Tester proves the
+transport but its GUI/diagnostic architecture must not be copied wholesale or
+imported by production.
+
 ## 6. Real Windows/DCS test evidence
 
 ### Earlier Alpha evidence
@@ -412,13 +463,25 @@ This follows the same durable principle as Architecture Decision Records: preser
 
 ## 12. Current immediate plan
 
-As of 2026-08-20:
+As of 2026-08-24, preserve Qwen Build #402, Yandex Direct Voice and the proven
+SRS baseline while proceeding in these explicit stages:
 
-1. Preserve Qwen Live Build #402 as the field-validated voice baseline.
-2. Begin the first Qwen/ATC integration with the Launcher-assigned toggle button and context-gated routing: free conversation outside a mission; free conversation plus Core-backed module interaction during an active mission.
-3. Keep the current Launcher Qwen UI otherwise unchanged for this integration pass.
-4. Do not implement the QWEN READY/ON DCS/VR overlay in the first ATC integration; retain the minimal OpenXR API layer + `XrCompositionLayerQuad` design for a later milestone.
-5. Validate the button/session behavior and ATC routing in a real DCS mission before refining the interaction model.
+1. Freeze the SRS baseline in project history and complete the read-only
+   production integration audit.
+2. Implement only production SRS transport v0.1; do not add DCS or ATC logic.
+3. Add independent provider and transport selection while preserving Qwen +
+   Direct Audio and Yandex + Direct Audio.
+4. Field-test production Yandex + SRS without DCS.
+5. Add only DCS radio context: aircraft, cockpit radios, frequencies, callsign
+   and position.
+6. Add `RadioRouter`, then Core-owned durable `FlightContext`.
+7. Prove provider-neutral tool calling through SRS with `orion.test.ping`, then
+   one safe ATC tool.
+8. Implement full Virtual ATC only after each preceding layer is independently
+   proven.
+
+The deferred QWEN READY/ON OpenXR overlay remains outside this sequence unless
+separately reprioritized.
 
 ## 13. Items that must not be forgotten
 
@@ -437,6 +500,10 @@ As of 2026-08-20:
 - Russian, English and free natural-language modes are required.
 - Casual/random conversation is approved.
 - Qwen Live is user-activated by a Launcher-assigned toggle button; do not keep an idle cloud realtime session active merely because DCS is running.
+- AI Provider (Qwen/Yandex) and Voice Transport (Direct Audio/SRS Radio) are independent selections; never encode SRS as a Yandex-only provider mode.
+- Initial SRS `SYNC` must contain non-null canonical `RadioInfo`; matching own server radio confirmation plus UDP readiness is required before `READY`.
+- SRS transport is field-proven without DCS; production must not make DCS a prerequisite for basic radio transport.
+- Do not import the standalone Tester into production or place ATC/DCS/provider credentials inside the future SRS transport.
 - Outside an active mission Qwen exposes free conversation only; in an active mission it additionally gains Core-backed ORION module interaction.
 - The QWEN READY/ON VR status indicator is deferred from the first ATC integration; preferred later design is a minimal OpenXR API layer + `XrCompositionLayerQuad` with graceful degradation.
 - Installer module selection is user-controlled, with all modules selected by default; Launcher runtime module selection is also user-controlled, with all installed modules enabled by default.
