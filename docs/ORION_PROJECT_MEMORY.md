@@ -879,3 +879,48 @@ PACKAGING VALIDATION PASSED.**
   Core-only Opus/samplerate/numpy runtime.
 - The canonical installer is `ORION-Alpha-0.2-Setup.exe`, 71,632,558 bytes,
   SHA-256 `326CFA7CE6765BA165AD9FF63A1A5E1C4EECD3F3B559BD4887E9AAB28FD231C1`.
+
+## 18. Stage 6A.2 test evidence transcripts and Launcher controls — 2026-08-26
+
+**Status: STAGE 6A.2 IMPLEMENTED; STAGE 6B NOT STARTED.**
+
+- The Stage 6A.1 field test passed ORION identity and showed materially improved
+  subjective and recorded provider-audio latency. Human observation still found
+  incorrect heading (approximately -104 degrees), unnatural speed presentation
+  and unnatural coordinate presentation. Those semantics are deliberately not
+  changed here; exact utterance evidence is required before the next forensic
+  tranche.
+- Transcript evidence is enabled only inside an explicitly user-started Test
+  Evidence session. Final provider-exposed user transcription and assistant
+  audio/text transcription events are correlated with available test session,
+  provider, transport, turn, response, provider item, event, context-version and
+  timestamp identifiers. Missing provider transcript events remain explicitly
+  `NOT OBSERVABLE`; no STT, TTS or additional model is introduced.
+- Core remains the sole recorder and export owner. The existing bounded recorder
+  and the existing start/status/stop-export Core endpoints are reused. Outside
+  an active Test Evidence session, the new transcript path is a no-op and
+  production transcript persistence remains disabled.
+- Settings places `START TEST SESSION`, `STOP & EXPORT TEST SESSION`, compact
+  recorder status and a Windows-native `OPEN EXPORT FOLDER` action beside the
+  existing `START LIVE` / `STOP LIVE` controls. Launcher is only an API client;
+  refresh reads Core status and duplicate start does not create another owner.
+- Raw audio, PCM, Opus, Base64 payloads, provider request bodies, system prompts,
+  credentials and unrelated environment data remain excluded. The explicit
+  transcript text may naturally contain spoken flight values or coordinates.
+- Heading normalization, speed/TAS/vertical-speed semantics, coordinate
+  formatting, airfield resolution, FlightContext behavior, SRS, DCS Export,
+  RadioContext and RadioRouter remain unchanged. Their forensic correction is
+  deferred. Stage 6B and Local Decision/Planner AI have not started.
+
+### Stage 6A.2 automated and packaging checkpoint
+
+- The focused recorder/provider/Launcher/SRS result is 43 passed. The isolated
+  full regression result is 1,222 passed with 80.95% branch coverage. Ruff,
+  pyright over changed production modules, compileall, privacy/security scans
+  and diff checks are clean.
+- Frozen Core native, Launcher SRS-control, Credential Manager and exact
+  Launcher-to-Core loopback smokes passed without physical audio devices,
+  external SRS, DCS or live provider access. The product package contains no
+  test evidence, JSONL/log data, credential material or official SRS binaries.
+- The Stage 6A.2 installer is `ORION-Alpha-0.2-Setup.exe`, 71,644,218 bytes,
+  SHA-256 `5ADD76234D3F66EBB0DA490B9E7A195EE6E96E9B553416597AB4A8E6355F7B56`.

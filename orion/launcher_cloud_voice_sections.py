@@ -75,6 +75,16 @@ def format_orion_srs_status(result: Mapping[str, object]) -> str:
     return "ORION SRS: NOT CONNECTED"
 
 
+def format_test_evidence_status(result: Mapping[str, object]) -> str:
+    if bool(result.get("active")):
+        provider = str(result.get("provider") or "unknown").upper()
+        transport = str(result.get("transport") or "unknown").upper()
+        count = int(str(result.get("event_count") or 0))
+        return f"Test Session: RECORDING — {provider} / {transport} | events={count}"
+    export_path = str(result.get("last_export_path") or "").strip()
+    return f"Test Session: OFF{f' — Last export: {export_path}' if export_path else ''}"
+
+
 class CloudVoiceConfigStore:
     """Persist non-secret ADR-004 Launcher settings only."""
 
@@ -198,6 +208,7 @@ class LauncherCloudVoiceSectionsMixin:
         self._qwen_control_diagnostics = BoundedControlDiagnostics()
         self._realtime_session_controller = RealtimeSessionController(self._realtime_core_json)
         self._voice_credential_store = default_voice_credential_store()
+        self._last_test_evidence_export = ""
         self._srs_process_controller = SrsExternalProcessController()
         self._qwen_controller_monitor = QwenControllerMonitor(
             backend=PygameJoystickBackend(),
@@ -299,6 +310,7 @@ class LauncherCloudVoiceSectionsMixin:
             "write", lambda *_: self._remember_srs_eam_password(srs_eam_password.get())
         )
         live_status = StringVar(value="STOPPED — Realtime voice is not active")
+        test_evidence_status = StringVar(value="Test Session: OFF")
         compatibility_status = StringVar()
         srs_server_status = StringVar(value="SRS SERVER: STOPPED")
         srs_client_status = StringVar(value="SRS CLIENT: STOPPED")
@@ -578,6 +590,52 @@ class LauncherCloudVoiceSectionsMixin:
             command=lambda: control_live(start=False),
         ).pack(side=LEFT)
 
+        ttk.Label(
+            box,
+            textvariable=test_evidence_status,
+            style="CardText.TLabel",
+            wraplength=780,
+            justify="left",
+        ).pack(anchor="w", pady=(12, 8))
+        test_evidence_buttons = ttk.Frame(box, style="Card.TFrame")
+        test_evidence_buttons.pack(fill=X)
+        reveal_test_evidence_button = ttk.Button(
+            test_evidence_buttons,
+            text="OPEN EXPORT FOLDER",
+            style="Secondary.TButton",
+            state="disabled",
+            command=self._open_last_test_evidence_export,
+        )
+
+        def start_test_evidence() -> None:
+            evidence_config = CloudVoiceConfig(
+                cloud_provider=provider_labels[provider.get()],
+                voice_transport=transport_labels[transport.get()],
+            )
+            self._start_test_evidence_async(
+                evidence_config,
+                test_evidence_status,
+            )
+
+        ttk.Button(
+            test_evidence_buttons,
+            text="START TEST SESSION",
+            style="Primary.TButton",
+            command=start_test_evidence,
+        ).pack(side=LEFT, padx=(0, 8))
+        ttk.Button(
+            test_evidence_buttons,
+            text="STOP & EXPORT TEST SESSION",
+            style="Secondary.TButton",
+            command=lambda: self._stop_test_evidence_async(
+                test_evidence_status,
+                reveal_test_evidence_button,
+            ),
+        ).pack(side=LEFT, padx=(0, 8))
+        reveal_test_evidence_button.pack(side=LEFT)
+        self._test_evidence_status_var = test_evidence_status
+        self._test_evidence_reveal_button = reveal_test_evidence_button
+
         def refresh_provider_fields(*_args: object) -> None:
             selected = provider_labels[provider.get()]
             selected_transport = transport_labels[transport.get()]
@@ -614,6 +672,11 @@ class LauncherCloudVoiceSectionsMixin:
             live_status,
             orion_srs_status,
             lambda: transport_labels[transport.get()],
+            generation,
+        )
+        self._test_evidence_poll(
+            test_evidence_status,
+            reveal_test_evidence_button,
             generation,
         )
         self._srs_process_poll(
@@ -717,6 +780,148 @@ class LauncherCloudVoiceSectionsMixin:
                 variable.set(text)
 
         self._schedule_qwen_ui(0, apply)
+
+    @staticmethod
+    def _selected_test_evidence_identity(
+        config: CloudVoiceConfig,
+        live_status: Mapping[str, object],
+    ) -> tuple[str, str]:
+        active_state = str(live_status.get("state") or "").casefold()
+        if active_state in {"starting", "connected", "streaming"}:
+            provider = str(live_status.get("provider") or "").casefold()
+            transport = str(live_status.get("transport") or "").casefold()
+        else:
+            provider = config.cloud_provider.strip().casefold()
+            transport = config.voice_transport.strip().casefold()
+        if provider == "qwen_realtime":
+            provider = "qwen"
+        if provider not in {"qwen", "yandex"}:
+            raise ValueError("Cannot determine the active realtime provider safely")
+        if transport not in {"direct", "srs"}:
+            raise ValueError("Cannot determine the active realtime transport safely")
+        if provider == "qwen" and transport != "direct":
+            raise ValueError("Qwen + SRS Radio is not available in v0.1")
+        return provider, transport
+
+    def _start_test_evidence(self, config: CloudVoiceConfig) -> dict[str, object]:
+        current = self._test_evidence_status()
+        if bool(current.get("active")):
+            return {**current, "already_active": True}
+        live_status = self._realtime_core_json("/v1/realtime/live/status")
+        provider, transport = self._selected_test_evidence_identity(config, live_status)
+        return self._realtime_core_json(
+            "/v1/realtime/test-evidence/start",
+            method="POST",
+            payload={"provider": provider, "transport": transport},
+        )
+
+    def _test_evidence_status(self) -> dict[str, object]:
+        return self._realtime_core_json("/v1/realtime/test-evidence/status")
+
+    def _stop_test_evidence(self) -> dict[str, object]:
+        return self._realtime_core_json(
+            "/v1/realtime/test-evidence/stop-export",
+            method="POST",
+        )
+
+    def _start_test_evidence_async(
+        self,
+        config: CloudVoiceConfig,
+        status_var: StringVar,
+    ) -> None:
+        generation = self._qwen_view_generation
+
+        def worker() -> None:
+            try:
+                result = self._start_test_evidence(config)
+                text = format_test_evidence_status(result)
+                if bool(result.get("already_active")):
+                    text += " — already active"
+                self._schedule_qwen_ui(0, lambda: status_var.set(text), generation)
+            except (OSError, ValueError, RuntimeError, urllib.error.URLError) as exc:
+                text = f"Test Session: ERROR — {type(exc).__name__}: {exc}"
+                self._schedule_qwen_ui(0, lambda: status_var.set(text), generation)
+
+        threading.Thread(target=worker, name="orion-test-evidence-start", daemon=True).start()
+
+    def _stop_test_evidence_async(
+        self,
+        status_var: StringVar,
+        reveal_button: ttk.Button,
+    ) -> None:
+        generation = self._qwen_view_generation
+
+        def worker() -> None:
+            try:
+                result = self._stop_test_evidence()
+                export_path = str(result.get("export_path") or "").strip()
+                if not export_path:
+                    raise RuntimeError("ORION Core did not return an evidence export path")
+
+                def apply_success() -> None:
+                    self._last_test_evidence_export = export_path
+                    status_var.set(f"Test Session: OFF — Exported: {export_path}")
+                    reveal_button.state(["!disabled"])
+                    messagebox.showinfo(
+                        "ORION Test Evidence",
+                        f"Test recording stopped.\n\nExport: {export_path}",
+                        parent=self.root,
+                    )
+
+                self._schedule_qwen_ui(0, apply_success, generation)
+            except (OSError, ValueError, RuntimeError, urllib.error.URLError) as exc:
+                text = f"Test Session: ERROR — {type(exc).__name__}: {exc}"
+                self._schedule_qwen_ui(0, lambda: status_var.set(text), generation)
+
+        threading.Thread(target=worker, name="orion-test-evidence-stop", daemon=True).start()
+
+    def _open_last_test_evidence_export(self) -> None:
+        export_path = str(getattr(self, "_last_test_evidence_export", "")).strip()
+        try:
+            if not export_path:
+                raise ValueError("No Test Evidence export is available")
+            directory = Path(export_path).resolve().parent
+            if not directory.is_dir():
+                raise FileNotFoundError(f"Export folder does not exist: {directory}")
+            startfile = getattr(os, "startfile", None)
+            if not callable(startfile):
+                raise RuntimeError("Windows folder reveal is unavailable")
+            startfile(str(directory))
+        except (OSError, ValueError, RuntimeError) as exc:
+            messagebox.showerror("ORION Test Evidence", str(exc), parent=self.root)
+
+    def _test_evidence_poll(
+        self,
+        status_var: StringVar,
+        reveal_button: ttk.Button,
+        generation: int,
+    ) -> None:
+        if not self._qwen_view_lifecycle.is_alive(generation):
+            return
+
+        def worker() -> None:
+            try:
+                result = self._test_evidence_status()
+            except Exception:
+                result = None
+            if result is not None:
+                def apply() -> None:
+                    status_var.set(format_test_evidence_status(result))
+                    export_path = str(result.get("last_export_path") or "").strip()
+                    if export_path:
+                        self._last_test_evidence_export = export_path
+                        reveal_button.state(["!disabled"])
+                    else:
+                        reveal_button.state(["disabled"])
+
+                self._schedule_qwen_ui(0, apply, generation)
+
+        threading.Thread(target=worker, name="orion-test-evidence-status", daemon=True).start()
+        self._schedule_qwen_ui(
+            1000,
+            lambda: self._test_evidence_poll(status_var, reveal_button, generation),
+            generation,
+        )
 
     def _build_qwen_controls(self, box: ttk.Frame) -> int:
         monitor = self._qwen_controller_monitor

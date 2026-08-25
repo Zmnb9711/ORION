@@ -29,6 +29,7 @@ from orion.qwen_live_diagnostics import QwenLiveDiagnostics
 from orion.qwen_realtime_provider import QwenRealtimeConfig, QwenRealtimeProvider
 from orion.realtime_ai_instructions import ORION_REALTIME_BASE_INSTRUCTIONS
 from orion.realtime_interaction_state import RealtimeInteractionState
+from orion.realtime_test_evidence import realtime_test_evidence
 from orion.realtime_tools import RealtimeToolCall, qwen_live_tool_definition, realtime_tools
 from orion.windows_wasapi_backend import WasapiDirection
 
@@ -1363,6 +1364,29 @@ class QwenLiveAudioService:
                     self._set(
                         phase=QwenAudioPhase.LISTENING,
                         message="Qwen listening",
+                    )
+                elif event_type == "conversation.item.input_audio_transcription.completed":
+                    realtime_test_evidence.record_transcript(
+                        "user",
+                        str(event.get("transcript") or ""),
+                        turn_id=interaction.current_turn_id(),
+                        event_id=str(event.get("event_id") or ""),
+                        provider_item_id=str(event.get("item_id") or ""),
+                    )
+                elif event_type in {
+                    "response.audio_transcript.done",
+                    "response.text.done",
+                }:
+                    response_id = str(
+                        event.get("response_id") or latest_response_id or "unknown"
+                    )
+                    realtime_test_evidence.record_transcript(
+                        "assistant",
+                        str(event.get("transcript") or event.get("text") or ""),
+                        turn_id=interaction.turn_for_response(response_id),
+                        response_id=response_id,
+                        event_id=str(event.get("event_id") or ""),
+                        provider_item_id=str(event.get("item_id") or ""),
                     )
                 elif event_type in {
                     "response.audio_transcript.delta",

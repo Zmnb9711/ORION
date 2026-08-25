@@ -54,6 +54,8 @@ class RealtimeTestEvidenceStatus:
     transport: str | None = None
     event_count: int = 0
     dropped_event_count: int = 0
+    user_transcript_count: int = 0
+    assistant_transcript_count: int = 0
     last_export_path: str | None = None
 
 
@@ -78,6 +80,9 @@ class RealtimeTestEvidenceRecorder:
         self._transport: str | None = None
         self._build_sha: str | None = None
         self._dropped = 0
+        self._user_transcript_count = 0
+        self._assistant_transcript_count = 0
+        self._current_context_version: str | None = None
         self._last_export_path: Path | None = None
 
     def start(
@@ -94,6 +99,9 @@ class RealtimeTestEvidenceRecorder:
                 raise ValueError("A realtime test session is already active")
             self._events.clear()
             self._dropped = 0
+            self._user_transcript_count = 0
+            self._assistant_transcript_count = 0
+            self._current_context_version = None
             self._active = True
             self._test_session_id = uuid4().hex
             self._started_at = datetime.now(UTC)
@@ -135,9 +143,59 @@ class RealtimeTestEvidenceRecorder:
                             continue
                         value = value[:200]
                     safe[key] = value
+            context_version = safe.get("context_version")
+            if isinstance(context_version, str) and context_version:
+                self._current_context_version = context_version
             if len(self._events) == self._events.maxlen:
                 self._dropped += 1
             self._events.append(safe)
+
+    def record_transcript(
+        self,
+        role: str,
+        transcript: str,
+        *,
+        turn_id: str | None = None,
+        response_id: str | None = None,
+        event_id: str | None = None,
+        provider_item_id: str | None = None,
+        context_version: str | None = None,
+    ) -> None:
+        """Record one provider-finalized transcript only in explicit test mode."""
+
+        if role not in {"user", "assistant"}:
+            raise ValueError("Realtime test transcript role must be user or assistant")
+        text = self._sanitize_transcript(transcript)
+        if not text:
+            return
+        with self._lock:
+            if not self._active or self._test_session_id is None:
+                return
+            safe: dict[str, object] = {
+                "timestamp": datetime.now(UTC).isoformat(timespec="milliseconds"),
+                "test_session_id": self._test_session_id,
+                "event": f"{role}_transcript",
+                "provider": self._provider,
+                "transport": self._transport,
+                "transcript": text,
+            }
+            identifiers = {
+                "turn_id": turn_id,
+                "response_id": response_id,
+                "event_id": event_id,
+                "provider_item_id": provider_item_id,
+                "context_version": context_version or self._current_context_version,
+            }
+            for key, value in identifiers.items():
+                if value:
+                    safe[key] = str(value)[:200]
+            if len(self._events) == self._events.maxlen:
+                self._dropped += 1
+            self._events.append(safe)
+            if role == "user":
+                self._user_transcript_count += 1
+            else:
+                self._assistant_transcript_count += 1
 
     def status(self) -> RealtimeTestEvidenceStatus:
         with self._lock:
@@ -155,6 +213,8 @@ class RealtimeTestEvidenceRecorder:
             transport = self._transport or "unknown"
             build_sha = self._build_sha or "unknown"
             dropped = self._dropped
+            user_transcript_count = self._user_transcript_count
+            assistant_transcript_count = self._assistant_transcript_count
             self._active = False
 
             root = self._runtime_dir or Path(os.environ.get("ORION_RUNTIME_DIR", "runtime"))
@@ -169,12 +229,18 @@ class RealtimeTestEvidenceRecorder:
 
             manifest = (
                 "ORION realtime test evidence\n"
-                "format_version=1\n"
+                "format_version=2\n"
                 f"test_session_id={session_id}\n"
                 "members=manifest.txt,session-summary.txt,events.jsonl\n"
                 "raw_audio_included=false\n"
-                "transcripts_included=false\n"
-                "exact_coordinates_included=false\n"
+                f"transcripts_included={str(bool(user_transcript_count or assistant_transcript_count)).lower()}\n"
+                f"user_transcripts_included={str(bool(user_transcript_count)).lower()}\n"
+                f"assistant_transcripts_included={str(bool(assistant_transcript_count)).lower()}\n"
+                f"user_transcript_observability={'CAPTURED' if user_transcript_count else 'NOT OBSERVABLE'}\n"
+                f"assistant_transcript_observability={'CAPTURED' if assistant_transcript_count else 'NOT OBSERVABLE'}\n"
+                "system_instructions_included=false\n"
+                "structured_exact_coordinates_included=false\n"
+                "spoken_coordinates_may_appear_in_explicit_transcripts=true\n"
                 "credentials_included=false\n"
                 "external_dcs_srs_logs_included=false\n"
             )
@@ -187,6 +253,8 @@ class RealtimeTestEvidenceRecorder:
                 f"transport={transport}\n"
                 f"event_count={len(events)}\n"
                 f"dropped_event_count={dropped}\n"
+                f"user_transcript_count={user_transcript_count}\n"
+                f"assistant_transcript_count={assistant_transcript_count}\n"
             )
             jsonl = "".join(
                 json.dumps(item, ensure_ascii=False, sort_keys=True) + "\n"
@@ -216,6 +284,10 @@ class RealtimeTestEvidenceRecorder:
             transport=self._transport if self._active else None,
             event_count=len(self._events) if self._active else 0,
             dropped_event_count=self._dropped if self._active else 0,
+            user_transcript_count=self._user_transcript_count if self._active else 0,
+            assistant_transcript_count=(
+                self._assistant_transcript_count if self._active else 0
+            ),
             last_export_path=(
                 str(self._last_export_path) if self._last_export_path is not None else None
             ),
@@ -228,6 +300,19 @@ class RealtimeTestEvidenceRecorder:
             raise ValueError(f"Realtime test {label} is invalid")
         if not re.fullmatch(r"[A-Za-z0-9_.:-]+", normalized):
             raise ValueError(f"Realtime test {label} contains unsupported characters")
+        return normalized
+
+    @staticmethod
+    def _sanitize_transcript(value: str, *, max_length: int = 8000) -> str:
+        normalized = value.strip()[:max_length]
+        if not normalized:
+            return ""
+        patterns = (
+            r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+",
+            r"(?i)\b(?:api[ _-]?key|authorization|eam[ _-]?password)\s*[:=]\s*\S+",
+        )
+        for pattern in patterns:
+            normalized = re.sub(pattern, "[REDACTED]", normalized)
         return normalized
 
     @staticmethod

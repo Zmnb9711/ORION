@@ -3,13 +3,17 @@ from __future__ import annotations
 import asyncio
 import base64
 import inspect
+import json
 import threading
+import zipfile
 from collections import deque
 from types import SimpleNamespace
 
 import aiohttp
+import orion.yandex_realtime_session as yandex_session_module
 
 from orion.realtime_audio_transport import RealtimePcmFormat
+from orion.realtime_test_evidence import RealtimeTestEvidenceRecorder
 from orion.yandex_realtime_session import YandexRealtimeSession
 
 
@@ -71,6 +75,12 @@ class FakeWebSocket:
             {"type": "session.updated", "session": {"id": "session"}},
             {"type": "input_audio_buffer.speech_started"},
             {"type": "input_audio_buffer.speech_stopped"},
+            {
+                "type": "conversation.item.input_audio_transcription.completed",
+                "event_id": "event-user",
+                "item_id": "item-user",
+                "transcript": "Какая у меня скорость?",
+            },
             {"type": "response.created", "response": {"id": "r1"}},
             {
                 "type": "response.output_audio.delta",
@@ -78,6 +88,13 @@ class FakeWebSocket:
                 "delta": base64.b64encode(output_pcm).decode("ascii"),
             },
             {"type": "response.output_audio.done", "response_id": "r1"},
+            {
+                "type": "response.output_audio_transcript.done",
+                "event_id": "event-assistant",
+                "item_id": "item-assistant",
+                "response_id": "r1",
+                "transcript": "Скорость отображается в узлах.",
+            },
             {"type": "response.done", "response": {"id": "r1", "status": status}},
         ]
         for event in events:
@@ -164,3 +181,37 @@ def test_cancelled_response_status_is_preserved_and_start_stop_start_is_clean(mo
         )
         assert ("response_done", ("r1", "cancelled")) in endpoint.events
         assert websocket.close_code == 1000
+
+
+def test_yandex_final_provider_transcripts_enter_only_active_test_evidence(
+    tmp_path,
+    monkeypatch,
+) -> None:  # noqa: ANN001
+    recorder = RealtimeTestEvidenceRecorder(tmp_path)
+    monkeypatch.setattr(yandex_session_module, "realtime_test_evidence", recorder)
+    recorder.start(provider="yandex", transport="srs")
+    websocket = FakeWebSocket(b"\0\0")
+    monkeypatch.setattr(aiohttp, "ClientSession", lambda **_: FakeClientSession(websocket))
+    stop = threading.Event()
+    asyncio.run(
+        YandexRealtimeSession(
+            "memory-only-secret",
+            "folder",
+            FakeEndpoint(stop, bytes(1764)),
+            stop,
+            FakeDiagnostics(),
+        ).run()
+    )
+    output = recorder.stop_and_export()
+    with zipfile.ZipFile(output) as archive:
+        events = [
+            json.loads(line)
+            for line in archive.read("events.jsonl").decode("utf-8").splitlines()
+        ]
+    assert [(event["event"], event["transcript"]) for event in events] == [
+        ("user_transcript", "Какая у меня скорость?"),
+        ("assistant_transcript", "Скорость отображается в узлах."),
+    ]
+    assert events[0]["turn_id"] == events[1]["turn_id"] == "turn_001"
+    assert events[0]["event_id"] == "event-user"
+    assert events[1]["response_id"] == "r1"

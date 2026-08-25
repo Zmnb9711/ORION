@@ -4,6 +4,7 @@ import json
 import sys
 import threading
 import time
+import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -11,6 +12,7 @@ import pytest
 
 import orion.qwen_live_audio_core as core
 from orion.qwen_live_diagnostics import QwenLiveDiagnostics
+from orion.realtime_test_evidence import RealtimeTestEvidenceRecorder
 
 
 def _diagnostics(tmp_path: Path) -> QwenLiveDiagnostics:
@@ -218,6 +220,78 @@ def test_clean_remote_close_is_classified_without_worker_failure(
     assert isinstance(recent_events, list)
     events = [event["event"] for event in recent_events]
     assert "CLEAN_REMOTE_CLOSE" in events
+
+
+def test_qwen_final_provider_transcripts_enter_only_active_test_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorder = RealtimeTestEvidenceRecorder(tmp_path)
+    recorder.start(provider="qwen", transport="direct")
+    monkeypatch.setattr(core, "realtime_test_evidence", recorder)
+    stop_event = threading.Event()
+    events: list[dict[str, object]] = [
+        {"type": "input_audio_buffer.speech_started", "event_id": "speech-start"},
+        {"type": "input_audio_buffer.speech_stopped", "event_id": "speech-stop"},
+        {
+            "type": "conversation.item.input_audio_transcription.completed",
+            "event_id": "event-user",
+            "item_id": "item-user",
+            "transcript": "Как тебя зовут?",
+        },
+        {
+            "type": "response.created",
+            "event_id": "response-created",
+            "response": {"id": "response-1"},
+        },
+        {
+            "type": "response.audio_transcript.done",
+            "event_id": "event-assistant",
+            "item_id": "item-assistant",
+            "response_id": "response-1",
+            "transcript": "Меня зовут ORION.",
+        },
+        {
+            "type": "response.done",
+            "event_id": "response-done",
+            "response": {"id": "response-1", "status": "completed"},
+        },
+    ]
+
+    class TranscriptProvider:
+        def _receive_json(self, _ws: object) -> dict[str, object]:
+            if events:
+                return events.pop(0)
+            stop_event.set()
+            raise ValueError("local test stop")
+
+    failures: core.queue.Queue[core._WorkerFailure] = core.queue.Queue(maxsize=1)
+    core.QwenLiveAudioService()._receive_worker(
+        ws=object(),
+        websocket=SimpleNamespace(WebSocketTimeoutException=TimeoutError),
+        provider=TranscriptProvider(),  # type: ignore[arg-type]
+        audio=SimpleNamespace(output_native_rate=48_000),  # type: ignore[arg-type]
+        stop_event=stop_event,
+        playback=core._PlaybackFifo(),
+        diagnostics=_diagnostics(tmp_path),
+        failures=failures,
+        monitor=core._SessionMonitor(connected_ns=time.perf_counter_ns()),
+    )
+    assert failures.empty()
+    output = recorder.stop_and_export()
+    with zipfile.ZipFile(output) as archive:
+        evidence = [
+            json.loads(line)
+            for line in archive.read("events.jsonl").decode("utf-8").splitlines()
+            if '"event": "user_transcript"' in line
+            or '"event": "assistant_transcript"' in line
+        ]
+    assert [(item["event"], item["transcript"]) for item in evidence] == [
+        ("user_transcript", "Как тебя зовут?"),
+        ("assistant_transcript", "Меня зовут ORION."),
+    ]
+    assert evidence[0]["turn_id"] == evidence[1]["turn_id"] == "turn_001"
+    assert evidence[1]["response_id"] == "response-1"
 
 
 def test_abrupt_eof_is_classified_as_connection_loss(tmp_path: Path) -> None:

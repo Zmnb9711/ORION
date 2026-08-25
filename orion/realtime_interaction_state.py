@@ -79,6 +79,10 @@ class RealtimeInteractionState:
         with self._lock:
             return self._current_turn_id
 
+    def turn_for_response(self, response_id: str) -> str | None:
+        with self._lock:
+            return self._response_turns.get(response_id)
+
     def response_started(self, response_id: str) -> str:
         now = self._clock_ns()
         with self._lock:

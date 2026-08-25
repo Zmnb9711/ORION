@@ -15,6 +15,7 @@ from orion.launcher_cloud_voice_sections import (
     LauncherCloudVoiceSectionsMixin,
     format_orion_srs_status,
     format_srs_process_status,
+    format_test_evidence_status,
 )
 from orion.srs_process_control import (
     SrsProcessKind,
@@ -158,6 +159,9 @@ def test_launcher_ui_contains_ordered_commands_and_manual_connect_instruction() 
     assert "AI SESSION TOGGLE" in text
     assert "QWEN SESSION TOGGLE" not in text
     assert "START LIVE" in text and "STOP LIVE" in text
+    assert text.index("START LIVE") < text.index("START TEST SESSION")
+    assert "STOP & EXPORT TEST SESSION" in text
+    assert "OPEN EXPORT FOLDER" in text
     assert "CLEAR SAVED CREDENTIALS" in text
     for forbidden_control in (
         "RADIO 1 FREQUENCY",
@@ -167,6 +171,79 @@ def test_launcher_ui_contains_ordered_commands_and_manual_connect_instruction() 
         "ENCRYPTION CONTROL",
     ):
         assert forbidden_control not in text
+
+
+def test_launcher_test_session_uses_active_core_provider_transport_and_core_endpoints() -> None:
+    launcher = cast(Any, object.__new__(LauncherCloudVoiceSectionsMixin))
+    calls: list[tuple[str, str, dict[str, object] | None]] = []
+
+    def request(
+        path: str,
+        *,
+        method: str = "GET",
+        payload: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        calls.append((path, method, payload))
+        if path.endswith("/status") and path.startswith("/v1/realtime/test-evidence"):
+            return {"active": False}
+        if path == "/v1/realtime/live/status":
+            return {"state": "streaming", "provider": "yandex", "transport": "srs"}
+        if path.endswith("/start"):
+            return {"active": True, "provider": "yandex", "transport": "srs"}
+        if path.endswith("/stop-export"):
+            return {"active": False, "export_path": r"C:\evidence\session.zip"}
+        raise AssertionError(path)
+
+    launcher._realtime_core_json = request
+    started = launcher._start_test_evidence(CloudVoiceConfig())
+    stopped = launcher._stop_test_evidence()
+    assert started["active"] is True
+    assert stopped["export_path"] == r"C:\evidence\session.zip"
+    assert calls == [
+        ("/v1/realtime/test-evidence/status", "GET", None),
+        ("/v1/realtime/live/status", "GET", None),
+        (
+            "/v1/realtime/test-evidence/start",
+            "POST",
+            {"provider": "yandex", "transport": "srs"},
+        ),
+        ("/v1/realtime/test-evidence/stop-export", "POST", None),
+    ]
+
+
+def test_launcher_duplicate_start_and_status_refresh_never_create_another_recorder() -> None:
+    launcher = cast(Any, object.__new__(LauncherCloudVoiceSectionsMixin))
+    calls: list[str] = []
+
+    def request(
+        path: str,
+        *,
+        method: str = "GET",
+        payload: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        del method, payload
+        calls.append(path)
+        return {
+            "active": True,
+            "provider": "yandex",
+            "transport": "srs",
+            "event_count": 7,
+        }
+
+    launcher._realtime_core_json = request
+    refreshed = launcher._test_evidence_status()
+    duplicate = launcher._start_test_evidence(
+        CloudVoiceConfig(cloud_provider="qwen_realtime", voice_transport="direct")
+    )
+    assert refreshed["active"] is True
+    assert duplicate["already_active"] is True
+    assert calls == [
+        "/v1/realtime/test-evidence/status",
+        "/v1/realtime/test-evidence/status",
+    ]
+    assert format_test_evidence_status(refreshed) == (
+        "Test Session: RECORDING — YANDEX / SRS | events=7"
+    )
 
 
 def test_voice_and_tray_shutdown_do_not_own_external_srs_processes() -> None:

@@ -15,6 +15,7 @@ from typing import Any, Callable, Protocol
 from orion.flight_context import FlightContextUpdateGate
 from orion.realtime_audio_transport import RealtimePcmEndpoint
 from orion.realtime_interaction_state import RealtimeInteractionState
+from orion.realtime_test_evidence import realtime_test_evidence
 from orion.yandex_realtime_provider import (
     build_yandex_url,
     decode_yandex_output_audio,
@@ -142,6 +143,13 @@ class YandexRealtimeSession:
                         self._diagnostics.record("speech_stopped", turn_id=turn_id)
                     elif kind == "conversation.item.input_audio_transcription.completed":
                         transcript = str(event.get("transcript") or "")
+                        realtime_test_evidence.record_transcript(
+                            "user",
+                            transcript,
+                            turn_id=self._interaction.current_turn_id(),
+                            event_id=str(event.get("event_id") or ""),
+                            provider_item_id=str(event.get("item_id") or ""),
+                        )
                         self._diagnostics.record(
                             "transcription_completed",
                             turn_id=self._interaction.current_turn_id(),
@@ -203,6 +211,21 @@ class YandexRealtimeSession:
                         )
                         self._endpoint.response_audio_done(response_id)
                         self._diagnostics.record("audio_done", response_id=response_id)
+                    elif kind in {
+                        "response.output_audio_transcript.done",
+                        "response.output_text.done",
+                    }:
+                        response_id = str(
+                            event.get("response_id") or latest_response_id or "unknown"
+                        )
+                        realtime_test_evidence.record_transcript(
+                            "assistant",
+                            str(event.get("transcript") or event.get("text") or ""),
+                            turn_id=self._interaction.turn_for_response(response_id),
+                            response_id=response_id,
+                            event_id=str(event.get("event_id") or ""),
+                            provider_item_id=str(event.get("item_id") or ""),
+                        )
                     elif kind == "response.done":
                         response = event.get("response") or {}
                         response_id = str(
