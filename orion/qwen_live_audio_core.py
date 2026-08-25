@@ -13,6 +13,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from orion.audio_device_config import audio_device_config
+from orion.flight_context import FlightContextUpdateGate
 from orion.portaudio_devices import (
     PortAudioEndpoint,
     enumerate_portaudio_endpoints,
@@ -42,6 +43,13 @@ PONG_TIMEOUT_SEC = 10.0
 FIRST_AUDIO_TIMEOUT_SEC = 20.0
 INTER_DELTA_TIMEOUT_SEC = 5.0
 RESPONSE_COMPLETION_TIMEOUT_SEC = 30.0
+QWEN_INSTRUCTIONS = (
+    "You are ORION's realtime conversational voice. Talk naturally in the language used by the user. "
+    "For ordinary conversation, answer without tools. For a DCS Virtual ATC request, call "
+    "orion_virtual_atc_request. ORION Core is authoritative for mission and ATC facts: never invent "
+    "an aircraft, airport, runway, clearance, traffic, frequency, telemetry value, or active mission. "
+    "If the tool reports unavailable, explain naturally that active DCS mission/ATC context is unavailable."
+)
 
 
 class QwenLiveState(StrEnum):
@@ -443,7 +451,12 @@ def _install_websocket_frame_telemetry(
         setattr(ws, "pong", monitored_pong)
 
 
-def _audio_session_update(model: str, voice: str) -> dict[str, Any]:
+def _audio_session_update(
+    model: str,
+    voice: str,
+    *,
+    instructions: str = QWEN_INSTRUCTIONS,
+) -> dict[str, Any]:
     normalized = model.strip().casefold()
     vad_type = "semantic_vad" if normalized == "qwen3.5-omni-realtime" or normalized.startswith("qwen3.5-omni-realtime-") else "server_vad"
     return {
@@ -451,13 +464,7 @@ def _audio_session_update(model: str, voice: str) -> dict[str, Any]:
         "session": {
             "modalities": ["text", "audio"],
             "voice": voice,
-            "instructions": (
-                "You are ORION's realtime conversational voice. Talk naturally in the language used by the user. "
-                "For ordinary conversation, answer without tools. For a DCS Virtual ATC request, call "
-                "orion_virtual_atc_request. ORION Core is authoritative for mission and ATC facts: never invent "
-                "an aircraft, airport, runway, clearance, traffic, frequency, telemetry value, or active mission. "
-                "If the tool reports unavailable, explain naturally that active DCS mission/ATC context is unavailable."
-            ),
+            "instructions": instructions,
             "input_audio_format": "pcm",
             "output_audio_format": "pcm",
             # Provider-side ASR is observational: it exposes what Qwen heard
@@ -769,10 +776,38 @@ class QwenLiveAudioService:
         failures: queue.Queue[_WorkerFailure],
         send_lock: threading.Lock,
         monitor: _SessionMonitor,
+        flight_context_gate: FlightContextUpdateGate | None = None,
+        model: str = "qwen3.5-omni-flash-realtime",
+        voice: str = "Tina",
     ) -> None:
         diagnostics.record("worker_started", stage="websocket_send")
         try:
             while not stop_event.is_set():
+                if flight_context_gate is not None:
+                    update = flight_context_gate.next_update()
+                    if update is not None:
+                        with send_lock:
+                            ws.send(
+                                json.dumps(
+                                    _audio_session_update(
+                                        model,
+                                        voice,
+                                        instructions=update.instructions,
+                                    ),
+                                    ensure_ascii=False,
+                                )
+                            )
+                        count = flight_context_gate.mark_applied(update)
+                        monitor.record_tx(time.perf_counter_ns())
+                        diagnostics.record(
+                            "flight_context_applied",
+                            context_state=update.state.value,
+                            context_fresh=update.fresh,
+                            aircraft_type=update.aircraft_type,
+                            context_generation=update.generation,
+                            context_update_count=count,
+                            provider="qwen",
+                        )
                 try:
                     qwen_pcm = capture_queue.get(timeout=0.05)
                 except queue.Empty:
@@ -1319,6 +1354,9 @@ class QwenLiveAudioService:
         stop_event: threading.Event,
         diagnostics: QwenLiveDiagnostics,
         monitor: _SessionMonitor | None = None,
+        flight_context_gate: FlightContextUpdateGate | None = None,
+        model: str = "qwen3.5-omni-flash-realtime",
+        voice: str = "Tina",
     ) -> None:
         if monitor is None:
             monitor = _SessionMonitor(connected_ns=time.perf_counter_ns())
@@ -1364,6 +1402,9 @@ class QwenLiveAudioService:
                             failures,
                             send_lock,
                             monitor,
+                            flight_context_gate,
+                            model,
+                            voice,
                         ),
                         daemon=True,
                         name="orion-qwen-send",
@@ -1579,7 +1620,15 @@ class QwenLiveAudioService:
 
     def _run(self, request: QwenLiveStartRequest, stop_event: threading.Event) -> None:
         ws = None
-        session_update = _audio_session_update(request.model, request.voice)
+        flight_context_gate = FlightContextUpdateGate(QWEN_INSTRUCTIONS)
+        initial_context = flight_context_gate.next_update(force=True)
+        if initial_context is None:  # pragma: no cover - force always returns a snapshot
+            raise RuntimeError("Initial FlightContext snapshot is unavailable")
+        session_update = _audio_session_update(
+            request.model,
+            request.voice,
+            instructions=initial_context.instructions,
+        )
         turn_detection = session_update["session"]["turn_detection"]
         diagnostics = QwenLiveDiagnostics(
             model=request.model,
@@ -1767,6 +1816,16 @@ class QwenLiveAudioService:
                     raise _ProviderErrorEvent(provider._error_message(event))
                 if event_type == "session.updated":
                     diagnostics.record_websocket_session_ready(t_ns=recv_end_ns)
+                    count = flight_context_gate.mark_applied(initial_context)
+                    diagnostics.record(
+                        "flight_context_applied",
+                        context_state=initial_context.state.value,
+                        context_fresh=initial_context.fresh,
+                        aircraft_type=initial_context.aircraft_type,
+                        context_generation=initial_context.generation,
+                        context_update_count=count,
+                        provider="qwen",
+                    )
                     break
             else:
                 raise TimeoutError("Timed out waiting for Qwen session.updated")
@@ -1795,6 +1854,9 @@ class QwenLiveAudioService:
                     stop_event=stop_event,
                     diagnostics=diagnostics,
                     monitor=monitor,
+                    flight_context_gate=flight_context_gate,
+                    model=request.model,
+                    voice=request.voice,
                 )
             finally:
                 # _run_transport closes the socket to wake and join both network

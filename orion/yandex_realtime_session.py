@@ -12,12 +12,14 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Protocol
 
+from orion.flight_context import FlightContextUpdateGate
 from orion.realtime_audio_transport import RealtimePcmEndpoint
 from orion.yandex_realtime_provider import (
     build_yandex_url,
     decode_yandex_output_audio,
     encode_yandex_input_audio,
     sanitize_yandex_error,
+    YANDEX_INSTRUCTIONS,
     yandex_authorization_headers,
     yandex_session_update,
 )
@@ -46,6 +48,7 @@ class YandexRealtimeSession:
         diagnostics: SessionDiagnostics,
         *,
         on_streaming: Callable[[], None] | None = None,
+        flight_context_gate: FlightContextUpdateGate | None = None,
     ) -> None:
         self._api_key = api_key
         self._folder_id = folder_id
@@ -53,6 +56,26 @@ class YandexRealtimeSession:
         self._stop = stop_event
         self._diagnostics = diagnostics
         self._on_streaming = on_streaming or (lambda: None)
+        self._flight_context = flight_context_gate or FlightContextUpdateGate(
+            YANDEX_INSTRUCTIONS
+        )
+
+    async def _send_flight_context_update(self, websocket: Any, *, force: bool = False) -> bool:
+        update = self._flight_context.next_update(force=force)
+        if update is None:
+            return False
+        await websocket.send_json(yandex_session_update(instructions=update.instructions))
+        count = self._flight_context.mark_applied(update)
+        self._diagnostics.record(
+            "flight_context_applied",
+            context_state=update.state.value,
+            context_fresh=update.fresh,
+            aircraft_type=update.aircraft_type,
+            context_generation=update.generation,
+            context_update_count=count,
+            provider="yandex",
+        )
+        return True
 
     async def run(self) -> YandexSessionResult:
         import aiohttp
@@ -64,6 +87,7 @@ class YandexRealtimeSession:
 
         async def send_worker() -> None:
             while not self._stop.is_set():
+                await self._send_flight_context_update(websocket)
                 pcm = await asyncio.to_thread(self._endpoint.read_input, 0.1)
                 if pcm is None:
                     continue
@@ -162,7 +186,7 @@ class YandexRealtimeSession:
             )
             self._diagnostics.record("websocket_connected")
             try:
-                await websocket.send_json(yandex_session_update())
+                await self._send_flight_context_update(websocket, force=True)
                 deadline = time.monotonic() + 15.0
                 while not self._stop.is_set():
                     if time.monotonic() >= deadline:

@@ -55,11 +55,11 @@ def yandex_authorization_headers(api_key: str) -> dict[str, str]:
     return {"Authorization": f"Api-Key {key}"}
 
 
-def yandex_session_update() -> dict[str, object]:
+def yandex_session_update(*, instructions: str = YANDEX_INSTRUCTIONS) -> dict[str, object]:
     return {
         "type": "session.update",
         "session": {
-            "instructions": YANDEX_INSTRUCTIONS,
+            "instructions": instructions,
             "output_modalities": ["audio"],
             "audio": {
                 "input": {

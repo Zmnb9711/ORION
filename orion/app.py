@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from importlib import import_module
 from uuid import UUID
 
@@ -36,18 +37,33 @@ _dispatcher = CommandDispatcher()
 
 def store_telemetry(payload: TelemetryEnvelope) -> None:
     global _latest
+    received_at = datetime.now(UTC)
     _latest = payload
-    live_telemetry.set(payload)
-    telemetry_handshake.observe(payload)
+    live_telemetry.set(payload, received_at=received_at)
+    telemetry_handshake.observe(payload, received_at=received_at)
     validation = hornet_live_validator.observe(payload)
     hornet_live_validation_notifier.observe(validation)
     _journal.append("telemetry", payload.model_dump(mode="json"))
 
 
+def store_heartbeat(*, source: str, protocol_version: str) -> None:
+    received_at = datetime.now(UTC)
+    live_telemetry.observe_heartbeat(
+        source=source,
+        protocol_version=protocol_version,
+        received_at=received_at,
+    )
+    telemetry_handshake.observe_heartbeat(
+        source=source,
+        protocol_version=protocol_version,
+        received_at=received_at,
+    )
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     apply_completed_onboarding_at_startup()
-    transport, _ = await start_udp_bridge(store_telemetry)
+    transport, _protocol = await start_udp_bridge(store_telemetry, store_heartbeat)
     proactive_mission_control.enable()
     try:
         yield

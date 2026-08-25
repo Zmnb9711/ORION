@@ -699,3 +699,106 @@ SRS wire/provider/audio changes.
   process was deliberately not stopped. The same exact smoke, including the
   frozen credential round trip, remains a mandatory clean Windows CI gate
   before this checkpoint can be called integrated-automation validated.
+
+## 16. Stage 5.1 field validation and Stage 6A FlightContext — 2026-08-25
+
+**Status: STAGE 5.1 FIELD-VALIDATED; STAGE 6A IMPLEMENTED, AUTOMATED AND
+PACKAGING VALIDATION PASSED.**
+
+### Field-proven SRS/Yandex baseline
+
+- The normal production chain passed in DCS: human microphone -> normal
+  official SRS Client -> SRS Server -> ORION SRS transport -> Yandex Realtime
+  -> ORION SRS transmission -> official SRS Client/headset.
+- F/A-18C COMM1 frequency isolation passed `251.000 AM -> 252.000 AM ->
+  251.000 AM`: ORION heard/responded on matching 251 MHz, stopped receiving
+  when the human cockpit/client moved to 252 MHz, and resumed after returning
+  to 251 MHz.
+- The human pilot uses the normal official SRS Client connection and
+  cockpit-controlled aircraft radios. The human pilot does **not** use
+  External AWACS Mode for normal DCS flying. EAM remains enabled only for
+  ORION's external radio endpoint. Preserve this ownership invariant.
+- The field evidence contained 16,315 valid telemetry records and consistently
+  identified `FA-18C_hornet`; aircraft detection was already working. The gap
+  was propagation from Core state into the active conversational AI session.
+
+### Core-owned FlightContext boundary
+
+- The existing `LiveTelemetryStore` remains the single authoritative owner of
+  current high-rate player-aircraft telemetry. It now also owns only the
+  current receive timestamp/source/protocol and a monotonic in-memory
+  generation. It remains ephemeral and retains no additional history.
+- `FlightContextService` is the provider- and transport-neutral, read-only Core
+  boundary over that existing current store. It exposes only the current
+  aircraft type, position, altitude/AGL, heading, true airspeed and vertical
+  speed required by Stage 6A. It contains no credentials and does not mix in
+  Mission World state.
+- Freshness semantics are deterministic: no received Export state is
+  `no_dcs`; a current Export heartbeat without a player aircraft is
+  `dcs_connected_no_aircraft`; aircraft telemetry no older than five seconds
+  is `fresh`; older data is `stale` and its flight values are withheld from AI.
+  A heartbeat after leaving the aircraft immediately invalidates the previous
+  aircraft rather than waiting for the stale timeout.
+- `FA-18C_hornet` is resolved through the generic Aircraft Knowledge profiles
+  to `F/A-18C Hornet`; the answer is not a Hornet-specific prompt constant.
+  Unknown future DCS types degrade to a sanitized DCS type name.
+
+### Realtime AI context semantics
+
+- One compact semantic FlightContext projection is used by Qwen Direct,
+  Yandex Direct and Yandex SRS. Audio transport does not own or interpret it.
+  Qwen + SRS remains explicitly unsupported with no fallback.
+- The initial provider `session.update` includes the current context. During
+  the same live WebSocket/provider session, identity and availability changes
+  propagate immediately; kinematic changes are coalesced to at most one update
+  per five seconds; an unchanged context refreshes no more often than every 30
+  seconds. Realtime conversation/audio sessions are not recreated, so their
+  lifecycle and conversational continuity remain intact.
+- Provider diagnostics record only bounded/sanitized context state, freshness,
+  aircraft type, generation and update count. Exact high-frequency position,
+  credentials, audio and encoded payloads are not added to context diagnostics.
+- Stage 5.1 manual session semantics remain authoritative: Launcher and HOTAS
+  control the same `RealtimeLiveCoordinator` session. Stage 6A does not add
+  automatic DCS mission start/stop behavior.
+
+### Read-only SRS radio-context audit and Stage 6B boundary
+
+- Official SRS 2.4.0.0 obtains Hornet state through its DCS Lua exporter. The
+  F/A-18C module reads COMM1/COMM2 devices 38/39 and exports frequency,
+  modulation, Guard/secondary frequency, volume, encryption state/key, radio
+  names, unit identity/ID and position to the official Client over local UDP
+  port 9084 at its periodic export cadence.
+- The Hornet exporter declares `dcsPtt=false` and `dcsRadioSwitch=false`;
+  selected transmission/PTT behavior is completed by official SRS Client
+  input/profile logic, not proven solely by the DCS Lua packet.
+- UDP 9084 is an internal SRS integration boundary already consumed by the
+  official Client, not an approved stable ORION product API. Stage 6B should
+  prefer a minimal independent mapping based on public DCS Export interfaces,
+  unless a separately documented/supported SRS integration contract is
+  established. ORION must not copy GPL SRS production code or ship SRS source
+  or assemblies.
+- Stage 6A does not implement cockpit radio mapping, RadioRouter, ATC,
+  AWACS/GCI/JTAC/Tanker behavior, automatic mission lifecycle or an overlay.
+  The field-proven SRS wire/RadioInfo/readiness, Opus, resampler, routing,
+  transmission boundary, guard and pacing baseline remains protected.
+
+### Permanent project workflow invariant
+
+- Use one canonical Codex work thread. Historical Codex threads are read-only
+  reference. The GitHub repository plus this Project Memory are authoritative
+  project state; chat history is not authoritative project state.
+
+### Stage 6A automated and packaging checkpoint
+
+- The isolated full regression result is 1,206 passed with 80.50% coverage;
+  the focused DCS/realtime/provider/SRS/security result is 236 passed. Ruff,
+  pyright over changed production modules, compileall and diff checks are
+  clean. The isolation redirects only the machine-specific DCS Saved Games
+  known-folder lookup to a temporary directory.
+- Frozen Core native smoke confirms libopus 1.6.1 and samplerate 0.2.4 with no
+  network or audio device. The exact delivered Launcher-to-Core layout passed
+  the loopback-only integrated smoke, including clean shutdown and the frozen
+  Credential Manager round trip; it started no SRS process and left no orphan.
+- Canonical Stage 6A artifacts retain the normal product names and layout. The
+  installer is `ORION-Alpha-0.2-Setup.exe`, 71,600,109 bytes, SHA-256
+  `1573E3B85215DD26F71C1174F0FFC4DF34EF3C364E5077B85DC98A73B7F69FD5`.
