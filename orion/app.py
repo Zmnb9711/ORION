@@ -100,6 +100,7 @@ for _router_module in (
     "orion.dialogue_runtime_api",
     "orion.voice_core_api",
     "orion.realtime_tool_api",
+    "orion.realtime_test_evidence_api",
     "orion.speech_scheduler_api",
     "orion.tts_audio_api",
     "orion.windows_audio_worker_api",

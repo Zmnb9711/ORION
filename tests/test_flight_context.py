@@ -8,6 +8,11 @@ from orion.flight_context import (
     FlightContextState,
     FlightContextUpdateGate,
 )
+from orion.realtime_ai_instructions import (
+    FLIGHT_CONTEXT_END,
+    FLIGHT_CONTEXT_START,
+    ORION_REALTIME_BASE_INSTRUCTIONS,
+)
 from orion.live_telemetry_store import LiveTelemetryStore
 from orion.models import AircraftState, Position, TelemetryEnvelope
 
@@ -68,6 +73,36 @@ def test_fresh_field_representative_telemetry_propagates_all_stage6a_fields() ->
     assert snapshot.heading_deg == 251.4
     assert snapshot.true_airspeed_mps == 0.7
     assert snapshot.vertical_speed_mps == -0.1
+
+
+def test_ai_presentation_has_verified_aviation_units_and_signed_vertical_rate() -> None:
+    store = LiveTelemetryStore()
+    store.set(_telemetry())
+    instructions = FlightContextService(store).ai_update(
+        ORION_REALTIME_BASE_INSTRUCTIONS
+    ).instructions
+    assert "F/A-18C Hornet" in instructions
+    assert "DCS heading: 251 degrees" in instructions
+    assert "does not establish that it is magnetic" in instructions
+    assert "Altitude MSL: 123 ft (37 m)" in instructions
+    assert "4 ft (1 m) AGL" in instructions
+    assert "True airspeed: 1 kt (0.7 m/s)" in instructions
+    assert "Signed vertical speed: -20 ft/min (-0.1 m/s)" in instructions
+    assert "negative means descending" in instructions
+    assert "41° 36.61' N, 041° 35.99' E" in instructions
+    assert "Do not infer or guess a country or airfield" in instructions
+
+
+def test_canonical_identity_and_single_context_block_survive_many_updates() -> None:
+    store = LiveTelemetryStore()
+    context = FlightContextService(store)
+    instructions = ORION_REALTIME_BASE_INSTRUCTIONS
+    for sequence in range(1, 51):
+        store.set(_telemetry(sequence=sequence, latitude=41.61 + sequence / 100_000))
+        instructions = context.ai_update(instructions).instructions
+        assert "Your name is ORION" in instructions
+        assert instructions.count(FLIGHT_CONTEXT_START) == 1
+        assert instructions.count(FLIGHT_CONTEXT_END) == 1
 
 
 def test_aircraft_change_replaces_current_authoritative_context() -> None:
@@ -139,6 +174,35 @@ def test_identity_change_bypasses_kinematic_coalescing_delay() -> None:
     gate.mark_applied(first)
     store.set(_telemetry("F-16C_50", sequence=2))
     assert gate.next_update() is not None
+
+
+def test_active_turn_defers_and_latest_context_coalesces_until_safe_boundary() -> None:
+    store = LiveTelemetryStore()
+    context = FlightContextService(store)
+    clock_value = [100.0]
+    gate = FlightContextUpdateGate(
+        ORION_REALTIME_BASE_INSTRUCTIONS,
+        context=context,
+        clock=lambda: clock_value[0],
+    )
+    store.set(_telemetry())
+    initial = gate.next_update(force=True)
+    assert initial is not None
+    gate.mark_applied(initial)
+
+    store.set(_telemetry("F-16C_50", sequence=2, heading=90))
+    assert gate.next_update(safe_to_apply=False) is None
+    assert gate.deferred_count == 1
+    store.set(_telemetry("A-10C_2", sequence=3, heading=180))
+    assert gate.next_update(safe_to_apply=False) is None
+    assert gate.coalesced_count == 1
+
+    latest = gate.next_update(safe_to_apply=True)
+    assert latest is not None
+    assert latest.aircraft_type == "A-10C_2"
+    assert "DCS heading: 180 degrees" in latest.instructions
+    gate.mark_applied(latest)
+    assert gate.update_count == 2
 
 
 def test_flight_context_is_current_only_and_does_not_write_history(

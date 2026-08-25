@@ -41,6 +41,8 @@ def test_yandex_diagnostics_drop_credentials_and_audio_payloads(tmp_path) -> Non
         authorization="Api-Key super-secret",
         pcm=b"raw-audio",
         base64="c2VjcmV0",
+        latitude=31.505,
+        longitude=65.847,
         error="request failed for super-secret",
         byte_count=1764,
     )
@@ -48,5 +50,7 @@ def test_yandex_diagnostics_drop_credentials_and_audio_payloads(tmp_path) -> Non
     assert "super-secret" not in text
     assert "raw-audio" not in text
     assert "c2VjcmV0" not in text
+    assert "31.505" not in text
+    assert "65.847" not in text
     assert "[REDACTED]" in text
     assert '"byte_count": 1764' in text

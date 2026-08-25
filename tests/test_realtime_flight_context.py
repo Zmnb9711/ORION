@@ -14,6 +14,8 @@ from orion.srs_protocol import (
 )
 from orion.yandex_realtime_provider import YANDEX_INSTRUCTIONS
 from orion.yandex_realtime_session import YandexRealtimeSession
+from orion.realtime_ai_instructions import FLIGHT_CONTEXT_START
+from orion.realtime_interaction_state import RealtimeInteractionState
 
 
 class _Endpoint:
@@ -108,6 +110,11 @@ def test_qwen_direct_session_keeps_audio_tools_and_receives_same_flight_facts() 
     assert session["input_audio_format"] == "pcm"
     assert session["output_audio_format"] == "pcm"
     assert session["tools"]
+    assert "Your name is ORION" in str(session["instructions"])
+    yandex = _context().ai_update(YANDEX_INSTRUCTIONS).instructions
+    assert str(session["instructions"]).split(FLIGHT_CONTEXT_START, 1)[1] == yandex.split(
+        FLIGHT_CONTEXT_START, 1
+    )[1]
 
 
 def test_flight_context_has_no_effect_on_srs_radioinfo_or_readiness_payloads() -> None:
@@ -126,3 +133,62 @@ def test_flight_context_has_no_effect_on_srs_radioinfo_or_readiness_payloads() -
     assert sync_client["RadioInfo"] == update_client["RadioInfo"]
     assert "FlightContext" not in repr(sync)
     assert "flight_context" not in repr(update)
+
+
+def test_yandex_context_refresh_waits_for_response_boundary_without_session_reset() -> None:
+    store = LiveTelemetryStore()
+    store.set(
+        TelemetryEnvelope(
+            protocol_version="0.3",
+            source="dcs-export",
+            sequence=1,
+            state=AircraftState(
+                aircraft_type="FA-18C_hornet",
+                position=Position(latitude=41.61, longitude=41.60, altitude_m=38),
+                heading_deg=251,
+                true_airspeed_mps=1,
+                vertical_speed_mps=0,
+            ),
+        )
+    )
+    interaction = RealtimeInteractionState()
+    gate = FlightContextUpdateGate(
+        YANDEX_INSTRUCTIONS,
+        context=FlightContextService(store),
+    )
+    diagnostics = _Diagnostics()
+    session = YandexRealtimeSession(
+        "api-memory-only",
+        "folder",
+        _Endpoint(),  # type: ignore[arg-type]
+        threading.Event(),
+        diagnostics,
+        flight_context_gate=gate,
+        interaction_state=interaction,
+    )
+    websocket = _WebSocket()
+    assert asyncio.run(session._send_flight_context_update(websocket, force=True))
+    interaction.speech_started()
+    interaction.speech_stopped()
+    interaction.response_started("response-1")
+    store.set(
+        TelemetryEnvelope(
+            protocol_version="0.3",
+            source="dcs-export",
+            sequence=2,
+            state=AircraftState(
+                aircraft_type="F-16C_50",
+                position=Position(latitude=41.61, longitude=41.60, altitude_m=38),
+                heading_deg=90,
+                true_airspeed_mps=2,
+                vertical_speed_mps=0,
+            ),
+        )
+    )
+    assert not asyncio.run(session._send_flight_context_update(websocket))
+    assert len(websocket.sent) == 1
+    assert any(event == "flight_context_deferred" for event, _ in diagnostics.events)
+    interaction.response_done("response-1")
+    assert asyncio.run(session._send_flight_context_update(websocket))
+    assert len(websocket.sent) == 2
+    assert "F-16C 50" in str(cast(dict[str, Any], websocket.sent[-1]["session"])["instructions"])

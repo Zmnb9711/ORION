@@ -14,6 +14,7 @@ from typing import Any, Callable, Protocol
 
 from orion.flight_context import FlightContextUpdateGate
 from orion.realtime_audio_transport import RealtimePcmEndpoint
+from orion.realtime_interaction_state import RealtimeInteractionState
 from orion.yandex_realtime_provider import (
     build_yandex_url,
     decode_yandex_output_audio,
@@ -49,6 +50,7 @@ class YandexRealtimeSession:
         *,
         on_streaming: Callable[[], None] | None = None,
         flight_context_gate: FlightContextUpdateGate | None = None,
+        interaction_state: RealtimeInteractionState | None = None,
     ) -> None:
         self._api_key = api_key
         self._folder_id = folder_id
@@ -59,22 +61,51 @@ class YandexRealtimeSession:
         self._flight_context = flight_context_gate or FlightContextUpdateGate(
             YANDEX_INSTRUCTIONS
         )
+        self._interaction = interaction_state or RealtimeInteractionState()
 
-    async def _send_flight_context_update(self, websocket: Any, *, force: bool = False) -> bool:
-        update = self._flight_context.next_update(force=force)
+    async def _send_flight_context_update(
+        self,
+        websocket: Any,
+        *,
+        force: bool = False,
+    ) -> bool:
+        deferred_before = self._flight_context.deferred_count
+        coalesced_before = self._flight_context.coalesced_count
+        update = self._flight_context.next_update(
+            force=force,
+            safe_to_apply=force or self._interaction.safe_to_refresh,
+        )
+        if self._flight_context.deferred_count != deferred_before:
+            self._diagnostics.record(
+                "flight_context_deferred",
+                context_deferred_count=self._flight_context.deferred_count,
+                active_turn_id=self._interaction.current_turn_id(),
+                provider="yandex",
+            )
+        if self._flight_context.coalesced_count != coalesced_before:
+            self._diagnostics.record(
+                "flight_context_coalesced",
+                context_coalesced_count=self._flight_context.coalesced_count,
+                active_turn_id=self._interaction.current_turn_id(),
+                provider="yandex",
+            )
         if update is None:
             return False
         await websocket.send_json(yandex_session_update(instructions=update.instructions))
         count = self._flight_context.mark_applied(update)
-        self._diagnostics.record(
-            "flight_context_applied",
-            context_state=update.state.value,
-            context_fresh=update.fresh,
-            aircraft_type=update.aircraft_type,
-            context_generation=update.generation,
-            context_update_count=count,
-            provider="yandex",
-        )
+        fields = {
+            "context_state": update.state.value,
+            "context_fresh": update.fresh,
+            "aircraft_type": update.aircraft_type,
+            "context_generation": update.generation,
+            "context_version": update.context_version,
+            "context_update_count": count,
+            "context_deferred_count": self._flight_context.deferred_count,
+            "context_coalesced_count": self._flight_context.coalesced_count,
+            "provider": "yandex",
+        }
+        self._diagnostics.record("flight_context_update_sent", **fields)
+        self._diagnostics.record("flight_context_applied", **fields)
         return True
 
     async def run(self) -> YandexSessionResult:
@@ -103,14 +134,18 @@ class YandexRealtimeSession:
                     event = message.json()
                     kind = str(event.get("type") or "")
                     if kind == "input_audio_buffer.speech_started":
+                        turn_id = self._interaction.speech_started()
                         self._endpoint.input_speech_started()
-                        self._diagnostics.record("speech_started")
+                        self._diagnostics.record("speech_started", turn_id=turn_id)
                     elif kind == "input_audio_buffer.speech_stopped":
-                        self._diagnostics.record("speech_stopped")
+                        turn_id = self._interaction.speech_stopped()
+                        self._diagnostics.record("speech_stopped", turn_id=turn_id)
                     elif kind == "conversation.item.input_audio_transcription.completed":
                         transcript = str(event.get("transcript") or "")
                         self._diagnostics.record(
                             "transcription_completed",
+                            turn_id=self._interaction.current_turn_id(),
+                            provider_item_id=str(event.get("item_id") or ""),
                             characters=len(transcript),
                             persisted=False,
                         )
@@ -125,13 +160,37 @@ class YandexRealtimeSession:
                             response.get("id") or event.get("response_id") or "unknown"
                         )
                         latest_response_id = response_id
+                        turn_id = self._interaction.response_started(response_id)
                         self._endpoint.response_started(response_id)
-                        self._diagnostics.record("response_created", response_id=response_id)
+                        self._diagnostics.record(
+                            "response_created",
+                            response_id=response_id,
+                            turn_id=turn_id,
+                        )
                     elif kind == "response.output_audio.delta":
                         pcm = decode_yandex_output_audio(event)
                         response_id = str(
                             event.get("response_id") or latest_response_id or "unknown"
                         )
+                        first_audio = self._interaction.first_audio(response_id)
+                        if first_audio is not None:
+                            summary = self._interaction.latency_summary()
+                            self._diagnostics.record(
+                                "response_first_audio",
+                                response_id=response_id,
+                                turn_id=first_audio.turn_id,
+                                response_created_to_first_audio_ms=(
+                                    first_audio.response_created_to_first_audio_ms
+                                ),
+                                speech_stopped_to_first_audio_ms=(
+                                    first_audio.speech_stopped_to_first_audio_ms
+                                ),
+                                latency_sample_count=summary.sample_count,
+                                latency_latest_ms=summary.latest_ms,
+                                latency_median_ms=summary.median_ms,
+                                latency_p90_ms=summary.p90_ms,
+                                latency_maximum_ms=summary.maximum_ms,
+                            )
                         self._endpoint.response_audio(response_id, pcm)
                         self._diagnostics.record(
                             "audio_delta",
@@ -154,15 +213,20 @@ class YandexRealtimeSession:
                         )
                         status = str(response.get("status") or "")
                         self._endpoint.response_done(response_id, status)
+                        turn_id = self._interaction.response_done(response_id)
                         self._diagnostics.record(
                             "response_done",
                             response_id=response_id,
+                            turn_id=turn_id,
                             status=status,
                         )
                     elif kind == "error":
                         raise RuntimeError(event.get("error") or "Yandex provider error")
                     else:
-                        self._diagnostics.record(kind or "provider_event")
+                        self._diagnostics.record(
+                            kind or "provider_event",
+                            provider_event_id=str(event.get("event_id") or ""),
+                        )
                 elif message.type in {
                     aiohttp.WSMsgType.CLOSE,
                     aiohttp.WSMsgType.CLOSED,

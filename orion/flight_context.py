@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 import time
+from hashlib import sha256
 from datetime import UTC, datetime
 from enum import StrEnum
 from threading import RLock
@@ -18,6 +19,7 @@ from pydantic import BaseModel, ConfigDict
 
 from orion.aircraft_knowledge import aircraft_knowledge
 from orion.live_telemetry_store import LiveTelemetryStore, live_telemetry
+from orion.realtime_ai_instructions import compose_realtime_instructions
 
 
 class FlightContextState(StrEnum):
@@ -61,6 +63,7 @@ class AiFlightContextUpdate(BaseModel):
     generation: int
     aircraft_type: str | None = None
     aircraft_display_name: str | None = None
+    context_version: str
     semantic_fingerprint: tuple[object, ...]
     identity_fingerprint: tuple[object, ...]
 
@@ -143,6 +146,7 @@ class FlightContextService:
             generation=snapshot.generation,
             aircraft_type=snapshot.aircraft_type,
             aircraft_display_name=snapshot.aircraft_display_name,
+            context_version=sha256(repr(semantic).encode("utf-8")).hexdigest()[:16],
             semantic_fingerprint=semantic,
             identity_fingerprint=identity,
         )
@@ -175,7 +179,6 @@ class FlightContextService:
         base_instructions: str,
         snapshot: FlightContextSnapshot,
     ) -> str:
-        base = base_instructions.strip()
         if not snapshot.fresh:
             reason = {
                 FlightContextState.NO_DCS: "DCS telemetry has not been received",
@@ -184,27 +187,62 @@ class FlightContextService:
                 ),
                 FlightContextState.STALE: "the last DCS telemetry is stale",
             }[snapshot.state]
-            return (
-                f"{base}\n\n"
-                "Current DCS flight context: unavailable; "
-                f"{reason}. Do not infer or invent the current aircraft or flight state."
+            context = (
+                "Current DCS flight context is unavailable: "
+                f"{reason}. Do not infer or invent the current aircraft, location, "
+                "airfield, or flight state."
             )
-        agl = (
-            "unavailable"
-            if snapshot.altitude_agl_m is None
-            else f"{snapshot.altitude_agl_m:.0f} m"
+            return compose_realtime_instructions(base_instructions, context)
+        assert snapshot.altitude_m is not None
+        assert snapshot.true_airspeed_mps is not None
+        assert snapshot.vertical_speed_mps is not None
+        assert snapshot.latitude is not None
+        assert snapshot.longitude is not None
+        altitude_ft = snapshot.altitude_m * 3.2808398950131
+        tas_kt = snapshot.true_airspeed_mps * 1.9438444924406
+        vertical_fpm = snapshot.vertical_speed_mps * 196.85039370079
+        agl = "unavailable"
+        if snapshot.altitude_agl_m is not None:
+            agl_ft = snapshot.altitude_agl_m * 3.2808398950131
+            agl = f"{agl_ft:.0f} ft ({snapshot.altitude_agl_m:.0f} m) AGL"
+        position = FlightContextService._format_coordinates(
+            snapshot.latitude,
+            snapshot.longitude,
         )
-        return (
-            f"{base}\n\n"
-            "Current authoritative DCS flight context (live):\n"
+        context = (
+            "Current authoritative DCS flight context (fresh/live):\n"
             f"Aircraft: {snapshot.aircraft_display_name} "
             f"(DCS type {snapshot.aircraft_type}).\n"
-            f"Position: {snapshot.latitude:.5f}, {snapshot.longitude:.5f}.\n"
-            f"Altitude: {snapshot.altitude_m:.0f} m MSL; AGL: {agl}.\n"
-            f"Heading: {snapshot.heading_deg:.0f} degrees.\n"
-            f"True airspeed: {snapshot.true_airspeed_mps:.0f} m/s.\n"
-            f"Vertical speed: {snapshot.vertical_speed_mps:.0f} m/s.\n"
-            "Use these values only as current flight facts; do not invent unavailable fields."
+            f"DCS heading: {snapshot.heading_deg:.0f} degrees in the range 000-359; "
+            "the source does not establish that it is magnetic.\n"
+            f"Altitude MSL: {altitude_ft:.0f} ft ({snapshot.altitude_m:.0f} m).\n"
+            f"Height above ground: {agl}.\n"
+            f"True airspeed: {tas_kt:.0f} kt ({snapshot.true_airspeed_mps:.1f} m/s), "
+            "a non-negative speed magnitude. For an ordinary question about speed, "
+            "answer with true airspeed, not vertical speed.\n"
+            f"Signed vertical speed: {vertical_fpm:+.0f} ft/min "
+            f"({snapshot.vertical_speed_mps:+.1f} m/s); positive means climbing, "
+            "negative means descending, near zero means level.\n"
+            f"Position: {position}. ORION has no deterministic current airfield name. "
+            "Do not infer or guess a country or airfield from coordinates; state that "
+            "the exact airfield is not deterministically known.\n"
+            "Use only these values as current facts and do not invent unavailable fields."
+        )
+        return compose_realtime_instructions(base_instructions, context)
+
+    @staticmethod
+    def _format_coordinates(latitude: float, longitude: float) -> str:
+        def component(value: float, positive: str, negative: str) -> str:
+            hemisphere = positive if value >= 0 else negative
+            absolute = abs(value)
+            degrees = int(absolute)
+            minutes = (absolute - degrees) * 60
+            width = 2 if positive == "N" else 3
+            return f"{degrees:0{width}d}° {minutes:05.2f}' {hemisphere}"
+
+        return (
+            f"{component(latitude, 'N', 'S')}, "
+            f"{component(longitude, 'E', 'W')}"
         )
 
 
@@ -232,6 +270,9 @@ class FlightContextUpdateGate:
         self._last_update: AiFlightContextUpdate | None = None
         self._last_applied_at: float | None = None
         self._update_count = 0
+        self._pending_update: AiFlightContextUpdate | None = None
+        self._deferred_count = 0
+        self._coalesced_count = 0
         self._lock = RLock()
 
     @property
@@ -239,25 +280,59 @@ class FlightContextUpdateGate:
         with self._lock:
             return self._update_count
 
-    def next_update(self, *, force: bool = False) -> AiFlightContextUpdate | None:
+    @property
+    def deferred_count(self) -> int:
+        with self._lock:
+            return self._deferred_count
+
+    @property
+    def coalesced_count(self) -> int:
+        with self._lock:
+            return self._coalesced_count
+
+    def next_update(
+        self,
+        *,
+        force: bool = False,
+        safe_to_apply: bool = True,
+    ) -> AiFlightContextUpdate | None:
         candidate = self._context.ai_update(self._base_instructions)
         now = self._clock()
         with self._lock:
             previous = self._last_update
             last_at = self._last_applied_at
+            pending = self._pending_update
+            if pending is not None:
+                if (
+                    candidate.semantic_fingerprint != pending.semantic_fingerprint
+                    or candidate.identity_fingerprint != pending.identity_fingerprint
+                ):
+                    self._pending_update = candidate
+                    self._coalesced_count += 1
+                return self._pending_update if safe_to_apply else None
             if force or previous is None or last_at is None:
-                return candidate
-            elapsed = max(0.0, now - last_at)
-            if candidate.identity_fingerprint != previous.identity_fingerprint:
-                return candidate
-            if candidate.semantic_fingerprint != previous.semantic_fingerprint:
-                return candidate if elapsed >= self._minimum_interval else None
-            return candidate if elapsed >= self._refresh_interval else None
+                eligible = True
+            else:
+                elapsed = max(0.0, now - last_at)
+                if candidate.identity_fingerprint != previous.identity_fingerprint:
+                    eligible = True
+                elif candidate.semantic_fingerprint != previous.semantic_fingerprint:
+                    eligible = elapsed >= self._minimum_interval
+                else:
+                    eligible = elapsed >= self._refresh_interval
+            if not eligible:
+                return None
+            if not safe_to_apply:
+                self._pending_update = candidate
+                self._deferred_count += 1
+                return None
+            return candidate
 
     def mark_applied(self, update: AiFlightContextUpdate) -> int:
         with self._lock:
             self._last_update = update
             self._last_applied_at = self._clock()
+            self._pending_update = None
             self._update_count += 1
             return self._update_count
 

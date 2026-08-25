@@ -152,6 +152,11 @@ def test_srs_rx_decode_resample_exact_blocks_trailing_silence_and_completed_tx(t
         time.sleep(0.02)
     assert len(radio.sent) == 3
     assert status["tx_frames"] == 3
+    events = endpoint.diagnostics.snapshot()
+    tx_started = [event for event in events if event["event"] == "srs_tx_started"]
+    assert len(tx_started) == 1
+    assert tx_started[0]["response_id"] == "r1"
+    assert tx_started[0]["packet_id"] == 1
     endpoint.stop()
 
 

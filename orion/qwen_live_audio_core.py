@@ -27,6 +27,8 @@ from orion.qwen_audio_device import (
 )
 from orion.qwen_live_diagnostics import QwenLiveDiagnostics
 from orion.qwen_realtime_provider import QwenRealtimeConfig, QwenRealtimeProvider
+from orion.realtime_ai_instructions import ORION_REALTIME_BASE_INSTRUCTIONS
+from orion.realtime_interaction_state import RealtimeInteractionState
 from orion.realtime_tools import RealtimeToolCall, qwen_live_tool_definition, realtime_tools
 from orion.windows_wasapi_backend import WasapiDirection
 
@@ -44,7 +46,8 @@ FIRST_AUDIO_TIMEOUT_SEC = 20.0
 INTER_DELTA_TIMEOUT_SEC = 5.0
 RESPONSE_COMPLETION_TIMEOUT_SEC = 30.0
 QWEN_INSTRUCTIONS = (
-    "You are ORION's realtime conversational voice. Talk naturally in the language used by the user. "
+    ORION_REALTIME_BASE_INSTRUCTIONS
+    + " "
     "For ordinary conversation, answer without tools. For a DCS Virtual ATC request, call "
     "orion_virtual_atc_request. ORION Core is authoritative for mission and ATC facts: never invent "
     "an aircraft, airport, runway, clearance, traffic, frequency, telemetry value, or active mission. "
@@ -779,12 +782,32 @@ class QwenLiveAudioService:
         flight_context_gate: FlightContextUpdateGate | None = None,
         model: str = "qwen3.5-omni-flash-realtime",
         voice: str = "Tina",
+        interaction_state: RealtimeInteractionState | None = None,
     ) -> None:
+        interaction = interaction_state or RealtimeInteractionState()
         diagnostics.record("worker_started", stage="websocket_send")
         try:
             while not stop_event.is_set():
                 if flight_context_gate is not None:
-                    update = flight_context_gate.next_update()
+                    deferred_before = flight_context_gate.deferred_count
+                    coalesced_before = flight_context_gate.coalesced_count
+                    update = flight_context_gate.next_update(
+                        safe_to_apply=interaction.safe_to_refresh
+                    )
+                    if flight_context_gate.deferred_count != deferred_before:
+                        diagnostics.record(
+                            "flight_context_deferred",
+                            context_deferred_count=flight_context_gate.deferred_count,
+                            active_turn_id=interaction.current_turn_id(),
+                            provider="qwen",
+                        )
+                    if flight_context_gate.coalesced_count != coalesced_before:
+                        diagnostics.record(
+                            "flight_context_coalesced",
+                            context_coalesced_count=flight_context_gate.coalesced_count,
+                            active_turn_id=interaction.current_turn_id(),
+                            provider="qwen",
+                        )
                     if update is not None:
                         with send_lock:
                             ws.send(
@@ -799,15 +822,26 @@ class QwenLiveAudioService:
                             )
                         count = flight_context_gate.mark_applied(update)
                         monitor.record_tx(time.perf_counter_ns())
-                        diagnostics.record(
+                        for event_name in (
+                            "flight_context_update_sent",
                             "flight_context_applied",
-                            context_state=update.state.value,
-                            context_fresh=update.fresh,
-                            aircraft_type=update.aircraft_type,
-                            context_generation=update.generation,
-                            context_update_count=count,
-                            provider="qwen",
-                        )
+                        ):
+                            diagnostics.record(
+                                event_name,
+                                context_state=update.state.value,
+                                context_fresh=update.fresh,
+                                aircraft_type=update.aircraft_type,
+                                context_generation=update.generation,
+                                context_version=update.context_version,
+                                context_update_count=count,
+                                context_deferred_count=(
+                                    flight_context_gate.deferred_count
+                                ),
+                                context_coalesced_count=(
+                                    flight_context_gate.coalesced_count
+                                ),
+                                provider="qwen",
+                            )
                 try:
                     qwen_pcm = capture_queue.get(timeout=0.05)
                 except queue.Empty:
@@ -1130,7 +1164,10 @@ class QwenLiveAudioService:
         diagnostics: QwenLiveDiagnostics,
         failures: queue.Queue[_WorkerFailure],
         monitor: _SessionMonitor,
+        interaction_state: RealtimeInteractionState | None = None,
     ) -> None:
+        interaction = interaction_state or RealtimeInteractionState()
+        latest_response_id: str | None = None
         diagnostics.record("worker_started", stage="websocket_receive")
         try:
             while not stop_event.is_set():
@@ -1201,7 +1238,26 @@ class QwenLiveAudioService:
                         classification="PROVIDER_ERROR_EVENT",
                     )
                     raise _ProviderErrorEvent(provider._error_message(event))
+                if event_type == "input_audio_buffer.speech_started":
+                    turn_id = interaction.speech_started()
+                    diagnostics.record("speech_started_correlated", turn_id=turn_id)
+                elif event_type == "input_audio_buffer.speech_stopped":
+                    turn_id = interaction.speech_stopped()
+                    diagnostics.record("speech_stopped_correlated", turn_id=turn_id)
                 if event_type == "response.created":
+                    response = event.get("response")
+                    response_id = str(
+                        (response.get("id") if isinstance(response, dict) else None)
+                        or event.get("response_id")
+                        or "unknown"
+                    )
+                    latest_response_id = response_id
+                    turn_id = interaction.response_started(response_id)
+                    diagnostics.record(
+                        "response_created_correlated",
+                        turn_id=turn_id,
+                        response_id=response_id,
+                    )
                     monitor.response_created(event, recv_end_ns)
                     playback.mark_response_active(True)
                 if event_type == "response.function_call_arguments.done":
@@ -1214,6 +1270,9 @@ class QwenLiveAudioService:
                 if event_type == "response.audio.delta" and isinstance(
                     event.get("delta"), str
                 ):
+                    response_id = str(
+                        event.get("response_id") or latest_response_id or "unknown"
+                    )
                     encoded_delta = event["delta"]
                     decoded_delta = base64.b64decode(encoded_delta, validate=True)
                     response_resample_start_ns = time.perf_counter_ns()
@@ -1236,6 +1295,25 @@ class QwenLiveAudioService:
                             t_ns=recv_end_ns,
                         )
                         continue
+                    first_audio = interaction.first_audio(response_id)
+                    if first_audio is not None:
+                        latency = interaction.latency_summary()
+                        diagnostics.record(
+                            "response_first_audio_correlated",
+                            turn_id=first_audio.turn_id,
+                            response_id=response_id,
+                            response_created_to_first_audio_ms=(
+                                first_audio.response_created_to_first_audio_ms
+                            ),
+                            speech_stopped_to_first_audio_ms=(
+                                first_audio.speech_stopped_to_first_audio_ms
+                            ),
+                            latency_sample_count=latency.sample_count,
+                            latency_latest_ms=latency.latest_ms,
+                            latency_median_ms=latency.median_ms,
+                            latency_p90_ms=latency.p90_ms,
+                            latency_maximum_ms=latency.maximum_ms,
+                        )
                     response_resample_end_ns = time.perf_counter_ns()
                     diagnostics.record_audio_delta(
                         receive_ns=recv_end_ns,
@@ -1267,6 +1345,19 @@ class QwenLiveAudioService:
                         message="Qwen listening",
                     )
                 elif event_type == "response.done":
+                    response = event.get("response")
+                    response_id = str(
+                        (response.get("id") if isinstance(response, dict) else None)
+                        or event.get("response_id")
+                        or latest_response_id
+                        or "unknown"
+                    )
+                    turn_id = interaction.response_done(response_id)
+                    diagnostics.record(
+                        "response_done_correlated",
+                        turn_id=turn_id,
+                        response_id=response_id,
+                    )
                     monitor.response_done()
                     playback.mark_response_active(False)
                     self._set(
@@ -1360,6 +1451,7 @@ class QwenLiveAudioService:
     ) -> None:
         if monitor is None:
             monitor = _SessionMonitor(connected_ns=time.perf_counter_ns())
+        interaction = RealtimeInteractionState()
         capture_queue: queue.Queue[bytes] = queue.Queue(
             maxsize=CAPTURE_QUEUE_BLOCKS
         )
@@ -1405,6 +1497,7 @@ class QwenLiveAudioService:
                             flight_context_gate,
                             model,
                             voice,
+                            interaction,
                         ),
                         daemon=True,
                         name="orion-qwen-send",
@@ -1421,6 +1514,7 @@ class QwenLiveAudioService:
                             diagnostics,
                             failures,
                             monitor,
+                            interaction,
                         ),
                         daemon=True,
                         name="orion-qwen-receive",
@@ -1817,15 +1911,22 @@ class QwenLiveAudioService:
                 if event_type == "session.updated":
                     diagnostics.record_websocket_session_ready(t_ns=recv_end_ns)
                     count = flight_context_gate.mark_applied(initial_context)
-                    diagnostics.record(
+                    for event_name in (
+                        "flight_context_update_sent",
                         "flight_context_applied",
-                        context_state=initial_context.state.value,
-                        context_fresh=initial_context.fresh,
-                        aircraft_type=initial_context.aircraft_type,
-                        context_generation=initial_context.generation,
-                        context_update_count=count,
-                        provider="qwen",
-                    )
+                    ):
+                        diagnostics.record(
+                            event_name,
+                            context_state=initial_context.state.value,
+                            context_fresh=initial_context.fresh,
+                            aircraft_type=initial_context.aircraft_type,
+                            context_generation=initial_context.generation,
+                            context_version=initial_context.context_version,
+                            context_update_count=count,
+                            context_deferred_count=flight_context_gate.deferred_count,
+                            context_coalesced_count=flight_context_gate.coalesced_count,
+                            provider="qwen",
+                        )
                     break
             else:
                 raise TimeoutError("Timed out waiting for Qwen session.updated")

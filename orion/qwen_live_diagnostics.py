@@ -49,9 +49,16 @@ _FORBIDDEN_FIELD_NAMES = {
     "authorization",
     "audio",
     "base64",
+    "coordinate",
     "delta",
+    "latitude",
+    "longitude",
+    "opus",
     "payload",
+    "pcm",
     "raw",
+    "secret",
+    "token",
 }
 
 
@@ -1028,6 +1035,8 @@ class QwenLiveDiagnostics:
 
     @_synchronized
     def record(self, kind: str, *, t_ns: int | None = None, **fields: object) -> None:
+        from orion.realtime_test_evidence import realtime_test_evidence
+
         safe_fields: dict[str, object] = {}
         for key, value in fields.items():
             if key.casefold() in _FORBIDDEN_FIELD_NAMES:
@@ -1045,6 +1054,7 @@ class QwenLiveDiagnostics:
                 **safe_fields,
             }
         )
+        realtime_test_evidence.record(kind, **safe_fields)
 
     def _utc_timestamp(self, t_ns: int) -> str:
         return (

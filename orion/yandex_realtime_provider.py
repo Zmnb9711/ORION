@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import quote
 
+from orion.realtime_ai_instructions import ORION_REALTIME_BASE_INSTRUCTIONS
 from orion.realtime_provider import RealtimeProviderState, RealtimeSmokeResult
 
 YANDEX_REALTIME_ENDPOINT = "wss://ai.api.cloud.yandex.net/v1/realtime"
@@ -18,10 +19,7 @@ YANDEX_INPUT_RATE = 44_100
 YANDEX_OUTPUT_RATE = 44_100
 YANDEX_VAD_THRESHOLD = 0.5
 YANDEX_VAD_SILENCE_MS = 400
-YANDEX_INSTRUCTIONS = (
-    "You are a conversational voice assistant. "
-    "Respond naturally and concisely in Russian."
-)
+YANDEX_INSTRUCTIONS = ORION_REALTIME_BASE_INSTRUCTIONS
 
 
 def sanitize_yandex_error(value: object, api_key: str = "") -> str:

@@ -733,8 +733,8 @@ def test_source_uses_reference_fifo_with_independent_blocking_audio_workers() ->
     assert session["input_audio_format"] == "pcm"
     assert session["output_audio_format"] == "pcm"
     assert session["instructions"].startswith(
-        "You are ORION's realtime conversational voice. "
-        "Talk naturally in the language used by the user."
+        "You are ORION, the user's realtime conversational voice assistant. "
+        "Your name is ORION;"
     )
     assert "ORION Core is authoritative" in session["instructions"]
     assert [tool["function"]["name"] for tool in session["tools"]] == [

@@ -9,6 +9,8 @@ from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 
+from orion.realtime_test_evidence import realtime_test_evidence
+
 _FORBIDDEN = {
     "api_key",
     "authorization",
@@ -66,6 +68,16 @@ class SrsTransportDiagnostics:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             with self.path.open("a", encoding="utf-8") as stream:
                 stream.write(json.dumps(safe, ensure_ascii=False) + "\n")
+        realtime_test_evidence.record(
+            str(safe["event"]),
+            realtime_session_id=self.session_id,
+            transport="srs",
+            **{
+                key: value
+                for key, value in safe.items()
+                if key not in {"timestamp", "event", "session_id"}
+            },
+        )
 
     def snapshot(self) -> tuple[dict[str, object], ...]:
         with self._lock:

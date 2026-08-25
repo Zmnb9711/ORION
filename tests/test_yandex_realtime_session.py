@@ -70,6 +70,7 @@ class FakeWebSocket:
         events = [
             {"type": "session.updated", "session": {"id": "session"}},
             {"type": "input_audio_buffer.speech_started"},
+            {"type": "input_audio_buffer.speech_stopped"},
             {"type": "response.created", "response": {"id": "r1"}},
             {
                 "type": "response.output_audio.delta",
@@ -143,6 +144,10 @@ def test_provider_session_is_portaudio_free_and_preserves_pcm_and_response_lifec
     appended = [item for item in websocket.sent if item["type"] == "input_audio_buffer.append"]
     assert appended and base64.b64decode(str(appended[0]["audio"])) == input_pcm
     assert result.clean_close and result.close_code == 1000
+    first_audio = [fields for event, fields in diagnostics.events if event == "response_first_audio"]
+    assert len(first_audio) == 1
+    assert first_audio[0]["turn_id"] == "turn_001"
+    assert first_audio[0]["response_id"] == "r1"
     source = inspect.getsource(__import__("orion.yandex_realtime_session", fromlist=["*"]))
     assert "import sounddevice" not in source
     assert "orion.portaudio" not in source

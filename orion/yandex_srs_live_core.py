@@ -405,11 +405,14 @@ class SrsYandexPcmEndpoint:
             if self.stop_event.is_set():
                 return
             try:
+                response_id = prepared.response_id
                 pcm16 = self.tx_resampler.process(prepared.pcm44, end_of_input=True)
                 frames, padding = split_tx_pcm(pcm16, OPUS_FRAME_BYTES)
                 encoded_frames = tuple(self.encoder.encode(frame) for frame in frames)
+                tx_started = False
 
                 def send_frame(opus: bytes, _sent_at: float) -> None:
+                    nonlocal tx_started
                     packet = VoicePacket(
                         audio=opus,
                         frequencies=(Frequency(self.config.frequency_hz, self.config.modulation),),
@@ -420,6 +423,13 @@ class SrsYandexPcmEndpoint:
                         current_sender_guid=self.radio.client_guid,
                     )
                     self.radio.send_voice(encode_voice_packet(packet))
+                    if not tx_started:
+                        tx_started = True
+                        self.diagnostics.record(
+                            "srs_tx_started",
+                            response_id=response_id,
+                            packet_id=self.packet_id,
+                        )
                     self.packet_id += 1
 
                 report = pacer.send(encoded_frames, send_frame, self.stop_event)

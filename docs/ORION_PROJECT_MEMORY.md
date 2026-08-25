@@ -802,3 +802,80 @@ PACKAGING VALIDATION PASSED.**
 - Canonical Stage 6A artifacts retain the normal product names and layout. The
   installer is `ORION-Alpha-0.2-Setup.exe`, 71,600,109 bytes, SHA-256
   `1573E3B85215DD26F71C1174F0FFC4DF34EF3C364E5077B85DC98A73B7F69FD5`.
+
+## 17. Stage 6A real field quality audit and Stage 6A.1 — 2026-08-25
+
+**Status: STAGE 6A.1 IMPLEMENTED; STAGE 6B NOT STARTED.**
+
+### Real-field result and measured latency
+
+- The Stage 6A F/A-18C field session proved the functional path from DCS
+  telemetry through `LiveTelemetryStore` and `FlightContextService` into the
+  live realtime AI. Aircraft, heading, altitude, speed-related values and
+  coordinates reached the model. SRS voice continued to work.
+- Field-quality defects were generic `assistant` identity, ambiguous negative
+  speed wording, raw coordinates, only an approximate Afghanistan location,
+  off-context answers and severe first-audio latency outliers.
+- Seventeen field responses had complete correlatable
+  `response.created -> first audio` observations: median 6,784 ms, nearest-rank
+  p90 30,282 ms and maximum 36,163 ms. The long delay was after provider
+  `response.created` and before provider audio, not in SRS transmission.
+- The field evidence showed 25 FlightContext applies and 50 inbound
+  `session.updated` events. Repository evidence proves one outbound update per
+  apply, but the provider's reason for two inbound events per outbound update
+  is not proven because the old diagnostic path did not retain event IDs.
+
+### Proven corrections
+
+- Yandex's old base prompt identified only a generic conversational assistant.
+  Qwen used provider-specific ORION wording. Both now share one provider-neutral
+  canonical identity: the assistant's name is ORION, and Core is authoritative
+  for current DCS facts.
+- A canonical composer replaces exactly one marked current FlightContext block.
+  Initial and subsequent provider session updates therefore preserve identity
+  and behavioral rules without accumulating prompt history or recreating the
+  WebSocket conversation.
+- The AI-facing view explicitly distinguishes DCS heading in degrees (without
+  claiming unproven magnetic semantics), MSL and AGL in feet plus source meters,
+  non-negative TAS in knots plus m/s, and signed vertical speed in ft/min plus
+  m/s. Positive vertical speed means climb and negative means descent.
+- Coordinates use deterministic degrees-and-decimal-minutes hemisphere format.
+  There is no licensed/reliable local ORION airfield catalog in this tranche;
+  the model is told not to infer country or airfield. Deterministic local
+  airfield resolution is deferred to the next dedicated micro-stage.
+- Provider sessions keep only the latest pending context and apply it at a safe
+  boundary after user speech/pending turn/active response completes. There are
+  no arbitrary sleeps and telemetry ownership/cadence remains unchanged.
+
+### Observability and privacy boundary
+
+- Provider-neutral turn state now correlates speech stop, response creation,
+  first audio and completion with bounded rolling median/p90/max latency.
+  Context diagnostics include state, generation, a non-coordinate semantic
+  version, and sent/deferred/coalesced counts. Yandex SRS records the first
+  successful TX packet marker without changing transmission behavior.
+- An explicitly started Core-only Test Evidence recorder exports
+  `ORION-Test-Evidence-<timestamp>.zip` through Core API. Its allowlist excludes
+  transcript text, exact coordinates, audio/PCM/Opus/Base64 and credentials.
+  It intentionally does not race or copy external DCS/SRS logs. Launcher
+  START/STOP buttons and optional explicitly consented richer snapshots remain
+  an immediate follow-up.
+- The protected DCS Export/UDP 45100, `LiveTelemetryStore`, SRS protocol,
+  RadioInfo/readiness, Opus/resampler/routing/400 ms boundary/250 ms guard/40 ms
+  pacing/EAM, audio-device, credential and shared-session baselines are
+  unchanged. COMM1/COMM2 awareness remains Stage 6B and is not started.
+
+### Stage 6A.1 automated and packaging checkpoint
+
+- The focused realtime/provider/SRS result is 209 passed. The isolated full
+  regression result is 1,215 passed with 80.77% branch coverage. Isolation only
+  redirects this workstation's real DCS Saved Games known folder to a temporary
+  empty directory. Ruff, pyright over changed production modules, compileall,
+  security/privacy regressions and diff checks are clean.
+- Fresh frozen Core native, Launcher SRS-control, Credential Manager and exact
+  Launcher-to-Core loopback smokes passed without physical audio devices,
+  external SRS processes or non-loopback networking. No credentials, user logs,
+  test evidence or official SRS applications are bundled; Launcher has no
+  Core-only Opus/samplerate/numpy runtime.
+- The canonical installer is `ORION-Alpha-0.2-Setup.exe`, 71,632,558 bytes,
+  SHA-256 `326CFA7CE6765BA165AD9FF63A1A5E1C4EECD3F3B559BD4887E9AAB28FD231C1`.

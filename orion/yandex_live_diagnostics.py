@@ -6,13 +6,26 @@ import threading
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
+
+from orion.realtime_test_evidence import realtime_test_evidence
 from orion.yandex_realtime_provider import sanitize_yandex_error
 
 
 class YandexLiveDiagnostics:
     """Bounded scalar-only diagnostics; credentials and audio payloads are forbidden."""
 
-    _FORBIDDEN = {"api_key", "authorization", "audio", "pcm", "base64", "token"}
+    _FORBIDDEN = {
+        "api_key",
+        "authorization",
+        "audio",
+        "base64",
+        "coordinate",
+        "latitude",
+        "longitude",
+        "pcm",
+        "token",
+        "transcript",
+    }
 
     def __init__(self, session_id: str, api_key: str, runtime_dir: Path | None = None) -> None:
         self.session_id = session_id
@@ -39,6 +52,11 @@ class YandexLiveDiagnostics:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             with self.path.open("a", encoding="utf-8") as stream:
                 stream.write(json.dumps(safe, ensure_ascii=False) + "\n")
+        realtime_test_evidence.record(
+            str(safe["event"]),
+            realtime_session_id=self.session_id,
+            **{key: value for key, value in safe.items() if key not in {"timestamp", "event", "session_id"}},
+        )
 
     def snapshot(self) -> tuple[dict[str, object], ...]:
         with self._lock:
