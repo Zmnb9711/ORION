@@ -924,3 +924,21 @@ PACKAGING VALIDATION PASSED.**
   test evidence, JSONL/log data, credential material or official SRS binaries.
 - The Stage 6A.2 installer is `ORION-Alpha-0.2-Setup.exe`, 71,644,218 bytes,
   SHA-256 `5ADD76234D3F66EBB0DA490B9E7A195EE6E96E9B553416597AB4A8E6355F7B56`.
+
+## 19. IA-0 provider-neutral interaction contracts — 2026-08-26
+
+**Status: IA-0 IMPLEMENTED; IA-1 AND STAGE 6B NOT STARTED.**
+
+- IA-0 introduces four provider- and transport-neutral contracts:
+  `CapabilityId`, `InteractionRequest`, `RouteDecision` and
+  `SemanticResponse`. They are serialization-safe Core/API data shapes only;
+  no production interaction flow uses them yet.
+- The Core/Planner boundary remains intentionally movable. A future capability
+  may use deterministic Core handling or Planner-assisted handling without
+  changing provider, transport or domain contracts.
+- `SemanticResponse` separates authoritative facts, deterministic derived
+  results, recommendations, assumptions, unavailable inputs and warnings. Its
+  `NATURALIZE` and `VERBATIM` presentation modes prepare the next approved
+  tranche: IA-1 — Yandex Presentation Contract Probe.
+- IA-0 adds no World Model, Tool Gateway, PlannerProvider, cloud model adapter,
+  RadioContext or RadioRouter. Stage 6B has not started.
