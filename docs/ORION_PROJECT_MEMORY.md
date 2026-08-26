@@ -1,6 +1,6 @@
 # ORION Project Memory
 
-> Canonical long-term project context. Updated: 2026-08-24.
+> Canonical long-term project context. Updated: 2026-08-26.
 >
 > Purpose: preserve approved product requirements, architectural invariants, milestone history, real-world test evidence, known risks, and the next agreed action across chats and development sessions.
 >
@@ -996,3 +996,51 @@ STAGE 6B NOT STARTED.**
   pending the same evidence. Do not claim IA-1 PASS before that field test.
   After IA-1 acceptance, the next approved stage is IA-2 — World Model Query
   Facade. Do not begin it automatically.
+
+## 21. IA-1 closure and hybrid presentation decision — 2026-08-26
+
+**Status: IA-1 CLOSED; HYBRID PRESENTATION APPROVED.**
+
+- Final evidence `ORION-Test-Evidence-20260826-193719.zip` completed the ten-case
+  A/B probe with 20/20 SRS transmissions, semantic PASS for every arm, 20 bounded
+  synthetic WAV artifacts, human acoustic review CLEAR and no duplicate SRS TX.
+- A real first-attempt SpeechKit connection timeout recovered through the
+  approved bounded retry. Reusable `aiohttp.ClientSession`, bounded transient
+  retry, no retry for deterministic 400/401/403, no validation-probe fallback and
+  fail-closed critical presentation remain the accepted transport behavior.
+- Realtime-only presentation is rejected as the sole critical aviation renderer.
+  Yandex Realtime is approved for conversational/noncritical speech; SpeechKit
+  TTS for deterministic critical/radio speech. Both feed the unchanged SRS radio
+  transport. Planner/provider reasoning remains independent and upstream.
+- ADR-004 is historically closed and remains superseded by ADR-005. No normal
+  runtime PresentationRouter migration was performed at this checkpoint.
+
+## 22. IA-2 World Model Query Facade — 2026-08-26
+
+**Status: IA-2 IMPLEMENTED AND CODE-VALIDATED; IA-3 NOT STARTED.**
+
+- `WorldModelFacade` is a provider-neutral, read-only projection over existing
+  owners. It is not a second store. LiveTelemetryStore, MissionStore, Mission
+  Bridge, aircraft adapters/mappings, navigation/coalition indexes and all domain
+  state machines retain authority and lifecycle ownership.
+- Immutable typed facts carry explicit known/unknown/unavailable/stale/restricted
+  status, source, authoritative/observed/derived class, timestamp, age,
+  generation, units and typed failure reason. Confidence is limited to uncertain
+  observations. Queries make no network/provider/SRS calls and perform no action.
+- The minimal surface covers ownship, navigation summary, validated F/A-18C
+  systems, mission/bridge identity, bounded mission-truth units, an intentionally
+  restricted observed-contact query, and Core-derived range/bearing/vertical
+  separation. Closure remains unavailable without reliable aligned velocities.
+- Mission truth must never be relabelled as detected/AWACS knowledge. A trusted
+  sensor/contact owner and policy are a P0/P1 prerequisite for exposing observed
+  tactical contacts.
+- Installed official DCS APIs expose independent left/right control surfaces and
+  `LoGetAltitude(x,z)`, but current ORION normalization does not export general
+  control-surface or terrain-query data. These are ranked gaps, not IA-2 exporter
+  changes. Tacview is reference/coverage evidence only: DCS may feed ORION and
+  Tacview independently; Tacview never feeds ORION.
+- Durable design: `docs/ia-2-world-model-query-facade.md`. Coverage and ranked
+  gaps: `docs/orion-data-coverage-matrix.md`.
+- The exact next approved stage is **IA-3 Tool Gateway**. Do not begin IA-4,
+  Qwen/provider adapters, Router, Stage 6B RadioContext/RadioRouter or domain
+  migrations as part of IA-2.

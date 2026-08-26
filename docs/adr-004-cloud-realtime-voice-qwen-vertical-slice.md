@@ -1,8 +1,19 @@
 # ADR-004 — Cloud Realtime Voice / Qwen vertical slice
 
-Status: Superseded by ADR-005
+Status: Closed / Superseded by ADR-005
 
 Baseline: ORION current field-confirmed working baseline is Build #312. Build #284 remains the immutable Voice/STT recovery GOLDEN.
+
+## Historical closure — 2026-08-26
+
+ADR-004 is closed as a historical provider experiment and remains superseded by
+ADR-005. Its durable conclusions survive: Core and deterministic domain state
+remain local, presentation/voice providers are replaceable adapters, and SRS is
+the single radio transport. IA-1 field validation subsequently selected hybrid
+presentation: Yandex Realtime for conversational/noncritical speech and
+SpeechKit TTS for deterministic critical/radio speech. This closure does not
+authorize Qwen integration; IA-2 is provider-neutral and IA-3 remains the next
+approved stage.
 
 ## Context
 

@@ -1,10 +1,10 @@
 # IA-1.1 Hybrid Presentation / SpeechKit feasibility probe
 
-Status: **IA-1.1 FIELD-VALIDATED — ARCHITECTURE DECISION PENDING**.
+Status: **CLOSED — HYBRID PRESENTATION APPROVED 2026-08-26**.
 
-This tranche adds a bounded diagnostic A/B probe. It does not select a production
-presentation architecture and does not route normal ORION responses through
-SpeechKit.
+This tranche supplied the bounded A/B evidence. The resulting architecture
+decision is hybrid presentation; this document does not itself migrate the
+normal runtime to a final PresentationRouter.
 
 ## Provider decision and evidence levels
 
@@ -40,7 +40,7 @@ only to obtain another control.
 
 FIELD-OBSERVED: the configured account can synthesize all selected v1 profiles;
 successful REST requests return valid LPCM; both A/B arms pass semantic checks and
-were judged acoustically clear through SRS. The architecture choice remains open.
+were judged acoustically clear through SRS. The hybrid architecture is approved.
 
 ## Bounded SpeechKit transport resilience
 
@@ -95,7 +95,25 @@ but existing evidence cannot separate DNS, TCP, and TLS sub-stages.
   20 seconds per artifact and 40 MiB per test session). Microphone, received radio,
   and unrelated SRS audio are never captured.
 
-## Decision matrix (field evidence available; decision pending)
+## Final field result and decision
+
+The controlled evidence bundle `ORION-Test-Evidence-20260826-193719.zip`
+recorded one completed ten-case A/B run: 20/20 SRS transmissions, semantic PASS
+for every arm, 20 bounded synthetic WAV artifacts, human acoustic review CLEAR,
+and no duplicate transmission. A real first-attempt SpeechKit connection timeout
+at the five-second bound recovered on bounded retry and the run completed. This
+validates the retry policy without weakening fail-closed critical presentation.
+
+Approved policy:
+
+```text
+SemanticResponse -> Presentation Policy
+                    | conversational/noncritical -> Yandex Realtime
+                    | critical/radio             -> SpeechKit TTS
+                    +-----------------------------+-> SRS
+```
+
+## Decision matrix (final)
 
 | Criterion | A: Realtime only | B: Hybrid Realtime + deterministic TTS | C: TTS for all finalized semantics |
 |---|---|---|---|
@@ -109,7 +127,9 @@ but existing evidence cannot separate DNS, TCP, and TLS sub-stages.
 | Complexity | Lowest | Highest | Moderate |
 | RadioEntity scalability | Not evaluated in IA-1.1 | Not evaluated in IA-1.1 | Not evaluated in IA-1.1 |
 
-No option is selected before exported A/B evidence and human acoustic review.
+**Selected: B — Hybrid Realtime + deterministic TTS.** Option A is rejected as
+the sole backend for critical semantics. Option C is not selected for all speech
+because Realtime remains suitable for conversational/noncritical presentation.
 
 ## Controlled field test (DCS required; not run during implementation)
 

@@ -1,7 +1,13 @@
 # IA-1 Yandex Presentation Contract Probe
 
 Implementation checkpoint: IA-0 commit `2d90e4f5c88c60ed27c840f967e5675f71d1721a`.
-IA-1 field status: **FIELD VALIDATION PENDING**.
+IA-1 field status: **CLOSED — FIELD-VALIDATED 2026-08-26**.
+
+The final IA-1.1 evidence closes this probe. Realtime presentation is approved
+for conversational/noncritical speech, but not as the sole renderer of critical
+aviation semantics. Critical/radio speech uses deterministic SpeechKit TTS. Both
+paths terminate at the same SRS transport; future Planner reasoning remains
+upstream and independent of presentation.
 
 ## Official Yandex Realtime findings
 
@@ -36,10 +42,9 @@ Realtime format migration:
 | `response.cancel` stops an in-progress response and ends with `response.done`. | VERIFIED | Existing VAD/PTT interruption remains authoritative; the probe records interruption and completion status. |
 | Exact behavior for multiple concurrent response requests is defined. | NOT DOCUMENTED | IA-1 serializes cases and rejects duplicate probe starts. |
 
-This is a Phase A **GO**: the official API provides a bounded presentation
-mechanism. Semantic fidelity, acoustic voice identity, role audibility,
-session-ID stability on the deployed model, latency, and PTT recovery remain
-live acceptance questions.
+This was the Phase A **GO**. Those live acceptance questions were resolved by
+the final IA-1.1 controlled run described in
+`docs/ia-1-1-hybrid-presentation-probe.md`.
 
 ## Test Evidence audit
 
