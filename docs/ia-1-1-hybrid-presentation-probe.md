@@ -82,25 +82,34 @@ differences, radio intelligibility, and provider behavior for this account.
 
 No option is selected before exported A/B evidence and human acoustic review.
 
-## Controlled field test (no DCS)
+## Controlled field test (DCS required; not run during implementation)
 
-1. Start the official SRS Server 2.4.0 and official SRS Client; connect EAM blue.
-2. Set Radio 1 to **251.000 AM** and confirm ordinary Common PTT audio works.
-3. In ORION Settings → Voice, start **Yandex + SRS**, then **START TEST SESSION**.
-4. Leave ordinary PTT idle during the critical sequence. Optionally enable bounded
-   synthetic WAV capture, then select **RUN HYBRID PRESENTATION PROBE**.
-5. Listen to every Realtime/SpeechKit pair. Check numbers, sign, units, identifiers,
-   `264.500 MHz AM`, `44X`, `1577`, and the unavailable phrase; also compare the
-   requested voice and style sequences.
-6. Wait for **REVIEW**. Record the acoustic disposition through the probe API/UI
-   when available, then stop and export Test Evidence.
-7. PASS requires 20 correlated completed SRS transmissions, no
-   `response_queue_full`, no critical interruption, successful noncritical
-   cancel/recovery, distinct main/probe session IDs, no observable FlightContext
-   mutation, all automatic text gates PASS, and acceptable human acoustic review.
-8. Stop on any semantic corruption, timeout, provider/SRS error, credential leak,
-   unexpected radio input capture, or main-session/history change. Mark provider
-   facts that are absent from evidence as **NOT OBSERVABLE**.
+1. Install the new build, start a calm F/A-18C DCS mission, and connect the official
+   SRS Client. Set SRS Speakers to **Default Speakers**.
+2. In ORION Settings → Voice select **Yandex + SRS Radio**, then select
+   **START TEST SESSION** and **START LIVE**.
+3. Verify ordinary Common PTT first. Ask `Орион, как тебя зовут?` and
+   one real context question such as `Какой у меня курс?`.
+4. Enable the explicit bounded synthetic-WAV evidence option and select
+   **RUN HYBRID PRESENTATION PROBE**. Do not interrupt the critical A/B cases.
+5. Listen to every serialized Realtime/SpeechKit pair. Check positive/negative
+   sign, values, units, callsign, `264.500 MHz AM`, `44X`, `1577`, and the
+   unavailable phrase.
+6. Listen to voice `dasha → alexander → dasha` and style
+   `julia neutral → strict → neutral`. Mark unsupported or inaudible changes
+   honestly rather than inferring them from an API acknowledgement.
+7. After the critical sequence, perform one noncritical PTT interruption/recovery
+   check. Wait for **REVIEW** and record the human acoustic disposition.
+8. Verify normal live operation afterward by asking `Какая у меня скорость?`
+   and `Орион, как тебя зовут?`.
+9. Select **STOP & EXPORT TEST SESSION**, open the export folder, and retain the
+   evidence ZIP for the architecture decision.
 
-Do not run DCS for this test. The exported `ia11-summary.json`, optional correlated
-WAVs, and human observations are the inputs to the later architecture decision.
+PASS requires 20 correlated SRS `tx_completed` transmissions, no
+`response_queue_full`, bounded correlated WAVs for every A/B arm, preserved
+sign/value/unit/identifier semantics, successful noncritical recovery, distinct
+main/probe session IDs, no FlightContext mutation, normal conversation before and
+after the probe, and acceptable human acoustic review. Stop and mark FAIL on any
+semantic corruption, timeout, provider/SRS error, credential/privacy leak,
+unexpected radio/microphone capture, or main-session contamination. Provider facts
+absent from evidence remain **NOT OBSERVABLE**.
