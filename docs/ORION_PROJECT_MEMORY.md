@@ -1044,3 +1044,37 @@ STAGE 6B NOT STARTED.**
 - The exact next approved stage is **IA-3 Tool Gateway**. Do not begin IA-4,
   Qwen/provider adapters, Router, Stage 6B RadioContext/RadioRouter or domain
   migrations as part of IA-2.
+
+## 23. IA-3 Tool Gateway — 2026-08-26
+
+**Status: IA-3 IMPLEMENTED AND CODE-VALIDATED; IA-4 NOT STARTED.**
+
+- IA-3 adds one Core-owned provider-neutral `ToolGateway` boundary. Future
+  provider adapters may translate their calls into `ToolCall` and translate
+  `ToolResult` outward, but providers never select policy, expand capabilities
+  or call World Model/domain owners directly.
+- Immutable contracts cover stable tool/version/schema identities, typed bounded
+  arguments/results, `ExecutionContext`, policy, safe errors, provenance,
+  lifecycle receipt, deadlines/cancellation and future confirmation/idempotency.
+  No provider JSON schema, WebSocket event, MCP, SRS or provider module is
+  imported by the Gateway.
+- Core policy checks exact registration/version, IA-0 `CapabilityId` allowlist,
+  permissions, runtime module state, mission/freshness, confirmation,
+  idempotency, deadline and cancellation before a handler. Handler input and
+  output are both Pydantic-validated. Exceptions are isolated into stable safe
+  errors; bounded diagnostics exclude arguments, results and credentials.
+- The initial catalog is read-only: ping, ownship, navigation, mission identity,
+  bounded mission-truth units, relative geometry and observed contacts. Every
+  world read goes through IA-2. Observed contacts remain explicitly restricted;
+  MissionStore truth is never relabelled as detected information.
+- `RealtimeToolService` and its Qwen/Virtual-ATC path remain unchanged as a
+  legacy prototype to deprecate later. No ATC/JTAC/AAR/mission/radio action is
+  migrated or exposed. The existing ConfirmationStore lacks expiry and
+  actor/session/tool binding, so future write confirmation fails closed until a
+  bound adapter exists.
+- Durable design: `docs/ia-3-tool-gateway.md`. A user DCS field test is not
+  required for IA-3; the first meaningful live AI/tool validation belongs after
+  IA-4/IA-5 and the controlled IA-6 slice.
+- The exact next approved stage is **IA-4 PlannerProvider Contract**. Do not
+  begin IA-5 Qwen/Yandex adapter work, IA-6 Router, Stage 6B, or domain action
+  exposure as part of IA-3.

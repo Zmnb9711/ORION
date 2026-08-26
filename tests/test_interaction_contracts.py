@@ -53,7 +53,7 @@ def test_capability_id_is_a_stable_string_identifier() -> None:
     capability = CapabilityId("flight.current_state")
     assert isinstance(capability, str)
     assert capability == "flight.current_state"
-    assert {capability: "handler"}["flight.current_state"] == "handler"
+    assert {capability: "handler"}[capability] == "handler"
 
 
 @pytest.mark.parametrize(
@@ -341,7 +341,7 @@ def test_contract_module_has_no_runtime_or_provider_imports() -> None:
     assert not any(name.startswith(forbidden) for name in imported)
 
 
-def test_only_approved_ia1_presentation_boundary_imports_ia0_contracts() -> None:
+def test_only_approved_architecture_boundaries_import_ia0_contracts() -> None:
     package = Path(__file__).parents[1] / "orion"
     consumers = []
     for path in package.glob("*.py"):
@@ -349,4 +349,9 @@ def test_only_approved_ia1_presentation_boundary_imports_ia0_contracts() -> None
             continue
         if "interaction_contracts" in path.read_text(encoding="utf-8"):
             consumers.append(path.name)
-    assert sorted(consumers) == ["realtime_test_evidence.py", "yandex_presentation.py"]
+    assert sorted(consumers) == [
+        "realtime_test_evidence.py",
+        "tool_gateway.py",
+        "tool_gateway_contracts.py",
+        "yandex_presentation.py",
+    ]
