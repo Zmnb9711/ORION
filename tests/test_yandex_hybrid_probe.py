@@ -8,6 +8,7 @@ import zipfile
 from urllib.parse import parse_qs
 
 import pytest
+import aiohttp
 
 import orion.yandex_hybrid_probe as hybrid_module
 from orion.realtime_test_evidence import RealtimeTestEvidenceRecorder
@@ -16,6 +17,9 @@ from orion.yandex_hybrid_probe import (
     HybridProbeRunner,
     HybridRuntimeContext,
     RealtimePresentationClient,
+    SpeechKitFailureCategory,
+    SpeechKitProviderError,
+    SpeechKitTtsClient,
     TestSemanticCase as SemanticCase,
     YandexHybridProbeAdapter,
     evaluate_semantics,
@@ -45,6 +49,83 @@ def test_speechkit_request_is_direct_finalized_text_lpcm_and_has_no_folder_or_se
     }
     assert b"folder" not in body.lower()
     assert b"top-secret" not in body
+
+
+class FakeSpeechKitResponse:
+    def __init__(self, status: int, payload: bytes) -> None:
+        self.status = status
+        self._payload = payload
+
+    async def __aenter__(self):  # noqa: ANN204
+        return self
+
+    async def __aexit__(self, *_args: object) -> None:
+        pass
+
+    async def read(self) -> bytes:
+        return self._payload
+
+
+class FakeSpeechKitSession:
+    def __init__(self, response: FakeSpeechKitResponse) -> None:
+        self.response = response
+        self.request: tuple[str, dict[str, str], bytes] | None = None
+
+    async def __aenter__(self):  # noqa: ANN204
+        return self
+
+    async def __aexit__(self, *_args: object) -> None:
+        pass
+
+    def post(self, url: str, *, headers: dict[str, str], data: bytes) -> FakeSpeechKitResponse:
+        self.request = (url, headers, data)
+        return self.response
+
+
+@pytest.mark.parametrize(
+    ("status", "category", "message"),
+    [
+        (401, SpeechKitFailureCategory.UNAUTHORIZED, "yc.ai.speechkitTts.execute"),
+        (403, SpeechKitFailureCategory.FORBIDDEN, "ai.speechkit-tts.user"),
+        (400, SpeechKitFailureCategory.MALFORMED_REQUEST, "rejected"),
+        (503, SpeechKitFailureCategory.PROVIDER_UNAVAILABLE, "unavailable"),
+    ],
+)
+def test_speechkit_http_failures_are_safe_and_actionable(
+    monkeypatch,
+    status: int,
+    category: SpeechKitFailureCategory,
+    message: str,
+) -> None:  # noqa: ANN001
+    async def scenario() -> None:
+        session = FakeSpeechKitSession(FakeSpeechKitResponse(status, b'{"provider":"detail"}'))
+        monkeypatch.setattr(aiohttp, "ClientSession", lambda **_kwargs: session)
+        with pytest.raises(SpeechKitProviderError) as caught:
+            await SpeechKitTtsClient().synthesize(hybrid_probe_cases()[0], "top-secret")
+        assert caught.value.status == status
+        assert caught.value.category is category
+        assert message in str(caught.value)
+        assert "top-secret" not in str(caught.value)
+        assert "top-secret" not in repr(caught.value)
+        assert "provider" not in str(caught.value)
+
+    asyncio.run(scenario())
+
+
+def test_speechkit_success_returns_bounded_lpcm_and_uses_api_key_header(monkeypatch) -> None:  # noqa: ANN001
+    async def scenario() -> None:
+        pcm = bytes(960)
+        session = FakeSpeechKitSession(FakeSpeechKitResponse(200, pcm))
+        monkeypatch.setattr(aiohttp, "ClientSession", lambda **_kwargs: session)
+        audio, text = await SpeechKitTtsClient().synthesize(hybrid_probe_cases()[0], "top-secret")
+        assert audio == pcm
+        assert text == hybrid_probe_cases()[0].finalized_text
+        assert session.request is not None
+        _url, headers, body = session.request
+        assert headers["Authorization"] == "Api-Key top-secret"
+        assert b"top-secret" not in body
+
+    asyncio.run(scenario())
 
 
 def test_all_hybrid_cases_are_one_concept_and_semantically_corruption_sensitive() -> None:
@@ -190,6 +271,75 @@ def test_runner_serializes_twenty_ab_transmissions_and_preserves_session_isolati
         assert evidence.isolation["probe_session_id"] == "probe-session"
 
     asyncio.run(scenario())
+
+
+def test_speechkit_failure_is_fail_closed_without_realtime_fallback(monkeypatch) -> None:  # noqa: ANN001
+    class RejectingSpeechKit:
+        async def synthesize(self, _case: SemanticCase, _api_key: str) -> tuple[bytes, str]:
+            raise SpeechKitProviderError(401)
+
+    async def scenario() -> None:
+        evidence = FakeEvidence()
+        monkeypatch.setattr(hybrid_module, "realtime_test_evidence", evidence)
+        endpoint = SerialEndpoint()
+        runner = HybridProbeRunner(
+            speechkit_factory=RejectingSpeechKit,
+            realtime_factory=lambda _key, _folder: FakeRealtime(),
+            sleep=lambda _seconds: asyncio.sleep(0),
+        )
+        with pytest.raises(SpeechKitProviderError):
+            await runner.run(
+                HybridRuntimeContext("top-secret", "folder", endpoint, "main", "ctx"),
+                "run123",
+                capture_audio=False,
+                progress=lambda *_args: None,
+            )
+        assert endpoint.calls == ["ia11-run123-heading-137-realtime"]
+        assert evidence.cases == [("heading-137", "realtime")]
+
+    asyncio.run(scenario())
+
+
+def test_adapter_records_redacted_speechkit_failure_for_launcher_and_evidence(monkeypatch) -> None:  # noqa: ANN001
+    recorded: list[tuple[str, dict[str, object]]] = []
+
+    class Status:
+        active = True
+
+    class Evidence:
+        def status(self):  # noqa: ANN201
+            return Status()
+
+        def record(self, event: str, **fields: object) -> None:
+            recorded.append((event, fields))
+
+    class Runner:
+        async def run(self, *_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+            raise SpeechKitProviderError(401)
+
+    monkeypatch.setattr(hybrid_module, "realtime_test_evidence", Evidence())
+    adapter = YandexHybridProbeAdapter(runner_factory=Runner)
+    adapter.attach(HybridRuntimeContext("top-secret", "folder", SerialEndpoint(), "main", None))
+    adapter.start()
+    deadline = time.monotonic() + 1.0
+    while adapter.status().state.value == "running" and time.monotonic() < deadline:
+        time.sleep(0.01)
+    status = adapter.status()
+    assert status.state.value == "fail"
+    assert "yc.ai.speechkitTts.execute" in status.message
+    assert "top-secret" not in status.message
+    assert recorded == [
+        (
+            "ia11_probe_failed",
+            {
+                "probe_run_id": status.probe_run_id,
+                "error_type": "SpeechKitProviderError",
+                "failure_category": "unauthorized_credential_or_scope",
+                "http_status": 401,
+            },
+        )
+    ]
+    assert "top-secret" not in repr(recorded)
 
 
 def test_audio_evidence_is_opt_in_bounded_correlated_and_contains_no_mic_or_radio_audio(tmp_path) -> None:  # noqa: ANN001

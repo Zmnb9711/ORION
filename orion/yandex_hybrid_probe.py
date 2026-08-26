@@ -44,6 +44,47 @@ class HybridProbeState(StrEnum):
     FAIL = "fail"
 
 
+class SpeechKitFailureCategory(StrEnum):
+    UNAUTHORIZED = "unauthorized_credential_or_scope"
+    FORBIDDEN = "forbidden_or_missing_permission"
+    MALFORMED_REQUEST = "malformed_request"
+    RATE_LIMITED = "rate_limited"
+    PROVIDER_UNAVAILABLE = "provider_unavailable"
+    HTTP_ERROR = "provider_http_error"
+
+
+class SpeechKitProviderError(RuntimeError):
+    """Safe provider failure that never retains the response body or credential."""
+
+    def __init__(self, status: int) -> None:
+        self.status = status
+        if status == 401:
+            self.category = SpeechKitFailureCategory.UNAUTHORIZED
+            message = (
+                "SpeechKit authorization failed (HTTP 401): verify the service-account "
+                "API key, yc.ai.speechkitTts.execute scope, and ai.speechkit-tts.user role"
+            )
+        elif status == 403:
+            self.category = SpeechKitFailureCategory.FORBIDDEN
+            message = (
+                "SpeechKit permission denied (HTTP 403): verify ai.speechkit-tts.user "
+                "access and Yandex Cloud policy"
+            )
+        elif status == 400:
+            self.category = SpeechKitFailureCategory.MALFORMED_REQUEST
+            message = "SpeechKit rejected the synthesis request (HTTP 400)"
+        elif status == 429:
+            self.category = SpeechKitFailureCategory.RATE_LIMITED
+            message = "SpeechKit synthesis rate limit reached (HTTP 429)"
+        elif 500 <= status <= 599:
+            self.category = SpeechKitFailureCategory.PROVIDER_UNAVAILABLE
+            message = f"SpeechKit service unavailable (HTTP {status})"
+        else:
+            self.category = SpeechKitFailureCategory.HTTP_ERROR
+            message = f"SpeechKit request failed (HTTP {status})"
+        super().__init__(message)
+
+
 class AcousticReview(StrEnum):
     CLEAR = "clear"
     REVIEW = "review"
@@ -170,7 +211,7 @@ class SpeechKitTtsClient:
             async with client.post(url, headers=headers, data=body) as response:
                 payload = await response.read()
                 if response.status != 200:
-                    raise RuntimeError(f"SpeechKit TTS returned HTTP {response.status}")
+                    raise SpeechKitProviderError(response.status)
         if not payload or len(payload) % 2:
             raise ValueError("SpeechKit returned invalid LPCM audio")
         return payload, case.finalized_text
@@ -512,6 +553,16 @@ class YandexHybridProbeAdapter:
                 )
             )
         except Exception as exc:
+            failure: dict[str, object] = {
+                "probe_run_id": run_id,
+                "error_type": type(exc).__name__,
+            }
+            if isinstance(exc, SpeechKitProviderError):
+                failure.update(
+                    failure_category=exc.category.value,
+                    http_status=exc.status,
+                )
+            realtime_test_evidence.record("ia11_probe_failed", **failure)
             with self._lock:
                 self._status = self._status.model_copy(
                     update={"state": HybridProbeState.FAIL, "message": f"{type(exc).__name__}: {str(exc)[:160]}", "case_id": None, "backend": None}
