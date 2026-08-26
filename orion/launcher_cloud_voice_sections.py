@@ -8,7 +8,7 @@ import urllib.request
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from tkinter import LEFT, X, StringVar, TclError, filedialog, messagebox
+from tkinter import LEFT, X, BooleanVar, StringVar, TclError, filedialog, messagebox
 from tkinter import ttk
 from typing import Any, Callable
 
@@ -91,6 +91,15 @@ def format_presentation_probe_status(result: Mapping[str, object]) -> str:
     case_id = str(result.get("probe_case_id") or "").strip()
     suffix = f" | case={case_id}" if case_id else ""
     return f"Presentation Probe: {state} — {message}{suffix}"
+
+
+def format_hybrid_probe_status(result: Mapping[str, object]) -> str:
+    state = str(result.get("state") or "off").upper()
+    message = str(result.get("message") or "Hybrid presentation probe is off")
+    case_id = str(result.get("case_id") or "").strip()
+    backend = str(result.get("backend") or "").strip()
+    suffix = f" | {case_id}/{backend}" if case_id and backend else ""
+    return f"Hybrid Probe: {state} — {message}{suffix}"
 
 
 class CloudVoiceConfigStore:
@@ -598,6 +607,51 @@ class LauncherCloudVoiceSectionsMixin:
             command=lambda: control_live(start=False),
         ).pack(side=LEFT)
 
+        ttk.Label(box, text="HYBRID PRESENTATION / SPEECHKIT PROBE", style="CardTitle.TLabel").pack(anchor="w", pady=(18, 0))
+        ttk.Label(
+            box,
+            text=(
+                "Compares disposable Yandex Realtime rendering with direct SpeechKit TTS, "
+                "then sends each synthetic phrase through the existing SRS TX one at a time. "
+                "Requires Yandex + SRS and an active Test Session."
+            ),
+            style="CardText.TLabel",
+            wraplength=780,
+            justify="left",
+        ).pack(anchor="w", pady=(6, 8))
+        hybrid_status = StringVar(value="Hybrid Probe: OFF")
+        ttk.Label(box, textvariable=hybrid_status, style="CardText.TLabel", wraplength=780, justify="left").pack(anchor="w", pady=(0, 8))
+        hybrid_row = ttk.Frame(box, style="Card.TFrame")
+        hybrid_row.pack(fill=X)
+        capture_hybrid_audio = BooleanVar(value=False)
+        ttk.Checkbutton(
+            hybrid_row,
+            text="Include bounded synthetic probe WAVs in Test Evidence",
+            variable=capture_hybrid_audio,
+        ).pack(side=LEFT, padx=(0, 8))
+        ttk.Button(
+            hybrid_row,
+            text="RUN HYBRID PRESENTATION PROBE",
+            style="Secondary.TButton",
+            command=lambda: self._hybrid_probe_async(capture_hybrid_audio.get(), hybrid_status),
+        ).pack(side=LEFT)
+        hybrid_review_row = ttk.Frame(box, style="Card.TFrame")
+        hybrid_review_row.pack(fill=X, pady=(8, 0))
+        hybrid_review = StringVar(value="CLEAR")
+        ttk.Combobox(
+            hybrid_review_row,
+            textvariable=hybrid_review,
+            values=("CLEAR", "REVIEW", "FAIL"),
+            state="readonly",
+            width=12,
+        ).pack(side=LEFT, padx=(0, 8))
+        ttk.Button(
+            hybrid_review_row,
+            text="RECORD ACOUSTIC REVIEW",
+            style="Secondary.TButton",
+            command=lambda: self._hybrid_review_async(hybrid_review.get(), hybrid_status),
+        ).pack(side=LEFT)
+
         ttk.Label(
             box,
             textvariable=test_evidence_status,
@@ -728,6 +782,7 @@ class LauncherCloudVoiceSectionsMixin:
             generation,
         )
         self._presentation_probe_poll(probe_status, generation)
+        self._hybrid_probe_poll(hybrid_status, generation)
         self._srs_process_poll(
             srs_server_path,
             srs_client_path,
@@ -900,6 +955,48 @@ class LauncherCloudVoiceSectionsMixin:
             daemon=True,
         ).start()
 
+    def _hybrid_probe_status(self) -> dict[str, object]:
+        return self._realtime_core_json(
+            "/v1/realtime/yandex/hybrid-presentation-probe/status"
+        )
+
+    def _start_hybrid_probe(self, capture_audio: bool) -> dict[str, object]:
+        return self._realtime_core_json(
+            "/v1/realtime/yandex/hybrid-presentation-probe/start",
+            method="POST",
+            payload={"capture_synthetic_audio": capture_audio},
+        )
+
+    def _hybrid_probe_async(self, capture_audio: bool, status_var: StringVar) -> None:
+        generation = self._qwen_view_generation
+
+        def worker() -> None:
+            try:
+                result = self._start_hybrid_probe(capture_audio)
+                text = format_hybrid_probe_status(result)
+            except (OSError, ValueError, RuntimeError, urllib.error.URLError) as exc:
+                text = f"Hybrid Probe: FAIL — {type(exc).__name__}: {exc}"
+            self._schedule_qwen_ui(0, lambda: status_var.set(text), generation)
+
+        threading.Thread(target=worker, name="orion-hybrid-probe-start", daemon=True).start()
+
+    def _hybrid_review_async(self, result: str, status_var: StringVar) -> None:
+        generation = self._qwen_view_generation
+
+        def worker() -> None:
+            try:
+                response = self._realtime_core_json(
+                    "/v1/realtime/yandex/hybrid-presentation-probe/review",
+                    method="POST",
+                    payload={"result": result.strip().casefold()},
+                )
+                text = format_hybrid_probe_status(response)
+            except (OSError, ValueError, RuntimeError, urllib.error.URLError) as exc:
+                text = f"Hybrid Probe: FAIL — {type(exc).__name__}: {exc}"
+            self._schedule_qwen_ui(0, lambda: status_var.set(text), generation)
+
+        threading.Thread(target=worker, name="orion-hybrid-probe-review", daemon=True).start()
+
     def _stop_test_evidence(self) -> dict[str, object]:
         return self._realtime_core_json(
             "/v1/realtime/test-evidence/stop-export",
@@ -1030,6 +1127,26 @@ class LauncherCloudVoiceSectionsMixin:
         self._schedule_qwen_ui(
             1000,
             lambda: self._presentation_probe_poll(status_var, generation),
+            generation,
+        )
+
+    def _hybrid_probe_poll(self, status_var: StringVar, generation: int) -> None:
+        if not self._qwen_view_lifecycle.is_alive(generation):
+            return
+
+        def worker() -> None:
+            try:
+                result = self._hybrid_probe_status()
+            except Exception:
+                result = None
+            if result is not None:
+                text = format_hybrid_probe_status(result)
+                self._schedule_qwen_ui(0, lambda: status_var.set(text), generation)
+
+        threading.Thread(target=worker, name="orion-hybrid-probe-status", daemon=True).start()
+        self._schedule_qwen_ui(
+            1000,
+            lambda: self._hybrid_probe_poll(status_var, generation),
             generation,
         )
 

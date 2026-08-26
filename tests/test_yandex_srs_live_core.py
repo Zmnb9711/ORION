@@ -220,3 +220,30 @@ def test_radio_registration_events_forward_real_launcher_phases(tmp_path) -> Non
     endpoint._on_radio_event("srs.state", {"value": "READY"})
     assert status["phase"] == "provider_connecting"
     endpoint.stop()
+
+
+def test_probe_tx_uses_existing_single_slot_queue_and_waits_for_matching_completion(tmp_path) -> None:  # noqa: ANN001
+    endpoint, radio, _status = make_endpoint(tmp_path, Clock())
+    endpoint.connect_radio()
+    endpoint.start()
+    report = endpoint.transmit_probe_audio("ia11-case-realtime", bytes(400), 2.0)
+    assert endpoint.tx_queue.maxsize == 1
+    assert radio.sent
+    assert report["queue_to_first_tx_ms"] >= 0
+    assert report["queue_to_complete_ms"] >= report["queue_to_first_tx_ms"]
+    assert not any(event["event"] == "response_queue_full" for event in endpoint.diagnostics.snapshot())
+    endpoint.stop()
+
+
+def test_probe_tx_timeout_is_bounded_when_worker_is_not_running(tmp_path) -> None:  # noqa: ANN001
+    endpoint, _radio, _status = make_endpoint(tmp_path, Clock())
+    endpoint.connect_radio()
+    started = time.monotonic()
+    try:
+        endpoint.transmit_probe_audio("ia11-timeout", bytes(20), 0.02)
+    except TimeoutError:
+        pass
+    else:
+        raise AssertionError("Expected matching tx_completed timeout")
+    assert time.monotonic() - started < 0.5
+    endpoint.stop()

@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import io
 import os
 import re
 import threading
+import wave
 import zipfile
 from collections import deque
 from dataclasses import dataclass
@@ -112,6 +115,8 @@ class RealtimeTestEvidenceRecorder:
         self._last_export_path: Path | None = None
         self._probe_cases: dict[str, dict[str, object]] = {}
         self._probe_response_cases: dict[str, str] = {}
+        self._hybrid_runs: dict[str, dict[str, object]] = {}
+        self._hybrid_audio: dict[str, bytes] = {}
 
     def start(
         self,
@@ -132,6 +137,8 @@ class RealtimeTestEvidenceRecorder:
             self._current_context_version = None
             self._probe_cases.clear()
             self._probe_response_cases.clear()
+            self._hybrid_runs.clear()
+            self._hybrid_audio.clear()
             self._active = True
             self._test_session_id = uuid4().hex
             self._started_at = datetime.now(UTC)
@@ -435,6 +442,193 @@ class RealtimeTestEvidenceRecorder:
         with self._lock:
             return self._status_locked()
 
+    @property
+    def current_context_version(self) -> str | None:
+        with self._lock:
+            return self._current_context_version
+
+    def record_hybrid_run(
+        self,
+        *,
+        run_id: str,
+        main_session_id: str,
+        probe_session_id: str,
+        context_version_before: str | None,
+    ) -> None:
+        with self._lock:
+            if not self._active:
+                return
+            self._hybrid_runs[run_id] = {
+                "run_id": self._identifier(run_id, "hybrid run", max_length=40),
+                "fact_origin": "synthetic_probe",
+                "main_session_id": main_session_id[:200],
+                "probe_session_id": probe_session_id[:200],
+                "session_isolated": bool(probe_session_id and probe_session_id != main_session_id),
+                "context_version_before": context_version_before or "NOT OBSERVABLE",
+                "context_version_after": "NOT OBSERVABLE",
+                "cases": [],
+                "config_observations": [],
+                "acoustic_review": "NOT OBSERVABLE",
+            }
+
+    def record_hybrid_config(
+        self,
+        run_id: str,
+        case_id: str,
+        voice: str,
+        role: str,
+        observations: list[dict[str, str]],
+    ) -> None:
+        with self._lock:
+            run = self._hybrid_runs.get(run_id)
+            if run is None:
+                return
+            configs = run["config_observations"]
+            if isinstance(configs, list):
+                configs.append(
+                    {
+                        "case_id": case_id[:80],
+                        "requested_voice": voice[:40],
+                        "requested_role": role[:40],
+                        "observed": [
+                            {
+                                "voice": str(item.get("voice") or "")[:40],
+                                "role": str(item.get("role") or "")[:40],
+                            }
+                            for item in observations[:20]
+                        ],
+                    }
+                )
+
+    def record_hybrid_audio(
+        self,
+        *,
+        run_id: str,
+        case_id: str,
+        backend: str,
+        response_id: str,
+        pcm44: bytes,
+    ) -> None:
+        """Store only explicitly supplied, bounded synthetic probe output audio."""
+
+        max_pcm_bytes = 44_100 * 2 * 20
+        if not pcm44 or len(pcm44) % 2 or len(pcm44) > max_pcm_bytes:
+            raise ValueError("Hybrid probe audio must be bounded PCM16 mono (20 seconds max)")
+        with self._lock:
+            if not self._active or run_id not in self._hybrid_runs:
+                return
+            if sum(map(len, self._hybrid_audio.values())) + len(pcm44) > 40 * 1024 * 1024:
+                raise ValueError("Hybrid probe audio exceeded the 40 MiB session bound")
+            safe_case = self._identifier(case_id, "hybrid case", max_length=80)
+            safe_backend = self._identifier(backend, "hybrid backend", max_length=20)
+            name = f"ia11-audio/{safe_case}-{safe_backend}.wav"
+            buffer = io.BytesIO()
+            with wave.open(buffer, "wb") as output:
+                output.setnchannels(1)
+                output.setsampwidth(2)
+                output.setframerate(44_100)
+                output.writeframes(pcm44)
+            wav = buffer.getvalue()
+            self._hybrid_audio[name] = wav
+            run = self._hybrid_runs[run_id]
+            artifacts = run.setdefault("audio_artifacts", [])
+            if isinstance(artifacts, list):
+                artifacts.append(
+                    {
+                        "case_id": safe_case,
+                        "backend": safe_backend,
+                        "response_id": response_id[:200],
+                        "filename": name,
+                        "sha256": hashlib.sha256(wav).hexdigest(),
+                        "bytes": len(wav),
+                        "sample_rate": 44_100,
+                        "channels": 1,
+                        "sample_width_bytes": 2,
+                        "source": "synthetic_provider_output_entering_srs",
+                    }
+                )
+
+    def record_hybrid_case(
+        self,
+        *,
+        run_id: str,
+        case: object,
+        backend: str,
+        response_id: str,
+        transcript: str,
+        evaluation: dict[str, object],
+        provider_timing: dict[str, float],
+        queue_latency_ms: float,
+        tx_timing: dict[str, float],
+    ) -> None:
+        with self._lock:
+            run = self._hybrid_runs.get(run_id)
+            if run is None:
+                return
+            cases = run["cases"]
+            if not isinstance(cases, list):
+                return
+            cases.append(
+                {
+                    "case_id": str(getattr(case, "case_id", "unknown"))[:80],
+                    "backend": backend[:20],
+                    "finalized_text": self._sanitize_transcript(str(getattr(case, "finalized_text", "")), max_length=1000),
+                    "observed_transcript": self._sanitize_transcript(transcript, max_length=1000) or "NOT OBSERVABLE",
+                    "voice": str(getattr(case, "voice", ""))[:40],
+                    "role": str(getattr(case, "role", ""))[:40],
+                    "response_id": response_id[:200],
+                    "text_validation": evaluation,
+                    "acoustic_review": "NOT OBSERVABLE",
+                    "request_to_first_audio_ms": round(float(provider_timing.get("provider_first_audio_ms", 0.0)), 3),
+                    "request_to_audio_complete_ms": round(float(provider_timing.get("provider_complete_ms", 0.0)), 3),
+                    "request_to_srs_queue_ms": round(queue_latency_ms, 3),
+                    "srs_queue_to_first_tx_ms": round(float(tx_timing.get("queue_to_first_tx_ms", 0.0)), 3),
+                    "srs_queue_to_tx_complete_ms": round(float(tx_timing.get("queue_to_complete_ms", 0.0)), 3),
+                }
+            )
+
+    def record_hybrid_isolation(
+        self,
+        *,
+        run_id: str,
+        main_session_id: str,
+        probe_session_id: str,
+        context_version_before: str | None,
+        context_version_after: str | None,
+    ) -> None:
+        with self._lock:
+            run = self._hybrid_runs.get(run_id)
+            if run is None:
+                return
+            run["main_session_id_after"] = main_session_id[:200]
+            run["probe_session_id_after"] = probe_session_id[:200]
+            run["session_isolated"] = bool(probe_session_id and probe_session_id != main_session_id)
+            run["context_version_before"] = context_version_before or "NOT OBSERVABLE"
+            run["context_version_after"] = context_version_after or "NOT OBSERVABLE"
+            run["context_unchanged"] = (
+                context_version_before == context_version_after
+                if context_version_before is not None and context_version_after is not None
+                else "NOT OBSERVABLE"
+            )
+
+    def record_hybrid_review(self, run_id: str, result: str) -> None:
+        with self._lock:
+            run = self._hybrid_runs.get(run_id)
+            if run is not None:
+                run["acoustic_review"] = result[:40]
+
+    def record_hybrid_recovery(self, run_id: str, result: dict[str, object]) -> None:
+        with self._lock:
+            run = self._hybrid_runs.get(run_id)
+            if run is None:
+                return
+            run["noncritical_interruption_recovery"] = {
+                "cancel_sent": bool(result.get("cancel_sent")),
+                "cancelled_status": str(result.get("cancelled_status") or "NOT OBSERVABLE")[:40],
+                "recovery_text_validation": result.get("recovery_text_validation", "NOT OBSERVABLE"),
+                "critical_case_interrupted": bool(result.get("critical_case_interrupted")),
+            }
+
     def stop_and_export(self) -> Path:
         with self._lock:
             if not self._active or self._started_at is None or self._test_session_id is None:
@@ -450,6 +644,8 @@ class RealtimeTestEvidenceRecorder:
             user_transcript_count = self._user_transcript_count
             assistant_transcript_count = self._assistant_transcript_count
             probe_cases = tuple(dict(item) for item in self._probe_cases.values())
+            hybrid_runs = tuple(dict(item) for item in self._hybrid_runs.values())
+            hybrid_audio = dict(self._hybrid_audio)
             self._active = False
 
             root = self._runtime_dir or Path(os.environ.get("ORION_RUNTIME_DIR", "runtime"))
@@ -465,12 +661,19 @@ class RealtimeTestEvidenceRecorder:
             members = "manifest.txt,session-summary.txt,events.jsonl"
             if probe_cases:
                 members += ",ia1-summary.json"
+            if hybrid_runs:
+                members += ",ia11-summary.json"
+            if hybrid_audio:
+                members += "," + ",".join(sorted(hybrid_audio))
             manifest = (
                 "ORION realtime test evidence\n"
-                "format_version=3\n"
+                f"format_version={4 if hybrid_runs else 3}\n"
                 f"test_session_id={session_id}\n"
                 f"members={members}\n"
-                "raw_audio_included=false\n"
+                f"raw_audio_included={str(bool(hybrid_audio)).lower()}\n"
+                f"synthetic_probe_audio_included={str(bool(hybrid_audio)).lower()}\n"
+                "microphone_audio_included=false\n"
+                "unrelated_srs_audio_included=false\n"
                 f"transcripts_included={str(bool(user_transcript_count or assistant_transcript_count)).lower()}\n"
                 f"user_transcripts_included={str(bool(user_transcript_count)).lower()}\n"
                 f"assistant_transcripts_included={str(bool(assistant_transcript_count)).lower()}\n"
@@ -482,6 +685,8 @@ class RealtimeTestEvidenceRecorder:
                 "credentials_included=false\n"
                 "external_dcs_srs_logs_included=false\n"
                 f"ia1_probe_cases={len(probe_cases)}\n"
+                f"ia11_probe_runs={len(hybrid_runs)}\n"
+                f"ia11_audio_artifacts={len(hybrid_audio)}\n"
             )
             summary = (
                 f"test_session_id={session_id}\n"
@@ -508,7 +713,7 @@ class RealtimeTestEvidenceRecorder:
                 json.dumps(item, ensure_ascii=False, sort_keys=True) + "\n"
                 for item in events
             )
-            archive_members = {
+            archive_members: dict[str, str | bytes] = {
                 "manifest.txt": manifest,
                 "session-summary.txt": summary,
                 "events.jsonl": jsonl,
@@ -520,6 +725,22 @@ class RealtimeTestEvidenceRecorder:
                     indent=2,
                     sort_keys=True,
                 ) + "\n"
+            if hybrid_runs:
+                archive_members["ia11-summary.json"] = json.dumps(
+                    {
+                        "scope": "IA-1.1 hybrid presentation feasibility probe",
+                        "audio_privacy": {
+                            "synthetic_provider_output_only": True,
+                            "microphone_audio": False,
+                            "radio_received_audio": False,
+                        },
+                        "runs": hybrid_runs,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                ) + "\n"
+            archive_members.update(hybrid_audio)
             self._write_zip(output, archive_members)
             self._last_export_path = output.resolve()
             return self._last_export_path
@@ -610,13 +831,14 @@ class RealtimeTestEvidenceRecorder:
         return all(checks) if checks else bool(response.unavailable_inputs)
 
     @staticmethod
-    def _write_zip(output: Path, members: dict[str, str]) -> None:
+    def _write_zip(output: Path, members: dict[str, str | bytes]) -> None:
         with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
             for name in sorted(members):
                 info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
                 info.compress_type = zipfile.ZIP_DEFLATED
                 info.external_attr = 0o600 << 16
-                archive.writestr(info, members[name].encode("utf-8"))
+                value = members[name]
+                archive.writestr(info, value.encode("utf-8") if isinstance(value, str) else value)
 
 
 realtime_test_evidence = RealtimeTestEvidenceRecorder()

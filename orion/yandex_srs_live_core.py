@@ -154,6 +154,9 @@ class SrsYandexPcmEndpoint:
         self._rx_end_injected_at: float | None = None
         self._boundary_thread: threading.Thread | None = None
         self._tx_thread: threading.Thread | None = None
+        self._probe_lock = threading.Lock()
+        self._probe_tx_started: dict[str, tuple[threading.Event, float | None]] = {}
+        self._probe_tx_completed: dict[str, tuple[threading.Event, float | None]] = {}
 
     def connect_radio(self) -> None:
         self.radio.connect()
@@ -301,6 +304,8 @@ class SrsYandexPcmEndpoint:
                     error_type=type(failure).__name__,
                     error=str(failure),
                 )
+            for marker, _timestamp in self._probe_tx_completed.values():
+                marker.set()
         self.stop_event.set()
 
     def failure(self) -> BaseException | None:
@@ -388,6 +393,52 @@ class SrsYandexPcmEndpoint:
         response.queued = True
         response.pcm.clear()
 
+    def transmit_probe_audio(
+        self,
+        response_id: str,
+        pcm44: bytes,
+        timeout_s: float,
+    ) -> dict[str, float]:
+        """Serialize one bounded synthetic probe utterance through the normal TX worker."""
+
+        if not response_id or len(response_id) > 200:
+            raise ValueError("Hybrid probe response ID is invalid")
+        if not pcm44 or len(pcm44) % 2 or len(pcm44) > RESPONSE_MAX_BYTES:
+            raise ValueError("Hybrid probe PCM is empty, unaligned, or exceeds the response bound")
+        if timeout_s <= 0:
+            raise ValueError("Hybrid probe TX timeout must be positive")
+        with self._probe_lock:
+            if self.failure() is not None or self.stop_event.is_set():
+                raise RuntimeError("SRS endpoint is not available for hybrid probe TX")
+            started_event = threading.Event()
+            completed_event = threading.Event()
+            with self._lock:
+                if self.tracker.bot_tx_active or not self.tx_queue.empty():
+                    raise RuntimeError("SRS TX is busy; hybrid probe did not enter the bounded queue")
+                self._probe_tx_started[response_id] = (started_event, None)
+                self._probe_tx_completed[response_id] = (completed_event, None)
+                queued_at = self.clock()
+                try:
+                    self.tx_queue.put_nowait(_PreparedResponse(response_id, bytes(pcm44)))
+                except queue.Full as exc:
+                    self._probe_tx_started.pop(response_id, None)
+                    self._probe_tx_completed.pop(response_id, None)
+                    raise RuntimeError("SRS TX queue is busy; hybrid probe was not queued") from exc
+            if not completed_event.wait(timeout_s):
+                with self._lock:
+                    self._probe_tx_started.pop(response_id, None)
+                    self._probe_tx_completed.pop(response_id, None)
+                raise TimeoutError("Timed out waiting for matching SRS tx_completed")
+            with self._lock:
+                started_at = self._probe_tx_started.pop(response_id, (started_event, None))[1]
+                completed_at = self._probe_tx_completed.pop(response_id, (completed_event, None))[1]
+            if started_at is None or completed_at is None:
+                raise RuntimeError("SRS probe TX completed without correlated timing markers")
+            return {
+                "queue_to_first_tx_ms": (started_at - queued_at) * 1000,
+                "queue_to_complete_ms": (completed_at - queued_at) * 1000,
+            }
+
     def _tx_worker(self) -> None:
         pacer = TxPacer(clock=self.clock)
         while not self.stop_event.is_set():
@@ -425,6 +476,11 @@ class SrsYandexPcmEndpoint:
                     self.radio.send_voice(encode_voice_packet(packet))
                     if not tx_started:
                         tx_started = True
+                        with self._lock:
+                            marker = self._probe_tx_started.get(response_id)
+                            if marker is not None:
+                                self._probe_tx_started[response_id] = (marker[0], self.clock())
+                                marker[0].set()
                         self.diagnostics.record(
                             "srs_tx_started",
                             response_id=response_id,
@@ -450,6 +506,11 @@ class SrsYandexPcmEndpoint:
                     max_jitter_ms=report.max_jitter_ms,
                     cumulative_drift_ms=report.cumulative_drift_ms,
                 )
+                with self._lock:
+                    marker = self._probe_tx_completed.get(response_id)
+                    if marker is not None:
+                        self._probe_tx_completed[response_id] = (marker[0], self.clock())
+                        marker[0].set()
             except Exception as exc:
                 if not self.stop_event.is_set():
                     self._set_failure(exc)
@@ -478,6 +539,8 @@ class SrsYandexPcmEndpoint:
             for response in self.responses.values():
                 response.pcm.clear()
                 response.dropped = True
+            for marker, _timestamp in self._probe_tx_completed.values():
+                marker.set()
 
 
 class YandexSrsLiveService:
@@ -550,6 +613,7 @@ class YandexSrsLiveService:
         )
         yandex_diagnostics = YandexLiveDiagnostics(session_id, api_key)
         endpoint: SrsYandexPcmEndpoint | None = None
+        main_yandex_session_id: str | None = None
         try:
             config = SrsRadioConfig(
                 host=request.host,
@@ -574,6 +638,24 @@ class YandexSrsLiveService:
                     message="Yandex SRS voice is running",
                 )
 
+            def session_ready(yandex_session_id: str) -> None:
+                nonlocal main_yandex_session_id
+                from orion.yandex_hybrid_probe import HybridRuntimeContext, yandex_hybrid_probe
+                from orion.realtime_test_evidence import realtime_test_evidence
+
+                if endpoint is None:
+                    raise RuntimeError("SRS endpoint is unavailable during Yandex handshake")
+                main_yandex_session_id = yandex_session_id
+                yandex_hybrid_probe.attach(
+                    HybridRuntimeContext(
+                        api_key=api_key,
+                        folder_id=request.folder_id,
+                        endpoint=endpoint,
+                        main_session_id=yandex_session_id,
+                        context_version=realtime_test_evidence.current_context_version,
+                    )
+                )
+
             asyncio.run(
                 YandexRealtimeSession(
                     api_key,
@@ -582,6 +664,7 @@ class YandexSrsLiveService:
                     stop_event,
                     yandex_diagnostics,
                     on_streaming=streaming,
+                    on_session_ready=session_ready,
                 ).run()
             )
         except Exception as exc:
@@ -598,6 +681,10 @@ class YandexSrsLiveService:
             )
         finally:
             stop_event.set()
+            if main_yandex_session_id is not None:
+                from orion.yandex_hybrid_probe import yandex_hybrid_probe
+
+                yandex_hybrid_probe.detach(main_yandex_session_id)
             if endpoint is not None:
                 endpoint.stop()
             with self._lock:

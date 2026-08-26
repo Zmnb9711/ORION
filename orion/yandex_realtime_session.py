@@ -54,6 +54,7 @@ class YandexRealtimeSession:
         diagnostics: SessionDiagnostics,
         *,
         on_streaming: Callable[[], None] | None = None,
+        on_session_ready: Callable[[str], None] | None = None,
         flight_context_gate: FlightContextUpdateGate | None = None,
         interaction_state: RealtimeInteractionState | None = None,
     ) -> None:
@@ -63,6 +64,7 @@ class YandexRealtimeSession:
         self._stop = stop_event
         self._diagnostics = diagnostics
         self._on_streaming = on_streaming or (lambda: None)
+        self._on_session_ready = on_session_ready or (lambda _session_id: None)
         self._flight_context = flight_context_gate or FlightContextUpdateGate(
             YANDEX_INSTRUCTIONS
         )
@@ -324,6 +326,7 @@ class YandexRealtimeSession:
                 if not self._stop.is_set():
                     if not yandex_session_id:
                         raise RuntimeError("Yandex session.updated did not expose a session ID")
+                    self._on_session_ready(yandex_session_id)
                     presentation_driver = YandexPresentationSessionDriver(
                         yandex_presentation,
                         yandex_session_id=yandex_session_id,
