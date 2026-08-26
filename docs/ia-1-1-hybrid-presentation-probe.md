@@ -26,9 +26,11 @@ Official sources checked on 2026-08-26:
 - [SpeechKit v3 streaming API](https://aistudio.yandex.ru/docs/en/speechkit/tts/api/tts-streaming.html)
 
 DOCUMENTED: v1 REST supports direct synthesis, API-key authorization, LPCM at
-48/16/8 kHz, per-request voice, role (`emotion`) and speed. `dasha/neutral`,
-`alexander/neutral`, and `julia/neutral|strict` are listed combinations. The v1
-request has a 5,000-character text limit and a 15 KB request limit.
+48/16/8 kHz, per-request voice, role (`emotion`) and speed. The probe uses the
+v1/v3 intersection `jane/neutral|evil` and `ermil/neutral`. The earlier
+`dasha`, `alexander`, and `julia/strict` selection was rejected by REST v1
+because those profiles are v3-only. The v1 request has a 5,000-character text
+limit and a 15 KB request limit.
 
 NOT AVAILABLE IN THIS PROBE: pitch control. It is not a documented v1 request
 parameter. The heavier v3 streaming/protobuf surface is intentionally not added
@@ -47,8 +49,8 @@ differences, radio intelligibility, and provider behavior for this account.
 - Realtime uses a disposable provider session, separate from the main conversation.
   The evidence bundle records both IDs and the before/after observable
   FlightContext version.
-- Voice sequence is `dasha → alexander → dasha`; style sequence is
-  `julia/neutral → julia/strict → julia/neutral`. Every observed stale
+- Voice sequence is `jane → ermil → jane`; style sequence is
+  `jane/neutral → jane/evil → jane/neutral`. Every observed stale
   `session.updated` configuration is retained, and execution continues only after
   the requested effective voice/role is observed.
 - Provider completion precedes SRS queue acceptance. A matching `srs_tx_started`
@@ -95,8 +97,8 @@ No option is selected before exported A/B evidence and human acoustic review.
 5. Listen to every serialized Realtime/SpeechKit pair. Check positive/negative
    sign, values, units, callsign, `264.500 MHz AM`, `44X`, `1577`, and the
    unavailable phrase.
-6. Listen to voice `dasha → alexander → dasha` and style
-   `julia neutral → strict → neutral`. Mark unsupported or inaudible changes
+6. Listen to voice `jane → ermil → jane` and style
+   `jane neutral → evil → neutral`. Mark unsupported or inaudible changes
    honestly rather than inferring them from an API acknowledgement.
 7. After the critical sequence, perform one noncritical PTT interruption/recovery
    check. Wait for **REVIEW** and record the human acoustic disposition.

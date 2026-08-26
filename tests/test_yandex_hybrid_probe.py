@@ -7,8 +7,8 @@ import time
 import zipfile
 from urllib.parse import parse_qs
 
-import pytest
 import aiohttp
+import pytest
 
 import orion.yandex_hybrid_probe as hybrid_module
 from orion.realtime_test_evidence import RealtimeTestEvidenceRecorder
@@ -41,8 +41,8 @@ def test_speechkit_request_is_direct_finalized_text_lpcm_and_has_no_folder_or_se
     assert fields == {
         "text": [case.finalized_text],
         "lang": ["ru-RU"],
-        "voice": ["julia"],
-        "emotion": ["strict"],
+        "voice": ["jane"],
+        "emotion": ["evil"],
         "speed": ["1.0"],
         "format": ["lpcm"],
         "sampleRateHertz": ["48000"],
@@ -112,6 +112,26 @@ def test_speechkit_http_failures_are_safe_and_actionable(
     asyncio.run(scenario())
 
 
+def test_speechkit_400_surfaces_only_bounded_allowlisted_provider_detail(monkeypatch) -> None:  # noqa: ANN001
+    async def scenario() -> None:
+        payload = (
+            b'{"error_code":"BAD_REQUEST","error_message":"Unsupported voice is requested: dasha; '
+            b'top-secret","provider_internal":"must-not-appear"}'
+        )
+        session = FakeSpeechKitSession(FakeSpeechKitResponse(400, payload))
+        monkeypatch.setattr(aiohttp, "ClientSession", lambda **_kwargs: session)
+        with pytest.raises(SpeechKitProviderError) as caught:
+            await SpeechKitTtsClient().synthesize(hybrid_probe_cases()[0], "top-secret")
+        assert caught.value.provider_code == "BAD_REQUEST"
+        assert caught.value.provider_message == "Unsupported voice is requested: dasha; <redacted>"
+        assert "Unsupported voice is requested: dasha" in str(caught.value)
+        assert "provider_internal" not in str(caught.value)
+        assert "top-secret" not in str(caught.value)
+        assert "top-secret" not in repr(caught.value)
+
+    asyncio.run(scenario())
+
+
 def test_speechkit_success_returns_bounded_lpcm_and_uses_api_key_header(monkeypatch) -> None:  # noqa: ANN001
     async def scenario() -> None:
         pcm = bytes(960)
@@ -132,15 +152,30 @@ def test_all_hybrid_cases_are_one_concept_and_semantically_corruption_sensitive(
     cases = hybrid_probe_cases()
     assert len(cases) == 10
     assert len({case.case_id for case in cases}) == len(cases)
-    assert [case.voice for case in cases[:3]] == ["dasha", "alexander", "dasha"]
+    assert [case.voice for case in cases[:3]] == ["jane", "ermil", "jane"]
     assert [(case.voice, case.role) for case in cases[3:6]] == [
-        ("julia", "neutral"),
-        ("julia", "strict"),
-        ("julia", "neutral"),
+        ("jane", "neutral"),
+        ("jane", "evil"),
+        ("jane", "neutral"),
     ]
     for case in cases:
         assert evaluate_semantics(case, case.finalized_text)["status"] == "PASS"
         assert evaluate_semantics(case, "Факт намеренно поврежден.")["status"] == "FAIL"
+
+
+def test_every_hybrid_case_uses_a_confirmed_speechkit_v1_profile() -> None:
+    profiles = {(case.voice, case.role) for case in hybrid_probe_cases()}
+    assert profiles == {
+        ("jane", "neutral"),
+        ("jane", "evil"),
+        ("ermil", "neutral"),
+    }
+
+
+def test_speechkit_request_rejects_v3_only_voice_before_network() -> None:
+    case = SemanticCase("unsupported", "Проверка.", (("провер",),), "dasha", "neutral")
+    with pytest.raises(ValueError, match="not supported by the SpeechKit REST v1 probe"):
+        speechkit_request(case, api_key="top-secret")
 
 
 def test_speechkit_pcm_is_normalized_to_existing_orion_44100_boundary() -> None:

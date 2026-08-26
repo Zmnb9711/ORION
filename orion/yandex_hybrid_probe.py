@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import re
 import threading
 import time
@@ -34,6 +35,13 @@ ORION_PROVIDER_RATE = 44_100
 PROBE_TIMEOUT_S = 30.0
 TX_TIMEOUT_S = 45.0
 TX_GUARD_S = 0.250
+SPEECHKIT_V1_PROBE_PROFILES = frozenset(
+    {
+        ("jane", "neutral"),
+        ("jane", "evil"),
+        ("ermil", "neutral"),
+    }
+)
 
 
 class HybridProbeState(StrEnum):
@@ -56,8 +64,16 @@ class SpeechKitFailureCategory(StrEnum):
 class SpeechKitProviderError(RuntimeError):
     """Safe provider failure that never retains the response body or credential."""
 
-    def __init__(self, status: int) -> None:
+    def __init__(
+        self,
+        status: int,
+        *,
+        provider_code: str | None = None,
+        provider_message: str | None = None,
+    ) -> None:
         self.status = status
+        self.provider_code = provider_code
+        self.provider_message = provider_message
         if status == 401:
             self.category = SpeechKitFailureCategory.UNAUTHORIZED
             message = (
@@ -82,7 +98,39 @@ class SpeechKitProviderError(RuntimeError):
         else:
             self.category = SpeechKitFailureCategory.HTTP_ERROR
             message = f"SpeechKit request failed (HTTP {status})"
+        if provider_code or provider_message:
+            detail = ": ".join(item for item in (provider_code, provider_message) if item)
+            message = f"{message}: {detail}"
         super().__init__(message)
+
+    @classmethod
+    def from_payload(cls, status: int, payload: bytes, *, secret: str) -> SpeechKitProviderError:
+        """Extract only bounded allow-listed provider fields from an error response."""
+
+        provider_code: str | None = None
+        provider_message: str | None = None
+        try:
+            decoded = json.loads(payload[:2048].decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            decoded = None
+        if isinstance(decoded, dict):
+            raw_code = decoded.get("error_code")
+            raw_message = decoded.get("error_message")
+            if isinstance(raw_code, str):
+                provider_code = _bounded_provider_field(raw_code, secret, 80)
+            if isinstance(raw_message, str):
+                provider_message = _bounded_provider_field(raw_message, secret, 240)
+        return cls(
+            status,
+            provider_code=provider_code,
+            provider_message=provider_message,
+        )
+
+
+def _bounded_provider_field(value: str, secret: str, limit: int) -> str:
+    safe = value.replace(secret, "<redacted>") if secret else value
+    safe = re.sub(r"[\x00-\x1f\x7f]+", " ", safe)
+    return re.sub(r"\s+", " ", safe).strip()[:limit]
 
 
 class AcousticReview(StrEnum):
@@ -113,7 +161,7 @@ class TestSemanticCase:
     case_id: str
     finalized_text: str
     required_groups: tuple[tuple[str, ...], ...]
-    voice: str = "dasha"
+    voice: str = "jane"
     role: str = "neutral"
 
 
@@ -122,11 +170,11 @@ def hybrid_probe_cases() -> tuple[TestSemanticCase, ...]:
 
     return (
         TestSemanticCase("heading-137", "Курс сто тридцать семь градусов.", (("137", "сто тридцать семь"), ("градус",))),
-        TestSemanticCase("tas-286", "Истинная воздушная скорость двести восемьдесят шесть узлов.", (("286", "двести восемьдесят шесть"), ("узл",)), "alexander"),
+        TestSemanticCase("tas-286", "Истинная воздушная скорость двести восемьдесят шесть узлов.", (("286", "двести восемьдесят шесть"), ("узл",)), "ermil"),
         TestSemanticCase("altitude-12450", "Высота двенадцать тысяч четыреста пятьдесят футов.", (("12450", "12 450", "двенадцать тысяч четыреста пятьдесят"), ("фут",))),
-        TestSemanticCase("radio-264500", "Радио двести шестьдесят четыре целых пять десятых мегагерца, амплитудная модуляция.", (("264.500", "264,500", "двести шестьдесят четыре целых пять"), ("мегагерц",), ("амплитуд", " am")), "julia"),
-        TestSemanticCase("tacan-44x", "ТАКАН сорок четыре икс.", (("44x", "44 x", "сорок четыре икс"),), "julia", "strict"),
-        TestSemanticCase("laser-1577", "Лазерный код один пять семь семь.", (("1577", "один пять семь семь"), ("лазер",)), "julia"),
+        TestSemanticCase("radio-264500", "Радио двести шестьдесят четыре целых пять десятых мегагерца, амплитудная модуляция.", (("264.500", "264,500", "двести шестьдесят четыре целых пять"), ("мегагерц",), ("амплитуд", " am")), "jane"),
+        TestSemanticCase("tacan-44x", "ТАКАН сорок четыре икс.", (("44x", "44 x", "сорок четыре икс"),), "jane", "evil"),
+        TestSemanticCase("laser-1577", "Лазерный код один пять семь семь.", (("1577", "один пять семь семь"), ("лазер",)), "jane"),
         TestSemanticCase("callsign-viper21", "Позывной Вайпер два один.", (("viper 2-1", "вайпер два один", "вайпер 2 1"), ("позывн",))),
         TestSemanticCase("distance-63", "Дистанция шестьдесят три морские мили.", (("63", "шестьдесят три"), ("морск", " nm"))),
         TestSemanticCase("negative-850", "Поправка минус восемьсот пятьдесят футов.", (("-850", "минус восемьсот пятьдесят"), ("фут",))),
@@ -166,6 +214,10 @@ def speechkit_request(
     text = case.finalized_text.strip()
     if not text or len(text) > 5000:
         raise ValueError("SpeechKit text must contain 1 to 5000 characters")
+    if (case.voice, case.role) not in SPEECHKIT_V1_PROBE_PROFILES:
+        raise ValueError(
+            f"Voice/role {case.voice}/{case.role} is not supported by the SpeechKit REST v1 probe"
+        )
     fields = {
         "text": text,
         "lang": "ru-RU",
@@ -211,7 +263,11 @@ class SpeechKitTtsClient:
             async with client.post(url, headers=headers, data=body) as response:
                 payload = await response.read()
                 if response.status != 200:
-                    raise SpeechKitProviderError(response.status)
+                    raise SpeechKitProviderError.from_payload(
+                        response.status,
+                        payload,
+                        secret=api_key,
+                    )
         if not payload or len(payload) % 2:
             raise ValueError("SpeechKit returned invalid LPCM audio")
         return payload, case.finalized_text
