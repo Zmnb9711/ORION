@@ -341,7 +341,7 @@ def test_contract_module_has_no_runtime_or_provider_imports() -> None:
     assert not any(name.startswith(forbidden) for name in imported)
 
 
-def test_production_flow_does_not_import_ia0_contracts_yet() -> None:
+def test_only_approved_ia1_presentation_boundary_imports_ia0_contracts() -> None:
     package = Path(__file__).parents[1] / "orion"
     consumers = []
     for path in package.glob("*.py"):
@@ -349,4 +349,4 @@ def test_production_flow_does_not_import_ia0_contracts_yet() -> None:
             continue
         if "interaction_contracts" in path.read_text(encoding="utf-8"):
             consumers.append(path.name)
-    assert consumers == []
+    assert sorted(consumers) == ["realtime_test_evidence.py", "yandex_presentation.py"]

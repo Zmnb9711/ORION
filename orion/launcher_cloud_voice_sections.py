@@ -85,6 +85,14 @@ def format_test_evidence_status(result: Mapping[str, object]) -> str:
     return f"Test Session: OFF{f' — Last export: {export_path}' if export_path else ''}"
 
 
+def format_presentation_probe_status(result: Mapping[str, object]) -> str:
+    state = str(result.get("state") or "idle").upper()
+    message = str(result.get("message") or "Presentation probe is idle")
+    case_id = str(result.get("probe_case_id") or "").strip()
+    suffix = f" | case={case_id}" if case_id else ""
+    return f"Presentation Probe: {state} — {message}{suffix}"
+
+
 class CloudVoiceConfigStore:
     """Persist non-secret ADR-004 Launcher settings only."""
 
@@ -636,6 +644,46 @@ class LauncherCloudVoiceSectionsMixin:
         self._test_evidence_status_var = test_evidence_status
         self._test_evidence_reveal_button = reveal_test_evidence_button
 
+        ttk.Separator(box, orient="horizontal").pack(fill=X, pady=(18, 14))
+        ttk.Label(box, text="PRESENTATION PROBE", style="CardTitle.TLabel").pack(anchor="w")
+        ttk.Label(
+            box,
+            text=(
+                "Runs bounded synthetic IA-1 cases in the existing active Yandex session. "
+                "Start Test Session first for field evidence."
+            ),
+            style="CardText.TLabel",
+            wraplength=780,
+            justify="left",
+        ).pack(anchor="w", pady=(6, 8))
+        probe_status = StringVar(value="Presentation Probe: IDLE")
+        ttk.Label(
+            box,
+            textvariable=probe_status,
+            style="CardText.TLabel",
+            wraplength=780,
+            justify="left",
+        ).pack(anchor="w", pady=(0, 8))
+        probe_row = ttk.Frame(box, style="Card.TFrame")
+        probe_row.pack(fill=X)
+        probe_selection = StringVar(value="FULL")
+        ttk.Combobox(
+            probe_row,
+            textvariable=probe_selection,
+            values=("NATURALIZE", "VERBATIM", "VOICE", "STYLE", "FULL"),
+            state="readonly",
+            width=20,
+        ).pack(side=LEFT, padx=(0, 8))
+        ttk.Button(
+            probe_row,
+            text="RUN PRESENTATION PROBE",
+            style="Secondary.TButton",
+            command=lambda: self._presentation_probe_async(
+                probe_selection.get(),
+                probe_status,
+            ),
+        ).pack(side=LEFT)
+
         def refresh_provider_fields(*_args: object) -> None:
             selected = provider_labels[provider.get()]
             selected_transport = transport_labels[transport.get()]
@@ -679,6 +727,7 @@ class LauncherCloudVoiceSectionsMixin:
             reveal_test_evidence_button,
             generation,
         )
+        self._presentation_probe_poll(probe_status, generation)
         self._srs_process_poll(
             srs_server_path,
             srs_client_path,
@@ -818,6 +867,39 @@ class LauncherCloudVoiceSectionsMixin:
     def _test_evidence_status(self) -> dict[str, object]:
         return self._realtime_core_json("/v1/realtime/test-evidence/status")
 
+    def _presentation_probe_status(self) -> dict[str, object]:
+        return self._realtime_core_json(
+            "/v1/realtime/yandex/presentation-probe/status"
+        )
+
+    def _start_presentation_probe(self, selection: str) -> dict[str, object]:
+        return self._realtime_core_json(
+            "/v1/realtime/yandex/presentation-probe/start",
+            method="POST",
+            payload={"selection": selection.strip().casefold()},
+        )
+
+    def _presentation_probe_async(
+        self,
+        selection: str,
+        status_var: StringVar,
+    ) -> None:
+        generation = self._qwen_view_generation
+
+        def worker() -> None:
+            try:
+                result = self._start_presentation_probe(selection)
+                text = format_presentation_probe_status(result)
+            except (OSError, ValueError, RuntimeError, urllib.error.URLError) as exc:
+                text = f"Presentation Probe: ERROR — {type(exc).__name__}: {exc}"
+            self._schedule_qwen_ui(0, lambda: status_var.set(text), generation)
+
+        threading.Thread(
+            target=worker,
+            name="orion-presentation-probe-start",
+            daemon=True,
+        ).start()
+
     def _stop_test_evidence(self) -> dict[str, object]:
         return self._realtime_core_json(
             "/v1/realtime/test-evidence/stop-export",
@@ -920,6 +1002,34 @@ class LauncherCloudVoiceSectionsMixin:
         self._schedule_qwen_ui(
             1000,
             lambda: self._test_evidence_poll(status_var, reveal_button, generation),
+            generation,
+        )
+
+    def _presentation_probe_poll(
+        self,
+        status_var: StringVar,
+        generation: int,
+    ) -> None:
+        if not self._qwen_view_lifecycle.is_alive(generation):
+            return
+
+        def worker() -> None:
+            try:
+                result = self._presentation_probe_status()
+            except Exception:
+                result = None
+            if result is not None:
+                text = format_presentation_probe_status(result)
+                self._schedule_qwen_ui(0, lambda: status_var.set(text), generation)
+
+        threading.Thread(
+            target=worker,
+            name="orion-presentation-probe-status",
+            daemon=True,
+        ).start()
+        self._schedule_qwen_ui(
+            1000,
+            lambda: self._presentation_probe_poll(status_var, generation),
             generation,
         )
 

@@ -443,6 +443,7 @@ class SrsYandexPcmEndpoint:
                 )
                 self.diagnostics.record(
                     "tx_completed",
+                    response_id=response_id,
                     frames=report.sent_frames,
                     final_padding_samples=padding,
                     median_jitter_ms=report.median_jitter_ms,

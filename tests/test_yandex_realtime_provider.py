@@ -13,6 +13,7 @@ from orion.yandex_realtime_provider import (
     YANDEX_VAD_SILENCE_MS,
     YANDEX_VAD_THRESHOLD,
     YANDEX_VOICE,
+    YANDEX_VOICE_ROLE,
     YandexRealtimeConfig,
     YandexRealtimeProvider,
     build_yandex_model_uri,
@@ -55,6 +56,7 @@ def test_yandex_session_update_has_production_defaults_and_no_tools() -> None:
     assert output_audio == {
         "format": {"type": "audio/pcm", "rate": YANDEX_OUTPUT_RATE},
         "voice": YANDEX_VOICE,
+        "role": YANDEX_VOICE_ROLE,
     }
     assert "tools" not in session
 

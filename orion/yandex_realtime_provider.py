@@ -14,6 +14,7 @@ from orion.realtime_provider import RealtimeProviderState, RealtimeSmokeResult
 YANDEX_REALTIME_ENDPOINT = "wss://ai.api.cloud.yandex.net/v1/realtime"
 YANDEX_MODEL = "speech-realtime-260528"
 YANDEX_VOICE = "dasha"
+YANDEX_VOICE_ROLE = "neutral"
 YANDEX_LANGUAGE = "ru-RU"
 YANDEX_INPUT_RATE = 44_100
 YANDEX_OUTPUT_RATE = 44_100
@@ -72,6 +73,7 @@ def yandex_session_update(*, instructions: str = YANDEX_INSTRUCTIONS) -> dict[st
                 "output": {
                     "format": {"type": "audio/pcm", "rate": YANDEX_OUTPUT_RATE},
                     "voice": YANDEX_VOICE,
+                    "role": YANDEX_VOICE_ROLE,
                 },
             },
         },

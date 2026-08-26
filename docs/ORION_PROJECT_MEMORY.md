@@ -942,3 +942,57 @@ PACKAGING VALIDATION PASSED.**
   tranche: IA-1 — Yandex Presentation Contract Probe.
 - IA-0 adds no World Model, Tool Gateway, PlannerProvider, cloud model adapter,
   RadioContext or RadioRouter. Stage 6B has not started.
+
+## 20. IA-1 Yandex presentation contract probe — 2026-08-26
+
+**Status: IA-1 IMPLEMENTED AND PACKAGED; FIELD VALIDATION PENDING. IA-2 AND
+STAGE 6B NOT STARTED.**
+
+- IA-1 consumes the real IA-0 `SemanticResponse` through a bounded
+  Yandex-specific adapter in the existing active Realtime WebSocket. It uses
+  documented `conversation.item.create` text injection plus explicit
+  `response.create` with per-response presentation instructions. IA-0 remains
+  provider-neutral; no duplicate semantic schema, World Model, Tool Gateway,
+  Planner, RadioContext or RadioRouter was added.
+- NATURALIZE supplies already-decided authoritative/derived values,
+  recommendation and unavailable status and forbids new domain reasoning.
+  Automatic checking is conservative: corruption-sensitive tokens may prove a
+  failure, but natural-language equivalence remains `REVIEW_REQUIRED` rather
+  than an invented PASS. VERBATIM supplies only the finalized text and records
+  exact plus case/punctuation/whitespace-normalized transcript matches. Yandex
+  does not document a character-exact speech guarantee.
+- Current Yandex documentation verifies session-level voice and SpeechKit-role
+  updates inside an active WebSocket and full `session.updated` configuration.
+  Per-response voice, Realtime pitch/emotion and speech-rate controls are not
+  documented. The probe uses acknowledged `dasha -> alexander -> dasha` voice
+  switching and one-voice `julia neutral -> strict -> neutral` style switching,
+  then restores `dasha/neutral`. Acoustic identity, deployed session-ID
+  stability and audible role behavior require the field test.
+- Settings -> Voice contains one compact selector and RUN PRESENTATION PROBE
+  action. It accepts only canned synthetic cases, requires a compatible idle
+  Yandex session, rejects duplicate runs and returns to ordinary operation.
+  FlightContext updates defer while the probe owns the presentation boundary;
+  normal PTT, provider audio and the existing Direct/SRS endpoints remain the
+  same paths.
+- Existing Test Evidence now correlates probe run/case, interaction and
+  SemanticResponse IDs; client/provider event IDs; expected synthetic facts;
+  final transcript; voice/role request and acknowledgement; session IDs;
+  response, first-audio, SRS first-TX and completion timing; interruption; and
+  conservative fidelity results. `ia1-summary.json` is added only when a probe
+  ran. Raw audio/PCM/Opus/Base64, credentials, provider payloads, system prompt,
+  exact DCS coordinates and unrestricted history remain excluded.
+- SRS protocol, RadioInfo/readiness, routing, Opus/resampler, 400 ms boundary,
+  250 ms guard, 40 ms pacing, EAM and audio routing remain unchanged. The only
+  SRS-boundary code change is the already-known provider response ID on the
+  bounded TX-complete diagnostic for evidence correlation.
+- Focused shared-boundary regression is 78 passed; isolated full regression is
+  1,259 passed. Ruff, pyright, compileall, privacy/secret and diff checks are
+  clean. Frozen Core native, Launcher SRS-control and exact loopback integrated
+  product smokes pass with no external SRS, live provider or physical audio.
+- IA-1 installer: `ORION-Alpha-0.2-Setup.exe`, 71,710,461 bytes, SHA-256
+  `6773F70F90B8B7F4BF8BB4830B686F666141745921FE62D5317BAAC5F6C47E5B`.
+- Presentation Architecture remains provisionally A/B pending the real
+  DCS + Yandex + SRS evidence ZIP. Voice Model remains provisionally A/B/C
+  pending the same evidence. Do not claim IA-1 PASS before that field test.
+  After IA-1 acceptance, the next approved stage is IA-2 — World Model Query
+  Facade. Do not begin it automatically.

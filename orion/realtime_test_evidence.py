@@ -13,6 +13,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
+from orion.interaction_contracts import PresentationMode, SemanticResponse
+
 
 _ALLOWED_FIELDS = {
     "active_turn_id",
@@ -36,6 +38,30 @@ _ALLOWED_FIELDS = {
     "packet_id",
     "provider_event_id",
     "provider_item_id",
+    "client_event_id",
+    "client_item_event_id",
+    "client_response_event_id",
+    "completion_latency_ms",
+    "effective_style",
+    "effective_voice",
+    "error_type",
+    "fact_origin",
+    "first_provider_audio_latency_ms",
+    "first_srs_tx_latency_ms",
+    "interacted",
+    "interrupted",
+    "presentation_mode",
+    "probe_case_id",
+    "probe_run_id",
+    "probe_selection",
+    "requested_style",
+    "requested_voice",
+    "restoration",
+    "session_id_after",
+    "session_id_before",
+    "session_identity_unchanged",
+    "session_update_latency_ms",
+    "yandex_session_id",
     "realtime_session_id",
     "response_created_to_first_audio_ms",
     "response_id",
@@ -84,6 +110,8 @@ class RealtimeTestEvidenceRecorder:
         self._assistant_transcript_count = 0
         self._current_context_version: str | None = None
         self._last_export_path: Path | None = None
+        self._probe_cases: dict[str, dict[str, object]] = {}
+        self._probe_response_cases: dict[str, str] = {}
 
     def start(
         self,
@@ -102,6 +130,8 @@ class RealtimeTestEvidenceRecorder:
             self._user_transcript_count = 0
             self._assistant_transcript_count = 0
             self._current_context_version = None
+            self._probe_cases.clear()
+            self._probe_response_cases.clear()
             self._active = True
             self._test_session_id = uuid4().hex
             self._started_at = datetime.now(UTC)
@@ -149,6 +179,21 @@ class RealtimeTestEvidenceRecorder:
             if len(self._events) == self._events.maxlen:
                 self._dropped += 1
             self._events.append(safe)
+            response_id = safe.get("response_id")
+            if event in {"srs_tx_started", "tx_completed"} and isinstance(response_id, str):
+                case_id = self._probe_response_cases.get(response_id)
+                case = self._probe_cases.get(case_id or "")
+                if case is not None and event == "srs_tx_started" and "first_srs_tx_at" not in case:
+                    case["first_srs_tx_at"] = safe["timestamp"]
+                    started = self._parse_timestamp(case.get("request_started_at"))
+                    sent = self._parse_timestamp(safe["timestamp"])
+                    if started is not None and sent is not None:
+                        case["first_srs_tx_latency_ms"] = round(
+                            (sent - started).total_seconds() * 1000,
+                            3,
+                        )
+                elif case is not None and event == "tx_completed":
+                    case["srs_tx_completed_at"] = safe["timestamp"]
 
     def record_transcript(
         self,
@@ -197,6 +242,195 @@ class RealtimeTestEvidenceRecorder:
             else:
                 self._assistant_transcript_count += 1
 
+    def record_probe_request(
+        self,
+        *,
+        probe_run_id: str,
+        probe_case_id: str,
+        response: SemanticResponse,
+        expected_presentation: str,
+        requested_voice: str | None,
+        requested_style: str | None,
+        client_item_event_id: str,
+        client_response_event_id: str,
+    ) -> None:
+        """Store bounded synthetic expected semantics in the existing recorder."""
+
+        with self._lock:
+            if not self._active:
+                return
+            now = datetime.now(UTC).isoformat(timespec="milliseconds")
+            case = {
+                "probe_run_id": self._identifier(probe_run_id, "probe run", max_length=40),
+                "probe_case_id": self._identifier(probe_case_id, "probe case", max_length=80),
+                "interaction_id": str(response.interaction_id),
+                "semantic_response_id": str(response.response_id),
+                "presentation_mode": response.presentation_mode.value,
+                "fact_origin": "synthetic_probe",
+                "authoritative_facts": [
+                    {
+                        "key": str(fact.key),
+                        "value": fact.value,
+                        "unit": fact.unit,
+                    }
+                    for fact in response.authoritative_facts
+                ],
+                "derived_results": [
+                    {
+                        "key": str(fact.key),
+                        "value": fact.value,
+                        "unit": fact.unit,
+                    }
+                    for fact in response.derived_results
+                ],
+                "recommendation": response.recommendation,
+                "unavailable_inputs": [
+                    {"key": str(issue.key), "status": issue.status.value}
+                    for issue in response.unavailable_inputs
+                ],
+                "verbatim_text": response.verbatim_text,
+                "expected_presentation": expected_presentation[:4000],
+                "requested_voice": requested_voice,
+                "requested_style": requested_style,
+                "presentation_method": "conversation_item_plus_response_create",
+                "per_response_instructions": True,
+                "conversation_item_injection": True,
+                "explicit_response_create": True,
+                "session_update_required": requested_voice is not None,
+                "client_item_event_id": client_item_event_id,
+                "client_response_event_id": client_response_event_id,
+                "request_started_at": now,
+                "result": "PENDING",
+            }
+            self._probe_cases[probe_case_id] = case
+        self.record(
+            "ia1_presentation_requested",
+            probe_run_id=probe_run_id,
+            probe_case_id=probe_case_id,
+            presentation_mode=response.presentation_mode.value,
+            fact_origin="synthetic_probe",
+            requested_voice=requested_voice,
+            requested_style=requested_style,
+            client_item_event_id=client_item_event_id,
+            client_response_event_id=client_response_event_id,
+        )
+
+    def record_probe_response_created(
+        self,
+        *,
+        probe_case_id: str,
+        response_id: str,
+        provider_event_id: str,
+    ) -> None:
+        with self._lock:
+            case = self._probe_cases.get(probe_case_id)
+            if case is None:
+                return
+            now = datetime.now(UTC).isoformat(timespec="milliseconds")
+            case["yandex_response_id"] = response_id[:200]
+            case["response_created_at"] = now
+            self._probe_response_cases[response_id] = probe_case_id
+            started = self._parse_timestamp(case.get("request_started_at"))
+            created = self._parse_timestamp(now)
+            if started is not None and created is not None:
+                case["response_created_latency_ms"] = round(
+                    (created - started).total_seconds() * 1000,
+                    3,
+                )
+        self.record(
+            "ia1_response_created",
+            probe_case_id=probe_case_id,
+            response_id=response_id,
+            provider_event_id=provider_event_id,
+        )
+
+    def record_probe_first_audio(self, response_id: str) -> None:
+        with self._lock:
+            case_id = self._probe_response_cases.get(response_id)
+            case = self._probe_cases.get(case_id or "")
+            if case is None or "first_provider_audio_at" in case:
+                return
+            now = datetime.now(UTC).isoformat(timespec="milliseconds")
+            case["first_provider_audio_at"] = now
+            started = self._parse_timestamp(case.get("request_started_at"))
+            first = self._parse_timestamp(now)
+            if started is not None and first is not None:
+                case["first_provider_audio_latency_ms"] = round(
+                    (first - started).total_seconds() * 1000,
+                    3,
+                )
+
+    def record_probe_transcript(
+        self,
+        *,
+        probe_case_id: str,
+        response_id: str,
+        transcript: str,
+        response: SemanticResponse,
+    ) -> None:
+        observed = self._sanitize_transcript(transcript)
+        with self._lock:
+            case = self._probe_cases.get(probe_case_id)
+            if case is None:
+                return
+            case["observed_transcript"] = observed
+            if response.presentation_mode is PresentationMode.VERBATIM:
+                expected = response.verbatim_text or ""
+                case["verbatim_exact_match"] = observed == expected
+                case["verbatim_normalized_match"] = (
+                    self._normalize_verbatim(observed)
+                    == self._normalize_verbatim(expected)
+                )
+                case["result"] = (
+                    "PASS"
+                    if case["verbatim_exact_match"]
+                    else (
+                        "REVIEW_REQUIRED"
+                        if case["verbatim_normalized_match"]
+                        else "FAIL"
+                    )
+                )
+            else:
+                preserved = self._naturalize_tokens_preserved(response, observed)
+                case["naturalize_tokens_preserved"] = preserved
+                case["result"] = "REVIEW_REQUIRED" if preserved else "FAIL"
+        self.record(
+            "ia1_probe_transcript_evaluated",
+            probe_case_id=probe_case_id,
+            response_id=response_id,
+            status=str(case["result"]),
+        )
+
+    def record_probe_completion(
+        self,
+        *,
+        probe_run_id: str,
+        probe_case_id: str,
+        response_id: str,
+        status: str,
+        interrupted: bool,
+        completion_latency_ms: float,
+    ) -> None:
+        with self._lock:
+            case = self._probe_cases.get(probe_case_id)
+            if case is None:
+                return
+            case["response_status"] = status[:80]
+            case["interrupted"] = interrupted
+            case["completion_latency_ms"] = round(completion_latency_ms, 3)
+            case["completed_at"] = datetime.now(UTC).isoformat(timespec="milliseconds")
+            if case.get("result") == "PENDING":
+                case["result"] = "REVIEW_REQUIRED" if status == "completed" else "FAIL"
+        self.record(
+            "ia1_probe_case_completed",
+            probe_run_id=probe_run_id,
+            probe_case_id=probe_case_id,
+            response_id=response_id,
+            status=status,
+            interrupted=interrupted,
+            completion_latency_ms=completion_latency_ms,
+        )
+
     def status(self) -> RealtimeTestEvidenceStatus:
         with self._lock:
             return self._status_locked()
@@ -215,6 +449,7 @@ class RealtimeTestEvidenceRecorder:
             dropped = self._dropped
             user_transcript_count = self._user_transcript_count
             assistant_transcript_count = self._assistant_transcript_count
+            probe_cases = tuple(dict(item) for item in self._probe_cases.values())
             self._active = False
 
             root = self._runtime_dir or Path(os.environ.get("ORION_RUNTIME_DIR", "runtime"))
@@ -227,11 +462,14 @@ class RealtimeTestEvidenceRecorder:
                 output = output_dir / f"ORION-Test-Evidence-{stamp}-{suffix}.zip"
                 suffix += 1
 
+            members = "manifest.txt,session-summary.txt,events.jsonl"
+            if probe_cases:
+                members += ",ia1-summary.json"
             manifest = (
                 "ORION realtime test evidence\n"
-                "format_version=2\n"
+                "format_version=3\n"
                 f"test_session_id={session_id}\n"
-                "members=manifest.txt,session-summary.txt,events.jsonl\n"
+                f"members={members}\n"
                 "raw_audio_included=false\n"
                 f"transcripts_included={str(bool(user_transcript_count or assistant_transcript_count)).lower()}\n"
                 f"user_transcripts_included={str(bool(user_transcript_count)).lower()}\n"
@@ -243,6 +481,7 @@ class RealtimeTestEvidenceRecorder:
                 "spoken_coordinates_may_appear_in_explicit_transcripts=true\n"
                 "credentials_included=false\n"
                 "external_dcs_srs_logs_included=false\n"
+                f"ia1_probe_cases={len(probe_cases)}\n"
             )
             summary = (
                 f"test_session_id={session_id}\n"
@@ -256,18 +495,32 @@ class RealtimeTestEvidenceRecorder:
                 f"user_transcript_count={user_transcript_count}\n"
                 f"assistant_transcript_count={assistant_transcript_count}\n"
             )
+            for case in probe_cases:
+                case_id = str(case.get("probe_case_id") or "unknown")
+                summary += (
+                    f"ia1_case.{case_id}.mode={case.get('presentation_mode', 'NOT OBSERVABLE')}\n"
+                    f"ia1_case.{case_id}.result={case.get('result', 'NOT OBSERVABLE')}\n"
+                    f"ia1_case.{case_id}.response_latency_ms={case.get('first_provider_audio_latency_ms', 'NOT OBSERVABLE')}\n"
+                    f"ia1_case.{case_id}.srs_tx_latency_ms={case.get('first_srs_tx_latency_ms', 'NOT OBSERVABLE')}\n"
+                    f"ia1_case.{case_id}.interrupted={case.get('interrupted', 'NOT OBSERVABLE')}\n"
+                )
             jsonl = "".join(
                 json.dumps(item, ensure_ascii=False, sort_keys=True) + "\n"
                 for item in events
             )
-            self._write_zip(
-                output,
-                {
-                    "manifest.txt": manifest,
-                    "session-summary.txt": summary,
-                    "events.jsonl": jsonl,
-                },
-            )
+            archive_members = {
+                "manifest.txt": manifest,
+                "session-summary.txt": summary,
+                "events.jsonl": jsonl,
+            }
+            if probe_cases:
+                archive_members["ia1-summary.json"] = json.dumps(
+                    {"fact_origin": "synthetic_probe", "cases": probe_cases},
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                ) + "\n"
+            self._write_zip(output, archive_members)
             self._last_export_path = output.resolve()
             return self._last_export_path
 
@@ -314,6 +567,47 @@ class RealtimeTestEvidenceRecorder:
         for pattern in patterns:
             normalized = re.sub(pattern, "[REDACTED]", normalized)
         return normalized
+
+    @staticmethod
+    def _parse_timestamp(value: object) -> datetime | None:
+        if not isinstance(value, str):
+            return None
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _normalize_verbatim(value: str) -> str:
+        value = re.sub(r"[^\w\s.-]", " ", value.casefold())
+        return re.sub(r"\s+", " ", value).strip()
+
+    @staticmethod
+    def _naturalize_tokens_preserved(response: SemanticResponse, observed: str) -> bool:
+        normalized = observed.casefold()
+        checks: list[bool] = []
+        for fact in response.authoritative_facts:
+            checks.append(str(fact.value).casefold() in normalized)
+        for issue in response.unavailable_inputs:
+            if not any(
+                token in normalized
+                for token in ("unavailable", "unknown", "недоступ", "неизвест")
+            ) and re.search(r"\b\d{1,3}\s*[xy]\b", normalized):
+                return False
+        if response.recommendation:
+            tokens = [
+                token.casefold()
+                for token in re.findall(
+                    r"[A-Za-zА-Яа-я0-9-]+", response.recommendation
+                )
+                if len(token) > 2 or any(character.isdigit() for character in token)
+            ]
+            checks.extend(
+                token in normalized
+                for token in tokens
+                if any(character.isdigit() for character in token)
+            )
+        return all(checks) if checks else bool(response.unavailable_inputs)
 
     @staticmethod
     def _write_zip(output: Path, members: dict[str, str]) -> None:

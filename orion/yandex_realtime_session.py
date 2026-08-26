@@ -25,6 +25,10 @@ from orion.yandex_realtime_provider import (
     yandex_authorization_headers,
     yandex_session_update,
 )
+from orion.yandex_presentation import (
+    YandexPresentationSessionDriver,
+    yandex_presentation,
+)
 
 
 class SessionDiagnostics(Protocol):
@@ -69,12 +73,15 @@ class YandexRealtimeSession:
         websocket: Any,
         *,
         force: bool = False,
+        presentation_idle: bool = True,
     ) -> bool:
         deferred_before = self._flight_context.deferred_count
         coalesced_before = self._flight_context.coalesced_count
         update = self._flight_context.next_update(
             force=force,
-            safe_to_apply=force or self._interaction.safe_to_refresh,
+            safe_to_apply=force or (
+                presentation_idle and self._interaction.safe_to_refresh
+            ),
         )
         if self._flight_context.deferred_count != deferred_before:
             self._diagnostics.record(
@@ -115,11 +122,18 @@ class YandexRealtimeSession:
         websocket: Any = None
         send_task: asyncio.Task[None] | None = None
         receive_task: asyncio.Task[None] | None = None
+        presentation_task: asyncio.Task[None] | None = None
+        presentation_driver: YandexPresentationSessionDriver | None = None
         close_owned = False
 
         async def send_worker() -> None:
             while not self._stop.is_set():
-                await self._send_flight_context_update(websocket)
+                await self._send_flight_context_update(
+                    websocket,
+                    presentation_idle=(
+                        presentation_driver is None or not presentation_driver.active
+                    ),
+                )
                 pcm = await asyncio.to_thread(self._endpoint.read_input, 0.1)
                 if pcm is None:
                     continue
@@ -134,6 +148,11 @@ class YandexRealtimeSession:
                 if message.type is aiohttp.WSMsgType.TEXT:
                     event = message.json()
                     kind = str(event.get("type") or "")
+                    probe_error_consumed = (
+                        presentation_driver.handle_event(event)
+                        if presentation_driver is not None
+                        else False
+                    )
                     if kind == "input_audio_buffer.speech_started":
                         turn_id = self._interaction.speech_started()
                         self._endpoint.input_speech_started()
@@ -182,6 +201,7 @@ class YandexRealtimeSession:
                         )
                         first_audio = self._interaction.first_audio(response_id)
                         if first_audio is not None:
+                            realtime_test_evidence.record_probe_first_audio(response_id)
                             summary = self._interaction.latency_summary()
                             self._diagnostics.record(
                                 "response_first_audio",
@@ -244,7 +264,8 @@ class YandexRealtimeSession:
                             status=status,
                         )
                     elif kind == "error":
-                        raise RuntimeError(event.get("error") or "Yandex provider error")
+                        if not probe_error_consumed:
+                            raise RuntimeError(event.get("error") or "Yandex provider error")
                     else:
                         self._diagnostics.record(
                             kind or "provider_event",
@@ -272,6 +293,7 @@ class YandexRealtimeSession:
                 autoclose=True,
             )
             self._diagnostics.record("websocket_connected")
+            yandex_session_id: str | None = None
             try:
                 await self._send_flight_context_update(websocket, force=True)
                 deadline = time.monotonic() + 15.0
@@ -285,7 +307,14 @@ class YandexRealtimeSession:
                     if message.type is aiohttp.WSMsgType.TEXT:
                         event = message.json()
                         kind = str(event.get("type") or "")
-                        self._diagnostics.record(kind or "handshake_event")
+                        session = event.get("session") or {}
+                        candidate_id = str(session.get("id") or "")
+                        if candidate_id:
+                            yandex_session_id = candidate_id
+                        self._diagnostics.record(
+                            kind or "handshake_event",
+                            provider_event_id=str(event.get("event_id") or ""),
+                        )
                         if kind == "session.updated":
                             break
                         if kind == "error":
@@ -293,11 +322,23 @@ class YandexRealtimeSession:
                     else:
                         raise ConnectionError("Yandex closed before session.updated")
                 if not self._stop.is_set():
+                    if not yandex_session_id:
+                        raise RuntimeError("Yandex session.updated did not expose a session ID")
+                    presentation_driver = YandexPresentationSessionDriver(
+                        yandex_presentation,
+                        yandex_session_id=yandex_session_id,
+                        diagnostics=self._diagnostics,
+                        interaction_idle=lambda: self._interaction.safe_to_refresh,
+                    )
                     self._endpoint.start()
                     self._on_streaming()
                     send_task = asyncio.create_task(send_worker(), name="orion-yandex-send")
                     receive_task = asyncio.create_task(
                         receive_worker(), name="orion-yandex-receive"
+                    )
+                    presentation_task = asyncio.create_task(
+                        presentation_driver.run(websocket, self._stop),
+                        name="orion-yandex-presentation",
                     )
                     while True:
                         failure = self._endpoint.failure()
@@ -306,7 +347,7 @@ class YandexRealtimeSession:
                         if self._stop.is_set():
                             break
                         await asyncio.sleep(0.05)
-                        for task in (send_task, receive_task):
+                        for task in (send_task, receive_task, presentation_task):
                             if task.done():
                                 error = task.exception()
                                 if error is not None:
@@ -318,6 +359,8 @@ class YandexRealtimeSession:
             finally:
                 self._stop.set()
                 self._endpoint.stop()
+                if presentation_driver is not None:
+                    presentation_driver.close()
                 if send_task is not None and not send_task.done():
                     send_task.cancel()
                     try:
@@ -331,6 +374,12 @@ class YandexRealtimeSession:
                     receive_task.cancel()
                     try:
                         await receive_task
+                    except (asyncio.CancelledError, Exception):
+                        pass
+                if presentation_task is not None and not presentation_task.done():
+                    presentation_task.cancel()
+                    try:
+                        await presentation_task
                     except (asyncio.CancelledError, Exception):
                         pass
                 code = websocket.close_code
