@@ -252,7 +252,12 @@ def test_voice_and_tray_shutdown_do_not_own_external_srs_processes() -> None:
     launcher._really_exiting = False
     launcher._tray = SimpleNamespace(stop=lambda: events.append("tray_stop"))
     launcher._stop_realtime_before_exit = lambda: events.append("realtime_stop")
-    launcher.core = SimpleNamespace(shutdown=lambda: events.append("core_shutdown"))
+    launcher.core = SimpleNamespace(
+        owns_process=True,
+        managed_pid=5151,
+        record_lifecycle=lambda event, **fields: events.append(event),
+        shutdown=lambda: events.append("core_shutdown"),
+    )
     launcher.root = SimpleNamespace(destroy=lambda: events.append("root_destroy"))
     launcher._srs_process_controller = SimpleNamespace(
         terminate=lambda: events.append("forbidden_srs_terminate")
@@ -260,13 +265,21 @@ def test_voice_and_tray_shutdown_do_not_own_external_srs_processes() -> None:
 
     FieldFixedAudioLauncher.exit_application(launcher)
 
-    assert events == ["tray_stop", "realtime_stop", "core_shutdown", "root_destroy"]
+    assert events == [
+        "explicit_tray_exit_requested",
+        "realtime_stop",
+        "core_shutdown",
+        "tray_stop",
+        "launcher_exit",
+        "root_destroy",
+    ]
 
     tray_launcher = cast(Any, object.__new__(WindowsOrionDesktopLauncher))
     tray_launcher._really_exiting = False
     tray_launcher.config = SimpleNamespace(minimize_to_tray=True)
     tray_launcher._tray = SimpleNamespace(start=lambda: events.append("tray_start"))
     tray_launcher.root = SimpleNamespace(withdraw=lambda: events.append("withdraw"))
+    tray_launcher.core = SimpleNamespace(owns_process=True)
     tray_launcher._srs_process_controller = launcher._srs_process_controller
     WindowsOrionDesktopLauncher.close(tray_launcher)
     assert events[-2:] == ["tray_start", "withdraw"]

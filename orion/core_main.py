@@ -11,6 +11,8 @@ from typing import TextIO
 
 import uvicorn
 
+from orion.core_lifecycle import core_lifecycle
+
 _NULL_STREAMS: list[TextIO] = []
 
 
@@ -107,7 +109,17 @@ def main(argv: list[str] | None = None) -> int:
 
         _startup_log(runtime, "app_import_ready")
         _startup_log(runtime, "uvicorn_start")
-        uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+        server = uvicorn.Server(
+            uvicorn.Config(app, host=args.host, port=args.port, log_level="info")
+        )
+        core_lifecycle.bind(
+            os.environ.get("ORION_LAUNCHER_SHUTDOWN_TOKEN"),
+            lambda: setattr(server, "should_exit", True),
+        )
+        try:
+            server.run()
+        finally:
+            core_lifecycle.unbind()
         _startup_log(runtime, "uvicorn_exit")
         return 0
     except Exception as exc:

@@ -1143,3 +1143,23 @@ STAGE 6B NOT STARTED.**
   IA-6 Router or Stage 6B work was performed.
 - Durable decision: `docs/ia-5-qwen-yandex-ai-studio-adapter.md`. The exact next
   approved stage is **IA-6 Interaction Router + controlled Planner slice**.
+
+## 26. PRE-IA-6 Launcher/Core lifecycle correction — 2026-08-27
+
+**Status: IMPLEMENTED AND CODE-VALIDATED; IA-5 REMAINS COMPLETE; IA-6 IS NEXT.**
+
+- Window close/X continues to hide Launcher to the tray and keeps its Core
+  child and runtime sessions alive.
+- Explicit tray Exit now gracefully stops only the Core created by that exact
+  Launcher. Ownership is the live child process handle plus an unlogged,
+  non-persisted random lifecycle token; PID files, executable name/path and port
+  ownership are never sufficient.
+- Core accepts the token-bound local shutdown request by setting Uvicorn's
+  graceful exit flag. Launcher waits boundedly, verifies child exit and telemetry
+  UDP release, and uses terminate/kill fallback only while the exact owned child
+  handle remains authoritative.
+- A compatible Core already healthy before Launcher startup is treated as
+  external and is preserved on Exit.
+- Validation used isolated temporary HTTP/UDP ports and did not terminate or
+  replace the installed Core holding canonical UDP 45100. IA-6 and Stage 6B were
+  not started.

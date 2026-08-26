@@ -65,6 +65,9 @@ class WindowsOrionDesktopLauncher(OrionDesktopLauncher):
             except TrayUnavailable:
                 self.exit_application()
                 return
+            recorder = getattr(self.core, "record_lifecycle", None)
+            if callable(recorder):
+                recorder("window_close_to_tray", owned=self.core.owns_process)
             self.root.withdraw()
             return
         self.exit_application()

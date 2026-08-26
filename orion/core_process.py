@@ -1,27 +1,44 @@
 from __future__ import annotations
 
-import csv
-import io
 import json
 import os
+import secrets
+import socket
 import subprocess
 import sys
 import time
 import urllib.error
 import urllib.request
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 
-class CoreProcessManager:
-    """Manage ORION Core as a process separate from the desktop launcher.
+@dataclass(frozen=True, slots=True)
+class CoreShutdownResult:
+    owned: bool
+    pid: int | None
+    graceful_requested: bool
+    graceful_exit: bool
+    fallback_terminate: bool
+    fallback_kill: bool
+    process_exited: bool
+    udp_released: bool | None
 
-    ``start`` ensures a Core process exists. ``stop`` intentionally only
-    detaches the launcher without stopping Core. ``shutdown`` is the explicit
-    lifecycle operation used only by full ORION Exit.
+
+class CoreProcessManager:
+    """Manage the Core process created by this exact Launcher instance.
+
+    A live child ``Popen`` handle plus an unlogged random lifecycle token is the
+    ownership proof. A healthy Core found before startup is usable but external:
+    it is never adopted or terminated from a PID file, image name, path or port.
     """
 
     GRACEFUL_STOP_TIMEOUT = 3.0
-    FORCE_STOP_TIMEOUT = 2.0
+    TERMINATE_TIMEOUT = 2.0
+    KILL_TIMEOUT = 2.0
+    UDP_RELEASE_TIMEOUT = 2.0
+    LIFECYCLE_LOG_LIMIT = 64 * 1024
 
     def __init__(self, host: str, port: int, runtime_dir: Path) -> None:
         self.host = host
@@ -29,7 +46,8 @@ class CoreProcessManager:
         self.runtime_dir = runtime_dir
         self._process: subprocess.Popen[bytes] | None = None
         self._owns_process = False
-        self._managed_pid: int | None = None
+        self._shutdown_token: str | None = None
+        self.last_shutdown: CoreShutdownResult | None = None
 
     @property
     def base_url(self) -> str:
@@ -40,8 +58,35 @@ class CoreProcessManager:
         return self._owns_process
 
     @property
-    def _pid_path(self) -> Path:
-        return self.runtime_dir / "orion-core.pid"
+    def managed_pid(self) -> int | None:
+        process = self._process
+        return process.pid if process is not None and self._owns_process else None
+
+    @property
+    def _lifecycle_log_path(self) -> Path:
+        return self.runtime_dir / "launcher-lifecycle.jsonl"
+
+    def record_lifecycle(self, event: str, **fields: object) -> None:
+        """Append one bounded, credential-free lifecycle diagnostic."""
+
+        allowed = {
+            key: value
+            for key, value in fields.items()
+            if key in {"pid", "owned", "reason", "graceful", "fallback", "udp_released"}
+            and isinstance(value, (bool, int, str, type(None)))
+        }
+        payload = {"timestamp": datetime.now(UTC).isoformat(), "event": event, **allowed}
+        try:
+            self.runtime_dir.mkdir(parents=True, exist_ok=True)
+            path = self._lifecycle_log_path
+            if path.is_file() and path.stat().st_size >= self.LIFECYCLE_LOG_LIMIT:
+                data = path.read_bytes()[-(self.LIFECYCLE_LOG_LIMIT // 2) :]
+                newline = data.find(b"\n")
+                path.write_bytes(data[newline + 1 :] if newline >= 0 else b"")
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(payload, sort_keys=True) + "\n")
+        except OSError:
+            return
 
     def healthy(self, timeout: float = 0.5) -> bool:
         try:
@@ -50,97 +95,27 @@ class CoreProcessManager:
         except (OSError, urllib.error.URLError, json.JSONDecodeError):
             return False
 
-    def _read_runtime_pid(self) -> int | None:
-        try:
-            value = int(self._pid_path.read_text(encoding="ascii").strip())
-        except (OSError, ValueError):
-            return None
-        return value if value > 0 else None
-
-    @staticmethod
-    def _windows_image_name(pid: int) -> str | None:
-        try:
-            result = subprocess.run(  # noqa: S603, S607
-                ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                text=True,
-                timeout=3.0,
-                check=False,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            return None
-        rows = list(csv.reader(io.StringIO(result.stdout)))
-        if not rows or len(rows[0]) < 2:
-            return None
-        if rows[0][0].startswith("INFO:"):
-            return None
-        try:
-            listed_pid = int(rows[0][1])
-        except ValueError:
-            return None
-        return rows[0][0] if listed_pid == pid else None
-
-    def _validated_runtime_pid(self) -> int | None:
-        pid = self._read_runtime_pid()
-        if pid is None:
-            return None
-        if os.name != "nt":
-            return pid
-        image = self._windows_image_name(pid)
-        if image is None or image.casefold() != "orion-core.exe":
-            return None
-        return pid
-
-    @staticmethod
-    def _taskkill_pid(pid: int, *, force: bool) -> None:
-        command = ["taskkill", "/PID", str(pid)]
-        if force:
-            command.append("/F")
-        subprocess.run(  # noqa: S603, S607
-            command,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=3.0,
-            check=False,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-
-    def _wait_until_core_stops(self, pid: int, timeout: float) -> bool:
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            if os.name == "nt":
-                if self._windows_image_name(pid) is None:
-                    return True
-            elif not self.healthy(timeout=0.2):
-                return True
-            time.sleep(0.1)
-        return False
-
     def start(self) -> None:
-        # Reuse an already-running ORION Core instead of spawning a duplicate.
-        # If it belongs to this runtime/build, retain its validated PID so full
-        # tray Exit can still enforce Core=0.
+        self.record_lifecycle("launcher_started", owned=False)
         if self.healthy():
             self._process = None
             self._owns_process = False
-            self._managed_pid = self._validated_runtime_pid()
+            self._shutdown_token = None
+            self.record_lifecycle("launcher_attached_external_core", owned=False)
             return
         if self._process is not None and self._process.poll() is None:
             return
 
         self.runtime_dir.mkdir(parents=True, exist_ok=True)
+        token = secrets.token_urlsafe(32)
         env = os.environ.copy()
         env["ORION_RUNTIME_DIR"] = str(self.runtime_dir)
-        command = self._command()
+        env["ORION_LAUNCHER_SHUTDOWN_TOKEN"] = token
         creationflags = 0
         if os.name == "nt" and hasattr(subprocess, "CREATE_NO_WINDOW"):
             creationflags = subprocess.CREATE_NO_WINDOW
-        self._process = subprocess.Popen(  # noqa: S603
-            command,
+        process = subprocess.Popen(  # noqa: S603
+            self._command(),
             cwd=str(self.runtime_dir.parent),
             env=env,
             stdin=subprocess.DEVNULL,
@@ -148,55 +123,131 @@ class CoreProcessManager:
             stderr=subprocess.DEVNULL,
             creationflags=creationflags,
         )
+        self._process = process
         self._owns_process = True
-        self._managed_pid = self._process.pid
+        self._shutdown_token = token
+        self.record_lifecycle("core_ownership_established", pid=process.pid, owned=True)
 
     def stop(self) -> None:
-        """Detach the launcher without shutting down ORION Core."""
+        """Detach without stopping Core; used only by non-canonical legacy runners."""
+
+        self.record_lifecycle("launcher_detached_core", pid=self.managed_pid, owned=self._owns_process)
         self._process = None
         self._owns_process = False
-        self._managed_pid = None
+        self._shutdown_token = None
 
-    def shutdown(self) -> None:
-        """Stop the ORION Core associated with this Launcher/runtime.
+    def _request_graceful_shutdown(self, token: str) -> bool:
+        request = urllib.request.Request(
+            f"{self.base_url}/v1/lifecycle/shutdown",
+            data=b"",
+            headers={"X-ORION-Lifecycle-Token": token},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=1.0) as response:
+                return response.status == 202
+        except (OSError, urllib.error.URLError):
+            return False
 
-        A Core spawned by this manager is stopped through its Popen handle. A
-        reused Core is stopped only when its runtime PID can be validated as the
-        packaged ``ORION-Core.exe``. Global image-name killing is forbidden.
-        """
+    @staticmethod
+    def _wait_for_process(process: subprocess.Popen[bytes], timeout: float) -> bool:
+        try:
+            process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return False
+        except OSError:
+            return process.poll() is not None
+        return True
+
+    @staticmethod
+    def _udp_port_available(host: str, port: int) -> bool:
+        family = socket.AF_INET6 if ":" in host else socket.AF_INET
+        try:
+            with socket.socket(family, socket.SOCK_DGRAM) as probe:
+                probe.bind((host, port))
+        except OSError:
+            return False
+        return True
+
+    def _wait_for_udp_release(self) -> bool:
+        host = os.environ.get("ORION_FLIGHT_BRIDGE_HOST", "127.0.0.1")
+        try:
+            port = int(os.environ.get("ORION_FLIGHT_BRIDGE_TELEMETRY_PORT", "45100"))
+        except ValueError:
+            return False
+        deadline = time.monotonic() + self.UDP_RELEASE_TIMEOUT
+        while time.monotonic() < deadline:
+            if self._udp_port_available(host, port):
+                return True
+            time.sleep(0.05)
+        return False
+
+    def shutdown(self) -> CoreShutdownResult:
+        """Gracefully stop only the exact Core child created by this manager."""
+
         process = self._process
-        if process is not None and self._owns_process:
-            if process.poll() is None:
-                process.terminate()
-                try:
-                    process.wait(timeout=self.GRACEFUL_STOP_TIMEOUT)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait(timeout=self.FORCE_STOP_TIMEOUT)
-            self._process = None
-            self._owns_process = False
-            self._managed_pid = None
-            return
+        token = self._shutdown_token
+        pid = process.pid if process is not None else None
+        if process is None or not self._owns_process or token is None:
+            result = CoreShutdownResult(False, pid, False, False, False, False, False, None)
+            self.record_lifecycle("external_core_preserved", pid=pid, owned=False)
+            self._clear_ownership(result)
+            return result
 
-        pid = self._managed_pid or self._validated_runtime_pid()
-        if pid is None:
-            self._process = None
-            self._owns_process = False
-            self._managed_pid = None
-            return
+        graceful_requested = False
+        graceful_exit = process.poll() is not None
+        fallback_terminate = False
+        fallback_kill = False
+        self.record_lifecycle("graceful_core_shutdown_requested", pid=pid, owned=True)
 
-        if os.name == "nt":
+        if not graceful_exit:
+            graceful_requested = self._request_graceful_shutdown(token)
+            if graceful_requested:
+                graceful_exit = self._wait_for_process(process, self.GRACEFUL_STOP_TIMEOUT)
+
+        if not graceful_exit and process.poll() is None:
+            fallback_terminate = True
+            self.record_lifecycle("graceful_core_shutdown_timeout", pid=pid, owned=True)
             try:
-                self._taskkill_pid(pid, force=False)
-                if not self._wait_until_core_stops(pid, self.GRACEFUL_STOP_TIMEOUT):
-                    self._taskkill_pid(pid, force=True)
-                    self._wait_until_core_stops(pid, self.FORCE_STOP_TIMEOUT)
+                process.terminate()
             except OSError:
                 pass
+            if not self._wait_for_process(process, self.TERMINATE_TIMEOUT) and process.poll() is None:
+                fallback_kill = True
+                try:
+                    process.kill()
+                except OSError:
+                    pass
+                self._wait_for_process(process, self.KILL_TIMEOUT)
 
+        process_exited = process.poll() is not None
+        udp_released = self._wait_for_udp_release() if process_exited else False
+        result = CoreShutdownResult(
+            True,
+            pid,
+            graceful_requested,
+            graceful_exit,
+            fallback_terminate,
+            fallback_kill,
+            process_exited,
+            udp_released,
+        )
+        self.record_lifecycle(
+            "core_exit_complete" if process_exited else "core_exit_failed",
+            pid=pid,
+            owned=True,
+            graceful=graceful_exit,
+            fallback=fallback_terminate,
+            udp_released=udp_released,
+        )
+        self._clear_ownership(result)
+        return result
+
+    def _clear_ownership(self, result: CoreShutdownResult) -> None:
+        self.last_shutdown = result
         self._process = None
         self._owns_process = False
-        self._managed_pid = None
+        self._shutdown_token = None
 
     def _command(self) -> list[str]:
         override = os.environ.get("ORION_CORE_EXECUTABLE")

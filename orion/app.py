@@ -3,15 +3,17 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from importlib import import_module
+from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, FastAPI, HTTPException, Query
+from fastapi import APIRouter, FastAPI, Header, HTTPException, Query
 
 from orion import __version__
 from orion.capabilities import MissionPackRegistration, capability_registry
 from orion.commands import CommandDispatcher, DcsCommand
 from orion.config import settings
 from orion.confirmations import ConfirmationDecision, ConfirmationStatus, PendingAction, PendingActionCreate, confirmation_store
+from orion.core_lifecycle import core_lifecycle
 from orion.dialogue import DialogueRequest, DialogueResult, classify_dialogue
 from orion.events import EventJournal
 from orion.fa18c_live_validation import hornet_live_validator
@@ -63,7 +65,12 @@ def store_heartbeat(*, source: str, protocol_version: str) -> None:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     apply_completed_onboarding_at_startup()
-    transport, _protocol = await start_udp_bridge(store_telemetry, store_heartbeat)
+    transport, _protocol = await start_udp_bridge(
+        store_telemetry,
+        store_heartbeat,
+        host=settings.telemetry_host,
+        port=settings.telemetry_port,
+    )
     proactive_mission_control.enable()
     try:
         yield
@@ -73,6 +80,19 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="ORION Core", version=__version__, lifespan=lifespan)
+
+
+@app.post("/v1/lifecycle/shutdown", status_code=202, include_in_schema=False)
+def request_core_shutdown(
+    lifecycle_token: Annotated[
+        str | None,
+        Header(alias="X-ORION-Lifecycle-Token"),
+    ] = None,
+) -> dict[str, str]:
+    if not core_lifecycle.request_shutdown(lifecycle_token):
+        # Only the Launcher that created this process has the unlogged token.
+        raise HTTPException(status_code=404, detail="Not found")
+    return {"status": "shutdown_requested"}
 
 
 def _include_router(module_name: str) -> None:

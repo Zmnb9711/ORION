@@ -1,12 +1,7 @@
 from __future__ import annotations
 
-from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
-
-from orion import core_process
-from orion.core_process import CoreProcessManager
 from orion.desktop_app_windows import WindowsOrionDesktopLauncher
 from orion.desktop_launcher_field_fixed import FieldFixedAudioLauncher
 
@@ -31,6 +26,17 @@ class _Recorder:
     def start(self) -> None:
         self.events.append(self.name)
 
+    @property
+    def owns_process(self) -> bool:
+        return True
+
+    @property
+    def managed_pid(self) -> int:
+        return 5151
+
+    def record_lifecycle(self, event: str, **_fields: object) -> None:
+        self.events.append(event)
+
 
 def test_full_exit_stops_realtime_provider_before_core_before_launcher() -> None:
     events: list[str] = []
@@ -43,10 +49,17 @@ def test_full_exit_stops_realtime_provider_before_core_before_launcher() -> None
 
     launcher.exit_application()
 
-    assert events == ["tray", "realtime-stop", "core", "launcher"]
+    assert events == [
+        "explicit_tray_exit_requested",
+        "realtime-stop",
+        "core",
+        "tray",
+        "launcher_exit",
+        "launcher",
+    ]
     assert launcher._really_exiting is True
     launcher.exit_application()
-    assert events == ["tray", "realtime-stop", "core", "launcher"]
+    assert events[-1] == "launcher"
 
 
 def test_window_close_to_tray_does_not_shutdown_runtime() -> None:
@@ -56,6 +69,7 @@ def test_window_close_to_tray_does_not_shutdown_runtime() -> None:
         config=SimpleNamespace(minimize_to_tray=True),
         _tray=_Recorder(events, "tray-start"),
         root=_Recorder(events, "window-withdraw"),
+        core=SimpleNamespace(owns_process=True),
         exit_application=lambda: events.append("FULL-EXIT"),
     )
 
@@ -63,44 +77,3 @@ def test_window_close_to_tray_does_not_shutdown_runtime() -> None:
 
     assert events == ["tray-start", "window-withdraw"]
     assert "FULL-EXIT" not in events
-
-
-def test_reused_windows_core_is_shutdown_by_exact_validated_pid(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    manager = CoreProcessManager("127.0.0.1", 8000, tmp_path)
-    manager._managed_pid = 5151
-    calls: list[tuple[int, bool]] = []
-    monkeypatch.setattr(core_process, "os", SimpleNamespace(name="nt"))
-    monkeypatch.setattr(manager, "_taskkill_pid", lambda pid, *, force: calls.append((pid, force)))
-    monkeypatch.setattr(manager, "_wait_until_core_stops", lambda pid, timeout: True)
-
-    manager.shutdown()
-
-    assert calls == [(5151, False)]
-    assert manager._managed_pid is None
-
-
-def test_reused_windows_core_force_kills_same_pid_only_after_timeout(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    manager = CoreProcessManager("127.0.0.1", 8000, tmp_path)
-    manager._managed_pid = 5151
-    calls: list[tuple[int, bool]] = []
-    waits = iter([False, True])
-    monkeypatch.setattr(core_process, "os", SimpleNamespace(name="nt"))
-    monkeypatch.setattr(manager, "_taskkill_pid", lambda pid, *, force: calls.append((pid, force)))
-    monkeypatch.setattr(manager, "_wait_until_core_stops", lambda pid, timeout: next(waits))
-
-    manager.shutdown()
-
-    assert calls == [(5151, False), (5151, True)]
-    assert manager._managed_pid is None
-
-
-def test_runtime_pid_is_accepted_only_for_packaged_orion_core(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    manager = CoreProcessManager("127.0.0.1", 8000, tmp_path)
-    tmp_path.mkdir(parents=True, exist_ok=True)
-    (tmp_path / "orion-core.pid").write_text("6161", encoding="ascii")
-    monkeypatch.setattr(core_process, "os", SimpleNamespace(name="nt"))
-    monkeypatch.setattr(manager, "_windows_image_name", lambda pid: "ORION-Core.exe")
-    assert manager._validated_runtime_pid() == 6161
-
-    monkeypatch.setattr(manager, "_windows_image_name", lambda pid: "notepad.exe")
-    assert manager._validated_runtime_pid() is None

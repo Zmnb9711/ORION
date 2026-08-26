@@ -31,10 +31,21 @@ class FieldFixedAudioLauncher(
         if getattr(self, "_really_exiting", False):
             return
         self._really_exiting = True
-        self._tray.stop()
-        self._stop_realtime_before_exit()
-        self.core.shutdown()
-        self.root.destroy()
+        recorder = getattr(self.core, "record_lifecycle", None)
+        if callable(recorder):
+            recorder(
+                "explicit_tray_exit_requested",
+                pid=getattr(self.core, "managed_pid", None),
+                owned=self.core.owns_process,
+            )
+        try:
+            self._stop_realtime_before_exit()
+            self.core.shutdown()
+        finally:
+            self._tray.stop()
+            if callable(recorder):
+                recorder("launcher_exit", owned=False)
+            self.root.destroy()
 
 
 def run_field_fixed_launcher(runtime_dir: Path, host: str = "127.0.0.1", port: int = 8000) -> int:
