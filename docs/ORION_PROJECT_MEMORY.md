@@ -1078,3 +1078,40 @@ STAGE 6B NOT STARTED.**
 - The exact next approved stage is **IA-4 PlannerProvider Contract**. Do not
   begin IA-5 Qwen/Yandex adapter work, IA-6 Router, Stage 6B, or domain action
   exposure as part of IA-3.
+
+## 24. IA-4 PlannerProvider Contract — 2026-08-27
+
+**Status: IA-4 IMPLEMENTED AND CODE-VALIDATED; IA-5 NOT STARTED.**
+
+- IA-4 adds a provider-neutral `PlannerProvider` / short-lived `PlannerRun`
+  boundary and a small Core-owned task state machine. Core retains interaction
+  and task identity, capability/permission policy, deadlines, cancellation,
+  tool execution, receipts, replay safety, final-response acceptance and
+  diagnostics. Providers receive only bounded task input and a filtered IA-3
+  catalog; they never receive World Model/domain ownership or create their own
+  `ExecutionContext`.
+- The bounded lifecycle supports immediate IA-0 `SemanticResponse`, sequential
+  tool rounds and multiple tool calls per round. Calls execute only through IA-3.
+  Exact call/event replays reuse completed results without handler execution or
+  another tool round; conflicting identity reuse fails closed. No write tool or
+  domain action is exposed.
+- Core absolute deadline and event-backed cancellation reach the provider wait
+  contract and are checked before new tools/continuations. Provider retry policy
+  is a future adapter bound, separate from tool retries; IA-4 implements no HTTP
+  retry or provider transport.
+- A final response must match the interaction/capability policy. Every claimed
+  authoritative fact requires a completed cited IA-3 result with authoritative
+  IA-2 provenance. Exact semantic value-to-result binding and freshness policy
+  remain an explicit IA-6 seam; missing/non-authoritative provenance already
+  fails closed.
+- Bounded diagnostics contain only lifecycle/correlation scalars. They exclude
+  prompts, user text, hidden reasoning, provider payloads, arguments/results,
+  credentials and mission state. Provider/Gateway exceptions are normalized and
+  redacted.
+- A deterministic fake proves the complete read-only vertical path from IA-0
+  request through IA-3 and IA-2 back to an accepted SemanticResponse, plus
+  lifecycle, replay, deadline, cancellation, failures and privacy. A DCS/provider
+  field test is not required.
+- Durable design: `docs/ia-4-planner-provider-contract.md`. The exact next
+  approved stage is **IA-5 Qwen3.6-35B / Yandex AI Studio Adapter**. Do not begin
+  IA-6 Router, Stage 6B or domain action exposure as part of IA-4.

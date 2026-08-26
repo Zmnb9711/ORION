@@ -350,6 +350,8 @@ def test_only_approved_architecture_boundaries_import_ia0_contracts() -> None:
         if "interaction_contracts" in path.read_text(encoding="utf-8"):
             consumers.append(path.name)
     assert sorted(consumers) == [
+        "planner.py",
+        "planner_contracts.py",
         "realtime_test_evidence.py",
         "tool_gateway.py",
         "tool_gateway_contracts.py",
