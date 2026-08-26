@@ -1115,3 +1115,31 @@ STAGE 6B NOT STARTED.**
 - Durable design: `docs/ia-4-planner-provider-contract.md`. The exact next
   approved stage is **IA-5 Qwen3.6-35B / Yandex AI Studio Adapter**. Do not begin
   IA-6 Router, Stage 6B or domain action exposure as part of IA-4.
+
+## 25. IA-5 Qwen3.6 / Yandex AI Studio Adapter — 2026-08-27
+
+**Status: IA-5 IMPLEMENTED, LIVE-PROVIDER AND CODE VALIDATED; IA-6 NOT STARTED.**
+
+- IA-5 adds a real non-streaming Yandex AI Studio Responses adapter for
+  `gpt://<folder_id>/qwen3.6-35b-a3b` without changing IA-0 through IA-4. It
+  uses the existing secure Yandex credential and Folder ID; Realtime Workflow
+  ID never enters planner configuration or requests.
+- Current official docs and live Gates 1–4 proved auth/model, ordinary response,
+  strict structured output, function calling, opaque `previous_response_id`,
+  usage, low reasoning and response deletion. Hidden reasoning is ignored and
+  never persisted.
+- Provider-safe hashed aliases translate Yandex function names back to the exact
+  task-filtered IA-3 definitions. Provider JSON becomes IA-4 requests only;
+  Core still owns execution context and IA-3 remains the sole executor.
+- Core retains complete ToolResults. Qwen receives a bounded WorldFact projection
+  preserving values/status/source/authority/freshness, and final JSON must build
+  a real IA-0 SemanticResponse accepted again by unchanged IA-4 provenance rules.
+- One reusable bounded `aiohttp` session serves a short planner task. Safe
+  transient retries are distinct from tool execution; deterministic provider or
+  semantic failures fail closed. Every obtained stored response is deleted at
+  terminal cleanup.
+- Real Gate 6 completed on synthetic state through Qwen -> IA-4 -> IA-3 -> IA-2
+  -> ToolResult -> Qwen continuation -> IA-0. No DCS, SRS, audio, Launcher,
+  IA-6 Router or Stage 6B work was performed.
+- Durable decision: `docs/ia-5-qwen-yandex-ai-studio-adapter.md`. The exact next
+  approved stage is **IA-6 Interaction Router + controlled Planner slice**.
