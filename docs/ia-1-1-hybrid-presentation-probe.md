@@ -1,6 +1,6 @@
 # IA-1.1 Hybrid Presentation / SpeechKit feasibility probe
 
-Status: **IA-1.1 IMPLEMENTED — FIELD VALIDATION PENDING**.
+Status: **IA-1.1 FIELD-VALIDATED — ARCHITECTURE DECISION PENDING**.
 
 This tranche adds a bounded diagnostic A/B probe. It does not select a production
 presentation architecture and does not route normal ORION responses through
@@ -23,7 +23,9 @@ Official sources checked on 2026-08-26:
 - [SpeechKit access roles](https://aistudio.yandex.ru/docs/en/speechkit/security/index.html)
 - [SpeechKit voices and roles](https://aistudio.yandex.ru/en/docs/speechkit/tts/voices)
 - [SpeechKit TTS overview](https://aistudio.yandex.ru/docs/en/speechkit/tts/)
+- [SpeechKit response status codes](https://aistudio.yandex.ru/docs/en/speechkit/concepts/response.html)
 - [SpeechKit v3 streaming API](https://aistudio.yandex.ru/docs/en/speechkit/tts/api/tts-streaming.html)
+- [aiohttp client session and timeout reference](https://docs.aiohttp.org/en/stable/client_reference.html)
 
 DOCUMENTED: v1 REST supports direct synthesis, API-key authorization, LPCM at
 48/16/8 kHz, per-request voice, role (`emotion`) and speed. The probe uses the
@@ -36,9 +38,34 @@ NOT AVAILABLE IN THIS PROBE: pitch control. It is not a documented v1 request
 parameter. The heavier v3 streaming/protobuf surface is intentionally not added
 only to obtain another control.
 
-NOT OBSERVABLE until the controlled field test: whether the configured service
-account currently has `ai.speechkit-tts.user`, real latency, perceived voice/style
-differences, radio intelligibility, and provider behavior for this account.
+FIELD-OBSERVED: the configured account can synthesize all selected v1 profiles;
+successful REST requests return valid LPCM; both A/B arms pass semantic checks and
+were judged acoustically clear through SRS. The architecture choice remains open.
+
+## Bounded SpeechKit transport resilience
+
+Field evidence on 2026-08-26 captured two SpeechKit `ConnectionTimeoutError`
+failures at different cases, each immediately after a successful Realtime/SRS arm.
+The failures arrived at the configured five-second connection bound. Adjacent
+runs completed 24 SpeechKit requests with valid audio. A separate failed run
+timed out before the disposable Realtime session was registered and is not
+classified as a SpeechKit failure.
+
+The SpeechKit client now owns one `aiohttp.ClientSession` for a probe run so its
+DNS cache, connection pool, and keep-alive can be reused. Each synthesis permits
+at most three total attempts with 250 ms and 750 ms backoffs. Retries are limited
+to connection/read/request timeouts, safe DNS/connection/body failures, HTTP 429,
+and HTTP 500/502/503/504. HTTP 400/401/403, TLS certificate failures, local
+profile/request/audio validation, semantic failures, cancellation, and SRS
+failures are never retried. Only provider synthesis is retried before SRS queue
+acceptance; partial or duplicate SRS transmissions cannot result.
+
+Every attempt records bounded scalar events with run/case/response correlation,
+profile, attempt number, elapsed time, safe failure category, HTTP status when
+available, retry disposition, exhaustion, and successful PCM size. Credentials,
+headers, response bodies, and exception text are not recorded. A
+`ConnectionTimeoutError` proves the aiohttp connection phase exceeded its bound,
+but existing evidence cannot separate DNS, TCP, and TLS sub-stages.
 
 ## Probe invariants
 
@@ -68,7 +95,7 @@ differences, radio intelligibility, and provider behavior for this account.
   20 seconds per artifact and 40 MiB per test session). Microphone, received radio,
   and unrelated SRS audio are never captured.
 
-## Decision matrix (pending field evidence)
+## Decision matrix (field evidence available; decision pending)
 
 | Criterion | A: Realtime only | B: Hybrid Realtime + deterministic TTS | C: TTS for all finalized semantics |
 |---|---|---|---|

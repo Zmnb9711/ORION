@@ -18,6 +18,7 @@ from orion.yandex_hybrid_probe import (
     HybridRuntimeContext,
     RealtimePresentationClient,
     SpeechKitFailureCategory,
+    SpeechKitAttemptContext,
     SpeechKitProviderError,
     SpeechKitTtsClient,
     TestSemanticCase as SemanticCase,
@@ -77,9 +78,43 @@ class FakeSpeechKitSession:
     async def __aexit__(self, *_args: object) -> None:
         pass
 
+    async def close(self) -> None:
+        pass
+
     def post(self, url: str, *, headers: dict[str, str], data: bytes) -> FakeSpeechKitResponse:
         self.request = (url, headers, data)
         return self.response
+
+
+class SequencedSpeechKitSession:
+    def __init__(self, outcomes: list[FakeSpeechKitResponse | Exception]) -> None:
+        self.outcomes = outcomes
+        self.requests = 0
+        self.closed = False
+
+    async def __aenter__(self):  # noqa: ANN204
+        return self
+
+    async def __aexit__(self, *_args: object) -> None:
+        self.closed = True
+
+    async def close(self) -> None:
+        self.closed = True
+
+    def post(self, *_args: object, **_kwargs: object) -> FakeSpeechKitResponse:
+        self.requests += 1
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+
+def _attempt_context() -> SpeechKitAttemptContext:
+    return SpeechKitAttemptContext("run123", "heading-137", "ia11-run123-heading-137-speechkit")
+
+
+async def _no_sleep(_seconds: float) -> None:
+    pass
 
 
 @pytest.mark.parametrize(
@@ -137,13 +172,223 @@ def test_speechkit_success_returns_bounded_lpcm_and_uses_api_key_header(monkeypa
         pcm = bytes(960)
         session = FakeSpeechKitSession(FakeSpeechKitResponse(200, pcm))
         monkeypatch.setattr(aiohttp, "ClientSession", lambda **_kwargs: session)
-        audio, text = await SpeechKitTtsClient().synthesize(hybrid_probe_cases()[0], "top-secret")
+        events: list[tuple[str, dict[str, object]]] = []
+        audio, text = await SpeechKitTtsClient().synthesize(
+            hybrid_probe_cases()[0],
+            "top-secret",
+            attempt_context=_attempt_context(),
+            observer=lambda event, fields: events.append((event, fields)),
+        )
         assert audio == pcm
         assert text == hybrid_probe_cases()[0].finalized_text
         assert session.request is not None
         _url, headers, body = session.request
         assert headers["Authorization"] == "Api-Key top-secret"
         assert b"top-secret" not in body
+        assert [event for event, _fields in events] == [
+            "speechkit_attempt_started",
+            "speechkit_attempt_succeeded",
+        ]
+        assert events[-1][1]["attempt_number"] == 1
+        assert events[-1][1]["pcm_bytes"] == len(pcm)
+
+    asyncio.run(scenario())
+
+
+def test_speechkit_context_reuses_one_session_across_syntheses(monkeypatch) -> None:  # noqa: ANN001
+    async def scenario() -> None:
+        session = SequencedSpeechKitSession(
+            [FakeSpeechKitResponse(200, bytes(960)), FakeSpeechKitResponse(200, bytes(960))]
+        )
+        sessions_created = 0
+
+        def session_factory(**_kwargs):  # noqa: ANN202
+            nonlocal sessions_created
+            sessions_created += 1
+            return session
+
+        monkeypatch.setattr(aiohttp, "ClientSession", session_factory)
+        async with SpeechKitTtsClient() as client:
+            await client.synthesize(hybrid_probe_cases()[0], "top-secret")
+            await client.synthesize(hybrid_probe_cases()[1], "top-secret")
+        assert sessions_created == 1
+        assert session.requests == 2
+        assert session.closed
+
+    asyncio.run(scenario())
+
+
+def test_speechkit_connection_timeout_then_success_is_bounded_and_observable(monkeypatch) -> None:  # noqa: ANN001
+    async def scenario() -> None:
+        session = SequencedSpeechKitSession(
+            [aiohttp.ConnectionTimeoutError("connect"), FakeSpeechKitResponse(200, bytes(960))]
+        )
+        monkeypatch.setattr(aiohttp, "ClientSession", lambda **_kwargs: session)
+        events: list[tuple[str, dict[str, object]]] = []
+        audio, _text = await SpeechKitTtsClient(sleep=_no_sleep).synthesize(
+            hybrid_probe_cases()[0],
+            "top-secret",
+            attempt_context=_attempt_context(),
+            observer=lambda event, fields: events.append((event, fields)),
+        )
+        assert audio == bytes(960)
+        assert session.requests == 2
+        assert [event for event, _fields in events] == [
+            "speechkit_attempt_started",
+            "speechkit_attempt_failed",
+            "speechkit_attempt_started",
+            "speechkit_attempt_succeeded",
+        ]
+        assert events[1][1]["failure_category"] == "connect_timeout"
+        assert events[1][1]["retry_scheduled"] is True
+        assert events[-1][1]["attempt_number"] == 2
+
+    asyncio.run(scenario())
+
+
+def test_speechkit_two_transient_failures_then_success(monkeypatch) -> None:  # noqa: ANN001
+    async def scenario() -> None:
+        session = SequencedSpeechKitSession(
+            [
+                aiohttp.ConnectionTimeoutError("connect"),
+                aiohttp.ServerDisconnectedError("reset"),
+                FakeSpeechKitResponse(200, bytes(960)),
+            ]
+        )
+        monkeypatch.setattr(aiohttp, "ClientSession", lambda **_kwargs: session)
+        events: list[tuple[str, dict[str, object]]] = []
+        await SpeechKitTtsClient(sleep=_no_sleep).synthesize(
+            hybrid_probe_cases()[0],
+            "top-secret",
+            attempt_context=_attempt_context(),
+            observer=lambda event, fields: events.append((event, fields)),
+        )
+        assert session.requests == 3
+        failures = [fields for event, fields in events if event == "speechkit_attempt_failed"]
+        assert [item["failure_category"] for item in failures] == [
+            "connect_timeout",
+            "connection_failure",
+        ]
+        assert events[-1][1]["attempt_number"] == 3
+
+    asyncio.run(scenario())
+
+
+def test_speechkit_all_transient_attempts_exhausted(monkeypatch) -> None:  # noqa: ANN001
+    async def scenario() -> None:
+        session = SequencedSpeechKitSession(
+            [aiohttp.ConnectionTimeoutError("connect") for _index in range(3)]
+        )
+        monkeypatch.setattr(aiohttp, "ClientSession", lambda **_kwargs: session)
+        events: list[tuple[str, dict[str, object]]] = []
+        with pytest.raises(aiohttp.ConnectionTimeoutError):
+            await SpeechKitTtsClient(sleep=_no_sleep).synthesize(
+                hybrid_probe_cases()[0],
+                "top-secret",
+                attempt_context=_attempt_context(),
+                observer=lambda event, fields: events.append((event, fields)),
+            )
+        assert session.requests == 3
+        assert events[-1][0] == "speechkit_attempt_failed"
+        assert events[-1][1]["retry_scheduled"] is False
+        assert events[-1][1]["retry_exhausted"] is True
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("status", [429, 500, 503])
+def test_speechkit_retryable_http_status_then_success(monkeypatch, status: int) -> None:  # noqa: ANN001
+    async def scenario() -> None:
+        session = SequencedSpeechKitSession(
+            [FakeSpeechKitResponse(status, b"{}"), FakeSpeechKitResponse(200, bytes(960))]
+        )
+        monkeypatch.setattr(aiohttp, "ClientSession", lambda **_kwargs: session)
+        events: list[tuple[str, dict[str, object]]] = []
+        await SpeechKitTtsClient(sleep=_no_sleep).synthesize(
+            hybrid_probe_cases()[0],
+            "top-secret",
+            attempt_context=_attempt_context(),
+            observer=lambda event, fields: events.append((event, fields)),
+        )
+        assert session.requests == 2
+        failure = next(fields for event, fields in events if event == "speechkit_attempt_failed")
+        assert failure["http_status"] == status
+        assert failure["retry_scheduled"] is True
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("status", [400, 401, 403])
+def test_speechkit_nonretryable_http_status_fails_once(monkeypatch, status: int) -> None:  # noqa: ANN001
+    async def scenario() -> None:
+        session = SequencedSpeechKitSession([FakeSpeechKitResponse(status, b"{}")])
+        monkeypatch.setattr(aiohttp, "ClientSession", lambda **_kwargs: session)
+        events: list[tuple[str, dict[str, object]]] = []
+        with pytest.raises(SpeechKitProviderError):
+            await SpeechKitTtsClient(sleep=_no_sleep).synthesize(
+                hybrid_probe_cases()[0],
+                "top-secret",
+                attempt_context=_attempt_context(),
+                observer=lambda event, fields: events.append((event, fields)),
+            )
+        assert session.requests == 1
+        assert events[-1][1]["retry_scheduled"] is False
+        assert events[-1][1]["retry_exhausted"] is False
+
+    asyncio.run(scenario())
+
+
+def test_speechkit_unsupported_profile_makes_zero_http_attempts(monkeypatch) -> None:  # noqa: ANN001
+    async def scenario() -> None:
+        monkeypatch.setattr(
+            aiohttp,
+            "ClientSession",
+            lambda **_kwargs: pytest.fail("HTTP session must not be created"),
+        )
+        case = SemanticCase("unsupported", "Проверка.", (("провер",),), "dasha", "neutral")
+        with pytest.raises(ValueError, match="not supported"):
+            await SpeechKitTtsClient().synthesize(case, "top-secret")
+
+    asyncio.run(scenario())
+
+
+def test_speechkit_cancellation_during_backoff_exits_cleanly(monkeypatch) -> None:  # noqa: ANN001
+    async def cancel_backoff(_seconds: float) -> None:
+        raise asyncio.CancelledError
+
+    async def scenario() -> None:
+        session = SequencedSpeechKitSession([aiohttp.ConnectionTimeoutError("connect")])
+        monkeypatch.setattr(aiohttp, "ClientSession", lambda **_kwargs: session)
+        events: list[tuple[str, dict[str, object]]] = []
+        with pytest.raises(asyncio.CancelledError):
+            await SpeechKitTtsClient(sleep=cancel_backoff).synthesize(
+                hybrid_probe_cases()[0],
+                "top-secret",
+                attempt_context=_attempt_context(),
+                observer=lambda event, fields: events.append((event, fields)),
+            )
+        assert session.requests == 1
+        assert events[-1][0] == "speechkit_retry_cancelled"
+        assert events[-1][1]["attempt_number"] == 2
+
+    asyncio.run(scenario())
+
+
+def test_speechkit_attempt_evidence_never_contains_secret(monkeypatch) -> None:  # noqa: ANN001
+    async def scenario() -> None:
+        payload = b'{"error_code":"BAD_REQUEST","error_message":"top-secret"}'
+        session = SequencedSpeechKitSession([FakeSpeechKitResponse(400, payload)])
+        monkeypatch.setattr(aiohttp, "ClientSession", lambda **_kwargs: session)
+        events: list[tuple[str, dict[str, object]]] = []
+        with pytest.raises(SpeechKitProviderError):
+            await SpeechKitTtsClient(sleep=_no_sleep).synthesize(
+                hybrid_probe_cases()[0],
+                "top-secret",
+                attempt_context=_attempt_context(),
+                observer=lambda event, fields: events.append((event, fields)),
+            )
+        assert "top-secret" not in repr(events)
+        assert "Authorization" not in repr(events)
 
     asyncio.run(scenario())
 
@@ -216,7 +461,11 @@ class FakeEvidence:
 
     def __init__(self) -> None:
         self.cases: list[tuple[str, str]] = []
+        self.events: list[tuple[str, dict[str, object]]] = []
         self.isolation: dict[str, object] = {}
+
+    def record(self, event: str, **fields: object) -> None:
+        self.events.append((event, fields))
 
     def record_hybrid_run(self, **_fields: object) -> None:
         pass
@@ -257,7 +506,18 @@ class FakeRealtime:
 
 
 class FakeSpeechKit:
-    async def synthesize(self, case: SemanticCase, _api_key: str) -> tuple[bytes, str]:
+    async def __aenter__(self):  # noqa: ANN204
+        return self
+
+    async def __aexit__(self, *_args: object) -> None:
+        pass
+
+    async def synthesize(
+        self,
+        case: SemanticCase,
+        _api_key: str,
+        **_kwargs: object,
+    ) -> tuple[bytes, str]:
         return bytes(220), case.finalized_text
 
 
@@ -308,9 +568,55 @@ def test_runner_serializes_twenty_ab_transmissions_and_preserves_session_isolati
     asyncio.run(scenario())
 
 
+def test_runner_retry_transmits_successful_speechkit_audio_exactly_once(monkeypatch) -> None:  # noqa: ANN001
+    async def scenario() -> None:
+        evidence = FakeEvidence()
+        monkeypatch.setattr(hybrid_module, "realtime_test_evidence", evidence)
+        monkeypatch.setattr(hybrid_module, "hybrid_probe_cases", lambda: (hybrid_probe_cases()[0],))
+        session = SequencedSpeechKitSession(
+            [aiohttp.ConnectionTimeoutError("connect"), FakeSpeechKitResponse(200, bytes(960))]
+        )
+        monkeypatch.setattr(aiohttp, "ClientSession", lambda **_kwargs: session)
+        endpoint = SerialEndpoint()
+        runner = HybridProbeRunner(
+            speechkit_factory=lambda: SpeechKitTtsClient(sleep=_no_sleep),
+            realtime_factory=lambda _key, _folder: FakeRealtime(),
+            sleep=_no_sleep,
+        )
+        completed, _probe_id, passed = await runner.run(
+            HybridRuntimeContext("secret", "folder", endpoint, "main", "ctx"),
+            "run123",
+            capture_audio=False,
+            progress=lambda *_args: None,
+        )
+        assert completed == 2
+        assert passed
+        assert session.requests == 2
+        assert endpoint.calls == [
+            "ia11-run123-heading-137-realtime",
+            "ia11-run123-heading-137-speechkit",
+        ]
+        assert [event for event, _fields in evidence.events].count(
+            "speechkit_attempt_succeeded"
+        ) == 1
+
+    asyncio.run(scenario())
+
+
 def test_speechkit_failure_is_fail_closed_without_realtime_fallback(monkeypatch) -> None:  # noqa: ANN001
     class RejectingSpeechKit:
-        async def synthesize(self, _case: SemanticCase, _api_key: str) -> tuple[bytes, str]:
+        async def __aenter__(self):  # noqa: ANN204
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            pass
+
+        async def synthesize(
+            self,
+            _case: SemanticCase,
+            _api_key: str,
+            **_kwargs: object,
+        ) -> tuple[bytes, str]:
             raise SpeechKitProviderError(401)
 
     async def scenario() -> None:
@@ -406,6 +712,36 @@ def test_audio_evidence_is_opt_in_bounded_correlated_and_contains_no_mic_or_radi
     assert "unrelated_srs_audio_included=false" in manifest
     assert hashlib.sha256(wav).hexdigest() in summary
     assert "response-1" in summary
+
+
+def test_speechkit_attempt_observability_is_bounded_and_secret_free(tmp_path) -> None:  # noqa: ANN001
+    recorder = RealtimeTestEvidenceRecorder(tmp_path)
+    recorder.start(provider="yandex", transport="srs")
+    recorder.record(
+        "speechkit_attempt_failed",
+        probe_run_id="run123",
+        probe_case_id="heading-137",
+        response_id="ia11-run123-heading-137-speechkit",
+        requested_voice="jane",
+        requested_style="neutral",
+        attempt_number=1,
+        elapsed_ms=5001.25,
+        failure_category="connect_timeout",
+        http_status=None,
+        retry_scheduled=True,
+        retry_exhausted=False,
+        unsafe_detail="Authorization: Api-Key top-secret",
+    )
+    output = recorder.stop_and_export()
+    with zipfile.ZipFile(output) as archive:
+        events = archive.read("events.jsonl").decode("utf-8")
+    assert "speechkit_attempt_failed" in events
+    assert '"attempt_number": 1' in events
+    assert '"failure_category": "connect_timeout"' in events
+    assert '"retry_scheduled": true' in events
+    assert "unsafe_detail" not in events
+    assert "top-secret" not in events
+    assert "Authorization" not in events
 
 
 def test_hybrid_adapter_requires_active_evidence_and_records_review(monkeypatch) -> None:  # noqa: ANN001

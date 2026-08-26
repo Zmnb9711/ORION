@@ -16,7 +16,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any, Callable, Protocol
+from typing import Any, Awaitable, Callable, Protocol
 from urllib.parse import urlencode
 from uuid import uuid4
 
@@ -35,6 +35,9 @@ ORION_PROVIDER_RATE = 44_100
 PROBE_TIMEOUT_S = 30.0
 TX_TIMEOUT_S = 45.0
 TX_GUARD_S = 0.250
+SPEECHKIT_MAX_ATTEMPTS = 3
+SPEECHKIT_RETRY_BACKOFF_S = (0.250, 0.750)
+SPEECHKIT_RETRYABLE_HTTP_STATUSES = frozenset({429, 500, 502, 503, 504})
 SPEECHKIT_V1_PROBE_PROFILES = frozenset(
     {
         ("jane", "neutral"),
@@ -253,24 +256,223 @@ class HybridRuntimeContext:
     context_version: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class SpeechKitAttemptContext:
+    run_id: str
+    case_id: str
+    response_id: str
+
+
+SpeechKitAttemptObserver = Callable[[str, dict[str, object]], None]
+
+
+def _speechkit_failure(exc: Exception) -> tuple[str, int | None, bool]:
+    """Return a safe category, optional HTTP status, and retry decision."""
+
+    import aiohttp
+
+    if isinstance(exc, SpeechKitProviderError):
+        return (
+            exc.category.value,
+            exc.status,
+            exc.status in SPEECHKIT_RETRYABLE_HTTP_STATUSES,
+        )
+    if isinstance(exc, aiohttp.ConnectionTimeoutError):
+        return "connect_timeout", None, True
+    if isinstance(exc, aiohttp.SocketTimeoutError):
+        return "read_timeout", None, True
+    if isinstance(exc, aiohttp.ClientConnectorDNSError):
+        return "dns_failure", None, True
+    if isinstance(
+        exc,
+        (
+            aiohttp.ClientConnectorCertificateError,
+            aiohttp.ClientConnectorSSLError,
+            aiohttp.ServerFingerprintMismatch,
+        ),
+    ):
+        return "tls_validation_failure", None, False
+    if isinstance(exc, aiohttp.ClientPayloadError):
+        return "response_body_failure", None, True
+    if isinstance(exc, aiohttp.ClientConnectionError):
+        return "connection_failure", None, True
+    if isinstance(exc, asyncio.TimeoutError):
+        return "request_timeout", None, True
+    if isinstance(exc, ValueError):
+        return "invalid_audio", None, False
+    return "local_error", None, False
+
+
 class SpeechKitTtsClient:
-    async def synthesize(self, case: TestSemanticCase, api_key: str) -> tuple[bytes, str]:
+    """Reusable async SpeechKit REST v1 transport with bounded transient retry."""
+
+    def __init__(
+        self,
+        *,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    ) -> None:
+        self._sleep = sleep
+        self._session: Any = None
+
+    @staticmethod
+    def _timeout() -> Any:
+        import aiohttp
+
+        return aiohttp.ClientTimeout(total=PROBE_TIMEOUT_S, connect=5.0)
+
+    async def __aenter__(self) -> SpeechKitTtsClient:
+        import aiohttp
+
+        if self._session is not None:
+            raise RuntimeError("SpeechKit client session is already open")
+        self._session = aiohttp.ClientSession(timeout=self._timeout())
+        return self
+
+    async def __aexit__(self, *_args: object) -> None:
+        session = self._session
+        self._session = None
+        if session is not None:
+            await session.close()
+
+    async def synthesize(
+        self,
+        case: TestSemanticCase,
+        api_key: str,
+        *,
+        attempt_context: SpeechKitAttemptContext | None = None,
+        observer: SpeechKitAttemptObserver | None = None,
+    ) -> tuple[bytes, str]:
         import aiohttp
 
         url, headers, body = speechkit_request(case, api_key=api_key)
-        timeout = aiohttp.ClientTimeout(total=PROBE_TIMEOUT_S, connect=5.0)
-        async with aiohttp.ClientSession(timeout=timeout) as client:
-            async with client.post(url, headers=headers, data=body) as response:
-                payload = await response.read()
-                if response.status != 200:
-                    raise SpeechKitProviderError.from_payload(
-                        response.status,
-                        payload,
-                        secret=api_key,
+        if self._session is not None:
+            return await self._synthesize_with_session(
+                self._session,
+                case,
+                api_key,
+                url,
+                headers,
+                body,
+                attempt_context,
+                observer,
+            )
+        async with aiohttp.ClientSession(timeout=self._timeout()) as client:
+            return await self._synthesize_with_session(
+                client,
+                case,
+                api_key,
+                url,
+                headers,
+                body,
+                attempt_context,
+                observer,
+            )
+
+    async def _synthesize_with_session(
+        self,
+        client: Any,
+        case: TestSemanticCase,
+        api_key: str,
+        url: str,
+        headers: dict[str, str],
+        body: bytes,
+        attempt_context: SpeechKitAttemptContext | None,
+        observer: SpeechKitAttemptObserver | None,
+    ) -> tuple[bytes, str]:
+        for attempt in range(1, SPEECHKIT_MAX_ATTEMPTS + 1):
+            started = time.monotonic()
+            self._emit_attempt(
+                observer,
+                "speechkit_attempt_started",
+                attempt_context,
+                case,
+                attempt_number=attempt,
+            )
+            try:
+                async with client.post(url, headers=headers, data=body) as response:
+                    payload = await response.read()
+                    if response.status != 200:
+                        raise SpeechKitProviderError.from_payload(
+                            response.status,
+                            payload,
+                            secret=api_key,
+                        )
+                if not payload or len(payload) % 2:
+                    raise ValueError("SpeechKit returned invalid LPCM audio")
+            except asyncio.CancelledError:
+                self._emit_attempt(
+                    observer,
+                    "speechkit_attempt_cancelled",
+                    attempt_context,
+                    case,
+                    attempt_number=attempt,
+                    elapsed_ms=(time.monotonic() - started) * 1000,
+                    retry_scheduled=False,
+                    retry_exhausted=False,
+                )
+                raise
+            except Exception as exc:
+                category, http_status, retryable = _speechkit_failure(exc)
+                retry_scheduled = retryable and attempt < SPEECHKIT_MAX_ATTEMPTS
+                self._emit_attempt(
+                    observer,
+                    "speechkit_attempt_failed",
+                    attempt_context,
+                    case,
+                    attempt_number=attempt,
+                    elapsed_ms=(time.monotonic() - started) * 1000,
+                    failure_category=category,
+                    http_status=http_status,
+                    retry_scheduled=retry_scheduled,
+                    retry_exhausted=retryable and not retry_scheduled,
+                )
+                if not retry_scheduled:
+                    raise
+                try:
+                    await self._sleep(SPEECHKIT_RETRY_BACKOFF_S[attempt - 1])
+                except asyncio.CancelledError:
+                    self._emit_attempt(
+                        observer,
+                        "speechkit_retry_cancelled",
+                        attempt_context,
+                        case,
+                        attempt_number=attempt + 1,
                     )
-        if not payload or len(payload) % 2:
-            raise ValueError("SpeechKit returned invalid LPCM audio")
-        return payload, case.finalized_text
+                    raise
+                continue
+            self._emit_attempt(
+                observer,
+                "speechkit_attempt_succeeded",
+                attempt_context,
+                case,
+                attempt_number=attempt,
+                elapsed_ms=(time.monotonic() - started) * 1000,
+                pcm_bytes=len(payload),
+                retry_scheduled=False,
+                retry_exhausted=False,
+            )
+            return payload, case.finalized_text
+        raise AssertionError("SpeechKit retry loop exhausted without a result")
+
+    @staticmethod
+    def _emit_attempt(
+        observer: SpeechKitAttemptObserver | None,
+        event: str,
+        context: SpeechKitAttemptContext | None,
+        case: TestSemanticCase,
+        **fields: object,
+    ) -> None:
+        if observer is None:
+            return
+        safe: dict[str, object] = {
+            "probe_run_id": context.run_id if context else "NOT OBSERVABLE",
+            "probe_case_id": context.case_id if context else case.case_id,
+            "response_id": context.response_id if context else "NOT OBSERVABLE",
+            "requested_voice": case.voice,
+            "requested_style": case.role,
+            **fields,
+        }
+        observer(event, safe)
 
 
 class RealtimePresentationClient:
@@ -470,7 +672,6 @@ class HybridProbeRunner:
     ) -> tuple[int, str, bool]:
         completed = 0
         text_gate_passed = True
-        speechkit = self._speechkit_factory()
         probe_session_id = ""
         async with self._realtime_factory(context.api_key, context.folder_id) as realtime:
             probe_session_id = realtime.session_id or ""
@@ -480,57 +681,70 @@ class HybridProbeRunner:
                 probe_session_id=probe_session_id,
                 context_version_before=context.context_version,
             )
-            current_config: tuple[str, str] | None = None
-            for case in hybrid_probe_cases():
-                if current_config != (case.voice, case.role):
-                    observations = await realtime.apply_voice(case.voice, case.role)
-                    realtime_test_evidence.record_hybrid_config(run_id, case.case_id, case.voice, case.role, observations)
-                    current_config = (case.voice, case.role)
-                for backend in ("realtime", "speechkit"):
-                    progress(case.case_id, backend, probe_session_id)
-                    request_at = time.monotonic()
-                    if backend == "realtime":
-                        pcm44, transcript, provider_timing = await realtime.synthesize(case)
-                    else:
-                        pcm48, transcript = await speechkit.synthesize(case, context.api_key)
-                        first_at = time.monotonic()
-                        pcm44 = normalize_speechkit_pcm(pcm48)
-                        provider_timing = {
-                            "provider_first_audio_ms": (first_at - request_at) * 1000,
-                            "provider_complete_ms": (time.monotonic() - request_at) * 1000,
-                        }
-                    observed_text = transcript if backend == "realtime" else case.finalized_text
-                    evaluation = evaluate_semantics(case, observed_text)
-                    text_gate_passed = text_gate_passed and evaluation["status"] == "PASS"
-                    response_id = f"ia11-{run_id[:8]}-{case.case_id}-{backend}"
-                    if capture_audio:
-                        realtime_test_evidence.record_hybrid_audio(
+            async with self._speechkit_factory() as speechkit:
+                current_config: tuple[str, str] | None = None
+                for case in hybrid_probe_cases():
+                    if current_config != (case.voice, case.role):
+                        observations = await realtime.apply_voice(case.voice, case.role)
+                        realtime_test_evidence.record_hybrid_config(run_id, case.case_id, case.voice, case.role, observations)
+                        current_config = (case.voice, case.role)
+                    for backend in ("realtime", "speechkit"):
+                        progress(case.case_id, backend, probe_session_id)
+                        response_id = f"ia11-{run_id[:8]}-{case.case_id}-{backend}"
+                        request_at = time.monotonic()
+                        if backend == "realtime":
+                            pcm44, transcript, provider_timing = await realtime.synthesize(case)
+                        else:
+                            pcm48, transcript = await speechkit.synthesize(
+                                case,
+                                context.api_key,
+                                attempt_context=SpeechKitAttemptContext(
+                                    run_id=run_id,
+                                    case_id=case.case_id,
+                                    response_id=response_id,
+                                ),
+                                observer=lambda event, fields: realtime_test_evidence.record(
+                                    event,
+                                    **fields,
+                                ),
+                            )
+                            first_at = time.monotonic()
+                            pcm44 = normalize_speechkit_pcm(pcm48)
+                            provider_timing = {
+                                "provider_first_audio_ms": (first_at - request_at) * 1000,
+                                "provider_complete_ms": (time.monotonic() - request_at) * 1000,
+                            }
+                        observed_text = transcript if backend == "realtime" else case.finalized_text
+                        evaluation = evaluate_semantics(case, observed_text)
+                        text_gate_passed = text_gate_passed and evaluation["status"] == "PASS"
+                        if capture_audio:
+                            realtime_test_evidence.record_hybrid_audio(
+                                run_id=run_id,
+                                case_id=case.case_id,
+                                backend=backend,
+                                response_id=response_id,
+                                pcm44=pcm44,
+                            )
+                        queue_at = time.monotonic()
+                        tx = await asyncio.to_thread(
+                            context.endpoint.transmit_probe_audio,
+                            response_id,
+                            pcm44,
+                            TX_TIMEOUT_S,
+                        )
+                        completed += 1
+                        realtime_test_evidence.record_hybrid_case(
                             run_id=run_id,
-                            case_id=case.case_id,
+                            case=case,
                             backend=backend,
                             response_id=response_id,
-                            pcm44=pcm44,
+                            transcript=observed_text,
+                            evaluation=evaluation,
+                            provider_timing=provider_timing,
+                            queue_latency_ms=(queue_at - request_at) * 1000,
+                            tx_timing=tx,
                         )
-                    queue_at = time.monotonic()
-                    tx = await asyncio.to_thread(
-                        context.endpoint.transmit_probe_audio,
-                        response_id,
-                        pcm44,
-                        TX_TIMEOUT_S,
-                    )
-                    completed += 1
-                    realtime_test_evidence.record_hybrid_case(
-                        run_id=run_id,
-                        case=case,
-                        backend=backend,
-                        response_id=response_id,
-                        transcript=observed_text,
-                        evaluation=evaluation,
-                        provider_timing=provider_timing,
-                        queue_latency_ms=(queue_at - request_at) * 1000,
-                        tx_timing=tx,
-                    )
-                    await self._sleep(TX_GUARD_S)
+                        await self._sleep(TX_GUARD_S)
             recovery = await realtime.interruption_recovery()
             realtime_test_evidence.record_hybrid_recovery(run_id, recovery)
             realtime_test_evidence.record_hybrid_isolation(
