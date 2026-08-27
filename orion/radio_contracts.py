@@ -195,6 +195,7 @@ class RadioTransmissionRequest(_RadioModel):
     context: RadioContext
     audio: FinalizedPcmAudio = Field(repr=False)
     transport_id: TransportId | None = None
+    timeout_s: float = Field(default=35.0, gt=0, le=120.0)
 
 
 class RadioFailure(_RadioModel):

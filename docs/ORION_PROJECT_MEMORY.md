@@ -1190,3 +1190,53 @@ STARTED.**
 - Durable design: `docs/stage-6b1-radio-router-contracts.md`. The next possible
   stage is **6B.2**, only after separate authorization. Do not begin Phraseology,
   domain migration, Launcher UX or DCS Native Voice work as part of 6B.1.
+
+## 28. Stage 6B.2 production SRS radio transport adapter — 2026-08-28
+
+**Status: IMPLEMENTED AND DETERMINISTICALLY VALIDATED; LIVE SRS FIELD GATE
+REQUIRED; STAGE 6B.3 NOT STARTED.**
+
+- `SrsRadioTransportAdapter` implements the Stage 6B.1 boundary while retaining
+  the existing field-proven SRS 2.4.x connection, registration, RadioInfo,
+  single-slot TX, 44.1-to-16 kHz resampling, Opus, packetization, retransmit=0,
+  40 ms pacing, UDP send and exact `tx_completed` ownership.
+- The first controlled production migration is the IA-1.1 Hybrid Presentation
+  Probe finalized-PCM path. It now uses `RadioRouter ->
+  SrsRadioTransportAdapter -> existing SRS TX worker`. Ordinary Realtime output
+  temporarily enters the same worker through the legacy admission seam; no
+  second SRS implementation or domain migration was created.
+- The adapter advertises TX audio/completion, frequency and modulation only.
+  Queued cancellation remains Router-owned; active single-transmission cancel
+  is truthfully unsupported. AM/FM mapping is explicit, while the wired product
+  remains the proven 251.000 MHz AM path.
+- Readiness is `READY` only when the SRS state is ready and the endpoint,
+  server-echoed radio registration and UDP registration are all complete.
+  Missing prerequisites degrade readiness. Context, PCM format/rate and
+  registered entity/frequency/modulation/coalition mismatches fail closed with
+  typed provider-neutral failures. Raw SRS exceptions, credentials, GUIDs and
+  audio do not cross the generic diagnostics boundary.
+- One accepted request performs one existing SRS enqueue. Generic completion is
+  emitted only after the matching established `tx_completed`; Router replay
+  returns the prior result without another transmission and conflicting reuse
+  fails closed. A bounded 35-second per-request timeout (maximum 120 seconds)
+  was added to the generic request and replay identity.
+- Deterministic wire equivalence proves that legacy and routed synthetic PCM use
+  the same resampler, Opus encoder, frame count, frequency/modulation, packet
+  constructor, unit/GUID/retransmit fields, pacer and completion semantics.
+  Session packet IDs intentionally continue and need not be byte-identical.
+- Validation passed: 73 focused tests, 322 extended SRS/Yandex/IA/lifecycle
+  tests, 1,478 full isolated repository tests, 82% isolated branch coverage,
+  Ruff, changed-production Pyright, compileall, `git diff --check`, and bounded
+  secret/privacy scans.
+- A fresh `release-stage6b2-20260828` Core/Launcher/product/installer build
+  passed offline Core-native, Launcher-control and assembled Launcher-to-Core
+  smokes without external SRS, DCS, provider access or audio devices. Core
+  contains the adapter/native dependencies; Launcher excludes them. The
+  installer was compiled but not automatically installed. Its size is
+  73,189,488 bytes and SHA-256 is
+  `CBC83918BE631A48E50D27A3F93D97091BB1DAF44AB546C2A17CA026F06F6F46`.
+- Local socket-send completion cannot prove server forwarding, official-client
+  reception or headphone audibility. A bounded no-DCS test with an official SRS
+  client on the same coalition and 251.000 MHz AM remains required.
+- Do not begin Stage 6B.3/domain migration, Phraseology, Launcher UX or DCS
+  Native Voice work without separate authorization.

@@ -15,7 +15,10 @@ AppPublisher={#MyAppPublisher}
 DefaultDirName={autopf}\ORION
 DefaultGroupName=ORION
 DisableProgramGroupPage=yes
-OutputDir=..\dist-installer
+#ifndef InstallerOutputDir
+#define InstallerOutputDir "..\dist-installer"
+#endif
+OutputDir={#InstallerOutputDir}
 OutputBaseFilename=ORION-Alpha-0.2-Setup
 Compression=lzma2
 SolidCompression=yes

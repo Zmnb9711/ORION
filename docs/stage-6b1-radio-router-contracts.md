@@ -78,6 +78,10 @@ AM, mono PCM16 at 44.1 kHz and one correlated transmission.
 - capability-dependent `cancel(tx_correlation_id)`;
 - bounded `shutdown(timeout_s)`.
 
+The real Stage 6B.2 adapter established that synchronous transmission also
+needs a bounded caller deadline. `RadioTransmissionRequest.timeout_s` defaults
+to 35 seconds, is limited to 120 seconds and is included in replay identity.
+
 Required TX capabilities are `TX_AUDIO`, `TX_COMPLETION`, `FREQUENCY` and
 `MODULATION`. Optional values describe RX, active cancellation, radio selection,
 coalition, positional radio and encryption. There is no generic PTT capability:

@@ -46,6 +46,7 @@ def test_build_workflows_assign_srs_native_runtime_to_core_not_launcher() -> Non
         )
         assert "--exclude-module samplerate" in launcher_line
         assert "--exclude-module numpy" in launcher_line
+        assert "--exclude-module orion.srs_radio_adapter" in launcher_line
         assert "--srs-control-smoke" in source
         assert "--integrated-product-smoke" in source
         assert "dist-product/Launcher/ORION-Launcher.exe" in source

@@ -5,7 +5,12 @@ import threading
 import time
 
 from orion.srs_diagnostics import SrsTransportDiagnostics
-from orion.srs_protocol import Frequency, VoicePacket, encode_voice_packet
+from orion.srs_protocol import (
+    Frequency,
+    VoicePacket,
+    decode_voice_packet,
+    encode_voice_packet,
+)
 from orion.srs_radio_transport import SrsRadioConfig, SrsState
 from orion.yandex_srs_live_core import (
     MAX_RESPONSE_STATES,
@@ -122,7 +127,9 @@ def human_packet(packet_id: int = 1) -> bytes:
     )
 
 
-def test_srs_rx_decode_resample_exact_blocks_trailing_silence_and_completed_tx(tmp_path) -> None:  # noqa: ANN001
+def test_srs_rx_decode_resample_exact_blocks_trailing_silence_and_completed_tx(
+    tmp_path,
+) -> None:  # noqa: ANN001
     clock = Clock()
     endpoint, radio, status = make_endpoint(tmp_path, clock)
     endpoint.connect_radio()
@@ -160,7 +167,9 @@ def test_srs_rx_decode_resample_exact_blocks_trailing_silence_and_completed_tx(t
     endpoint.stop()
 
 
-def test_incomplete_cancelled_oversized_and_stop_never_transmit(tmp_path, monkeypatch) -> None:  # noqa: ANN001
+def test_incomplete_cancelled_oversized_and_stop_never_transmit(
+    tmp_path, monkeypatch
+) -> None:  # noqa: ANN001
     clock = Clock()
     endpoint, radio, _status = make_endpoint(tmp_path, clock)
     endpoint.connect_radio()
@@ -222,7 +231,9 @@ def test_radio_registration_events_forward_real_launcher_phases(tmp_path) -> Non
     endpoint.stop()
 
 
-def test_probe_tx_uses_existing_single_slot_queue_and_waits_for_matching_completion(tmp_path) -> None:  # noqa: ANN001
+def test_probe_tx_uses_existing_single_slot_queue_and_waits_for_matching_completion(
+    tmp_path,
+) -> None:  # noqa: ANN001
     endpoint, radio, _status = make_endpoint(tmp_path, Clock())
     endpoint.connect_radio()
     endpoint.start()
@@ -231,7 +242,53 @@ def test_probe_tx_uses_existing_single_slot_queue_and_waits_for_matching_complet
     assert radio.sent
     assert report["queue_to_first_tx_ms"] >= 0
     assert report["queue_to_complete_ms"] >= report["queue_to_first_tx_ms"]
-    assert not any(event["event"] == "response_queue_full" for event in endpoint.diagnostics.snapshot())
+    assert not any(
+        event["event"] == "response_queue_full"
+        for event in endpoint.diagnostics.snapshot()
+    )
+    endpoint.stop()
+
+
+def test_router_adapter_and_legacy_response_reuse_identical_srs_wire_mechanics(
+    tmp_path,
+) -> None:  # noqa: ANN001
+    endpoint, radio, _status = make_endpoint(tmp_path, Clock())
+    endpoint.connect_radio()
+    endpoint.start()
+
+    endpoint.response_started("legacy-response")
+    endpoint.response_audio("legacy-response", bytes(400))
+    endpoint.response_audio_done("legacy-response")
+    endpoint.response_done("legacy-response", "completed")
+    deadline = time.monotonic() + 2.0
+    while len(radio.sent) < 3 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    legacy = tuple(decode_voice_packet(packet) for packet in radio.sent)
+    radio.sent.clear()
+
+    report = endpoint.transmit_probe_audio("router-adapter-response", bytes(400), 2.0)
+    adapted = tuple(decode_voice_packet(packet) for packet in radio.sent)
+
+    assert len(legacy) == len(adapted) == 3
+    assert report["queue_to_complete_ms"] >= report["queue_to_first_tx_ms"]
+    for direct, routed in zip(legacy, adapted, strict=True):
+        assert direct.audio == routed.audio == b"fake-opus"
+        assert (
+            direct.frequencies == routed.frequencies == (Frequency(251_000_000.0, 0),)
+        )
+        assert direct.unit_id == routed.unit_id == endpoint.config.unit_id
+        assert direct.retransmission_count == routed.retransmission_count == 0
+        assert direct.original_client_guid == routed.original_client_guid == ORION
+        assert direct.current_sender_guid == routed.current_sender_guid == ORION
+    completed = [
+        event
+        for event in endpoint.diagnostics.snapshot()
+        if event["event"] == "tx_completed"
+    ]
+    assert [event["response_id"] for event in completed] == [
+        "legacy-response",
+        "router-adapter-response",
+    ]
     endpoint.stop()
 
 
@@ -240,7 +297,7 @@ def test_probe_tx_timeout_is_bounded_when_worker_is_not_running(tmp_path) -> Non
     endpoint.connect_radio()
     started = time.monotonic()
     try:
-        endpoint.transmit_probe_audio("ia11-timeout", bytes(20), 0.02)
+        endpoint.transmit_srs_pcm("ia11-timeout", bytes(20), 0.02)
     except TimeoutError:
         pass
     else:

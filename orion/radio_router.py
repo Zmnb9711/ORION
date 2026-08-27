@@ -771,6 +771,7 @@ def _request_signature(request: RadioTransmissionRequest) -> str:
     payload = {
         "context": request.context.model_dump(mode="json"),
         "transport_id": request.transport_id,
+        "timeout_s": request.timeout_s,
         "audio": {
             "sample_rate_hz": request.audio.sample_rate_hz,
             "sample_format": request.audio.sample_format.value,
