@@ -1163,3 +1163,30 @@ STAGE 6B NOT STARTED.**
 - Validation used isolated temporary HTTP/UDP ports and did not terminate or
   replace the installed Core holding canonical UDP 45100. IA-6 and Stage 6B were
   not started.
+
+## 27. Stage 6B.1 provider-neutral radio boundary — 2026-08-28
+
+**Status: IMPLEMENTED AND CODE-VALIDATED AS AN UNWIRED SLICE; STAGE 6B.2 NOT
+STARTED.**
+
+- Immutable `RadioContext`, `RadioEntityRef` and finalized mono PCM16 contracts
+  represent one resolved transmission without copying cockpit/World Model state
+  or exposing SRS GUID, RadioInfo, radio index, UDP registration, provider
+  configuration, credentials or phraseology.
+- The Core-owned `RadioRouter` has one bounded priority/FIFO semantic TX queue,
+  explicit/default transport selection with no fallback, typed readiness and
+  capability failures, bounded correlation replay, queued cancellation,
+  capability-dependent active cancellation, normalized failures, safe bounded
+  diagnostics and bounded idempotent shutdown.
+- The generic adapter protocol requires only TX audio/completion, frequency and
+  modulation. It can represent the proven 251.000 MHz AM finalized-PCM use case
+  without SRS types and does not invent a DCS Native Voice API.
+- A tests-only deterministic Fake adapter proves readiness, capabilities,
+  transmission, blocking, exact call count, completion/failure, cancellation
+  and shutdown without network, audio hardware or an SRS process.
+- Existing SRS/Yandex/Hybrid Probe production paths are not imported, wrapped or
+  rewired. SRS registration, RadioInfo, Opus, pacing and PTT remain unchanged;
+  production SRS migration belongs exclusively to Stage 6B.2.
+- Durable design: `docs/stage-6b1-radio-router-contracts.md`. The next possible
+  stage is **6B.2**, only after separate authorization. Do not begin Phraseology,
+  domain migration, Launcher UX or DCS Native Voice work as part of 6B.1.
