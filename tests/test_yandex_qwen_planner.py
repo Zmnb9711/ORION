@@ -349,7 +349,9 @@ def test_transport_wait_maps_cancel_deadline_and_client_failure() -> None:
 
     with pytest.raises(YandexPlannerTransportError) as error:
         transport._await(  # type: ignore[attr-defined]
-            unavailable(), deadline=NOW + timedelta(minutes=1), cancellation=PlannerCancellationToken()
+            unavailable(),
+            deadline=datetime.now(UTC) + timedelta(minutes=1),
+            cancellation=PlannerCancellationToken(),
         )
     assert error.value.category is YandexFailureCategory.UNAVAILABLE
     transport.close()

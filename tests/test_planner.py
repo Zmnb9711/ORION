@@ -657,10 +657,10 @@ def test_end_to_end_fake_provider_gateway_world_model_to_semantic_response() -> 
                 capability=CapabilityId("world.ownship.read"),
                 authoritative_facts=(
                     SemanticFact(
-                        key="flight.heading_deg",
+                        key="ownship.heading_deg",
                         value=cast(int, heading["value"]),
                         kind=SemanticFactKind.AUTHORITATIVE,
-                        unit="deg_true",
+                        unit="deg",
                         source=ContextReference(
                             context_type="tool_result",
                             reference_id=tool_result.call_id,

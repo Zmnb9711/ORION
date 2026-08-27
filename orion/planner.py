@@ -35,6 +35,10 @@ from orion.planner_contracts import (
     PlannerUsage,
     ProviderIdentifier,
 )
+from orion.semantic_value_binding import (
+    authoritative_fact_matches_tool_result,
+    unavailable_input_matches_tool_result,
+)
 from orion.tool_gateway import ToolGateway, tool_gateway
 from orion.tool_gateway_contracts import (
     ExecutionContext,
@@ -546,6 +550,17 @@ class PlannerTaskRunner:
             if result.status is not ToolResultStatus.COMPLETED or result.provenance is None:
                 return False
             if WorldFactAuthority.AUTHORITATIVE not in result.provenance.authorities:
+                return False
+            if not authoritative_fact_matches_tool_result(fact, result):
+                return False
+        for issue in response.unavailable_inputs:
+            source = issue.source
+            if source is None:
+                continue
+            if source.context_type != "tool_result":
+                return False
+            recorded = ledger.get(source.reference_id)
+            if recorded is None or not unavailable_input_matches_tool_result(issue, recorded[1]):
                 return False
         return True
 

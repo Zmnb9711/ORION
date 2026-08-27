@@ -893,7 +893,8 @@ def _instructions(request: PlannerProviderRequest) -> str:
         "the completed function call ID as source context_type=tool_result. "
         "Preserve unknown, unavailable, stale and restricted states. Return only "
         "the required structured semantic object; presentation_mode is naturalize. "
-        "Select only scalar facts directly needed to answer the user; do not copy "
+        "Select only scalar facts directly needed to answer the user and preserve "
+        "each selected WorldFact scalar leaf's exact key, value and unit; do not copy "
         "the whole tool result or its metadata into the response. "
         f"Allowed capabilities: {allowed}.\n{core}"
     )[:8000]

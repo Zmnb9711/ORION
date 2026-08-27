@@ -120,6 +120,7 @@ for _router_module in (
     "orion.dialogue_runtime_api",
     "orion.voice_core_api",
     "orion.realtime_tool_api",
+    "orion.interaction_router_api",
     "orion.realtime_test_evidence_api",
     "orion.yandex_presentation_api",
     "orion.yandex_hybrid_probe_api",
