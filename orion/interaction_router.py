@@ -331,7 +331,14 @@ class InteractionRouter:
                     permissions=("world.read",),
                     core_instructions=(
                         "For the controlled ownship situation request, call the exposed ownship tool.",
-                        "Return only exact scalar WorldFact keys, values and units from that result.",
+                        "Return only ownship.heading_deg, ownship.position.latitude, and "
+                        "ownship.position.longitude; do not return altitude or any other WorldFact.",
+                        "Put each requested known authoritative leaf in authoritative_facts with "
+                        "its exact key, value, unit, authority, and completed call ID; if heading "
+                        "or position is unavailable or unknown, use only the matching sourced "
+                        "unavailable_inputs entry.",
+                        "This request requires no calculation: derived_results must be empty, and "
+                        "no fact key may appear in more than one semantic section.",
                         "Never upgrade observed, derived, stale or unavailable data to authoritative.",
                     ),
                     deadline=deadline,

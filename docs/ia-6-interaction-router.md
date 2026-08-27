@@ -1,6 +1,6 @@
 # IA-6 Interaction Router and controlled Planner slice
 
-Status: **IMPLEMENTED — CODE VALIDATED 2026-08-27**.
+Status: **IMPLEMENTED — CODE AND LIVE PROVIDER VALIDATED 2026-08-27**.
 
 IA-6 adds the first Core-owned policy boundary that selects a deterministic
 path or the IA-4 Planner. It also closes exact semantic value binding and adds
@@ -124,15 +124,27 @@ mutation rejection, incomplete semantic rejection, unavailable source binding,
 profile/tool-authority orthogonality, replay conflict, deadline, cancellation,
 API authority boundary, diagnostics privacy and immutable communication seams.
 
-One bounded live-provider check was attempted with synthetic ownship data only.
-No DCS, SRS, Launcher or audio device was started. Two runs reached the real
-IA-5 provider, executed exactly one completed IA-3 ownship call and then failed
-closed because IA-5 classified the provider's final structured response as
-`invalid_response`. A final diagnostic run spent its deadline on the first
-provider step. No invalid SemanticResponse was accepted and no semantic retry
-was added, because a retry must not cause repeated tool execution. Consequently
-the production wiring is present and the deterministic adapter boundary is
-green, but this change does not claim a new live `COMPLETED` result.
+The initial bounded live-provider checks used synthetic ownship data only. No
+DCS, SRS, Launcher or audio device was started. They consistently reached the
+real IA-5 provider and executed exactly one completed IA-3 ownship call, but
+Qwen's final semantic classification varied. Two responses repeated
+`ownship.heading_deg` in both authoritative and derived arrays, which the IA-0
+unique-key invariant rejected. Another response downgraded all requested known
+authoritative leaves to derived facts and added altitude, which the controlled
+IA-6 completeness policy rejected. HTTP, response completion, strict JSON,
+tool-call correlation and cleanup were valid; the failure was stochastic
+provider semantic non-compliance, not IA-5 translation or IA-6 value binding.
+
+The narrow correction strengthened only this controlled slice's Core
+instructions: return exactly heading, latitude and longitude; preserve known
+authoritative or sourced-unavailable status; exclude altitude; keep
+`derived_results` empty for this non-calculation; and never repeat a semantic
+key. No schema, validator, tool policy, retry or provider output transformation
+was relaxed or added. One post-fix live gate then completed through Router,
+IA-4, real Qwen, one IA-3 call, synthetic IA-2 data and exact value binding.
+It accepted heading `137 deg`, latitude `42.1` and longitude `41.2`, all tied to
+the completed call ID, with no derived facts. Both stored provider responses
+were deleted and the transport closed. No semantic retry or repair was used.
 
 ## STOP boundary
 

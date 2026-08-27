@@ -302,6 +302,13 @@ def test_controlled_slice_uses_qwen_planner_exact_ia3_tool_and_ia2_values() -> N
     assert [item.name for item in provider_request.available_tools] == [
         "orion.world.ownship.get"
     ]
+    instructions = " ".join(provider_request.core_instructions)
+    assert "ownship.heading_deg" in instructions
+    assert "ownship.position.latitude" in instructions
+    assert "ownship.position.longitude" in instructions
+    assert "do not return altitude" in instructions
+    assert "derived_results must be empty" in instructions
+    assert "no fact key may appear in more than one semantic section" in instructions
     assert result.planner_task is not None
     assert result.planner_task.requested_call_ids == ("ownship-call",)
 
