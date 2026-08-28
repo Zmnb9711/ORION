@@ -61,6 +61,16 @@ def test_yandex_session_update_has_production_defaults_and_no_tools() -> None:
     assert "tools" not in session
 
 
+def test_yandex_manual_input_commit_disables_server_vad_only_when_requested() -> None:
+    payload = yandex_session_update(manual_input_commit=True)
+    session = payload["session"]
+    assert isinstance(session, dict)
+    audio = session["audio"]
+    assert isinstance(audio, dict)
+    input_audio = audio["input"]
+    assert input_audio["turn_detection"] is None
+
+
 def test_yandex_input_and_output_base64_are_bit_exact() -> None:
     pcm = bytes(range(256)) * 7
     encoded = encode_yandex_input_audio(pcm)

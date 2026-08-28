@@ -1336,10 +1336,16 @@ CONVERSATION NOT STARTED.**
   speech-input owner: official SRS Client microphone/PTT -> SRS Server -> ORION
   SRS RX -> Yandex final user transcript. It creates no second microphone,
   Realtime session, SRS TX worker, packetizer, or Qwen-Realtime-to-SRS mode.
-- During the bounded run, the normal Yandex Realtime response is cancelled with
-  the documented `response.cancel` event and raced provider PCM is suppressed
-  before the radio queue. One Qwen3.6 Responses call produces only the strict
-  FREE/OPERATIONAL decomposition and FREE reply.
+- Field evidence from the first build proved that Yandex's 400 ms server VAD
+  could finalize a natural pause inside one held SRS PTT before the established
+  SRS RX transmission boundary. The corrected SRS input seam uses Yandex manual
+  input commit: server VAD is disabled for this transport, all PCM remains in
+  one physical PTT turn, and the buffer is committed exactly once when the
+  existing SRS RX tracker completes the transmission. Direct Audio is unchanged.
+- Ordinary Yandex SRS operation explicitly creates one response after the
+  manual commit. Live Golden omits that response request; `response.cancel` and
+  the endpoint PCM gate remain defense-in-depth only. One Qwen3.6 Responses call
+  produces only the strict FREE/OPERATIONAL decomposition and FREE reply.
 - Core then runs the existing Golden Takeoff decision over an explicitly
   labelled `CONTROLLED GOLDEN ATC FIXTURE`, resolves the experimental
   `FAP_RUSSIAN_ATC` Pilot entry, composes FREE before the immutable PROTECTED

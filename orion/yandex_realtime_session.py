@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Protocol
 
 from orion.flight_context import FlightContextUpdateGate
-from orion.realtime_audio_transport import RealtimePcmEndpoint
+from orion.realtime_audio_transport import RealtimeInputCommit, RealtimePcmEndpoint
 from orion.realtime_interaction_state import RealtimeInteractionState
 from orion.realtime_test_evidence import realtime_test_evidence
 from orion.yandex_realtime_provider import (
@@ -62,6 +62,7 @@ class YandexRealtimeSession:
         ]
         | None = None,
         suppress_provider_responses: Callable[[], bool] | None = None,
+        manual_input_commit: bool = False,
     ) -> None:
         self._api_key = api_key
         self._folder_id = folder_id
@@ -80,6 +81,7 @@ class YandexRealtimeSession:
         self._suppress_provider_responses = suppress_provider_responses or (
             lambda: False
         )
+        self._manual_input_commit = manual_input_commit
 
     async def _send_flight_context_update(
         self,
@@ -112,7 +114,12 @@ class YandexRealtimeSession:
             )
         if update is None:
             return False
-        await websocket.send_json(yandex_session_update(instructions=update.instructions))
+        await websocket.send_json(
+            yandex_session_update(
+                instructions=update.instructions,
+                manual_input_commit=self._manual_input_commit,
+            )
+        )
         count = self._flight_context.mark_applied(update)
         fields = {
             "context_state": update.state.value,
@@ -140,6 +147,8 @@ class YandexRealtimeSession:
         close_owned = False
 
         async def send_worker() -> None:
+            manual_turn_active = False
+            nonlocal latest_speech_stopped_at
             while not self._stop.is_set():
                 await self._send_flight_context_update(
                     websocket,
@@ -150,13 +159,49 @@ class YandexRealtimeSession:
                 pcm = await asyncio.to_thread(self._endpoint.read_input, 0.1)
                 if pcm is None:
                     continue
+                if isinstance(pcm, RealtimeInputCommit):
+                    if not self._manual_input_commit:
+                        raise RuntimeError(
+                            "Transport input commit requires manual provider turn mode"
+                        )
+                    if not manual_turn_active:
+                        self._diagnostics.record(
+                            "input_audio_commit_skipped",
+                            reason="empty_transport_turn",
+                        )
+                        continue
+                    turn_id = self._interaction.speech_stopped()
+                    latest_speech_stopped_at = time.monotonic()
+                    self._diagnostics.record(
+                        "speech_stopped",
+                        turn_id=turn_id,
+                        boundary_owner="transport",
+                    )
+                    await websocket.send_json({"type": "input_audio_buffer.commit"})
+                    self._diagnostics.record(
+                        "input_audio_commit_requested",
+                        turn_id=turn_id,
+                        boundary=pcm.boundary,
+                    )
+                    manual_turn_active = False
+                    continue
                 if len(pcm) % 2:
                     raise ValueError("Provider input PCM is not aligned to int16 samples")
+                if self._manual_input_commit and not manual_turn_active:
+                    turn_id = self._interaction.speech_started()
+                    self._diagnostics.record(
+                        "speech_started",
+                        turn_id=turn_id,
+                        boundary_owner="transport",
+                    )
+                    manual_turn_active = True
                 await websocket.send_json(encode_yandex_input_audio(pcm))
+
+        latest_speech_stopped_at: float | None = None
 
         async def receive_worker() -> None:
             latest_response_id: str | None = None
-            latest_speech_stopped_at: float | None = None
+            nonlocal latest_speech_stopped_at
             while not self._stop.is_set():
                 message = await websocket.receive()
                 if message.type is aiohttp.WSMsgType.TEXT:
@@ -203,6 +248,27 @@ class YandexRealtimeSession:
                             self._diagnostics.record(
                                 "final_transcript_consumer_failed",
                                 error_type=type(exc).__name__,
+                            )
+                        if self._manual_input_commit and self._suppress_provider_responses():
+                            self._interaction.complete_current_turn_without_response()
+                    elif kind == "input_audio_buffer.committed":
+                        if not self._manual_input_commit:
+                            self._diagnostics.record(
+                                kind,
+                                provider_item_id=str(event.get("item_id") or ""),
+                            )
+                        elif self._suppress_provider_responses():
+                            self._diagnostics.record(
+                                "provider_response_creation_suppressed",
+                                turn_id=self._interaction.current_turn_id(),
+                                provider_item_id=str(event.get("item_id") or ""),
+                            )
+                        else:
+                            await websocket.send_json({"type": "response.create"})
+                            self._diagnostics.record(
+                                "provider_response_create_requested",
+                                turn_id=self._interaction.current_turn_id(),
+                                provider_item_id=str(event.get("item_id") or ""),
                             )
                     elif kind == "conversation.item.input_audio_transcription.failed":
                         self._diagnostics.record(

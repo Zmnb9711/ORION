@@ -54,7 +54,11 @@ def yandex_authorization_headers(api_key: str) -> dict[str, str]:
     return {"Authorization": f"Api-Key {key}"}
 
 
-def yandex_session_update(*, instructions: str = YANDEX_INSTRUCTIONS) -> dict[str, object]:
+def yandex_session_update(
+    *,
+    instructions: str = YANDEX_INSTRUCTIONS,
+    manual_input_commit: bool = False,
+) -> dict[str, object]:
     return {
         "type": "session.update",
         "session": {
@@ -64,11 +68,15 @@ def yandex_session_update(*, instructions: str = YANDEX_INSTRUCTIONS) -> dict[st
                 "input": {
                     "format": {"type": "audio/pcm", "rate": YANDEX_INPUT_RATE},
                     "languages": [YANDEX_LANGUAGE],
-                    "turn_detection": {
-                        "type": "server_vad",
-                        "threshold": YANDEX_VAD_THRESHOLD,
-                        "silence_duration_ms": YANDEX_VAD_SILENCE_MS,
-                    },
+                    "turn_detection": (
+                        None
+                        if manual_input_commit
+                        else {
+                            "type": "server_vad",
+                            "threshold": YANDEX_VAD_THRESHOLD,
+                            "silence_duration_ms": YANDEX_VAD_SILENCE_MS,
+                        }
+                    ),
                 },
                 "output": {
                     "format": {"type": "audio/pcm", "rate": YANDEX_OUTPUT_RATE},

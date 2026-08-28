@@ -12,10 +12,10 @@ from orion.srs_protocol import (
     encode_voice_packet,
 )
 from orion.srs_radio_transport import SrsRadioConfig, SrsState
+from orion.realtime_audio_transport import RealtimeInputCommit
 from orion.yandex_srs_live_core import (
     MAX_RESPONSE_STATES,
     RESPONSE_MAX_BYTES,
-    TRAILING_SILENCE_BLOCKS,
     YANDEX_BLOCK_BYTES,
     SrsYandexPcmEndpoint,
 )
@@ -127,7 +127,7 @@ def human_packet(packet_id: int = 1) -> bytes:
     )
 
 
-def test_srs_rx_decode_resample_exact_blocks_trailing_silence_and_completed_tx(
+def test_srs_rx_decode_resample_exact_blocks_manual_commit_and_completed_tx(
     tmp_path,
 ) -> None:  # noqa: ANN001
     clock = Clock()
@@ -141,13 +141,14 @@ def test_srs_rx_decode_resample_exact_blocks_trailing_silence_and_completed_tx(
 
     clock.now = 10.7
     deadline = time.monotonic() + 1.0
-    silence: list[bytes] = []
-    while len(silence) < TRAILING_SILENCE_BLOCKS and time.monotonic() < deadline:
+    boundary: object | None = None
+    while boundary is None and time.monotonic() < deadline:
         try:
-            silence.append(endpoint.input_queue.get(timeout=0.05))
+            boundary = endpoint.input_queue.get(timeout=0.05)
         except queue.Empty:
             pass
-    assert silence == [bytes(YANDEX_BLOCK_BYTES)] * TRAILING_SILENCE_BLOCKS
+    assert boundary == RealtimeInputCommit()
+    assert endpoint.input_queue.empty()
 
     endpoint.response_started("r1")
     endpoint.response_audio("r1", b"y" * YANDEX_BLOCK_BYTES)

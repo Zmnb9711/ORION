@@ -51,3 +51,12 @@ def test_latency_summary_is_bounded_and_uses_nearest_rank_p90() -> None:
     assert summary.median_ms == pytest.approx(300)
     assert summary.p90_ms == pytest.approx(400)
     assert summary.maximum_ms == pytest.approx(400)
+
+
+def test_manually_committed_turn_without_provider_response_becomes_idle() -> None:
+    state = RealtimeInteractionState()
+    assert state.speech_started() == "turn_001"
+    assert state.speech_stopped() == "turn_001"
+    assert not state.safe_to_refresh
+    assert state.complete_current_turn_without_response() == "turn_001"
+    assert state.safe_to_refresh

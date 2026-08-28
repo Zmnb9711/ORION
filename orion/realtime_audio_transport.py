@@ -17,13 +17,22 @@ class RealtimePcmFormat:
     sample_width_bytes: int = 2
 
 
+@dataclass(frozen=True, slots=True)
+class RealtimeInputCommit:
+    """Transport-owned end of one complete input utterance."""
+
+    boundary: str = "transport_transmission_end"
+
+
 class RealtimePcmEndpoint(Protocol):
     transport_id: str
     pcm_format: RealtimePcmFormat
 
     def start(self) -> None: ...
 
-    def read_input(self, timeout: float = 0.1) -> bytes | None: ...
+    def read_input(
+        self, timeout: float = 0.1
+    ) -> bytes | RealtimeInputCommit | None: ...
 
     def failure(self) -> BaseException | None: ...
 

@@ -132,6 +132,16 @@ class RealtimeInteractionState:
                 self._speech_stopped_ns.pop(turn_id, None)
             return turn_id
 
+    def complete_current_turn_without_response(self) -> str | None:
+        """Release a manually committed input turn that intentionally has no reply."""
+
+        with self._lock:
+            turn_id = self._current_turn_id
+            if turn_id is not None and turn_id not in self._response_turns.values():
+                self._current_turn_id = None
+                self._speech_stopped_ns.pop(turn_id, None)
+            return turn_id
+
     def latency_summary(self) -> RealtimeLatencySummary:
         with self._lock:
             values = tuple(self._latencies_ms)

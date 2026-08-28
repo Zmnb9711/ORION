@@ -12,7 +12,7 @@ from types import SimpleNamespace
 import aiohttp
 import orion.yandex_realtime_session as yandex_session_module
 
-from orion.realtime_audio_transport import RealtimePcmFormat
+from orion.realtime_audio_transport import RealtimeInputCommit, RealtimePcmFormat
 from orion.realtime_test_evidence import RealtimeTestEvidenceRecorder
 from orion.yandex_realtime_session import YandexRealtimeSession
 
@@ -31,7 +31,7 @@ class FakeEndpoint:
 
     def __init__(self, stop: threading.Event, pcm: bytes) -> None:
         self.stop_event = stop
-        self.inputs: deque[bytes] = deque([pcm])
+        self.inputs: deque[bytes | RealtimeInputCommit] = deque([pcm])
         self.started = 0
         self.stopped = 0
         self.events: list[tuple[str, object]] = []
@@ -39,7 +39,9 @@ class FakeEndpoint:
     def start(self) -> None:
         self.started += 1
 
-    def read_input(self, timeout: float = 0.1) -> bytes | None:
+    def read_input(
+        self, timeout: float = 0.1
+    ) -> bytes | RealtimeInputCommit | None:
         return self.inputs.popleft() if self.inputs else None
 
     def failure(self) -> BaseException | None:
@@ -127,6 +129,65 @@ class FakeClientSession:
         return None
 
     async def ws_connect(self, *_: object, **__: object) -> FakeWebSocket:
+        return self.websocket
+
+
+class FakeManualCommitWebSocket:
+    def __init__(self, transcript: str) -> None:
+        self.closed = False
+        self.close_code: int | None = None
+        self.sent: list[dict[str, object]] = []
+        self.transcript = transcript
+        self.messages: asyncio.Queue[object] = asyncio.Queue()
+        self._enqueue({"type": "session.updated", "session": {"id": "manual"}})
+
+    def _enqueue(self, event: dict[str, object]) -> None:
+        self.messages.put_nowait(
+            SimpleNamespace(type=aiohttp.WSMsgType.TEXT, json=lambda: event)
+        )
+
+    async def send_json(self, event: dict[str, object]) -> None:
+        self.sent.append(event)
+        if event["type"] == "input_audio_buffer.commit":
+            self._enqueue(
+                {
+                    "type": "input_audio_buffer.committed",
+                    "event_id": "commit-event",
+                    "item_id": "complete-ptt-item",
+                }
+            )
+            self._enqueue(
+                {
+                    "type": "conversation.item.input_audio_transcription.completed",
+                    "event_id": "transcript-event",
+                    "item_id": "complete-ptt-item",
+                    "transcript": self.transcript,
+                }
+            )
+        elif event["type"] == "response.create":
+            self._enqueue({"type": "response.created", "response": {"id": "manual-r1"}})
+            self._enqueue(
+                {
+                    "type": "response.done",
+                    "response": {"id": "manual-r1", "status": "completed"},
+                }
+            )
+
+    async def receive(self) -> object:
+        return await self.messages.get()
+
+    async def close(self, *, code: int = 1000) -> None:
+        self.closed = True
+        self.close_code = code
+
+    def exception(self) -> None:
+        return None
+
+
+class FakeManualClientSession(FakeClientSession):
+    websocket: FakeManualCommitWebSocket
+
+    async def ws_connect(self, *_: object, **__: object) -> FakeManualCommitWebSocket:
         return self.websocket
 
 
@@ -244,3 +305,105 @@ def test_live_golden_hook_cancels_provider_response_and_forwards_final_transcrip
     )
     cancellations = [item for item in websocket.sent if item["type"] == "response.cancel"]
     assert cancellations == [{"type": "response.cancel", "response_id": "r1"}]
+
+
+def test_live_golden_manual_ptt_commit_delivers_one_complete_utterance(
+    monkeypatch,
+) -> None:  # noqa: ANN001
+    expected = "Добрый день! Разрешите взлёт."
+    websocket = FakeManualCommitWebSocket(expected)
+    monkeypatch.setattr(
+        aiohttp,
+        "ClientSession",
+        lambda **_: FakeManualClientSession(websocket),
+    )
+    stop = threading.Event()
+    endpoint = FakeEndpoint(stop, b"\x01\x02" * 400)
+    endpoint.inputs.extend(
+        (
+            bytes(1764 * 25),  # A natural 500 ms pause inside the held PTT.
+            b"\x03\x04" * 800,
+            RealtimeInputCommit(),
+        )
+    )
+    received: list[tuple[object, ...]] = []
+
+    def accept(*values: object) -> None:
+        received.append(values)
+        stop.set()
+
+    asyncio.run(
+        YandexRealtimeSession(
+            "memory-only-secret",
+            "folder",
+            endpoint,
+            stop,
+            FakeDiagnostics(),
+            on_final_user_transcript=accept,
+            suppress_provider_responses=lambda: True,
+            manual_input_commit=True,
+        ).run()
+    )
+
+    assert len(received) == 1
+    assert received[0][:4] == (
+        expected,
+        "turn_001",
+        "transcript-event",
+        "complete-ptt-item",
+    )
+    assert received[0][4] is not None
+    session_updates = [
+        event for event in websocket.sent if event["type"] == "session.update"
+    ]
+    assert session_updates
+    session = session_updates[0]["session"]
+    assert isinstance(session, dict)
+    audio = session["audio"]
+    assert isinstance(audio, dict)
+    assert audio["input"]["turn_detection"] is None
+    assert [event["type"] for event in websocket.sent].count(
+        "input_audio_buffer.commit"
+    ) == 1
+    input_events = [
+        event
+        for event in websocket.sent
+        if event["type"]
+        in {"input_audio_buffer.append", "input_audio_buffer.commit"}
+    ]
+    assert [event["type"] for event in input_events] == [
+        "input_audio_buffer.append",
+        "input_audio_buffer.append",
+        "input_audio_buffer.append",
+        "input_audio_buffer.commit",
+    ]
+    assert not any(event["type"] == "response.create" for event in websocket.sent)
+    assert not any(event["type"] == "response.cancel" for event in websocket.sent)
+
+
+def test_manual_ptt_commit_preserves_ordinary_yandex_response_creation(
+    monkeypatch,
+) -> None:  # noqa: ANN001
+    websocket = FakeManualCommitWebSocket("Обычный запрос")
+    monkeypatch.setattr(
+        aiohttp,
+        "ClientSession",
+        lambda **_: FakeManualClientSession(websocket),
+    )
+    stop = threading.Event()
+    endpoint = FakeEndpoint(stop, bytes(1764))
+    endpoint.inputs.append(RealtimeInputCommit())
+
+    asyncio.run(
+        YandexRealtimeSession(
+            "memory-only-secret",
+            "folder",
+            endpoint,
+            stop,
+            FakeDiagnostics(),
+            manual_input_commit=True,
+        ).run()
+    )
+
+    assert [event["type"] for event in websocket.sent].count("response.create") == 1
+    assert ("response_done", ("manual-r1", "completed")) in endpoint.events

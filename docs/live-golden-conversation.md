@@ -39,12 +39,33 @@ text is never sent back to Qwen. Qwen only returns the strict decomposition and
 the untrusted FREE response. Core owns the operational decision, phraseology
 and final ordering.
 
-While Live Golden is active, ORION sends the documented Yandex Realtime
-`response.cancel` event for the provider's normal response and independently
-drops any raced provider output PCM at the existing SRS endpoint. Thus normal
-Yandex response audio cannot compete with the protected SpeechKit response.
-The transcript callback is bounded and hands the finalized input to one
-background case worker; it never blocks the Realtime receive loop.
+The SRS path is push-to-talk, so it disables Yandex server VAD and commits the
+input buffer exactly once at the existing SRS RX transmission boundary. A
+natural pause inside a held PTT can therefore no longer split one physical
+transmission into several provider turns. After the manual commit, ordinary
+Yandex SRS operation explicitly requests one response; while Live Golden is
+active, that request is intentionally omitted. `response.cancel` and the
+existing endpoint PCM gate remain defense in depth for an unexpected provider
+response, not the primary suppression mechanism.
+
+The transcript callback is bounded and hands the single finalized PTT input to
+one background case worker; it never blocks the Realtime receive loop.
+
+## Field-discovered input-boundary correction
+
+The first build finalized the field phrase at Yandex's 400 ms server-VAD
+silence boundary instead of the physical SRS PTT boundary. Evidence from build
+`918ee5824d13e3ba576108132e0f313fa3a83836` showed `speech_stopped` and a final
+`добрый день` transcript 773 ms before `rx_transmission_completed`; another
+held PTT became two provider turns (`добрый`, then `добрый день`). Automatic
+response generation then competed with the still-arriving input. The semantic
+gate correctly rejected those incomplete turns.
+
+The correction leaves SRS protocol/framing, RadioRouter, SpeechKit, ATC,
+Phraseology and composition unchanged. Only the Yandex input turn owner changes
+for the existing SRS path: all PCM blocks precede one explicit
+`input_audio_buffer.commit`, and Live Golden does not send `response.create`.
+Direct Audio continues to use its existing server VAD behavior.
 
 ## Field corpus and expected response structure
 
