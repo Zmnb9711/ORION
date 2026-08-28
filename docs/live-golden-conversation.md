@@ -42,11 +42,13 @@ and final ordering.
 The SRS path is push-to-talk, so it disables Yandex server VAD and commits the
 input buffer exactly once at the existing SRS RX transmission boundary. A
 natural pause inside a held PTT can therefore no longer split one physical
-transmission into several provider turns. After the manual commit, ordinary
-Yandex SRS operation explicitly requests one response; while Live Golden is
-active, that request is intentionally omitted. `response.cancel` and the
-existing endpoint PCM gate remain defense in depth for an unexpected provider
-response, not the primary suppression mechanism.
+transmission into several provider turns. Field evidence also established that
+the deployed Yandex backend defers a manual commit until it receives
+`response.create`. ORION therefore sends one response request immediately after
+the commit. In ordinary Yandex SRS mode that same request is the single audible
+assistant response. In Live Golden it is a bounded text-only transcription
+wake-up: provider text is ignored, provider PCM is fail-closed before the SRS
+endpoint, and the internal response is cancelled when its ID becomes available.
 
 The transcript callback is bounded and hands the single finalized PTT input to
 one background case worker; it never blocks the Realtime receive loop.
@@ -62,10 +64,11 @@ response generation then competed with the still-arriving input. The semantic
 gate correctly rejected those incomplete turns.
 
 The correction leaves SRS protocol/framing, RadioRouter, SpeechKit, ATC,
-Phraseology and composition unchanged. Only the Yandex input turn owner changes
-for the existing SRS path: all PCM blocks precede one explicit
-`input_audio_buffer.commit`, and Live Golden does not send `response.create`.
-Direct Audio continues to use its existing server VAD behavior.
+Phraseology and composition unchanged. Only the Yandex input turn owner and the
+provider wake-up ordering change for the existing SRS path: all PCM blocks
+precede one explicit `input_audio_buffer.commit`, immediately followed by one
+mode-bounded `response.create`. Direct Audio continues to use its existing
+server VAD behavior.
 
 ## Field corpus and expected response structure
 

@@ -1342,9 +1342,13 @@ CONVERSATION NOT STARTED.**
   input commit: server VAD is disabled for this transport, all PCM remains in
   one physical PTT turn, and the buffer is committed exactly once when the
   existing SRS RX tracker completes the transmission. Direct Audio is unchanged.
-- Ordinary Yandex SRS operation explicitly creates one response after the
-  manual commit. Live Golden omits that response request; `response.cancel` and
-  the endpoint PCM gate remain defense-in-depth only. One Qwen3.6 Responses call
+- The deployed Yandex backend was field-proven to defer manual commit processing
+  until `response.create`; waiting for `input_audio_buffer.committed` before
+  creating the response deadlocks transcription. ORION now sends one response
+  request immediately after commit. Ordinary Yandex SRS reuses it as the single
+  audible response. Live Golden sends a bounded text-only transcription wake-up,
+  ignores/cancels that internal provider response and fail-closes any unexpected
+  provider PCM before SRS. One Qwen3.6 Responses call
   produces only the strict FREE/OPERATIONAL decomposition and FREE reply.
 - Core then runs the existing Golden Takeoff decision over an explicitly
   labelled `CONTROLLED GOLDEN ATC FIXTURE`, resolves the experimental

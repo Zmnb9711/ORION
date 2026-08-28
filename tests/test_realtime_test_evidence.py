@@ -159,6 +159,43 @@ def test_transcripts_share_the_existing_event_bound(tmp_path) -> None:  # noqa: 
     assert status.dropped_event_count == 1
 
 
+def test_manual_commit_wakeup_observability_is_scalar_and_privacy_bounded(
+    tmp_path,
+) -> None:  # noqa: ANN001
+    recorder = RealtimeTestEvidenceRecorder(tmp_path)
+    recorder.start(provider="yandex", transport="srs")
+    recorder.record(
+        "provider_wakeup_create_requested",
+        turn_id="turn_001",
+        internal_response=True,
+        output_modality="text",
+        reused_as_visible_response=False,
+    )
+    recorder.record(
+        "provider_wakeup_pcm_generated",
+        response_id="wake-up-1",
+        byte_count=320,
+        provider_media_generated=True,
+        provider_media_reached_transport=False,
+    )
+    output = recorder.stop_and_export()
+
+    with zipfile.ZipFile(output) as archive:
+        events = [
+            json.loads(line)
+            for line in archive.read("events.jsonl").decode("utf-8").splitlines()
+        ]
+        combined = b"".join(archive.read(name) for name in archive.namelist())
+
+    assert events[0]["output_modality"] == "text"
+    assert events[0]["internal_response"] is True
+    assert events[1]["provider_media_generated"] is True
+    assert events[1]["provider_media_reached_transport"] is False
+    assert events[1]["byte_count"] == 320
+    assert b"Authorization" not in combined
+    assert b"input_audio_buffer.append" not in combined
+
+
 def test_core_api_exposes_explicit_start_status_and_stop_export(tmp_path, monkeypatch) -> None:  # noqa: ANN001
     monkeypatch.setattr(realtime_test_evidence, "_runtime_dir", tmp_path)
     if realtime_test_evidence.status().active:
