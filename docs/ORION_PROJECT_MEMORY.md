@@ -1193,8 +1193,7 @@ STARTED.**
 
 ## 28. Stage 6B.2 production SRS radio transport adapter — 2026-08-28
 
-**Status: IMPLEMENTED AND DETERMINISTICALLY VALIDATED; LIVE SRS FIELD GATE
-REQUIRED; STAGE 6B.3 NOT STARTED.**
+**Status: CLOSED / FIELD VALIDATED; STAGE 6B.3 NOT STARTED.**
 
 - `SrsRadioTransportAdapter` implements the Stage 6B.1 boundary while retaining
   the existing field-proven SRS 2.4.x connection, registration, RadioInfo,
@@ -1235,8 +1234,41 @@ REQUIRED; STAGE 6B.3 NOT STARTED.**
   installer was compiled but not automatically installed. Its size is
   73,189,488 bytes and SHA-256 is
   `CBC83918BE631A48E50D27A3F93D97091BB1DAF44AB546C2A17CA026F06F6F46`.
-- Local socket-send completion cannot prove server forwarding, official-client
-  reception or headphone audibility. A bounded no-DCS test with an official SRS
-  client on the same coalition and 251.000 MHz AM remains required.
+- The bounded official-SRS field gate completed successfully: 20/20 routed
+  Hybrid Probe transmissions traversed adapter start, existing SRS TX start,
+  `tx_completed` and adapter completion without loss or duplication, and were
+  acoustically confirmed through the official SRS client. Stage 6B.2 remains
+  **CLOSED / FIELD VALIDATED**.
 - Do not begin Stage 6B.3/domain migration, Phraseology, Launcher UX or DCS
   Native Voice work without separate authorization.
+
+## 29. Pilot Phraseology KB — 2026-08-28
+
+**Status: PILOT PASS / ARCHITECTURE VALIDATED OFFLINE; PRODUCTION WIRING NOT
+STARTED.**
+
+- The Core-owned immutable Pilot catalog contains 25 experimental,
+  non-normative semantic entries with exact `en-US` and `ru-RU` realizations.
+  All 50/50 positive cases and all 12/12 intentional corruption self-tests
+  passed; RU/EN semantic equivalence, fresh-resolver determinism and stable
+  catalog identity also passed.
+- The exact fail-closed boundary is `OperationalSemanticUnit ->
+  ProtectedOperationalFragment`. Selection has no fuzzy matching, LLM phrase
+  choice, arbitrary free-text parsing, heuristic fallback or automatic
+  naturalization. Missing, ambiguous, invalid or wrongly-unitized input returns
+  a typed failure and no protected fragment.
+- The Pilot is offline and has no DCS, provider, SpeechKit, SRS, RadioRouter,
+  microphone, audio-output or credential dependency. It does not implement a
+  production PresentationRouter, TTS/radio wiring or migration of existing
+  ATC/AAR/AWACS/JTAC/Mission Control wording.
+- Catalog SHA-256:
+  `7285C72541AD6773C0492A92EFA7A6D04839C7D3E8E2263D3960FFD7022E13AE`.
+  Evidence ZIP SHA-256:
+  `BD9C93111F74025C85FE49244B6E1F237A4EF0F7D2C54C90C84F9788C7FFE442`.
+- The unrelated Setup Wizard baseline remains environment-dependent on this
+  workstation: the real `Saved Games/DCS` profile is auto-detected, producing
+  3 failures while 7 isolated Setup Wizard tests pass. Pilot code does not
+  modify Setup Wizard behavior or tests.
+- The next approved direction is incremental Phraseology KB expansion after
+  Pilot PASS. It requires a separate explicit implementation task; no AAR or
+  Tanker work has started.
