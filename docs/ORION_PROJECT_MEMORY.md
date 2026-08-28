@@ -1272,3 +1272,57 @@ STARTED.**
 - The next approved direction is incremental Phraseology KB expansion after
   Pilot PASS. It requires a separate explicit implementation task; no AAR or
   Tanker work has started.
+
+## 30. Golden takeoff and real-Qwen Mixed Composition checkpoint — 2026-08-28
+
+**Status: GOLDEN VERTICAL PASS; MIXED COMPOSITION PASS; LIVE GOLDEN
+CONVERSATION NOT STARTED.**
+
+- Golden Conversational Vertical #1 proves `natural-language utterance ->
+  TakeoffIntent -> existing AirportTowerController -> TakeoffAtcDecision ->
+  OperationalSemanticUnit -> PilotPhraseologyResolver ->
+  ProtectedOperationalFragment`. Existing deterministic ATC remains the sole
+  takeoff authority. Permitted, blocked, unavailable, unsupported and ambiguous
+  cases passed with exact callsign/runway preservation: 18/18 positive cases and
+  11/11 corruption self-tests. Golden evidence SHA-256 is
+  `A75C1A497FAFED19A3654FAD60136982F6487BF37C8D35536FD97909D7BF6C92`.
+- The real-Qwen Mixed Probe proves that one utterance can contain separate FREE
+  conversational and OPERATIONAL semantics. Six mixed Russian utterances and
+  three controls passed through the existing strict Yandex Qwen planner
+  boundary: 9/9 provider cases, zero retries/failures/timeouts on the final run,
+  and 14/14 corruption self-tests. Qwen identifies
+  `takeoff_clearance_request` and may produce the short FREE reply, but never
+  grants/denies takeoff or supplies protected values. Mixed evidence SHA-256 is
+  `B296A140B22EF6EAF7BDDDDF008AEC0308663DDF45956B53D4632573D08E817D`.
+- `ResponseCompositionPlan` keeps the untrusted/droppable FREE envelope separate
+  from immutable Core-rendered protected fragments. Core locally orders FREE
+  before PROTECTED. Once `ProtectedOperationalFragment` exists, no generative
+  provider may rewrite, paraphrase or naturalize it. Qwen never receives the
+  composed protected response.
+- Exactly one existing Communication Profile is active at a time: `ICAO`,
+  `FAA_US`, `NATO_MILITARY` or `FAP_RUSSIAN_ATC`. Profile selection is
+  independent from input language and never forces the user to speak the
+  profile's language. Operational phraseology follows the selected profile;
+  FREE conversation remains separate. The Mixed Probe selects
+  `FAP_RUSSIAN_ATC`, while its current wording remains experimental,
+  non-normative and not verified against ФАП-414.
+- Long-term production Phraseology KB architecture remains profile-specific,
+  versioned, provenance/source-aware and independently updateable. The current
+  code-seeded Pilot catalog is proof-of-architecture, not the final storage or
+  update model. High-level source families are ICAO Doc 4444/9432; FAA JO
+  7110.65, AIM and Pilot/Controller Glossary; NATO APP-7 plus domain military
+  sources; and ФАП-414 plus applicable authoritative Russian sources. No source
+  corpus was downloaded or populated in this checkpoint.
+- The reviewed catalog now contains 29 experimental bilingual entries and
+  passes 58 positive realizations plus the existing 12 corruption self-tests.
+  Catalog SHA-256 is
+  `1991EBF5924568DB81B96552CDAFA4DF013DAE92DFD523288EEB40CF4D517DDF`.
+- The next milestone is **Live Golden Conversation** only: approximately 5–6
+  natural Russian takeoff-clearance utterances, including `Добрый день!
+  Разрешите взлёт.`, through `microphone -> Qwen mixed decomposition ->
+  deterministic ATC -> selected Communication Profile -> Phraseology KB ->
+  local FREE + PROTECTED composition -> Yandex SpeechKit -> RadioRouter ->
+  production SRS adapter -> official SRS Server/Client -> pilot hears ORION`.
+  The final sentence must not be hardcoded: it must contain genuine FREE output
+  and protected KB phraseology. This live milestone is not implemented by this
+  checkpoint.

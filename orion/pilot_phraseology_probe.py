@@ -56,6 +56,8 @@ class PilotProbeReport:
 
 
 _SAMPLE_VALUES: dict[str, str | int] = {
+    "atc.callsign": "Viper 2-1",
+    "atc.runway_id": "07/25",
     "radio.callsign": "Viper 2-1",
     "radio.frequency_mhz": "264.500",
     "radio.modulation": "AM",

@@ -35,6 +35,7 @@ from orion.interaction_contracts import (
     SemanticResponse,
 )
 from orion.launcher_cloud_voice_sections import CloudVoiceConfigStore
+from orion.mixed_conversation import MixedConversationDecomposition
 from orion.planner import PlannerCancellationToken, PlannerProvider, PlannerRun
 from orion.planner_contracts import (
     PlannerError,
@@ -747,6 +748,7 @@ class YandexQwenPlannerRun(PlannerRun):
 
 
 _INPUT_MODELS: dict[str, type[BaseModel]] = {
+    MixedConversationDecomposition.schema_identity: MixedConversationDecomposition,
     NoArguments.schema_identity: NoArguments,
     PingArguments.schema_identity: PingArguments,
     MissionUnitsArguments.schema_identity: MissionUnitsArguments,

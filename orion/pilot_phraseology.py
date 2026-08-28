@@ -104,6 +104,7 @@ class PilotSlotDefinition(_PilotModel):
         formatter = self.formatter_id
         canonical_units = {
             ProtectedValueKind.CALLSIGN: None,
+            ProtectedValueKind.RUNWAY: None,
             ProtectedValueKind.HEADING: "deg",
             ProtectedValueKind.ALTITUDE: "ft",
             ProtectedValueKind.SPEED: "kt",

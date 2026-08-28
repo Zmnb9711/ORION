@@ -13,8 +13,8 @@ from orion.pilot_phraseology_probe import (
 def test_offline_probe_exports_complete_machine_verifiable_bundle(tmp_path) -> None:  # noqa: ANN001
     report = run_pilot_phraseology_probe(tmp_path)
     assert report.classification is PilotProbeClassification.PASS
-    assert report.semantic_entry_count == 25
-    assert report.positive_case_count == 50
+    assert report.semantic_entry_count == 29
+    assert report.positive_case_count == 58
     assert report.negative_self_test_count == 12
     assert report.evidence_path.parent == tmp_path
     assert len(report.evidence_sha256) == 64
@@ -40,7 +40,7 @@ def test_offline_probe_exports_complete_machine_verifiable_bundle(tmp_path) -> N
     self_tests = [
         record for record in records if record["record_type"] == "negative_self_test"
     ]
-    assert len(positives) == summary["expected_positive_result_count"] == 50
+    assert len(positives) == summary["expected_positive_result_count"] == 58
     assert len(self_tests) == summary["negative_self_test_count"] == 12
     assert all(record["overall"] == "PASS" for record in positives)
     assert all(
@@ -51,7 +51,7 @@ def test_offline_probe_exports_complete_machine_verifiable_bundle(tmp_path) -> N
     assert summary["ru_en_semantic_equivalence"] is True
     assert summary["independent_validation_issues"] == []
     assert catalog["catalog_sha256"] == report.catalog_sha256
-    assert len(catalog["entries"]) == 25
+    assert len(catalog["entries"]) == 29
     assert "classification=PILOT PASS" in manifest
     assert "network_used=false" in manifest
     assert "credentials_included=false" in manifest

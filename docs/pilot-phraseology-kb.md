@@ -30,7 +30,7 @@ routes and domain wording are unchanged.
 
 ## Catalog model and exact selection
 
-`PilotPhraseologyCatalog` is a code-seeded immutable 25-entry catalog. External
+`PilotPhraseologyCatalog` is a code-seeded immutable 29-entry catalog. External
 JSON/YAML package data is intentionally avoided for this experiment. Every
 `PilotPhraseologyEntry` contains:
 
@@ -41,8 +41,10 @@ JSON/YAML package data is intentionally avoided for this experiment. Every
 - ordered `en-US` and `ru-RU` realizations;
 - an enforced experimental/non-normative marker.
 
-The Pilot uses the existing `NATO_MILITARY` profile as an experiment selector;
-this does not claim that the synthetic wording is normative NATO phraseology.
+Most baseline Pilot entries use `NATO_MILITARY` as an experiment selector. The
+bounded Golden takeoff entries and their clarification use
+`FAP_RUSSIAN_ATC` to prove profile-aware selection. Neither selector claims
+that the synthetic wording is normative NATO phraseology or verified ФАП-414.
 Zero exact matches return `not_found`; multiple matches return `ambiguous`.
 There is no fuzzy selection, nearest phrase, embedding, LLM selection,
 free-text parsing or fallback phrase.
@@ -91,6 +93,7 @@ mixed-origin values. Redesigning provenance is deferred.
 | `general-unable` | unable | — |
 | `general-information-unavailable` | unavailable information | — |
 | `general-say-again` | repeat/clarification | — |
+| `general-say-again-fap` | profile-aware repeat/clarification | — |
 | `general-readback-confirmed` | confirmation/readback | — |
 | `radio-callsign` | callsign | callsign |
 | `radio-frequency` | frequency | frequency/MHz |
@@ -110,6 +113,9 @@ mixed-origin values. Redesigning provenance is deferred.
 | `warning-traffic` | bounded warning | — |
 | `status-ready` | operational status | — |
 | `status-not-ready` | operational status | — |
+| `atc-takeoff-clearance-granted` | bounded takeoff clearance granted | callsign, runway |
+| `atc-takeoff-hold` | bounded takeoff request held | callsign, runway |
+| `atc-takeoff-context-unavailable` | takeoff decision context unavailable | callsign, runway |
 
 Every entry has both language realizations. RU/EN verification compares the
 canonical semantic case, protected values, units, status, meaning and
@@ -131,7 +137,7 @@ Run without network, providers, credentials, DCS, SRS or audio devices:
 python -m orion.pilot_phraseology_probe --output-dir <runtime-directory>
 ```
 
-The Probe executes all 25 entries in both languages: 50 expected positive
+The Probe executes all 29 entries in both languages: 58 expected positive
 cases. It repeats the full corpus with a fresh catalog and resolver, compares
 canonical outputs after excluding correlation IDs/timings, and verifies stable
 catalog identity and RU/EN semantic equivalence.
@@ -168,7 +174,7 @@ A self-test passes only when the validator reports the injected defect.
 
 ## PASS/FAIL and deferred work
 
-`PILOT PASS` requires 20–30 entries, all 50 positive results, exact unique
+`PILOT PASS` requires 20–30 entries, all 58 positive results, exact unique
 selection, preservation of protected semantics, no drops/duplicates/fabricated
 facts, bilingual semantic equivalence, fresh-resolver determinism, stable
 catalog hash and 12/12 successful negative self-tests. Any executed Probe that

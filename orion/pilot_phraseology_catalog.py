@@ -25,9 +25,10 @@ def _selector(
     *,
     status: str | None = None,
     polarity: str | None = None,
+    profile_id: CommunicationProfileId = CommunicationProfileId.NATO_MILITARY,
 ) -> PilotSelector:
     return PilotSelector(
-        profile_id=CommunicationProfileId.NATO_MILITARY,
+        profile_id=profile_id,
         domain=domain,
         unit_type=unit_type,
         semantic_meaning=meaning,
@@ -72,11 +73,12 @@ def _entry(
 
 
 def build_pilot_phraseology_catalog() -> PilotPhraseologyCatalog:
-    """Return the complete 25-entry experimental/non-normative Pilot catalog."""
+    """Return the complete 29-entry experimental/non-normative Pilot catalog."""
 
     general = CommunicationDomain.GENERAL
     navigation = CommunicationDomain.NAVIGATION
     mission_control = CommunicationDomain.MISSION_CONTROL
+    atc = CommunicationDomain.ATC
     entries = (
         _entry(
             "general-acknowledgement",
@@ -144,6 +146,18 @@ def build_pilot_phraseology_catalog() -> PilotPhraseologyCatalog:
                 "general.response",
                 "general.say_again",
                 status="clarification_required",
+            ),
+            "Say again.",
+            "Повторите.",
+        ),
+        _entry(
+            "general-say-again-fap",
+            _selector(
+                general,
+                "general.response",
+                "general.say_again",
+                status="clarification_required",
+                profile_id=CommunicationProfileId.FAP_RUSSIAN_ATC,
             ),
             "Say again.",
             "Повторите.",
@@ -452,7 +466,81 @@ def build_pilot_phraseology_catalog() -> PilotPhraseologyCatalog:
             "Status not ready.",
             "Статус: не готов.",
         ),
+        _entry(
+            "atc-takeoff-clearance-granted",
+            _selector(
+                atc,
+                "atc.takeoff",
+                "atc.takeoff_clearance_granted",
+                status="granted",
+                polarity="positive",
+                profile_id=CommunicationProfileId.FAP_RUSSIAN_ATC,
+            ),
+            "{callsign}, runway {runway}, cleared for takeoff.",
+            "{callsign}, полоса {runway}, взлёт разрешён.",
+            _slot(
+                "callsign",
+                "atc.callsign",
+                ProtectedValueKind.CALLSIGN,
+                PilotFormatterId.EXACT_TEXT,
+            ),
+            _slot(
+                "runway",
+                "atc.runway_id",
+                ProtectedValueKind.RUNWAY,
+                PilotFormatterId.EXACT_TEXT,
+            ),
+        ),
+        _entry(
+            "atc-takeoff-hold",
+            _selector(
+                atc,
+                "atc.takeoff",
+                "atc.takeoff_hold",
+                status="hold",
+                polarity="negative",
+                profile_id=CommunicationProfileId.FAP_RUSSIAN_ATC,
+            ),
+            "{callsign}, hold position, runway {runway}.",
+            "{callsign}, сохраняйте позицию, полоса {runway}.",
+            _slot(
+                "callsign",
+                "atc.callsign",
+                ProtectedValueKind.CALLSIGN,
+                PilotFormatterId.EXACT_TEXT,
+            ),
+            _slot(
+                "runway",
+                "atc.runway_id",
+                ProtectedValueKind.RUNWAY,
+                PilotFormatterId.EXACT_TEXT,
+            ),
+        ),
+        _entry(
+            "atc-takeoff-context-unavailable",
+            _selector(
+                atc,
+                "atc.takeoff",
+                "atc.takeoff_context_unavailable",
+                status="unavailable",
+                profile_id=CommunicationProfileId.FAP_RUSSIAN_ATC,
+            ),
+            "{callsign}, takeoff clearance unavailable, runway {runway}.",
+            "{callsign}, разрешение на взлёт недоступно, полоса {runway}.",
+            _slot(
+                "callsign",
+                "atc.callsign",
+                ProtectedValueKind.CALLSIGN,
+                PilotFormatterId.EXACT_TEXT,
+            ),
+            _slot(
+                "runway",
+                "atc.runway_id",
+                ProtectedValueKind.RUNWAY,
+                PilotFormatterId.EXACT_TEXT,
+            ),
+        ),
     )
-    if len(entries) != 25:
-        raise AssertionError("bounded Pilot catalog must contain exactly 25 entries")
+    if len(entries) != 29:
+        raise AssertionError("bounded Pilot catalog must contain exactly 29 entries")
     return PilotPhraseologyCatalog(entries=entries)

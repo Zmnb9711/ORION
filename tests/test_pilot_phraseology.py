@@ -42,6 +42,8 @@ from orion.world_model_contracts import WorldFactAuthority
 INTERACTION_ID = UUID("12345678-1234-5678-1234-567812345678")
 
 SAMPLE_VALUES: dict[str, str | int] = {
+    "atc.callsign": "Viper 2-1",
+    "atc.runway_id": "07/25",
     "radio.callsign": "Viper 2-1",
     "radio.frequency_mhz": "264.500",
     "radio.modulation": "AM",
@@ -110,7 +112,7 @@ def _context(entry_id: str, language: str = "en-US") -> CommunicationContext:
 def test_catalog_is_bounded_bilingual_immutable_and_hash_stable() -> None:
     first = build_pilot_phraseology_catalog()
     second = build_pilot_phraseology_catalog()
-    assert len(first.entries) == 25
+    assert len(first.entries) == 29
     assert first.sha256 == second.sha256
     assert all(
         tuple(realization.language for realization in entry.realizations)
