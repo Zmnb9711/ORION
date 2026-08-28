@@ -61,14 +61,18 @@ def test_yandex_session_update_has_production_defaults_and_no_tools() -> None:
     assert "tools" not in session
 
 
-def test_yandex_manual_input_commit_disables_server_vad_only_when_requested() -> None:
+def test_yandex_transport_boundary_mode_keeps_provider_supported_server_vad() -> None:
     payload = yandex_session_update(manual_input_commit=True)
     session = payload["session"]
     assert isinstance(session, dict)
     audio = session["audio"]
     assert isinstance(audio, dict)
     input_audio = audio["input"]
-    assert input_audio["turn_detection"] is None
+    assert input_audio["turn_detection"] == {
+        "type": "server_vad",
+        "threshold": YANDEX_VAD_THRESHOLD,
+        "silence_duration_ms": YANDEX_VAD_SILENCE_MS,
+    }
 
 
 def test_yandex_input_and_output_base64_are_bit_exact() -> None:

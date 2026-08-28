@@ -1338,17 +1338,19 @@ CONVERSATION NOT STARTED.**
   Realtime session, SRS TX worker, packetizer, or Qwen-Realtime-to-SRS mode.
 - Field evidence from the first build proved that Yandex's 400 ms server VAD
   could finalize a natural pause inside one held SRS PTT before the established
-  SRS RX transmission boundary. The corrected SRS input seam uses Yandex manual
-  input commit: server VAD is disabled for this transport, all PCM remains in
-  one physical PTT turn, and the buffer is committed exactly once when the
-  existing SRS RX tracker completes the transmission. Direct Audio is unchanged.
-- The deployed Yandex backend was field-proven to defer manual commit processing
-  until `response.create`; waiting for `input_audio_buffer.committed` before
-  creating the response deadlocks transcription. ORION now sends one response
-  request immediately after commit. Ordinary Yandex SRS reuses it as the single
-  audible response. Live Golden sends a bounded text-only transcription wake-up,
-  ignores/cancels that internal provider response and fail-closes any unexpected
-  provider PCM before SRS. One Qwen3.6 Responses call
+  SRS RX transmission boundary. A subsequent field build then proved that the
+  deployed Yandex backend accepts `turn_detection=null` but silently ignores
+  `input_audio_buffer.commit`: `response.create` starts output from prior context
+  without producing `input_audio_buffer.committed` or an input transcript.
+- The compatible SRS input seam therefore keeps server VAD and aggregates all
+  finalized provider segments under the existing physical SRS RX transmission.
+  At that boundary ORION streams 800 ms of zero PCM in paced 40 ms chunks to
+  close the final provider segment. Only the joined non-empty transcript reaches
+  the Live Golden consumer. Direct Audio remains unchanged.
+- Provider cancellation is advisory on the current backend: cancelled responses
+  may continue to generate text and PCM. While Live Golden suppression is active,
+  every provider-created response ID is filtered before the Realtime endpoint and
+  SRS transport, independently of cancellation completion. One Qwen3.6 Responses call
   produces only the strict FREE/OPERATIONAL decomposition and FREE reply.
 - Core then runs the existing Golden Takeoff decision over an explicitly
   labelled `CONTROLLED GOLDEN ATC FIXTURE`, resolves the experimental

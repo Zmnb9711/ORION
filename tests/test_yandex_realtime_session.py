@@ -133,27 +133,28 @@ class FakeClientSession:
         return self.websocket
 
 
-class FakeManualCommitWebSocket:
-    """Provider-compatible fake: commit is processed only after response.create."""
+class FakeTransportBoundaryWebSocket:
+    """Provider-compatible fake: client commit is ignored; VAD consumes silence."""
 
     def __init__(
         self,
-        transcript: str,
+        transcript: str | tuple[str, ...],
         *,
         stop: threading.Event | None = None,
         output_pcm: bytes = b"\x07\x08" * 100,
-        respond_to_wakeup: bool = True,
+        respond_to_vad: bool = True,
         internal_output_pcm: bool = False,
     ) -> None:
         self.closed = False
         self.close_code: int | None = None
         self.sent: list[dict[str, object]] = []
-        self.transcript = transcript
+        self.transcripts = (transcript,) if isinstance(transcript, str) else transcript
         self.stop = stop
         self.output_pcm = output_pcm
-        self.respond_to_wakeup = respond_to_wakeup
+        self.respond_to_vad = respond_to_vad
         self.internal_output_pcm = internal_output_pcm
-        self._commit_pending = False
+        self._segment_index = 0
+        self._speech_active = False
         self._response_sequence = 0
         self.messages: asyncio.Queue[object] = asyncio.Queue()
         self._enqueue({"type": "session.updated", "session": {"id": "manual"}})
@@ -166,12 +167,23 @@ class FakeManualCommitWebSocket:
     async def send_json(self, event: dict[str, object]) -> None:
         self.sent.append(event)
         if event["type"] == "input_audio_buffer.commit":
-            self._commit_pending = True
+            # This is the behavior observed from the real Yandex backend: the
+            # documented client commit receives no acknowledgement or transcript.
             return
-        if event["type"] == "response.create" and self._commit_pending:
-            if not self.respond_to_wakeup:
+        if event["type"] == "input_audio_buffer.append":
+            audio = base64.b64decode(str(event.get("audio") or ""))
+            is_silence = bool(audio) and not any(audio)
+            if not is_silence:
+                if not self._speech_active:
+                    self._speech_active = True
+                    self._enqueue({"type": "input_audio_buffer.speech_started"})
                 return
-            self._commit_pending = False
+            if not self.respond_to_vad:
+                return
+            if not self._speech_active or self._segment_index >= len(self.transcripts):
+                return
+            self._speech_active = False
+            self._enqueue({"type": "input_audio_buffer.speech_stopped"})
             self._enqueue(
                 {
                     "type": "input_audio_buffer.committed",
@@ -182,42 +194,17 @@ class FakeManualCommitWebSocket:
             self._enqueue(
                 {
                     "type": "conversation.item.input_audio_transcription.completed",
-                    "event_id": "transcript-event",
-                    "item_id": "complete-ptt-item",
-                    "transcript": self.transcript,
+                    "event_id": f"transcript-event-{self._segment_index + 1}",
+                    "item_id": f"ptt-item-{self._segment_index + 1}",
+                    "transcript": self.transcripts[self._segment_index],
                 }
             )
+            self._segment_index += 1
             self._response_sequence += 1
             response_id = f"manual-r{self._response_sequence}"
             self._enqueue(
                 {"type": "response.created", "response": {"id": response_id}}
             )
-            response = event.get("response")
-            if isinstance(response, dict) and response.get("output_modalities") == [
-                "text"
-            ]:
-                if self.internal_output_pcm:
-                    self._enqueue(
-                        {
-                            "type": "response.output_audio.delta",
-                            "response_id": response_id,
-                            "delta": base64.b64encode(self.output_pcm).decode("ascii"),
-                        }
-                    )
-                    self._enqueue(
-                        {
-                            "type": "response.output_audio.done",
-                            "response_id": response_id,
-                        }
-                    )
-                self._enqueue(
-                    {
-                        "type": "response.output_text.done",
-                        "response_id": response_id,
-                        "text": "INTERNAL WAKEUP",
-                    }
-                )
-                return
             self._enqueue(
                 {
                     "type": "response.output_audio.delta",
@@ -244,15 +231,10 @@ class FakeManualCommitWebSocket:
                 }
             )
         elif event["type"] == "response.cancel":
-            response_id = str(event.get("response_id") or "manual-r1")
-            self._enqueue(
-                {
-                    "type": "response.done",
-                    "response": {"id": response_id, "status": "cancelled"},
-                }
-            )
-            if self.stop is not None:
-                asyncio.get_running_loop().call_later(0.01, self.stop.set)
+            # The real provider can continue producing media after cancellation.
+            # Its already queued response remains deliberately intact here.
+            if self.stop is not None and self._segment_index >= len(self.transcripts):
+                asyncio.get_running_loop().call_later(0.05, self.stop.set)
 
     async def receive(self) -> object:
         return await self.messages.get()
@@ -266,9 +248,9 @@ class FakeManualCommitWebSocket:
 
 
 class FakeManualClientSession(FakeClientSession):
-    websocket: FakeManualCommitWebSocket
+    websocket: FakeTransportBoundaryWebSocket
 
-    async def ws_connect(self, *_: object, **__: object) -> FakeManualCommitWebSocket:
+    async def ws_connect(self, *_: object, **__: object) -> FakeTransportBoundaryWebSocket:
         return self.websocket
 
 
@@ -367,6 +349,11 @@ def test_live_golden_hook_cancels_provider_response_and_forwards_final_transcrip
     stop = threading.Event()
     endpoint = FakeEndpoint(stop, bytes(1764))
     received: list[tuple[object, ...]] = []
+
+    def accept(*values: object) -> None:
+        received.append(values)
+        asyncio.get_running_loop().call_later(0.01, stop.set)
+
     asyncio.run(
         YandexRealtimeSession(
             "memory-only-secret",
@@ -374,7 +361,7 @@ def test_live_golden_hook_cancels_provider_response_and_forwards_final_transcrip
             endpoint,
             stop,
             FakeDiagnostics(),
-            on_final_user_transcript=lambda *values: received.append(values),
+            on_final_user_transcript=accept,
             suppress_provider_responses=lambda: True,
         ).run()
     )
@@ -393,7 +380,9 @@ def test_live_golden_manual_ptt_commit_delivers_one_complete_utterance(
 ) -> None:  # noqa: ANN001
     expected = "Добрый день! Разрешите взлёт."
     stop = threading.Event()
-    websocket = FakeManualCommitWebSocket(expected, stop=stop)
+    websocket = FakeTransportBoundaryWebSocket(
+        ("Добрый день!", "Разрешите взлёт."), stop=stop
+    )
     monkeypatch.setattr(
         aiohttp,
         "ClientSession",
@@ -430,8 +419,8 @@ def test_live_golden_manual_ptt_commit_delivers_one_complete_utterance(
     assert received[0][:4] == (
         expected,
         "turn_001",
-        "transcript-event",
-        "complete-ptt-item",
+        "transcript-event-2",
+        "ptt-item-2",
     )
     assert received[0][4] is not None
     session_updates = [
@@ -442,40 +431,34 @@ def test_live_golden_manual_ptt_commit_delivers_one_complete_utterance(
     assert isinstance(session, dict)
     audio = session["audio"]
     assert isinstance(audio, dict)
-    assert audio["input"]["turn_detection"] is None
+    assert audio["input"]["turn_detection"] == {
+        "type": "server_vad",
+        "threshold": 0.5,
+        "silence_duration_ms": 400,
+    }
     assert [event["type"] for event in websocket.sent].count(
         "input_audio_buffer.commit"
-    ) == 1
+    ) == 0
     input_events = [
         event
         for event in websocket.sent
-        if event["type"]
-        in {"input_audio_buffer.append", "input_audio_buffer.commit"}
+        if event["type"] == "input_audio_buffer.append"
     ]
-    assert [event["type"] for event in input_events] == [
-        "input_audio_buffer.append",
-        "input_audio_buffer.append",
-        "input_audio_buffer.append",
-        "input_audio_buffer.commit",
-    ]
+    assert len(input_events) >= 4
+    assert not any(base64.b64decode(str(input_events[-1]["audio"])))
     creates = [event for event in websocket.sent if event["type"] == "response.create"]
-    assert len(creates) == 1
-    wakeup = creates[0]["response"]
-    assert isinstance(wakeup, dict)
-    assert wakeup["output_modalities"] == ["text"]
-    assert wakeup["max_output_tokens"] == 1
-    assert [event["type"] for event in websocket.sent].count("response.cancel") == 1
+    assert creates == []
+    assert [event["type"] for event in websocket.sent].count("response.cancel") == 2
     assert not any(event == "audio" for event, _ in endpoint.events)
     assert not any(event == "response_started" for event, _ in endpoint.events)
     diagnostic_names = [event for event, _ in diagnostics.events]
-    assert "provider_wakeup_create_requested" in diagnostic_names
+    assert "provider_vad_flush_requested" in diagnostic_names
     assert "input_audio_buffer.committed" in diagnostic_names
+    assert diagnostic_names.count("transcription_segment_completed") == 2
     assert "transcription_completed" in diagnostic_names
-    assert "provider_wakeup_response_created" in diagnostic_names
-    assert "provider_wakeup_cancel_requested" in diagnostic_names
-    assert "provider_wakeup_response_ignored" in diagnostic_names
-    assert "provider_wakeup_text_ignored" in diagnostic_names
-    assert "provider_wakeup_response_done" in diagnostic_names
+    assert diagnostic_names.count("provider_response_suppressed") == 2
+    assert "provider_suppressed_text_ignored" in diagnostic_names
+    assert "provider_suppressed_response_done" in diagnostic_names
 
 
 def test_manual_ptt_commit_preserves_ordinary_yandex_response_creation(
@@ -483,7 +466,7 @@ def test_manual_ptt_commit_preserves_ordinary_yandex_response_creation(
 ) -> None:  # noqa: ANN001
     stop = threading.Event()
     output_pcm = b"\x09\x0a" * 120
-    websocket = FakeManualCommitWebSocket(
+    websocket = FakeTransportBoundaryWebSocket(
         "Обычный запрос", stop=stop, output_pcm=output_pcm
     )
     monkeypatch.setattr(
@@ -491,7 +474,7 @@ def test_manual_ptt_commit_preserves_ordinary_yandex_response_creation(
         "ClientSession",
         lambda **_: FakeManualClientSession(websocket),
     )
-    endpoint = FakeEndpoint(stop, bytes(1764))
+    endpoint = FakeEndpoint(stop, b"\x01\x02" * 882)
     endpoint.inputs.append(RealtimeInputCommit())
 
     asyncio.run(
@@ -506,37 +489,50 @@ def test_manual_ptt_commit_preserves_ordinary_yandex_response_creation(
     )
 
     creates = [event for event in websocket.sent if event["type"] == "response.create"]
-    assert creates == [{"type": "response.create"}]
+    assert creates == []
     assert endpoint.events.count(("audio", ("manual-r1", output_pcm))) == 1
     assert ("response_done", ("manual-r1", "completed")) in endpoint.events
 
 
-def test_provider_compatibility_fake_requires_response_create_after_commit() -> None:
+def test_provider_compatibility_fake_ignores_client_commit_and_uses_vad_tail() -> None:
     async def exercise() -> None:
-        websocket = FakeManualCommitWebSocket("Полная фраза")
+        websocket = FakeTransportBoundaryWebSocket("Полная фраза")
         await websocket.messages.get()  # session.updated
+        await websocket.send_json(
+            {
+                "type": "input_audio_buffer.append",
+                "audio": base64.b64encode(b"\x01\x02" * 100).decode("ascii"),
+            }
+        )
+        assert (await websocket.messages.get()).json()["type"] == (
+            "input_audio_buffer.speech_started"
+        )
         await websocket.send_json({"type": "input_audio_buffer.commit"})
+        assert websocket.messages.empty()
+        await websocket.send_json({"type": "response.create"})
         assert websocket.messages.empty()
         await websocket.send_json(
             {
-                "type": "response.create",
-                "response": {"output_modalities": ["text"]},
+                "type": "input_audio_buffer.append",
+                "audio": base64.b64encode(bytes(1764)).decode("ascii"),
             }
         )
         first = (await websocket.messages.get()).json()
         second = (await websocket.messages.get()).json()
-        assert first["type"] == "input_audio_buffer.committed"
-        assert second["type"] == "conversation.item.input_audio_transcription.completed"
+        third = (await websocket.messages.get()).json()
+        assert first["type"] == "input_audio_buffer.speech_stopped"
+        assert second["type"] == "input_audio_buffer.committed"
+        assert third["type"] == "conversation.item.input_audio_transcription.completed"
 
     asyncio.run(exercise())
 
 
-def test_live_golden_wakeup_provider_pcm_is_fail_closed_before_srs(
+def test_live_golden_server_vad_response_pcm_is_fail_closed_before_srs(
     monkeypatch,
 ) -> None:  # noqa: ANN001
     stop = threading.Event()
     output_pcm = b"\x0b\x0c" * 80
-    websocket = FakeManualCommitWebSocket(
+    websocket = FakeTransportBoundaryWebSocket(
         "Добрый день! Разрешите взлёт.",
         stop=stop,
         output_pcm=output_pcm,
@@ -547,7 +543,7 @@ def test_live_golden_wakeup_provider_pcm_is_fail_closed_before_srs(
         "ClientSession",
         lambda **_: FakeManualClientSession(websocket),
     )
-    endpoint = FakeEndpoint(stop, bytes(1764))
+    endpoint = FakeEndpoint(stop, b"\x01\x02" * 882)
     endpoint.inputs.append(RealtimeInputCommit())
     diagnostics = FakeDiagnostics()
 
@@ -567,7 +563,7 @@ def test_live_golden_wakeup_provider_pcm_is_fail_closed_before_srs(
     generated = [
         fields
         for event, fields in diagnostics.events
-        if event == "provider_wakeup_pcm_generated"
+        if event == "provider_suppressed_pcm_generated"
     ]
     assert generated == [
         {
@@ -579,29 +575,29 @@ def test_live_golden_wakeup_provider_pcm_is_fail_closed_before_srs(
     ]
 
 
-def test_manual_commit_wakeup_timeout_fails_closed(monkeypatch) -> None:  # noqa: ANN001
+def test_ptt_transcript_finalization_timeout_fails_closed(monkeypatch) -> None:  # noqa: ANN001
     monkeypatch.setattr(
         yandex_session_module,
-        "_MANUAL_COMMIT_WAKEUP_TIMEOUT_SECONDS",
+        "_PTT_TRANSCRIPTION_TIMEOUT_SECONDS",
         0.01,
     )
     stop = threading.Event()
-    websocket = FakeManualCommitWebSocket(
+    websocket = FakeTransportBoundaryWebSocket(
         "Не будет получено",
         stop=stop,
-        respond_to_wakeup=False,
+        respond_to_vad=False,
     )
     monkeypatch.setattr(
         aiohttp,
         "ClientSession",
         lambda **_: FakeManualClientSession(websocket),
     )
-    endpoint = FakeEndpoint(stop, bytes(1764))
+    endpoint = FakeEndpoint(stop, b"\x01\x02" * 882)
     endpoint.inputs.append(RealtimeInputCommit())
 
     with pytest.raises(
         TimeoutError,
-        match="Timed out waiting for Yandex manual input transcription",
+        match="Timed out waiting for Yandex PTT transcript finalization",
     ):
         asyncio.run(
             YandexRealtimeSession(

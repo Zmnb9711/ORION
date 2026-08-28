@@ -68,15 +68,17 @@ def yandex_session_update(
                 "input": {
                     "format": {"type": "audio/pcm", "rate": YANDEX_INPUT_RATE},
                     "languages": [YANDEX_LANGUAGE],
-                    "turn_detection": (
-                        None
-                        if manual_input_commit
-                        else {
-                            "type": "server_vad",
-                            "threshold": YANDEX_VAD_THRESHOLD,
-                            "silence_duration_ms": YANDEX_VAD_SILENCE_MS,
-                        }
-                    ),
+                    # The current Yandex backend accepts ``null`` here but then
+                    # silently ignores client ``input_audio_buffer.commit`` events.
+                    # Transport-owned PTT sessions therefore keep server VAD enabled
+                    # and flush its final segment with bounded silence at the physical
+                    # transmission boundary. The session layer aggregates every VAD
+                    # segment before exposing one finalized PTT utterance.
+                    "turn_detection": {
+                        "type": "server_vad",
+                        "threshold": YANDEX_VAD_THRESHOLD,
+                        "silence_duration_ms": YANDEX_VAD_SILENCE_MS,
+                    },
                 },
                 "output": {
                     "format": {"type": "audio/pcm", "rate": YANDEX_OUTPUT_RATE},

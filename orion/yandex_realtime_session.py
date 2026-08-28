@@ -9,7 +9,6 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
-from collections import deque
 from dataclasses import dataclass
 from typing import Any, Callable, Protocol
 
@@ -43,28 +42,9 @@ class YandexSessionResult:
     local_close_owner: bool
 
 
-_MANUAL_COMMIT_WAKEUP_TIMEOUT_SECONDS = 15.0
-_TRANSCRIPTION_WAKEUP_INSTRUCTIONS = (
-    "Internal transcription trigger. Do not answer the user or perform any action."
-)
-
-
-def _manual_commit_response_create(*, suppress_provider_response: bool) -> dict[str, object]:
-    """Wake the provider after commit without duplicating the normal audible response."""
-
-    if not suppress_provider_response:
-        # In ordinary SRS mode this single response is both the provider wake-up and
-        # the one intended audible assistant response.
-        return {"type": "response.create"}
-    return {
-        "type": "response.create",
-        "response": {
-            "output_modalities": ["text"],
-            "instructions": _TRANSCRIPTION_WAKEUP_INSTRUCTIONS,
-            "max_output_tokens": 1,
-            "metadata": {"orion_internal_purpose": "input_transcription_wakeup"},
-        },
-    }
+_PTT_TRANSCRIPTION_TIMEOUT_SECONDS = 15.0
+_PTT_VAD_FLUSH_SILENCE_MS = 800
+_PTT_VAD_FLUSH_CHUNK_MS = 40
 
 
 class YandexRealtimeSession:
@@ -170,15 +150,20 @@ class YandexRealtimeSession:
         presentation_task: asyncio.Task[None] | None = None
         presentation_driver: YandexPresentationSessionDriver | None = None
         close_owned = False
-        manual_response_roles: deque[str] = deque()
-        wakeup_response_ids: set[str] = set()
-        manual_wakeup_deadline: float | None = None
+        suppressed_response_ids: set[str] = set()
+        ptt_finalization_deadline: float | None = None
         manual_turn_ready = asyncio.Event()
         manual_turn_ready.set()
+        manual_transcript_parts: list[str] = []
+        manual_boundary_pending = False
+        manual_final_segment_stopped = False
+        manual_physical_turn_id: str | None = None
 
         async def send_worker() -> None:
             manual_turn_active = False
-            nonlocal latest_speech_stopped_at, manual_wakeup_deadline
+            nonlocal latest_speech_stopped_at, manual_boundary_pending
+            nonlocal manual_final_segment_stopped, manual_physical_turn_id
+            nonlocal ptt_finalization_deadline
             while not self._stop.is_set():
                 await self._send_flight_context_update(
                     websocket,
@@ -207,30 +192,47 @@ class YandexRealtimeSession:
                         turn_id=turn_id,
                         boundary_owner="transport",
                     )
-                    await websocket.send_json({"type": "input_audio_buffer.commit"})
                     self._diagnostics.record(
                         "input_audio_commit_requested",
                         turn_id=turn_id,
                         boundary=pcm.boundary,
+                        provider_commit_method="server_vad_tail",
                     )
-                    suppressed = self._suppress_provider_responses()
-                    role = "internal_wakeup" if suppressed else "visible_response"
-                    manual_response_roles.append(role)
-                    await websocket.send_json(
-                        _manual_commit_response_create(
-                            suppress_provider_response=suppressed
-                        )
+                    pcm_format = self._endpoint.pcm_format
+                    silence_bytes = (
+                        pcm_format.sample_rate
+                        * pcm_format.channels
+                        * pcm_format.sample_width_bytes
+                        * _PTT_VAD_FLUSH_SILENCE_MS
+                        // 1000
                     )
-                    manual_wakeup_deadline = (
-                        time.monotonic() + _MANUAL_COMMIT_WAKEUP_TIMEOUT_SECONDS
+                    silence_chunk_bytes = (
+                        pcm_format.sample_rate
+                        * pcm_format.channels
+                        * pcm_format.sample_width_bytes
+                        * _PTT_VAD_FLUSH_CHUNK_MS
+                        // 1000
+                    )
+                    manual_boundary_pending = True
+                    manual_final_segment_stopped = False
+                    ptt_finalization_deadline = (
+                        time.monotonic() + _PTT_TRANSCRIPTION_TIMEOUT_SECONDS
                     )
                     self._diagnostics.record(
-                        "provider_wakeup_create_requested",
+                        "provider_vad_flush_requested",
                         turn_id=turn_id,
-                        internal_response=suppressed,
-                        output_modality="text" if suppressed else "audio",
-                        reused_as_visible_response=not suppressed,
+                        silence_ms=_PTT_VAD_FLUSH_SILENCE_MS,
+                        byte_count=silence_bytes,
+                        physical_boundary=True,
                     )
+                    silence = bytes(silence_bytes)
+                    for offset in range(0, silence_bytes, silence_chunk_bytes):
+                        await websocket.send_json(
+                            encode_yandex_input_audio(
+                                silence[offset : offset + silence_chunk_bytes]
+                            )
+                        )
+                        await asyncio.sleep(_PTT_VAD_FLUSH_CHUNK_MS / 1000)
                     manual_turn_active = False
                     continue
                 if len(pcm) % 2:
@@ -239,6 +241,10 @@ class YandexRealtimeSession:
                     await manual_turn_ready.wait()
                     manual_turn_ready.clear()
                     turn_id = self._interaction.speech_started()
+                    manual_transcript_parts.clear()
+                    manual_boundary_pending = False
+                    manual_final_segment_stopped = False
+                    manual_physical_turn_id = turn_id
                     self._diagnostics.record(
                         "speech_started",
                         turn_id=turn_id,
@@ -251,7 +257,9 @@ class YandexRealtimeSession:
 
         async def receive_worker() -> None:
             latest_response_id: str | None = None
-            nonlocal latest_speech_stopped_at, manual_wakeup_deadline
+            nonlocal latest_speech_stopped_at, manual_boundary_pending
+            nonlocal manual_final_segment_stopped, manual_physical_turn_id
+            nonlocal ptt_finalization_deadline
             while not self._stop.is_set():
                 message = await websocket.receive()
                 if message.type is aiohttp.WSMsgType.TEXT:
@@ -263,33 +271,83 @@ class YandexRealtimeSession:
                         else False
                     )
                     if kind == "input_audio_buffer.speech_started":
+                        if self._manual_input_commit:
+                            self._diagnostics.record(
+                                "provider_segment_speech_started",
+                                turn_id=manual_physical_turn_id,
+                            )
+                            continue
                         turn_id = self._interaction.speech_started()
                         self._endpoint.input_speech_started()
                         self._diagnostics.record("speech_started", turn_id=turn_id)
                     elif kind == "input_audio_buffer.speech_stopped":
+                        if self._manual_input_commit:
+                            manual_final_segment_stopped = manual_boundary_pending
+                            self._diagnostics.record(
+                                "provider_segment_speech_stopped",
+                                turn_id=manual_physical_turn_id,
+                                after_physical_boundary=manual_boundary_pending,
+                            )
+                            continue
                         turn_id = self._interaction.speech_stopped()
                         latest_speech_stopped_at = time.monotonic()
                         self._diagnostics.record("speech_stopped", turn_id=turn_id)
                     elif kind == "conversation.item.input_audio_transcription.completed":
                         transcript = str(event.get("transcript") or "")
+                        if self._manual_input_commit:
+                            normalized = transcript.strip()
+                            if normalized:
+                                manual_transcript_parts.append(normalized)
+                            self._diagnostics.record(
+                                "transcription_segment_completed",
+                                turn_id=manual_physical_turn_id,
+                                provider_item_id=str(event.get("item_id") or ""),
+                                characters=len(transcript),
+                                segment_count=len(manual_transcript_parts),
+                                after_physical_boundary=manual_boundary_pending,
+                                persisted=False,
+                            )
+                            if not (
+                                manual_boundary_pending and manual_final_segment_stopped
+                            ):
+                                continue
+                            transcript = " ".join(manual_transcript_parts)
                         realtime_test_evidence.record_transcript(
                             "user",
                             transcript,
-                            turn_id=self._interaction.current_turn_id(),
+                            turn_id=(
+                                manual_physical_turn_id
+                                if self._manual_input_commit
+                                else self._interaction.current_turn_id()
+                            ),
                             event_id=str(event.get("event_id") or ""),
                             provider_item_id=str(event.get("item_id") or ""),
                         )
                         self._diagnostics.record(
                             "transcription_completed",
-                            turn_id=self._interaction.current_turn_id(),
+                            turn_id=(
+                                manual_physical_turn_id
+                                if self._manual_input_commit
+                                else self._interaction.current_turn_id()
+                            ),
                             provider_item_id=str(event.get("item_id") or ""),
                             characters=len(transcript),
+                            segment_count=(
+                                len(manual_transcript_parts)
+                                if self._manual_input_commit
+                                else 1
+                            ),
+                            physical_ptt_complete=self._manual_input_commit,
                             persisted=False,
                         )
                         try:
                             self._on_final_user_transcript(
                                 transcript,
-                                self._interaction.current_turn_id(),
+                                (
+                                    manual_physical_turn_id
+                                    if self._manual_input_commit
+                                    else self._interaction.current_turn_id()
+                                ),
                                 str(event.get("event_id") or ""),
                                 str(event.get("item_id") or ""),
                                 latest_speech_stopped_at,
@@ -299,10 +357,15 @@ class YandexRealtimeSession:
                                 "final_transcript_consumer_failed",
                                 error_type=type(exc).__name__,
                             )
-                        manual_wakeup_deadline = None
+                        ptt_finalization_deadline = None
                         if self._manual_input_commit and self._suppress_provider_responses():
                             self._interaction.complete_current_turn_without_response()
                             manual_turn_ready.set()
+                        if self._manual_input_commit:
+                            manual_transcript_parts.clear()
+                            manual_boundary_pending = False
+                            manual_final_segment_stopped = False
+                            manual_physical_turn_id = None
                     elif kind == "input_audio_buffer.committed":
                         self._diagnostics.record(
                             kind,
@@ -322,18 +385,12 @@ class YandexRealtimeSession:
                             response.get("id") or event.get("response_id") or "unknown"
                         )
                         latest_response_id = response_id
-                        response_role = (
-                            manual_response_roles.popleft()
-                            if manual_response_roles
-                            else "visible_response"
-                        )
-                        if response_role == "internal_wakeup":
-                            wakeup_response_ids.add(response_id)
+                        if self._suppress_provider_responses():
+                            suppressed_response_ids.add(response_id)
                             self._diagnostics.record(
-                                "provider_wakeup_response_created",
+                                "provider_response_suppressed",
                                 response_id=response_id,
-                                turn_id=self._interaction.current_turn_id(),
-                                internal_response=True,
+                                turn_id=manual_physical_turn_id,
                                 provider_media_generated=False,
                                 provider_media_reached_transport=False,
                             )
@@ -344,15 +401,9 @@ class YandexRealtimeSession:
                                 }
                             )
                             self._diagnostics.record(
-                                "provider_wakeup_cancel_requested",
+                                "provider_response_cancel_requested",
                                 response_id=response_id,
-                                turn_id=self._interaction.current_turn_id(),
-                            )
-                            self._diagnostics.record(
-                                "provider_wakeup_response_ignored",
-                                response_id=response_id,
-                                status="cancel_requested",
-                                provider_media_reached_transport=False,
+                                turn_id=manual_physical_turn_id,
                             )
                             continue
                         turn_id = self._interaction.response_started(response_id)
@@ -362,26 +413,14 @@ class YandexRealtimeSession:
                             response_id=response_id,
                             turn_id=turn_id,
                         )
-                        if self._suppress_provider_responses():
-                            await websocket.send_json(
-                                {
-                                    "type": "response.cancel",
-                                    "response_id": response_id,
-                                }
-                            )
-                            self._diagnostics.record(
-                                "provider_response_cancel_requested",
-                                response_id=response_id,
-                                turn_id=turn_id,
-                            )
                     elif kind == "response.output_audio.delta":
                         pcm = decode_yandex_output_audio(event)
                         response_id = str(
                             event.get("response_id") or latest_response_id or "unknown"
                         )
-                        if response_id in wakeup_response_ids:
+                        if response_id in suppressed_response_ids:
                             self._diagnostics.record(
-                                "provider_wakeup_pcm_generated",
+                                "provider_suppressed_pcm_generated",
                                 response_id=response_id,
                                 byte_count=len(pcm),
                                 provider_media_generated=True,
@@ -418,9 +457,9 @@ class YandexRealtimeSession:
                         response_id = str(
                             event.get("response_id") or latest_response_id or "unknown"
                         )
-                        if response_id in wakeup_response_ids:
+                        if response_id in suppressed_response_ids:
                             self._diagnostics.record(
-                                "provider_wakeup_audio_ignored",
+                                "provider_suppressed_audio_ignored",
                                 response_id=response_id,
                                 provider_media_reached_transport=False,
                             )
@@ -434,9 +473,9 @@ class YandexRealtimeSession:
                         response_id = str(
                             event.get("response_id") or latest_response_id or "unknown"
                         )
-                        if response_id in wakeup_response_ids:
+                        if response_id in suppressed_response_ids:
                             self._diagnostics.record(
-                                "provider_wakeup_text_ignored",
+                                "provider_suppressed_text_ignored",
                                 response_id=response_id,
                                 characters=len(
                                     str(event.get("transcript") or event.get("text") or "")
@@ -460,10 +499,10 @@ class YandexRealtimeSession:
                             or "unknown"
                         )
                         status = str(response.get("status") or "")
-                        if response_id in wakeup_response_ids:
-                            wakeup_response_ids.discard(response_id)
+                        if response_id in suppressed_response_ids:
+                            suppressed_response_ids.discard(response_id)
                             self._diagnostics.record(
-                                "provider_wakeup_response_done",
+                                "provider_suppressed_response_done",
                                 response_id=response_id,
                                 status=status,
                                 provider_media_reached_transport=False,
@@ -564,11 +603,11 @@ class YandexRealtimeSession:
                         if self._stop.is_set():
                             break
                         if (
-                            manual_wakeup_deadline is not None
-                            and time.monotonic() >= manual_wakeup_deadline
+                            ptt_finalization_deadline is not None
+                            and time.monotonic() >= ptt_finalization_deadline
                         ):
                             raise TimeoutError(
-                                "Timed out waiting for Yandex manual input transcription"
+                                "Timed out waiting for Yandex PTT transcript finalization"
                             )
                         await asyncio.sleep(0.05)
                         for task in (send_task, receive_task, presentation_task):

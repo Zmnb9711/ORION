@@ -39,16 +39,22 @@ text is never sent back to Qwen. Qwen only returns the strict decomposition and
 the untrusted FREE response. Core owns the operational decision, phraseology
 and final ordering.
 
-The SRS path is push-to-talk, so it disables Yandex server VAD and commits the
-input buffer exactly once at the existing SRS RX transmission boundary. A
-natural pause inside a held PTT can therefore no longer split one physical
-transmission into several provider turns. Field evidence also established that
-the deployed Yandex backend defers a manual commit until it receives
-`response.create`. ORION therefore sends one response request immediately after
-the commit. In ordinary Yandex SRS mode that same request is the single audible
-assistant response. In Live Golden it is a bounded text-only transcription
-wake-up: provider text is ignored, provider PCM is fail-closed before the SRS
-endpoint, and the internal response is cancelled when its ID becomes available.
+The SRS path is push-to-talk, but the deployed Yandex backend silently ignores
+client `input_audio_buffer.commit` while `turn_detection=null`, contrary to its
+published event contract. A following `response.create` generates a response
+from prior conversation context but does not commit or transcribe that buffer.
+ORION therefore retains provider server VAD and treats its transcripts only as
+segments. At the existing SRS RX transmission boundary it streams a bounded
+800 ms PCM-silence tail in 40 ms chunks so Yandex finalizes the last segment,
+then joins every non-empty segment observed during that one physical PTT and
+invokes the Live Golden consumer exactly once. Natural pauses may create
+provider segments, but can no longer create separate Live Golden cases.
+
+Every automatic provider response is fail-closed while Live Golden suppression
+is enabled: ORION requests cancellation but does not rely on cancellation being
+honored, and filters provider text and PCM by response ID before the existing
+Realtime endpoint and SRS transport. Ordinary Yandex SRS responses remain on
+their existing visible path.
 
 The transcript callback is bounded and hands the single finalized PTT input to
 one background case worker; it never blocks the Realtime receive loop.
@@ -64,11 +70,11 @@ response generation then competed with the still-arriving input. The semantic
 gate correctly rejected those incomplete turns.
 
 The correction leaves SRS protocol/framing, RadioRouter, SpeechKit, ATC,
-Phraseology and composition unchanged. Only the Yandex input turn owner and the
-provider wake-up ordering change for the existing SRS path: all PCM blocks
-precede one explicit `input_audio_buffer.commit`, immediately followed by one
-mode-bounded `response.create`. Direct Audio continues to use its existing
-server VAD behavior.
+Phraseology and composition unchanged. Only the Yandex input finalization seam
+changes for the existing SRS path: provider VAD segments are retained until the
+physical transmission boundary, a paced silence tail closes the last segment,
+and one aggregate reaches decomposition. Direct Audio continues to use its
+existing server VAD behavior.
 
 ## Field corpus and expected response structure
 
