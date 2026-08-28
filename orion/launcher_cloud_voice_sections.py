@@ -102,6 +102,19 @@ def format_hybrid_probe_status(result: Mapping[str, object]) -> str:
     return f"Hybrid Probe: {state} — {message}{suffix}"
 
 
+def format_live_golden_status(result: Mapping[str, object]) -> str:
+    state = str(result.get("state") or "off").upper()
+    message = str(result.get("message") or "Live Golden Conversation is off")
+    raw_case_number = result.get("case_number")
+    raw_total = result.get("total_cases")
+    case_number = raw_case_number if isinstance(raw_case_number, int) else 0
+    total = raw_total if isinstance(raw_total, int) else 8
+    prompt = str(result.get("next_prompt") or "").strip()
+    progress = f" [{case_number}/{total}]" if case_number else ""
+    next_case = f"\nSAY: {prompt}" if prompt else ""
+    return f"Live Golden: {state}{progress} — {message}{next_case}"
+
+
 class CloudVoiceConfigStore:
     """Persist non-secret ADR-004 Launcher settings only."""
 
@@ -607,6 +620,72 @@ class LauncherCloudVoiceSectionsMixin:
             command=lambda: control_live(start=False),
         ).pack(side=LEFT)
 
+        ttk.Label(
+            box,
+            text="LIVE GOLDEN CONVERSATION / MODE A",
+            style="CardTitle.TLabel",
+        ).pack(anchor="w", pady=(18, 0))
+        ttk.Label(
+            box,
+            text=(
+                "Real speech via official SRS Client → existing Yandex transcript → "
+                "Qwen FREE/OPERATIONAL → controlled Golden ATC → FAP_RUSSIAN_ATC → "
+                "SpeechKit → existing RadioRouter/SRS adapter. Start Yandex + SRS and "
+                "Test Session first. DCS is not required."
+            ),
+            style="CardText.TLabel",
+            wraplength=780,
+            justify="left",
+        ).pack(anchor="w", pady=(6, 8))
+        live_golden_status = StringVar(value="Live Golden: OFF")
+        ttk.Label(
+            box,
+            textvariable=live_golden_status,
+            style="CardText.TLabel",
+            wraplength=780,
+            justify="left",
+        ).pack(anchor="w", pady=(0, 8))
+        live_golden_row = ttk.Frame(box, style="Card.TFrame")
+        live_golden_row.pack(fill=X)
+        capture_live_golden_audio = BooleanVar(value=True)
+        ttk.Checkbutton(
+            live_golden_row,
+            text="Include finalized SpeechKit→SRS WAVs in Test Evidence",
+            variable=capture_live_golden_audio,
+        ).pack(side=LEFT, padx=(0, 8))
+        ttk.Button(
+            live_golden_row,
+            text="START LIVE GOLDEN",
+            style="Primary.TButton",
+            command=lambda: self._live_golden_start_async(
+                capture_live_golden_audio.get(), live_golden_status
+            ),
+        ).pack(side=LEFT, padx=(0, 8))
+        ttk.Button(
+            live_golden_row,
+            text="STOP LIVE GOLDEN",
+            style="Secondary.TButton",
+            command=lambda: self._live_golden_stop_async(live_golden_status),
+        ).pack(side=LEFT)
+        live_golden_review_row = ttk.Frame(box, style="Card.TFrame")
+        live_golden_review_row.pack(fill=X, pady=(8, 0))
+        live_golden_review = StringVar(value="CLEAR")
+        ttk.Combobox(
+            live_golden_review_row,
+            textvariable=live_golden_review,
+            values=("CLEAR", "UNCLEAR", "NOT_HEARD"),
+            state="readonly",
+            width=14,
+        ).pack(side=LEFT, padx=(0, 8))
+        ttk.Button(
+            live_golden_review_row,
+            text="RECORD CASE REVIEW",
+            style="Secondary.TButton",
+            command=lambda: self._live_golden_review_async(
+                live_golden_review.get(), live_golden_status
+            ),
+        ).pack(side=LEFT)
+
         ttk.Label(box, text="HYBRID PRESENTATION / SPEECHKIT PROBE", style="CardTitle.TLabel").pack(anchor="w", pady=(18, 0))
         ttk.Label(
             box,
@@ -783,6 +862,7 @@ class LauncherCloudVoiceSectionsMixin:
         )
         self._presentation_probe_poll(probe_status, generation)
         self._hybrid_probe_poll(hybrid_status, generation)
+        self._live_golden_poll(live_golden_status, generation)
         self._srs_process_poll(
             srs_server_path,
             srs_client_path,
@@ -959,6 +1039,81 @@ class LauncherCloudVoiceSectionsMixin:
         return self._realtime_core_json(
             "/v1/realtime/yandex/hybrid-presentation-probe/status"
         )
+
+    def _live_golden_status(self) -> dict[str, object]:
+        return self._realtime_core_json(
+            "/v1/realtime/live-golden-conversation/status"
+        )
+
+    def _live_golden_start_async(
+        self,
+        capture_audio: bool,
+        status_var: StringVar,
+    ) -> None:
+        generation = self._qwen_view_generation
+
+        def worker() -> None:
+            try:
+                result = self._realtime_core_json(
+                    "/v1/realtime/live-golden-conversation/start",
+                    method="POST",
+                    payload={"capture_response_audio": capture_audio},
+                )
+                text = format_live_golden_status(result)
+            except (OSError, ValueError, RuntimeError, urllib.error.URLError) as exc:
+                text = f"Live Golden: FAIL — {type(exc).__name__}: {exc}"
+            self._schedule_qwen_ui(0, lambda: status_var.set(text), generation)
+
+        threading.Thread(
+            target=worker,
+            name="orion-live-golden-start",
+            daemon=True,
+        ).start()
+
+    def _live_golden_stop_async(self, status_var: StringVar) -> None:
+        generation = self._qwen_view_generation
+
+        def worker() -> None:
+            try:
+                result = self._realtime_core_json(
+                    "/v1/realtime/live-golden-conversation/stop",
+                    method="POST",
+                )
+                text = format_live_golden_status(result)
+            except (OSError, ValueError, RuntimeError, urllib.error.URLError) as exc:
+                text = f"Live Golden: FAIL — {type(exc).__name__}: {exc}"
+            self._schedule_qwen_ui(0, lambda: status_var.set(text), generation)
+
+        threading.Thread(
+            target=worker,
+            name="orion-live-golden-stop",
+            daemon=True,
+        ).start()
+
+    def _live_golden_review_async(
+        self,
+        result: str,
+        status_var: StringVar,
+    ) -> None:
+        generation = self._qwen_view_generation
+
+        def worker() -> None:
+            try:
+                response = self._realtime_core_json(
+                    "/v1/realtime/live-golden-conversation/review",
+                    method="POST",
+                    payload={"result": result.strip().casefold()},
+                )
+                text = format_live_golden_status(response)
+            except (OSError, ValueError, RuntimeError, urllib.error.URLError) as exc:
+                text = f"Live Golden: FAIL — {type(exc).__name__}: {exc}"
+            self._schedule_qwen_ui(0, lambda: status_var.set(text), generation)
+
+        threading.Thread(
+            target=worker,
+            name="orion-live-golden-review",
+            daemon=True,
+        ).start()
 
     def _start_hybrid_probe(self, capture_audio: bool) -> dict[str, object]:
         return self._realtime_core_json(
@@ -1147,6 +1302,30 @@ class LauncherCloudVoiceSectionsMixin:
         self._schedule_qwen_ui(
             1000,
             lambda: self._hybrid_probe_poll(status_var, generation),
+            generation,
+        )
+
+    def _live_golden_poll(self, status_var: StringVar, generation: int) -> None:
+        if not self._qwen_view_lifecycle.is_alive(generation):
+            return
+
+        def worker() -> None:
+            try:
+                result = self._live_golden_status()
+            except Exception:
+                result = None
+            if result is not None:
+                text = format_live_golden_status(result)
+                self._schedule_qwen_ui(0, lambda: status_var.set(text), generation)
+
+        threading.Thread(
+            target=worker,
+            name="orion-live-golden-status",
+            daemon=True,
+        ).start()
+        self._schedule_qwen_ui(
+            1000,
+            lambda: self._live_golden_poll(status_var, generation),
             generation,
         )
 

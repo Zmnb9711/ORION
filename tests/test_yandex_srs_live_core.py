@@ -193,6 +193,24 @@ def test_incomplete_cancelled_oversized_and_stop_never_transmit(
     assert radio.sent == []
 
 
+def test_live_golden_provider_output_suppression_drops_realtime_pcm_before_tx(
+    tmp_path,
+) -> None:  # noqa: ANN001
+    endpoint, radio, _status = make_endpoint(tmp_path, Clock())
+    endpoint.connect_radio()
+    endpoint.start()
+    endpoint.set_provider_output_suppressed(True)
+    endpoint.response_started("suppressed-yandex-response")
+    endpoint.response_audio("suppressed-yandex-response", bytes(400))
+    endpoint.response_audio_done("suppressed-yandex-response")
+    endpoint.response_done("suppressed-yandex-response", "completed")
+    time.sleep(0.05)
+    assert radio.sent == []
+    assert endpoint.tx_queue.empty()
+    endpoint.set_provider_output_suppressed(False)
+    endpoint.stop()
+
+
 def test_provider_input_backpressure_is_bounded_and_reported(tmp_path) -> None:  # noqa: ANN001
     endpoint, _radio, _status = make_endpoint(tmp_path, Clock())
     for _ in range(endpoint.input_queue.maxsize):

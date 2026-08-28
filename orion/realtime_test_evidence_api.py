@@ -7,6 +7,7 @@ from dataclasses import asdict
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from orion.build_identity import load_build_identity
 from orion.realtime_test_evidence import realtime_test_evidence
 
 
@@ -21,10 +22,14 @@ class RealtimeTestEvidenceStart(BaseModel):
 @router.post("/start")
 def start_test_evidence(request: RealtimeTestEvidenceStart) -> dict[str, object]:
     try:
+        identity = load_build_identity()
         return asdict(
             realtime_test_evidence.start(
                 provider=request.provider,
                 transport=request.transport,
+                build_sha=identity.sha,
+                build_branch=identity.branch,
+                build_version=identity.version,
             )
         )
     except ValueError as exc:

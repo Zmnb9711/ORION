@@ -57,6 +57,11 @@ class YandexRealtimeSession:
         on_session_ready: Callable[[str], None] | None = None,
         flight_context_gate: FlightContextUpdateGate | None = None,
         interaction_state: RealtimeInteractionState | None = None,
+        on_final_user_transcript: Callable[
+            [str, str | None, str, str, float | None], None
+        ]
+        | None = None,
+        suppress_provider_responses: Callable[[], bool] | None = None,
     ) -> None:
         self._api_key = api_key
         self._folder_id = folder_id
@@ -69,6 +74,12 @@ class YandexRealtimeSession:
             YANDEX_INSTRUCTIONS
         )
         self._interaction = interaction_state or RealtimeInteractionState()
+        self._on_final_user_transcript = on_final_user_transcript or (
+            lambda _text, _turn_id, _event_id, _item_id, _speech_stopped_at: None
+        )
+        self._suppress_provider_responses = suppress_provider_responses or (
+            lambda: False
+        )
 
     async def _send_flight_context_update(
         self,
@@ -145,6 +156,7 @@ class YandexRealtimeSession:
 
         async def receive_worker() -> None:
             latest_response_id: str | None = None
+            latest_speech_stopped_at: float | None = None
             while not self._stop.is_set():
                 message = await websocket.receive()
                 if message.type is aiohttp.WSMsgType.TEXT:
@@ -161,6 +173,7 @@ class YandexRealtimeSession:
                         self._diagnostics.record("speech_started", turn_id=turn_id)
                     elif kind == "input_audio_buffer.speech_stopped":
                         turn_id = self._interaction.speech_stopped()
+                        latest_speech_stopped_at = time.monotonic()
                         self._diagnostics.record("speech_stopped", turn_id=turn_id)
                     elif kind == "conversation.item.input_audio_transcription.completed":
                         transcript = str(event.get("transcript") or "")
@@ -178,6 +191,19 @@ class YandexRealtimeSession:
                             characters=len(transcript),
                             persisted=False,
                         )
+                        try:
+                            self._on_final_user_transcript(
+                                transcript,
+                                self._interaction.current_turn_id(),
+                                str(event.get("event_id") or ""),
+                                str(event.get("item_id") or ""),
+                                latest_speech_stopped_at,
+                            )
+                        except Exception as exc:
+                            self._diagnostics.record(
+                                "final_transcript_consumer_failed",
+                                error_type=type(exc).__name__,
+                            )
                     elif kind == "conversation.item.input_audio_transcription.failed":
                         self._diagnostics.record(
                             "transcription_failed",
@@ -196,6 +222,18 @@ class YandexRealtimeSession:
                             response_id=response_id,
                             turn_id=turn_id,
                         )
+                        if self._suppress_provider_responses():
+                            await websocket.send_json(
+                                {
+                                    "type": "response.cancel",
+                                    "response_id": response_id,
+                                }
+                            )
+                            self._diagnostics.record(
+                                "provider_response_cancel_requested",
+                                response_id=response_id,
+                                turn_id=turn_id,
+                            )
                     elif kind == "response.output_audio.delta":
                         pcm = decode_yandex_output_audio(event)
                         response_id = str(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import os
 import sys
@@ -89,6 +90,12 @@ def main(argv: list[str] | None = None) -> int:
             metavar="RESULT_JSON",
             help="run the offline Core-bundled SRS native smoke and exit",
         )
+        parser.add_argument(
+            "--build-identity-smoke",
+            type=Path,
+            metavar="RESULT_JSON",
+            help="write the packaged build identity and exit",
+        )
         args = parser.parse_args(argv)
         _startup_log(runtime, "args_ready", f"host={args.host} port={args.port}")
 
@@ -102,6 +109,18 @@ def main(argv: list[str] | None = None) -> int:
                 encoding="utf-8",
             )
             _startup_log(runtime, "srs_native_smoke_ok", str(result_path))
+            return 0
+
+        if args.build_identity_smoke is not None:
+            from orion.build_identity import load_build_identity
+
+            result_path = args.build_identity_smoke.expanduser().resolve()
+            result_path.parent.mkdir(parents=True, exist_ok=True)
+            result_path.write_text(
+                json.dumps(dataclasses.asdict(load_build_identity()), sort_keys=True),
+                encoding="utf-8",
+            )
+            _startup_log(runtime, "build_identity_smoke_ok", str(result_path))
             return 0
 
         _startup_log(runtime, "app_import_start")

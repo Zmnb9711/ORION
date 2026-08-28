@@ -215,3 +215,32 @@ def test_yandex_final_provider_transcripts_enter_only_active_test_evidence(
     assert events[0]["turn_id"] == events[1]["turn_id"] == "turn_001"
     assert events[0]["event_id"] == "event-user"
     assert events[1]["response_id"] == "r1"
+
+
+def test_live_golden_hook_cancels_provider_response_and_forwards_final_transcript(
+    monkeypatch,
+) -> None:  # noqa: ANN001
+    websocket = FakeWebSocket(b"\x05\x06" * 100)
+    monkeypatch.setattr(aiohttp, "ClientSession", lambda **_: FakeClientSession(websocket))
+    stop = threading.Event()
+    endpoint = FakeEndpoint(stop, bytes(1764))
+    received: list[tuple[object, ...]] = []
+    asyncio.run(
+        YandexRealtimeSession(
+            "memory-only-secret",
+            "folder",
+            endpoint,
+            stop,
+            FakeDiagnostics(),
+            on_final_user_transcript=lambda *values: received.append(values),
+            suppress_provider_responses=lambda: True,
+        ).run()
+    )
+    assert received and received[0][:4] == (
+        "Какая у меня скорость?",
+        "turn_001",
+        "event-user",
+        "item-user",
+    )
+    cancellations = [item for item in websocket.sent if item["type"] == "response.cancel"]
+    assert cancellations == [{"type": "response.cancel", "response_id": "r1"}]

@@ -41,6 +41,7 @@ _ALLOWED_FIELDS = {
     "local_close_owner",
     "packet_id",
     "pcm_bytes",
+    "frames",
     "provider_event_id",
     "provider_item_id",
     "client_event_id",
@@ -48,6 +49,7 @@ _ALLOWED_FIELDS = {
     "client_response_event_id",
     "completion_latency_ms",
     "elapsed_ms",
+    "duration_ms",
     "effective_style",
     "effective_voice",
     "error_type",
@@ -75,6 +77,8 @@ _ALLOWED_FIELDS = {
     "realtime_session_id",
     "response_created_to_first_audio_ms",
     "response_id",
+    "queue_to_first_tx_ms",
+    "queue_to_complete_ms",
     "speech_stopped_to_first_audio_ms",
     "status",
     "turn_id",
@@ -92,6 +96,9 @@ class RealtimeTestEvidenceStatus:
     dropped_event_count: int = 0
     user_transcript_count: int = 0
     assistant_transcript_count: int = 0
+    build_sha: str | None = None
+    build_branch: str | None = None
+    build_version: str | None = None
     last_export_path: str | None = None
 
 
@@ -115,6 +122,8 @@ class RealtimeTestEvidenceRecorder:
         self._provider: str | None = None
         self._transport: str | None = None
         self._build_sha: str | None = None
+        self._build_branch: str | None = None
+        self._build_version: str | None = None
         self._dropped = 0
         self._user_transcript_count = 0
         self._assistant_transcript_count = 0
@@ -124,6 +133,8 @@ class RealtimeTestEvidenceRecorder:
         self._probe_response_cases: dict[str, str] = {}
         self._hybrid_runs: dict[str, dict[str, object]] = {}
         self._hybrid_audio: dict[str, bytes] = {}
+        self._live_golden_runs: dict[str, dict[str, object]] = {}
+        self._live_golden_audio: dict[str, bytes] = {}
 
     def start(
         self,
@@ -131,6 +142,8 @@ class RealtimeTestEvidenceRecorder:
         provider: str,
         transport: str,
         build_sha: str | None = None,
+        build_branch: str | None = None,
+        build_version: str | None = None,
     ) -> RealtimeTestEvidenceStatus:
         provider_value = self._identifier(provider, "provider")
         transport_value = self._identifier(transport, "transport")
@@ -146,6 +159,8 @@ class RealtimeTestEvidenceRecorder:
             self._probe_response_cases.clear()
             self._hybrid_runs.clear()
             self._hybrid_audio.clear()
+            self._live_golden_runs.clear()
+            self._live_golden_audio.clear()
             self._active = True
             self._test_session_id = uuid4().hex
             self._started_at = datetime.now(UTC)
@@ -160,6 +175,19 @@ class RealtimeTestEvidenceRecorder:
                 or re.fullmatch(r"[0-9a-fA-F]{7,40}", candidate_sha)
                 else "unknown"
             )
+            candidate_branch = (
+                build_branch or os.environ.get("ORION_BUILD_BRANCH") or "unknown"
+            ).strip()
+            self._build_branch = (
+                candidate_branch
+                if candidate_branch == "unknown"
+                or re.fullmatch(r"[A-Za-z0-9._/-]{1,160}", candidate_branch)
+                else "unknown"
+            )
+            candidate_version = (
+                build_version or os.environ.get("ORION_BUILD_VERSION") or "unknown"
+            ).strip()
+            self._build_version = candidate_version[:80] or "unknown"
             return self._status_locked()
 
     def record(self, event: str, **fields: object) -> None:
@@ -624,6 +652,146 @@ class RealtimeTestEvidenceRecorder:
             if run is not None:
                 run["acoustic_review"] = result[:40]
 
+    def record_live_golden_run(
+        self,
+        *,
+        run_id: str,
+        main_session_id: str,
+        mode: str,
+        communication_profile: str,
+        config_fingerprint: str,
+        corpus: tuple[dict[str, object], ...],
+        capture_audio: bool,
+    ) -> None:
+        """Register one bounded real-speech Golden field session."""
+
+        with self._lock:
+            if not self._active:
+                return
+            safe_run = self._identifier(run_id, "live Golden run", max_length=40)
+            self._live_golden_runs[safe_run] = {
+                "run_id": safe_run,
+                "mode": self._sanitize_transcript(mode, max_length=80),
+                "atc_context_origin": "CONTROLLED GOLDEN ATC FIXTURE",
+                "main_realtime_session_id": main_session_id[:200],
+                "second_microphone_owner": False,
+                "second_realtime_session": False,
+                "qwen_realtime_to_srs_transport": False,
+                "provider_response_suppressed": True,
+                "communication_profile": communication_profile[:80],
+                "profile_independent_from_input_language": True,
+                "config_fingerprint_sha256": config_fingerprint[:64],
+                "capture_response_audio": capture_audio,
+                "corpus": [self._safe_structured(item) for item in corpus[:8]],
+                "cases": [],
+                "state": "running",
+                "failure": None,
+            }
+
+    def record_live_golden_case(
+        self,
+        *,
+        run_id: str,
+        record: dict[str, object],
+    ) -> None:
+        with self._lock:
+            run = self._live_golden_runs.get(run_id)
+            if run is None:
+                return
+            cases = run.get("cases")
+            if isinstance(cases, list) and len(cases) < 8:
+                cases.append(self._safe_structured(record))
+
+    def record_live_golden_review(
+        self,
+        *,
+        run_id: str,
+        case_id: str,
+        result: str,
+    ) -> None:
+        with self._lock:
+            run = self._live_golden_runs.get(run_id)
+            if run is None:
+                return
+            cases = run.get("cases")
+            if not isinstance(cases, list):
+                return
+            for case in reversed(cases):
+                if isinstance(case, dict) and case.get("case_id") == case_id:
+                    case["acoustic_review"] = result[:40]
+                    return
+
+    def finish_live_golden_run(
+        self,
+        *,
+        run_id: str,
+        state: str,
+        failure: str | None = None,
+    ) -> None:
+        with self._lock:
+            run = self._live_golden_runs.get(run_id)
+            if run is None:
+                return
+            run["state"] = state[:40]
+            run["failure"] = (
+                self._sanitize_transcript(failure, max_length=240)
+                if failure
+                else None
+            )
+
+    def record_live_golden_audio(
+        self,
+        *,
+        run_id: str,
+        case_id: str,
+        response_id: str,
+        pcm44: bytes,
+    ) -> dict[str, object] | None:
+        """Store finalized SpeechKit PCM entering SRS, never microphone or RX audio."""
+
+        max_pcm_bytes = 44_100 * 2 * 30
+        if not pcm44 or len(pcm44) % 2 or len(pcm44) > max_pcm_bytes:
+            raise ValueError("Live Golden audio must be bounded PCM16 mono (30 seconds max)")
+        with self._lock:
+            run = self._live_golden_runs.get(run_id)
+            if not self._active or run is None:
+                return None
+            if sum(map(len, self._live_golden_audio.values())) + len(pcm44) > 40 * 1024 * 1024:
+                raise ValueError("Live Golden audio exceeded the 40 MiB session bound")
+            safe_case = self._identifier(case_id, "live Golden case", max_length=80)
+            name = f"live-golden-audio/{safe_case}.wav"
+            buffer = io.BytesIO()
+            with wave.open(buffer, "wb") as output:
+                output.setnchannels(1)
+                output.setsampwidth(2)
+                output.setframerate(44_100)
+                output.writeframes(pcm44)
+            wav = buffer.getvalue()
+            samples = memoryview(pcm44).cast("h")
+            peak = max((abs(int(sample)) for sample in samples), default=0)
+            artifact = {
+                "case_id": safe_case,
+                "response_id": response_id[:200],
+                "filename": name,
+                "sha256": hashlib.sha256(wav).hexdigest(),
+                "pcm_sha256": hashlib.sha256(pcm44).hexdigest(),
+                "bytes": len(wav),
+                "pcm_bytes": len(pcm44),
+                "sample_rate_hz": 44_100,
+                "channels": 1,
+                "sample_width_bytes": 2,
+                "non_empty": True,
+                "peak_absolute_sample": peak,
+                "clipping_detected": peak >= 32_767,
+                "source": "speechkit_finalized_pcm_entering_srs",
+                "receiver_side_recording": False,
+            }
+            self._live_golden_audio[name] = wav
+            artifacts = run.setdefault("audio_artifacts", [])
+            if isinstance(artifacts, list):
+                artifacts.append(artifact)
+            return dict(artifact)
+
     def record_hybrid_recovery(self, run_id: str, result: dict[str, object]) -> None:
         with self._lock:
             run = self._hybrid_runs.get(run_id)
@@ -647,12 +815,18 @@ class RealtimeTestEvidenceRecorder:
             provider = self._provider or "unknown"
             transport = self._transport or "unknown"
             build_sha = self._build_sha or "unknown"
+            build_branch = self._build_branch or "unknown"
+            build_version = self._build_version or "unknown"
             dropped = self._dropped
             user_transcript_count = self._user_transcript_count
             assistant_transcript_count = self._assistant_transcript_count
             probe_cases = tuple(dict(item) for item in self._probe_cases.values())
             hybrid_runs = tuple(dict(item) for item in self._hybrid_runs.values())
             hybrid_audio = dict(self._hybrid_audio)
+            live_golden_runs = tuple(
+                dict(item) for item in self._live_golden_runs.values()
+            )
+            live_golden_audio = dict(self._live_golden_audio)
             self._active = False
 
             root = self._runtime_dir or Path(os.environ.get("ORION_RUNTIME_DIR", "runtime"))
@@ -672,13 +846,18 @@ class RealtimeTestEvidenceRecorder:
                 members += ",ia11-summary.json"
             if hybrid_audio:
                 members += "," + ",".join(sorted(hybrid_audio))
+            if live_golden_runs:
+                members += ",live-golden-summary.json"
+            if live_golden_audio:
+                members += "," + ",".join(sorted(live_golden_audio))
             manifest = (
                 "ORION realtime test evidence\n"
-                f"format_version={4 if hybrid_runs else 3}\n"
+                f"format_version={5 if live_golden_runs else (4 if hybrid_runs else 3)}\n"
                 f"test_session_id={session_id}\n"
                 f"members={members}\n"
-                f"raw_audio_included={str(bool(hybrid_audio)).lower()}\n"
+                f"raw_audio_included={str(bool(hybrid_audio or live_golden_audio)).lower()}\n"
                 f"synthetic_probe_audio_included={str(bool(hybrid_audio)).lower()}\n"
+                f"live_golden_response_audio_included={str(bool(live_golden_audio)).lower()}\n"
                 "microphone_audio_included=false\n"
                 "unrelated_srs_audio_included=false\n"
                 f"transcripts_included={str(bool(user_transcript_count or assistant_transcript_count)).lower()}\n"
@@ -694,12 +873,16 @@ class RealtimeTestEvidenceRecorder:
                 f"ia1_probe_cases={len(probe_cases)}\n"
                 f"ia11_probe_runs={len(hybrid_runs)}\n"
                 f"ia11_audio_artifacts={len(hybrid_audio)}\n"
+                f"live_golden_runs={len(live_golden_runs)}\n"
+                f"live_golden_audio_artifacts={len(live_golden_audio)}\n"
             )
             summary = (
                 f"test_session_id={session_id}\n"
                 f"started_at={started_at.isoformat(timespec='milliseconds')}\n"
                 f"stopped_at={stopped_at.isoformat(timespec='milliseconds')}\n"
                 f"orion_build_sha={build_sha}\n"
+                f"orion_build_branch={build_branch}\n"
+                f"orion_build_version={build_version}\n"
                 f"provider={provider}\n"
                 f"transport={transport}\n"
                 f"event_count={len(events)}\n"
@@ -748,6 +931,24 @@ class RealtimeTestEvidenceRecorder:
                     sort_keys=True,
                 ) + "\n"
             archive_members.update(hybrid_audio)
+            if live_golden_runs:
+                archive_members["live-golden-summary.json"] = json.dumps(
+                    {
+                        "scope": "Live Golden Conversation Mode A",
+                        "classification": "FIELD EVIDENCE — HUMAN REVIEW REQUIRED",
+                        "audio_privacy": {
+                            "speechkit_response_entering_srs_only": True,
+                            "microphone_audio": False,
+                            "radio_received_audio": False,
+                            "receiver_side_recording": False,
+                        },
+                        "runs": live_golden_runs,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                ) + "\n"
+            archive_members.update(live_golden_audio)
             self._write_zip(output, archive_members)
             self._last_export_path = output.resolve()
             return self._last_export_path
@@ -769,6 +970,9 @@ class RealtimeTestEvidenceRecorder:
             assistant_transcript_count=(
                 self._assistant_transcript_count if self._active else 0
             ),
+            build_sha=self._build_sha if self._active else None,
+            build_branch=self._build_branch if self._active else None,
+            build_version=self._build_version if self._active else None,
             last_export_path=(
                 str(self._last_export_path) if self._last_export_path is not None else None
             ),
@@ -795,6 +999,26 @@ class RealtimeTestEvidenceRecorder:
         for pattern in patterns:
             normalized = re.sub(pattern, "[REDACTED]", normalized)
         return normalized
+
+    @classmethod
+    def _safe_structured(cls, value: object, *, depth: int = 0) -> object:
+        if depth > 8:
+            return "BOUND_EXCEEDED"
+        if value is None or isinstance(value, (bool, int, float)):
+            return value
+        if isinstance(value, str):
+            return cls._sanitize_transcript(value, max_length=4000)
+        if isinstance(value, dict):
+            result: dict[str, object] = {}
+            for key, item in list(value.items())[:80]:
+                safe_key = str(key)[:80]
+                if re.search(r"(?i)(?:api.?key|authorization|credential|password|secret)", safe_key):
+                    continue
+                result[safe_key] = cls._safe_structured(item, depth=depth + 1)
+            return result
+        if isinstance(value, (list, tuple)):
+            return [cls._safe_structured(item, depth=depth + 1) for item in value[:100]]
+        return cls._sanitize_transcript(str(value), max_length=200)
 
     @staticmethod
     def _parse_timestamp(value: object) -> datetime | None:

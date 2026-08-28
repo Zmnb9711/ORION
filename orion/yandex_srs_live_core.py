@@ -190,6 +190,7 @@ class SrsYandexPcmEndpoint:
         self.radio_router: RadioRouter | None = None
         self._stop_lock = threading.Lock()
         self._resources_stopped = False
+        self._provider_output_suppressed = False
 
     def connect_radio(self) -> None:
         self.radio.connect()
@@ -398,6 +399,10 @@ class SrsYandexPcmEndpoint:
             raise ValueError("Yandex response PCM is not aligned to int16 samples")
         with self._lock:
             response = self._response(response_id)
+            if self._provider_output_suppressed:
+                response.dropped = True
+                response.pcm.clear()
+                return
             if response.dropped:
                 return
             if len(response.pcm) + len(pcm16le) > RESPONSE_MAX_BYTES:
@@ -429,6 +434,8 @@ class SrsYandexPcmEndpoint:
 
     def _maybe_queue(self, response: _ResponseState) -> None:
         if (
+            self._provider_output_suppressed
+            or
             response.queued
             or response.dropped
             or not response.audio_done
@@ -451,13 +458,48 @@ class SrsYandexPcmEndpoint:
         response.queued = True
         response.pcm.clear()
 
+    def set_provider_output_suppressed(self, suppressed: bool) -> None:
+        """Bounded Live Golden gate; provider-generated PCM never reaches radio."""
+
+        with self._lock:
+            self._provider_output_suppressed = bool(suppressed)
+            if suppressed:
+                for response in self.responses.values():
+                    response.pcm.clear()
+                    response.dropped = True
+        self.diagnostics.record(
+            "provider_output_suppression_changed",
+            status="enabled" if suppressed else "disabled",
+        )
+
     def transmit_probe_audio(
         self,
         response_id: str,
         pcm44: bytes,
         timeout_s: float,
-    ) -> dict[str, float]:
+    ) -> dict[str, float | int]:
         """Route one hybrid-probe utterance through RadioRouter and the SRS adapter."""
+
+        return self.transmit_finalized_audio(
+            response_id,
+            pcm44,
+            timeout_s,
+            source_domain=CommunicationDomain.GENERAL,
+            priority=CommunicationPriority.IMPORTANT,
+            entity_id="orion.srs.hybrid-probe",
+        )
+
+    def transmit_finalized_audio(
+        self,
+        response_id: str,
+        pcm44: bytes,
+        timeout_s: float,
+        *,
+        source_domain: CommunicationDomain,
+        priority: CommunicationPriority,
+        entity_id: str,
+    ) -> dict[str, float | int]:
+        """Route already-finalized PCM through the one production Router/adapter."""
 
         router = self.radio_router
         if router is None:
@@ -467,15 +509,15 @@ class SrsYandexPcmEndpoint:
         request = RadioTransmissionRequest(
             context=RadioContext(
                 tx_correlation_id=response_id,
-                source_domain=CommunicationDomain.GENERAL,
+                source_domain=source_domain,
                 radio_entity=RadioEntityRef(
-                    entity_id="orion.srs.hybrid-probe",
+                    entity_id=entity_id,
                     operational_callsign=runtime.bot_name,
                     coalition=coalition,
                 ),
                 target_frequency_hz=runtime.frequency_hz,
                 modulation=radio_modulation_from_srs(runtime.modulation),
-                communication_priority=CommunicationPriority.IMPORTANT,
+                communication_priority=priority,
             ),
             audio=FinalizedPcmAudio(pcm=pcm44, sample_rate_hz=YANDEX_INPUT_RATE),
             transport_id=SRS_ADAPTER_ID,
@@ -513,6 +555,8 @@ class SrsYandexPcmEndpoint:
                 snapshot.completed_at - snapshot.enqueued_at
             ).total_seconds()
             * 1000,
+            "frame_count": snapshot.frame_count or 0,
+            "duration_ms": snapshot.duration_ms or 0.0,
         }
 
     def srs_adapter_runtime(self) -> SrsAdapterRuntime:
@@ -849,6 +893,10 @@ class YandexSrsLiveService:
 
             def session_ready(yandex_session_id: str) -> None:
                 nonlocal main_yandex_session_id
+                from orion.live_golden_conversation import (
+                    LiveGoldenRuntimeContext,
+                    live_golden_conversation,
+                )
                 from orion.yandex_hybrid_probe import (
                     HybridRuntimeContext,
                     yandex_hybrid_probe,
@@ -869,6 +917,16 @@ class YandexSrsLiveService:
                         context_version=realtime_test_evidence.current_context_version,
                     )
                 )
+                live_golden_conversation.attach(
+                    LiveGoldenRuntimeContext(
+                        api_key=api_key,
+                        folder_id=request.folder_id,
+                        endpoint=endpoint,
+                        main_session_id=yandex_session_id,
+                    )
+                )
+
+            from orion.live_golden_conversation import live_golden_conversation
 
             asyncio.run(
                 YandexRealtimeSession(
@@ -879,6 +937,12 @@ class YandexSrsLiveService:
                     yandex_diagnostics,
                     on_streaming=streaming,
                     on_session_ready=session_ready,
+                    on_final_user_transcript=(
+                        live_golden_conversation.accept_transcript
+                    ),
+                    suppress_provider_responses=(
+                        live_golden_conversation.suppress_provider_responses
+                    ),
                 ).run()
             )
         except Exception as exc:
@@ -898,8 +962,10 @@ class YandexSrsLiveService:
         finally:
             stop_event.set()
             if main_yandex_session_id is not None:
+                from orion.live_golden_conversation import live_golden_conversation
                 from orion.yandex_hybrid_probe import yandex_hybrid_probe
 
+                live_golden_conversation.detach(main_yandex_session_id)
                 yandex_hybrid_probe.detach(main_yandex_session_id)
             if endpoint is not None:
                 endpoint.stop()

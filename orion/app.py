@@ -124,6 +124,7 @@ for _router_module in (
     "orion.realtime_test_evidence_api",
     "orion.yandex_presentation_api",
     "orion.yandex_hybrid_probe_api",
+    "orion.live_golden_conversation_api",
     "orion.speech_scheduler_api",
     "orion.tts_audio_api",
     "orion.windows_audio_worker_api",

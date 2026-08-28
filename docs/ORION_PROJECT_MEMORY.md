@@ -1326,3 +1326,38 @@ CONVERSATION NOT STARTED.**
   The final sentence must not be hardcoded: it must contain genuine FREE output
   and protected KB phraseology. This live milestone is not implemented by this
   checkpoint.
+
+## 31. Live Golden Conversation Mode A implementation ready — 2026-08-28
+
+- Status is **IMPLEMENTATION READY FOR FIELD**, not `LIVE GOLDEN PASS`. A real
+  spoken-input run and explicit official-SRS-Client acoustic review remain the
+  field gate.
+- The bounded path reuses the single production Yandex + SRS session as the
+  speech-input owner: official SRS Client microphone/PTT -> SRS Server -> ORION
+  SRS RX -> Yandex final user transcript. It creates no second microphone,
+  Realtime session, SRS TX worker, packetizer, or Qwen-Realtime-to-SRS mode.
+- During the bounded run, the normal Yandex Realtime response is cancelled with
+  the documented `response.cancel` event and raced provider PCM is suppressed
+  before the radio queue. One Qwen3.6 Responses call produces only the strict
+  FREE/OPERATIONAL decomposition and FREE reply.
+- Core then runs the existing Golden Takeoff decision over an explicitly
+  labelled `CONTROLLED GOLDEN ATC FIXTURE`, resolves the experimental
+  `FAP_RUSSIAN_ATC` Pilot entry, composes FREE before the immutable PROTECTED
+  fragment, sends that exact local text to the existing SpeechKit client and
+  routes finalized PCM through the existing RadioRouter and production SRS
+  adapter. The protected fragment is never returned to Qwen.
+- Launcher exposes one small `LIVE GOLDEN CONVERSATION / MODE A` field control.
+  It presents the six approved Russian mixed cases plus pure-operational and
+  pure-conversational controls in order, and requires an explicit per-case
+  `clear`, `unclear`, or `not_heard` review before advancing.
+- Test Evidence now supports a bounded `live-golden-summary.json` plus optional
+  finalized SpeechKit-to-SRS WAVs. It records the strongest real-input
+  correlation, Qwen/ATC/phraseology/composition/SpeechKit/RadioRouter/SRS
+  chain, protected integrity, stage latency, human review and build identity.
+  WAV evidence is transmitter-side only, never a receiver-side recording.
+- Frozen build identity is carried by a bounded marker and records exact Git
+  SHA, branch and ORION version, closing the earlier `orion_build_sha=unknown`
+  observability gap for the field build.
+- This milestone is Mode A: DCS is not required and no live DCS runway awareness
+  is claimed. Broader ATC, other communication domains and Stage 6B expansion
+  remain out of scope.

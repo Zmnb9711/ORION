@@ -13,6 +13,7 @@ from orion.launcher_cloud_voice_sections import (
     CloudVoiceConfig,
     CloudVoiceConfigStore,
     LauncherCloudVoiceSectionsMixin,
+    format_live_golden_status,
     format_orion_srs_status,
     format_srs_process_status,
     format_test_evidence_status,
@@ -295,3 +296,17 @@ def test_launcher_frozen_smoke_has_no_side_effects() -> None:
         "network_used": False,
         "audio_devices_opened": False,
     }
+
+
+def test_live_golden_status_formatter_exposes_case_prompt_and_progress() -> None:
+    text = format_live_golden_status(
+        {
+            "state": "waiting_input",
+            "message": "Speak the displayed case through the official SRS Client",
+            "case_number": 1,
+            "total_cases": 8,
+            "next_prompt": "Добрый день! Разрешите взлёт.",
+        }
+    )
+    assert "WAITING_INPUT [1/8]" in text
+    assert "SAY: Добрый день! Разрешите взлёт." in text
