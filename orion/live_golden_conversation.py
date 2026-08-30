@@ -14,6 +14,7 @@ import json
 import threading
 import time
 import uuid
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
@@ -42,6 +43,7 @@ from orion.mixed_conversation import (
 from orion.pilot_phraseology import PilotPhraseologyResolver
 from orion.pilot_phraseology_catalog import build_pilot_phraseology_catalog
 from orion.planner import PlannerProvider
+from orion.realtime_audio_transport import RealtimeTranscriptSegment
 from orion.realtime_test_evidence import realtime_test_evidence
 from orion.srs_radio_adapter import SrsAdapterRuntime
 from orion.srs_radio_transport import SrsState
@@ -65,6 +67,8 @@ SPEECHKIT_ROLE = "neutral"
 PRIMARY_CASE_COUNT = 6
 TX_TIMEOUT_S = 40.0
 PROVIDER_DEADLINE_S = 60.0
+PTT_TRANSCRIPT_SETTLE_S = 1.0
+_COMPLETED_PTT_HISTORY = 8
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,6 +176,236 @@ class LiveGoldenRuntimeContext:
     folder_id: str
     endpoint: LiveGoldenEndpoint
     main_session_id: str
+
+
+@dataclass(slots=True)
+class _PendingPhysicalPtt:
+    transmission_id: str
+    provider_audio_start_ms: int
+    provider_audio_end_ms: int | None = None
+    segments: list[tuple[int, RealtimeTranscriptSegment]] = field(default_factory=list)
+    timer: threading.Timer | None = None
+    timer_token: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class _CompletedPhysicalPtt:
+    transmission_id: str
+    provider_audio_start_ms: int
+    provider_audio_end_ms: int
+
+
+class LiveGoldenPttCoordinator:
+    """Correlate provider VAD segments above the shared production session."""
+
+    def __init__(
+        self,
+        emit: Callable[[str, str, RealtimeTranscriptSegment, int], None],
+        *,
+        settle_seconds: float = PTT_TRANSCRIPT_SETTLE_S,
+    ) -> None:
+        if settle_seconds <= 0:
+            raise ValueError("Live Golden PTT settle interval must be positive")
+        self._emit = emit
+        self._settle_seconds = settle_seconds
+        self._lock = threading.RLock()
+        self._armed = False
+        self._generation = 0
+        self._sequence = 0
+        self._pending: dict[str, _PendingPhysicalPtt] = {}
+        self._completed: deque[_CompletedPhysicalPtt] = deque(
+            maxlen=_COMPLETED_PTT_HISTORY
+        )
+        self._seen_provider_items: set[str] = set()
+
+    def reset_and_arm(self) -> None:
+        with self._lock:
+            self._cancel_pending_locked()
+            self._generation += 1
+            self._armed = True
+            self._completed.clear()
+            self._seen_provider_items.clear()
+
+    def arm_next(self) -> None:
+        with self._lock:
+            self._armed = True
+
+    def cancel(self) -> None:
+        with self._lock:
+            self._generation += 1
+            self._armed = False
+            self._cancel_pending_locked()
+            self._completed.clear()
+            self._seen_provider_items.clear()
+
+    def transmission_started(
+        self, transmission_id: str, provider_audio_start_ms: int
+    ) -> None:
+        with self._lock:
+            if not self._armed or transmission_id in self._pending:
+                return
+            self._pending[transmission_id] = _PendingPhysicalPtt(
+                transmission_id=transmission_id,
+                provider_audio_start_ms=provider_audio_start_ms,
+            )
+        realtime_test_evidence.record(
+            "live_golden_ptt_started",
+            physical_transmission_id=transmission_id,
+            provider_position_ms=provider_audio_start_ms,
+        )
+
+    def transmission_completed(
+        self, transmission_id: str, provider_audio_end_ms: int
+    ) -> None:
+        with self._lock:
+            if not self._armed:
+                return
+            pending = self._pending.get(transmission_id)
+            if pending is None:
+                return
+            pending.provider_audio_end_ms = provider_audio_end_ms
+            self._schedule_locked(pending)
+        realtime_test_evidence.record(
+            "live_golden_ptt_completed",
+            physical_transmission_id=transmission_id,
+            provider_position_ms=provider_audio_end_ms,
+        )
+
+    def provider_activity(self, provider_audio_ms: int | None) -> None:
+        with self._lock:
+            if not self._armed:
+                return
+            pending = self._pending_for_position_locked(provider_audio_ms)
+            if pending is not None and pending.provider_audio_end_ms is not None:
+                self._schedule_locked(pending)
+
+    def accept_segment(self, segment: RealtimeTranscriptSegment) -> None:
+        text = segment.transcript.strip()
+        if not text:
+            return
+        with self._lock:
+            if not self._armed:
+                return
+            provider_item_id = segment.provider_item_id
+            if provider_item_id and provider_item_id in self._seen_provider_items:
+                return
+            position = (
+                segment.provider_audio_start_ms
+                if segment.provider_audio_start_ms is not None
+                else segment.provider_audio_end_ms
+            )
+            if self._completed_for_position_locked(position) is not None:
+                realtime_test_evidence.record(
+                    "live_golden_stale_segment_dropped",
+                    provider_item_id=provider_item_id,
+                    provider_position_ms=position,
+                )
+                return
+            pending = self._pending_for_position_locked(position)
+            if pending is None:
+                realtime_test_evidence.record(
+                    "live_golden_unmatched_segment_dropped",
+                    provider_item_id=provider_item_id,
+                    provider_position_ms=position,
+                )
+                return
+            if provider_item_id:
+                self._seen_provider_items.add(provider_item_id)
+            self._sequence += 1
+            pending.segments.append((self._sequence, segment))
+            segment_index = len(pending.segments)
+            if pending.provider_audio_end_ms is not None:
+                self._schedule_locked(pending)
+        realtime_test_evidence.record(
+            "live_golden_transcript_segment_correlated",
+            physical_transmission_id=pending.transmission_id,
+            provider_item_id=segment.provider_item_id,
+            segment_index=segment_index,
+            provider_start_ms=segment.provider_audio_start_ms,
+            provider_end_ms=segment.provider_audio_end_ms,
+        )
+
+    def _pending_for_position_locked(
+        self, provider_audio_ms: int | None
+    ) -> _PendingPhysicalPtt | None:
+        ordered = tuple(self._pending.values())
+        if provider_audio_ms is not None:
+            for pending in ordered:
+                end = pending.provider_audio_end_ms
+                if provider_audio_ms >= pending.provider_audio_start_ms and (
+                    end is None or provider_audio_ms <= end
+                ):
+                    return pending
+            return None
+        return ordered[0] if len(ordered) == 1 else None
+
+    def _completed_for_position_locked(
+        self, provider_audio_ms: int | None
+    ) -> _CompletedPhysicalPtt | None:
+        if provider_audio_ms is None:
+            return None
+        for completed in self._completed:
+            if (
+                completed.provider_audio_start_ms
+                <= provider_audio_ms
+                <= completed.provider_audio_end_ms
+            ):
+                return completed
+        return None
+
+    def _schedule_locked(self, pending: _PendingPhysicalPtt) -> None:
+        if pending.timer is not None:
+            pending.timer.cancel()
+        pending.timer_token += 1
+        token = pending.timer_token
+        generation = self._generation
+        timer = threading.Timer(
+            self._settle_seconds,
+            self._finalize,
+            args=(pending.transmission_id, generation, token),
+        )
+        timer.daemon = True
+        pending.timer = timer
+        timer.start()
+
+    def _finalize(self, transmission_id: str, generation: int, token: int) -> None:
+        emission: tuple[str, str, RealtimeTranscriptSegment, int] | None = None
+        with self._lock:
+            pending = self._pending.get(transmission_id)
+            if (
+                not self._armed
+                or generation != self._generation
+                or pending is None
+                or token != pending.timer_token
+                or pending.provider_audio_end_ms is None
+            ):
+                return
+            self._pending.pop(transmission_id, None)
+            self._completed.append(
+                _CompletedPhysicalPtt(
+                    transmission_id=transmission_id,
+                    provider_audio_start_ms=pending.provider_audio_start_ms,
+                    provider_audio_end_ms=pending.provider_audio_end_ms,
+                )
+            )
+            ordered = [item for _, item in sorted(pending.segments, key=lambda item: item[0])]
+            parts = [item.transcript.strip() for item in ordered if item.transcript.strip()]
+            if parts:
+                self._armed = False
+                emission = (transmission_id, " ".join(parts), ordered[-1], len(parts))
+        if emission is None:
+            realtime_test_evidence.record(
+                "live_golden_empty_ptt_discarded",
+                physical_transmission_id=transmission_id,
+            )
+            return
+        self._emit(*emission)
+
+    def _cancel_pending_locked(self) -> None:
+        for pending in self._pending.values():
+            if pending.timer is not None:
+                pending.timer.cancel()
+        self._pending.clear()
 
 
 class LiveGoldenCaseFailure(RuntimeError):
@@ -555,6 +789,7 @@ class LiveGoldenConversationService:
         self,
         *,
         runner: LiveGoldenCaseRunner | None = None,
+        ptt_settle_seconds: float = PTT_TRANSCRIPT_SETTLE_S,
     ) -> None:
         self._lock = threading.RLock()
         self._context: LiveGoldenRuntimeContext | None = None
@@ -562,6 +797,10 @@ class LiveGoldenConversationService:
         self._status = LiveGoldenStatus()
         self._generation = 0
         self._seen_provider_items: set[str] = set()
+        self._ptt_coordinator = LiveGoldenPttCoordinator(
+            self._accept_coordinated_utterance,
+            settle_seconds=ptt_settle_seconds,
+        )
 
     def status(self) -> LiveGoldenStatus:
         with self._lock:
@@ -588,6 +827,7 @@ class LiveGoldenConversationService:
             }
             run_id = self._status.run_id
             self._generation += 1
+            self._ptt_coordinator.cancel()
             self._context = None
             self._status = LiveGoldenStatus(
                 state=LiveGoldenState.FAIL if active else LiveGoldenState.OFF,
@@ -641,6 +881,7 @@ class LiveGoldenConversationService:
                 case_number=1,
                 capture_audio=capture_audio,
             )
+            self._ptt_coordinator.reset_and_arm()
             fingerprint = _configuration_fingerprint(runtime)
             realtime_test_evidence.record_live_golden_run(
                 run_id=run_id,
@@ -669,6 +910,7 @@ class LiveGoldenConversationService:
                 LiveGoldenState.COMPLETE,
             }
             self._generation += 1
+            self._ptt_coordinator.cancel()
             if context is not None:
                 context.endpoint.set_provider_output_suppressed(False)
             self._status = LiveGoldenStatus(
@@ -691,6 +933,47 @@ class LiveGoldenConversationService:
                 LiveGoldenState.AWAITING_REVIEW,
                 LiveGoldenState.FAIL,
             }
+
+    def input_transmission_started(
+        self, transmission_id: str, provider_audio_start_ms: int
+    ) -> None:
+        self._ptt_coordinator.transmission_started(
+            transmission_id, provider_audio_start_ms
+        )
+
+    def input_transmission_completed(
+        self, transmission_id: str, provider_audio_end_ms: int
+    ) -> None:
+        self._ptt_coordinator.transmission_completed(
+            transmission_id, provider_audio_end_ms
+        )
+
+    def provider_input_activity(self, provider_audio_ms: int | None) -> None:
+        self._ptt_coordinator.provider_activity(provider_audio_ms)
+
+    def accept_transcript_segment(self, segment: RealtimeTranscriptSegment) -> None:
+        self._ptt_coordinator.accept_segment(segment)
+
+    def _accept_coordinated_utterance(
+        self,
+        transmission_id: str,
+        transcript: str,
+        last_segment: RealtimeTranscriptSegment,
+        segment_count: int,
+    ) -> None:
+        realtime_test_evidence.record(
+            "live_golden_utterance_finalized",
+            physical_transmission_id=transmission_id,
+            provider_item_id=last_segment.provider_item_id,
+            segment_count=segment_count,
+        )
+        self.accept_transcript(
+            transcript,
+            transmission_id,
+            last_segment.event_id,
+            last_segment.provider_item_id,
+            last_segment.speech_stopped_at,
+        )
 
     def accept_transcript(
         self,
@@ -833,6 +1116,7 @@ class LiveGoldenConversationService:
             next_index = self._status.case_number
             context = self._context
             if next_index >= len(LIVE_GOLDEN_CORPUS):
+                self._ptt_coordinator.cancel()
                 if context is not None:
                     context.endpoint.set_provider_output_suppressed(False)
                 self._status = self._status.model_copy(
@@ -859,6 +1143,7 @@ class LiveGoldenConversationService:
                         "reviewed_cases": reviewed,
                     }
                 )
+                self._ptt_coordinator.arm_next()
             return self._status.model_copy(deep=True)
 
     def _is_cancelled(self, generation: int, run_id: str) -> bool:

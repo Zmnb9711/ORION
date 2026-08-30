@@ -62,7 +62,7 @@ def test_yandex_session_update_has_production_defaults_and_no_tools() -> None:
 
 
 def test_yandex_transport_boundary_mode_keeps_provider_supported_server_vad() -> None:
-    payload = yandex_session_update(manual_input_commit=True)
+    payload = yandex_session_update()
     session = payload["session"]
     assert isinstance(session, dict)
     audio = session["audio"]

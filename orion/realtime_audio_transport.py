@@ -18,10 +18,31 @@ class RealtimePcmFormat:
 
 
 @dataclass(frozen=True, slots=True)
-class RealtimeInputCommit:
-    """Transport-owned end of one complete input utterance."""
+class RealtimeInputTransmissionStarted:
+    """Provider-neutral metadata for the start of one transport transmission."""
 
+    transmission_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class RealtimeInputTransmissionCompleted:
+    """Provider-neutral metadata; this is not a provider commit request."""
+
+    transmission_id: str
     boundary: str = "transport_transmission_end"
+
+
+@dataclass(frozen=True, slots=True)
+class RealtimeTranscriptSegment:
+    """One immutable provider-finalized input transcription segment."""
+
+    transcript: str
+    turn_id: str | None
+    event_id: str
+    provider_item_id: str
+    speech_stopped_at: float | None
+    provider_audio_start_ms: int | None = None
+    provider_audio_end_ms: int | None = None
 
 
 class RealtimePcmEndpoint(Protocol):
@@ -32,7 +53,12 @@ class RealtimePcmEndpoint(Protocol):
 
     def read_input(
         self, timeout: float = 0.1
-    ) -> bytes | RealtimeInputCommit | None: ...
+    ) -> (
+        bytes
+        | RealtimeInputTransmissionStarted
+        | RealtimeInputTransmissionCompleted
+        | None
+    ): ...
 
     def failure(self) -> BaseException | None: ...
 

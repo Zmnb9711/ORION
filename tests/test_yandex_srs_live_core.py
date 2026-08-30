@@ -12,10 +12,14 @@ from orion.srs_protocol import (
     encode_voice_packet,
 )
 from orion.srs_radio_transport import SrsRadioConfig, SrsState
-from orion.realtime_audio_transport import RealtimeInputCommit
+from orion.realtime_audio_transport import (
+    RealtimeInputTransmissionCompleted,
+    RealtimeInputTransmissionStarted,
+)
 from orion.yandex_srs_live_core import (
     MAX_RESPONSE_STATES,
     RESPONSE_MAX_BYTES,
+    TRAILING_SILENCE_BLOCKS,
     YANDEX_BLOCK_BYTES,
     SrsYandexPcmEndpoint,
 )
@@ -127,7 +131,7 @@ def human_packet(packet_id: int = 1) -> bytes:
     )
 
 
-def test_srs_rx_decode_resample_exact_blocks_manual_commit_and_completed_tx(
+def test_srs_rx_decode_resample_historical_tail_boundary_and_completed_tx(
     tmp_path,
 ) -> None:  # noqa: ANN001
     clock = Clock()
@@ -135,19 +139,22 @@ def test_srs_rx_decode_resample_exact_blocks_manual_commit_and_completed_tx(
     endpoint.connect_radio()
     endpoint.start()
     endpoint._on_radio_datagram(human_packet())
+    started = endpoint.read_input(0.1)
+    assert started == RealtimeInputTransmissionStarted("srs-ptt-000001")
     assert endpoint.read_input(0.1) == b"r" * YANDEX_BLOCK_BYTES
     assert endpoint.decoded_samples == 640
     assert endpoint.resampled_rx_samples == YANDEX_BLOCK_BYTES // 2
 
     clock.now = 10.7
     deadline = time.monotonic() + 1.0
-    boundary: object | None = None
-    while boundary is None and time.monotonic() < deadline:
+    queued: list[object] = []
+    while len(queued) < TRAILING_SILENCE_BLOCKS + 1 and time.monotonic() < deadline:
         try:
-            boundary = endpoint.input_queue.get(timeout=0.05)
+            queued.append(endpoint.input_queue.get(timeout=0.05))
         except queue.Empty:
             pass
-    assert boundary == RealtimeInputCommit()
+    assert queued[:-1] == [bytes(YANDEX_BLOCK_BYTES)] * TRAILING_SILENCE_BLOCKS
+    assert queued[-1] == RealtimeInputTransmissionCompleted("srs-ptt-000001")
     assert endpoint.input_queue.empty()
 
     endpoint.response_started("r1")

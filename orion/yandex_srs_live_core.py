@@ -23,7 +23,11 @@ from orion.radio_contracts import (
     RadioTransmissionState,
 )
 from orion.radio_router import RadioRouter
-from orion.realtime_audio_transport import RealtimeInputCommit, RealtimePcmFormat
+from orion.realtime_audio_transport import (
+    RealtimeInputTransmissionCompleted,
+    RealtimeInputTransmissionStarted,
+    RealtimePcmFormat,
+)
 from orion.srs_diagnostics import SrsTransportDiagnostics, sanitize_srs_error
 from orion.srs_opus import OPUS_FRAME_BYTES, OpusDecoder, OpusEncoder
 from orion.srs_protocol import (
@@ -60,6 +64,8 @@ from orion.yandex_realtime_session import YandexRealtimeSession
 
 YANDEX_BLOCK_FRAMES = 882
 YANDEX_BLOCK_BYTES = YANDEX_BLOCK_FRAMES * 2
+TRAILING_SILENCE_MS = 400
+TRAILING_SILENCE_BLOCKS = TRAILING_SILENCE_MS // 20
 RESPONSE_MAX_SECONDS = 30
 RESPONSE_MAX_BYTES = YANDEX_INPUT_RATE * 2 * RESPONSE_MAX_SECONDS
 MAX_RESPONSE_STATES = 4
@@ -164,9 +170,11 @@ class SrsYandexPcmEndpoint:
             config.frequency_hz,
             config.modulation,
         )
-        self.input_queue: queue.Queue[bytes | RealtimeInputCommit] = queue.Queue(
-            maxsize=250
-        )
+        self.input_queue: queue.Queue[
+            bytes
+            | RealtimeInputTransmissionStarted
+            | RealtimeInputTransmissionCompleted
+        ] = queue.Queue(maxsize=250)
         self.tx_queue: queue.Queue[_PreparedResponse | None] = queue.Queue(maxsize=1)
         self.responses: dict[str, _ResponseState] = {}
         self.rx_accumulator = bytearray()
@@ -181,6 +189,7 @@ class SrsYandexPcmEndpoint:
         self._started = False
         self._failure: BaseException | None = None
         self._rx_end_injected_at: float | None = None
+        self._active_rx_transmission_id: str | None = None
         self._boundary_thread: threading.Thread | None = None
         self._tx_thread: threading.Thread | None = None
         self._probe_lock = threading.Lock()
@@ -282,6 +291,20 @@ class SrsYandexPcmEndpoint:
             self.decoded_samples += len(decoded) // 2
             resampled = self.rx_resampler.process(decoded)
             self.resampled_rx_samples += len(resampled) // 2
+            if self._active_rx_transmission_id is None:
+                self._active_rx_transmission_id = (
+                    f"srs-ptt-{self.tracker.counters.transmissions_started:06d}"
+                )
+                if not self._enqueue_input(
+                    RealtimeInputTransmissionStarted(
+                        transmission_id=self._active_rx_transmission_id
+                    )
+                ):
+                    return
+                self.diagnostics.record(
+                    "rx_transmission_started",
+                    physical_transmission_id=self._active_rx_transmission_id,
+                )
             self.rx_accumulator.extend(resampled)
             while len(self.rx_accumulator) >= YANDEX_BLOCK_BYTES:
                 block = bytes(self.rx_accumulator[:YANDEX_BLOCK_BYTES])
@@ -318,27 +341,57 @@ class SrsYandexPcmEndpoint:
                         return
                     self.rx_accumulator.clear()
                     self._status(input_chunks_delta=1)
-                if not self._enqueue_input(RealtimeInputCommit()):
+                silence = bytes(YANDEX_BLOCK_BYTES)
+                for _ in range(TRAILING_SILENCE_BLOCKS):
+                    if not self._enqueue_input(silence):
+                        return
+                    self._status(input_chunks_delta=1)
+                transmission_id = self._active_rx_transmission_id
+                if transmission_id is None:
+                    self.diagnostics.record(
+                        "rx_transmission_boundary_skipped",
+                        reason="no_decoded_input",
+                    )
+                    self._rx_end_injected_at = last_packet_at
+                    continue
+                if not self._enqueue_input(
+                    RealtimeInputTransmissionCompleted(
+                        transmission_id=transmission_id
+                    )
+                ):
                     return
+                self._active_rx_transmission_id = None
                 self._rx_end_injected_at = last_packet_at
                 self._status(
                     transmissions_completed=self.tracker.counters.transmissions_completed
                 )
                 self.diagnostics.record(
                     "rx_transmission_completed",
-                    input_commit_queued=True,
+                    boundary_marker_queued=True,
                     boundary_gap_ms=int(RX_END_GAP_SECONDS * 1000),
+                    physical_transmission_id=transmission_id,
+                    trailing_silence_ms=TRAILING_SILENCE_MS,
                 )
 
     def read_input(
         self, timeout: float = 0.1
-    ) -> bytes | RealtimeInputCommit | None:
+    ) -> (
+        bytes
+        | RealtimeInputTransmissionStarted
+        | RealtimeInputTransmissionCompleted
+        | None
+    ):
         try:
             return self.input_queue.get(timeout=timeout)
         except queue.Empty:
             return None
 
-    def _enqueue_input(self, block: bytes | RealtimeInputCommit) -> bool:
+    def _enqueue_input(
+        self,
+        block: bytes
+        | RealtimeInputTransmissionStarted
+        | RealtimeInputTransmissionCompleted,
+    ) -> bool:
         try:
             self.input_queue.put_nowait(block)
             return True
@@ -938,13 +991,21 @@ class YandexSrsLiveService:
                     yandex_diagnostics,
                     on_streaming=streaming,
                     on_session_ready=session_ready,
-                    on_final_user_transcript=(
-                        live_golden_conversation.accept_transcript
+                    on_user_transcript_segment=(
+                        live_golden_conversation.accept_transcript_segment
+                    ),
+                    on_input_transmission_started=(
+                        live_golden_conversation.input_transmission_started
+                    ),
+                    on_input_transmission_completed=(
+                        live_golden_conversation.input_transmission_completed
+                    ),
+                    on_provider_input_activity=(
+                        live_golden_conversation.provider_input_activity
                     ),
                     suppress_provider_responses=(
                         live_golden_conversation.suppress_provider_responses
                     ),
-                    manual_input_commit=True,
                 ).run()
             )
         except Exception as exc:

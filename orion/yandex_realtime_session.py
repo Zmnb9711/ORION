@@ -9,11 +9,17 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass
 from typing import Any, Callable, Protocol
 
 from orion.flight_context import FlightContextUpdateGate
-from orion.realtime_audio_transport import RealtimeInputCommit, RealtimePcmEndpoint
+from orion.realtime_audio_transport import (
+    RealtimeInputTransmissionCompleted,
+    RealtimeInputTransmissionStarted,
+    RealtimePcmEndpoint,
+    RealtimeTranscriptSegment,
+)
 from orion.realtime_interaction_state import RealtimeInteractionState
 from orion.realtime_test_evidence import realtime_test_evidence
 from orion.yandex_realtime_provider import (
@@ -42,11 +48,6 @@ class YandexSessionResult:
     local_close_owner: bool
 
 
-_PTT_TRANSCRIPTION_TIMEOUT_SECONDS = 15.0
-_PTT_VAD_FLUSH_SILENCE_MS = 800
-_PTT_VAD_FLUSH_CHUNK_MS = 40
-
-
 class YandexRealtimeSession:
     """One bounded provider session over an injected provider-native PCM endpoint."""
 
@@ -62,12 +63,12 @@ class YandexRealtimeSession:
         on_session_ready: Callable[[str], None] | None = None,
         flight_context_gate: FlightContextUpdateGate | None = None,
         interaction_state: RealtimeInteractionState | None = None,
-        on_final_user_transcript: Callable[
-            [str, str | None, str, str, float | None], None
-        ]
+        on_user_transcript_segment: Callable[[RealtimeTranscriptSegment], None]
         | None = None,
+        on_input_transmission_started: Callable[[str, int], None] | None = None,
+        on_input_transmission_completed: Callable[[str, int], None] | None = None,
+        on_provider_input_activity: Callable[[int | None], None] | None = None,
         suppress_provider_responses: Callable[[], bool] | None = None,
-        manual_input_commit: bool = False,
     ) -> None:
         self._api_key = api_key
         self._folder_id = folder_id
@@ -80,13 +81,21 @@ class YandexRealtimeSession:
             YANDEX_INSTRUCTIONS
         )
         self._interaction = interaction_state or RealtimeInteractionState()
-        self._on_final_user_transcript = on_final_user_transcript or (
-            lambda _text, _turn_id, _event_id, _item_id, _speech_stopped_at: None
+        self._on_user_transcript_segment = on_user_transcript_segment or (
+            lambda _segment: None
+        )
+        self._on_input_transmission_started = on_input_transmission_started or (
+            lambda _transmission_id, _provider_audio_ms: None
+        )
+        self._on_input_transmission_completed = on_input_transmission_completed or (
+            lambda _transmission_id, _provider_audio_ms: None
+        )
+        self._on_provider_input_activity = on_provider_input_activity or (
+            lambda _provider_audio_ms: None
         )
         self._suppress_provider_responses = suppress_provider_responses or (
             lambda: False
         )
-        self._manual_input_commit = manual_input_commit
 
     async def _send_flight_context_update(
         self,
@@ -122,7 +131,6 @@ class YandexRealtimeSession:
         await websocket.send_json(
             yandex_session_update(
                 instructions=update.instructions,
-                manual_input_commit=self._manual_input_commit,
             )
         )
         count = self._flight_context.mark_applied(update)
@@ -151,19 +159,17 @@ class YandexRealtimeSession:
         presentation_driver: YandexPresentationSessionDriver | None = None
         close_owned = False
         suppressed_response_ids: set[str] = set()
-        ptt_finalization_deadline: float | None = None
-        manual_turn_ready = asyncio.Event()
-        manual_turn_ready.set()
-        manual_transcript_parts: list[str] = []
-        manual_boundary_pending = False
-        manual_final_segment_stopped = False
-        manual_physical_turn_id: str | None = None
+        provider_segment_started_ms: int | None = None
+        provider_segment_spans: deque[
+            tuple[str | None, int | None, int | None]
+        ] = deque()
+
+        def provider_audio_ms(event: dict[str, Any], key: str) -> int | None:
+            value = event.get(key)
+            return value if isinstance(value, int) and not isinstance(value, bool) else None
 
         async def send_worker() -> None:
-            manual_turn_active = False
-            nonlocal latest_speech_stopped_at, manual_boundary_pending
-            nonlocal manual_final_segment_stopped, manual_physical_turn_id
-            nonlocal ptt_finalization_deadline
+            input_frames_sent = 0
             while not self._stop.is_set():
                 await self._send_flight_context_update(
                     websocket,
@@ -174,92 +180,57 @@ class YandexRealtimeSession:
                 pcm = await asyncio.to_thread(self._endpoint.read_input, 0.1)
                 if pcm is None:
                     continue
-                if isinstance(pcm, RealtimeInputCommit):
-                    if not self._manual_input_commit:
-                        raise RuntimeError(
-                            "Transport input commit requires manual provider turn mode"
+                provider_position_ms = round(
+                    input_frames_sent * 1000 / self._endpoint.pcm_format.sample_rate
+                )
+                if isinstance(pcm, RealtimeInputTransmissionStarted):
+                    self._diagnostics.record(
+                        "input_transmission_started",
+                        physical_transmission_id=pcm.transmission_id,
+                        provider_position_ms=provider_position_ms,
+                    )
+                    try:
+                        self._on_input_transmission_started(
+                            pcm.transmission_id, provider_position_ms
                         )
-                    if not manual_turn_active:
+                    except Exception as exc:
                         self._diagnostics.record(
-                            "input_audio_commit_skipped",
-                            reason="empty_transport_turn",
+                            "input_transmission_observer_failed",
+                            error_type=type(exc).__name__,
                         )
-                        continue
-                    turn_id = self._interaction.speech_stopped()
-                    latest_speech_stopped_at = time.monotonic()
+                    continue
+                if isinstance(pcm, RealtimeInputTransmissionCompleted):
                     self._diagnostics.record(
-                        "speech_stopped",
-                        turn_id=turn_id,
-                        boundary_owner="transport",
-                    )
-                    self._diagnostics.record(
-                        "input_audio_commit_requested",
-                        turn_id=turn_id,
+                        "input_transmission_completed",
+                        physical_transmission_id=pcm.transmission_id,
+                        provider_position_ms=provider_position_ms,
                         boundary=pcm.boundary,
-                        provider_commit_method="server_vad_tail",
+                        provider_commit_requested=False,
                     )
-                    pcm_format = self._endpoint.pcm_format
-                    silence_bytes = (
-                        pcm_format.sample_rate
-                        * pcm_format.channels
-                        * pcm_format.sample_width_bytes
-                        * _PTT_VAD_FLUSH_SILENCE_MS
-                        // 1000
-                    )
-                    silence_chunk_bytes = (
-                        pcm_format.sample_rate
-                        * pcm_format.channels
-                        * pcm_format.sample_width_bytes
-                        * _PTT_VAD_FLUSH_CHUNK_MS
-                        // 1000
-                    )
-                    manual_boundary_pending = True
-                    manual_final_segment_stopped = False
-                    ptt_finalization_deadline = (
-                        time.monotonic() + _PTT_TRANSCRIPTION_TIMEOUT_SECONDS
-                    )
-                    self._diagnostics.record(
-                        "provider_vad_flush_requested",
-                        turn_id=turn_id,
-                        silence_ms=_PTT_VAD_FLUSH_SILENCE_MS,
-                        byte_count=silence_bytes,
-                        physical_boundary=True,
-                    )
-                    silence = bytes(silence_bytes)
-                    for offset in range(0, silence_bytes, silence_chunk_bytes):
-                        await websocket.send_json(
-                            encode_yandex_input_audio(
-                                silence[offset : offset + silence_chunk_bytes]
-                            )
+                    try:
+                        self._on_input_transmission_completed(
+                            pcm.transmission_id, provider_position_ms
                         )
-                        await asyncio.sleep(_PTT_VAD_FLUSH_CHUNK_MS / 1000)
-                    manual_turn_active = False
+                    except Exception as exc:
+                        self._diagnostics.record(
+                            "input_transmission_observer_failed",
+                            error_type=type(exc).__name__,
+                        )
                     continue
                 if len(pcm) % 2:
                     raise ValueError("Provider input PCM is not aligned to int16 samples")
-                if self._manual_input_commit and not manual_turn_active:
-                    await manual_turn_ready.wait()
-                    manual_turn_ready.clear()
-                    turn_id = self._interaction.speech_started()
-                    manual_transcript_parts.clear()
-                    manual_boundary_pending = False
-                    manual_final_segment_stopped = False
-                    manual_physical_turn_id = turn_id
-                    self._diagnostics.record(
-                        "speech_started",
-                        turn_id=turn_id,
-                        boundary_owner="transport",
-                    )
-                    manual_turn_active = True
                 await websocket.send_json(encode_yandex_input_audio(pcm))
+                frame_bytes = (
+                    self._endpoint.pcm_format.channels
+                    * self._endpoint.pcm_format.sample_width_bytes
+                )
+                input_frames_sent += len(pcm) // frame_bytes
 
         latest_speech_stopped_at: float | None = None
 
         async def receive_worker() -> None:
             latest_response_id: str | None = None
-            nonlocal latest_speech_stopped_at, manual_boundary_pending
-            nonlocal manual_final_segment_stopped, manual_physical_turn_id
-            nonlocal ptt_finalization_deadline
+            nonlocal provider_segment_started_ms, latest_speech_stopped_at
             while not self._stop.is_set():
                 message = await websocket.receive()
                 if message.type is aiohttp.WSMsgType.TEXT:
@@ -271,102 +242,81 @@ class YandexRealtimeSession:
                         else False
                     )
                     if kind == "input_audio_buffer.speech_started":
-                        if self._manual_input_commit:
-                            self._diagnostics.record(
-                                "provider_segment_speech_started",
-                                turn_id=manual_physical_turn_id,
-                            )
-                            continue
+                        provider_segment_started_ms = provider_audio_ms(
+                            event, "audio_start_ms"
+                        )
                         turn_id = self._interaction.speech_started()
                         self._endpoint.input_speech_started()
-                        self._diagnostics.record("speech_started", turn_id=turn_id)
+                        self._on_provider_input_activity(provider_segment_started_ms)
+                        self._diagnostics.record(
+                            "provider_segment_speech_started",
+                            turn_id=turn_id,
+                            provider_start_ms=provider_segment_started_ms,
+                        )
                     elif kind == "input_audio_buffer.speech_stopped":
-                        if self._manual_input_commit:
-                            manual_final_segment_stopped = manual_boundary_pending
-                            self._diagnostics.record(
-                                "provider_segment_speech_stopped",
-                                turn_id=manual_physical_turn_id,
-                                after_physical_boundary=manual_boundary_pending,
-                            )
-                            continue
                         turn_id = self._interaction.speech_stopped()
                         latest_speech_stopped_at = time.monotonic()
-                        self._diagnostics.record("speech_stopped", turn_id=turn_id)
+                        audio_end_ms = provider_audio_ms(event, "audio_end_ms")
+                        provider_segment_spans.append(
+                            (turn_id, provider_segment_started_ms, audio_end_ms)
+                        )
+                        provider_segment_started_ms = None
+                        self._on_provider_input_activity(audio_end_ms)
+                        self._diagnostics.record(
+                            "provider_segment_speech_stopped",
+                            turn_id=turn_id,
+                            provider_end_ms=audio_end_ms,
+                        )
                     elif kind == "conversation.item.input_audio_transcription.completed":
                         transcript = str(event.get("transcript") or "")
-                        if self._manual_input_commit:
-                            normalized = transcript.strip()
-                            if normalized:
-                                manual_transcript_parts.append(normalized)
-                            self._diagnostics.record(
-                                "transcription_segment_completed",
-                                turn_id=manual_physical_turn_id,
-                                provider_item_id=str(event.get("item_id") or ""),
-                                characters=len(transcript),
-                                segment_count=len(manual_transcript_parts),
-                                after_physical_boundary=manual_boundary_pending,
-                                persisted=False,
-                            )
-                            if not (
-                                manual_boundary_pending and manual_final_segment_stopped
-                            ):
-                                continue
-                            transcript = " ".join(manual_transcript_parts)
+                        segment_turn_id, audio_start_ms, audio_end_ms = (
+                            provider_segment_spans.popleft()
+                            if provider_segment_spans
+                            else (None, None, None)
+                        )
+                        turn_id = (
+                            segment_turn_id or self._interaction.current_turn_id()
+                        )
+                        event_id = str(event.get("event_id") or "")
+                        provider_item_id = str(event.get("item_id") or "")
                         realtime_test_evidence.record_transcript(
                             "user",
                             transcript,
-                            turn_id=(
-                                manual_physical_turn_id
-                                if self._manual_input_commit
-                                else self._interaction.current_turn_id()
-                            ),
-                            event_id=str(event.get("event_id") or ""),
-                            provider_item_id=str(event.get("item_id") or ""),
+                            turn_id=turn_id,
+                            event_id=event_id,
+                            provider_item_id=provider_item_id,
                         )
                         self._diagnostics.record(
-                            "transcription_completed",
-                            turn_id=(
-                                manual_physical_turn_id
-                                if self._manual_input_commit
-                                else self._interaction.current_turn_id()
-                            ),
-                            provider_item_id=str(event.get("item_id") or ""),
+                            "transcription_segment_completed",
+                            turn_id=turn_id,
+                            provider_item_id=provider_item_id,
                             characters=len(transcript),
-                            segment_count=(
-                                len(manual_transcript_parts)
-                                if self._manual_input_commit
-                                else 1
-                            ),
-                            physical_ptt_complete=self._manual_input_commit,
+                            provider_start_ms=audio_start_ms,
+                            provider_end_ms=audio_end_ms,
                             persisted=False,
                         )
                         try:
-                            self._on_final_user_transcript(
-                                transcript,
-                                (
-                                    manual_physical_turn_id
-                                    if self._manual_input_commit
-                                    else self._interaction.current_turn_id()
-                                ),
-                                str(event.get("event_id") or ""),
-                                str(event.get("item_id") or ""),
-                                latest_speech_stopped_at,
+                            self._on_user_transcript_segment(
+                                RealtimeTranscriptSegment(
+                                    transcript=transcript,
+                                    turn_id=turn_id,
+                                    event_id=event_id,
+                                    provider_item_id=provider_item_id,
+                                    speech_stopped_at=latest_speech_stopped_at,
+                                    provider_audio_start_ms=audio_start_ms,
+                                    provider_audio_end_ms=audio_end_ms,
+                                )
                             )
                         except Exception as exc:
                             self._diagnostics.record(
-                                "final_transcript_consumer_failed",
+                                "transcript_segment_consumer_failed",
                                 error_type=type(exc).__name__,
                             )
-                        ptt_finalization_deadline = None
-                        if self._manual_input_commit and self._suppress_provider_responses():
+                        self._on_provider_input_activity(audio_end_ms)
+                        if self._suppress_provider_responses():
                             self._interaction.complete_current_turn_without_response()
-                            manual_turn_ready.set()
-                        if self._manual_input_commit:
-                            manual_transcript_parts.clear()
-                            manual_boundary_pending = False
-                            manual_final_segment_stopped = False
-                            manual_physical_turn_id = None
                     elif kind == "input_audio_buffer.committed":
+                        self._on_provider_input_activity(None)
                         self._diagnostics.record(
                             kind,
                             turn_id=self._interaction.current_turn_id(),
@@ -377,8 +327,6 @@ class YandexRealtimeSession:
                             "transcription_failed",
                             error=sanitize_yandex_error(event.get("error") or "failed", self._api_key),
                         )
-                        if self._manual_input_commit:
-                            raise RuntimeError("Yandex manual input transcription failed")
                     elif kind == "response.created":
                         response = event.get("response") or {}
                         response_id = str(
@@ -386,11 +334,12 @@ class YandexRealtimeSession:
                         )
                         latest_response_id = response_id
                         if self._suppress_provider_responses():
+                            turn_id = self._interaction.current_turn_id()
                             suppressed_response_ids.add(response_id)
                             self._diagnostics.record(
                                 "provider_response_suppressed",
                                 response_id=response_id,
-                                turn_id=manual_physical_turn_id,
+                                turn_id=turn_id,
                                 provider_media_generated=False,
                                 provider_media_reached_transport=False,
                             )
@@ -403,7 +352,7 @@ class YandexRealtimeSession:
                             self._diagnostics.record(
                                 "provider_response_cancel_requested",
                                 response_id=response_id,
-                                turn_id=manual_physical_turn_id,
+                                turn_id=turn_id,
                             )
                             continue
                         turn_id = self._interaction.response_started(response_id)
@@ -510,8 +459,6 @@ class YandexRealtimeSession:
                             continue
                         self._endpoint.response_done(response_id, status)
                         turn_id = self._interaction.response_done(response_id)
-                        if self._manual_input_commit:
-                            manual_turn_ready.set()
                         self._diagnostics.record(
                             "response_done",
                             response_id=response_id,
@@ -602,13 +549,6 @@ class YandexRealtimeSession:
                             raise failure
                         if self._stop.is_set():
                             break
-                        if (
-                            ptt_finalization_deadline is not None
-                            and time.monotonic() >= ptt_finalization_deadline
-                        ):
-                            raise TimeoutError(
-                                "Timed out waiting for Yandex PTT transcript finalization"
-                            )
                         await asyncio.sleep(0.05)
                         for task in (send_task, receive_task, presentation_task):
                             if task.done():
