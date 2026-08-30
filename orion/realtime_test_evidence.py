@@ -44,6 +44,7 @@ _ALLOWED_FIELDS = {
     "latency_p90_ms",
     "latency_sample_count",
     "local_close_owner",
+    "merge_decision",
     "internal_response",
     "output_modality",
     "packet_id",

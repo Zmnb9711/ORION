@@ -198,13 +198,15 @@ def _segment(
     item: str,
     start_ms: int,
     end_ms: int,
+    *,
+    stopped_at: float | None = None,
 ) -> RealtimeTranscriptSegment:
     return RealtimeTranscriptSegment(
         transcript=text,
         turn_id=f"provider-{item}",
         event_id=f"event-{item}",
         provider_item_id=item,
-        speech_stopped_at=time.monotonic(),
+        speech_stopped_at=(time.monotonic() if stopped_at is None else stopped_at),
         provider_audio_start_ms=start_ms,
         provider_audio_end_ms=end_ms,
     )
@@ -262,6 +264,116 @@ def test_split_provider_segments_dispatch_one_complete_live_golden_case(
     assert summary["runs"][0]["cases"][0]["input"]["final_transcript"] == (
         "Добрый день Разрешите взлёт"
     )
+    assert [
+        event["merge_decision"]
+        for event in events
+        if event["event"] == "live_golden_transcript_segment_correlated"
+    ] == ["INITIAL", "INDEPENDENT_APPEND"]
+
+
+def test_field_cumulative_hypotheses_dispatch_only_complete_utterance_once(
+    tmp_path,
+    monkeypatch,
+) -> None:  # noqa: ANN001
+    service, endpoint, recorder, provider = _service(tmp_path, monkeypatch)
+    service.start(capture_audio=False)
+    service.input_transmission_started("srs-ptt-1", 0)
+    service.accept_transcript_segment(
+        _segment("добрый день", "item-a", 1_700, 2_300)
+    )
+    service.accept_transcript_segment(
+        _segment("добрый день разрешите", "item-b", 960, 1_360)
+    )
+    service.accept_transcript_segment(
+        _segment("добрый день разрешите взлет", "item-c", 0, 20)
+    )
+    service.input_transmission_completed("srs-ptt-1", 4_080)
+
+    _wait_for(service, LiveGoldenState.AWAITING_REVIEW)
+    assert len(provider.requests) == 1
+    assert provider.requests[0].interaction.text == "добрый день разрешите взлет"
+    assert len(endpoint.transmissions) == 1
+    service.stop()
+    output = recorder.stop_and_export()
+    with zipfile.ZipFile(output) as archive:
+        events = [
+            json.loads(line)
+            for line in archive.read("events.jsonl").decode("utf-8").splitlines()
+        ]
+        summary = json.loads(archive.read("live-golden-summary.json"))
+    assert [
+        event["merge_decision"]
+        for event in events
+        if event["event"] == "live_golden_transcript_segment_correlated"
+    ] == ["INITIAL", "CUMULATIVE_EXTENSION", "CUMULATIVE_EXTENSION"]
+    assert summary["runs"][0]["cases"][0]["input"]["final_transcript"] == (
+        "добрый день разрешите взлет"
+    )
+
+
+def test_exact_suffix_prefix_overlap_is_merged_without_fuzzy_rewriting() -> None:
+    emitted: list[tuple[object, ...]] = []
+    coordinator = LiveGoldenPttCoordinator(
+        lambda *values: emitted.append(values), settle_seconds=0.01
+    )
+    coordinator.reset_and_arm()
+    coordinator.transmission_started("ptt-1", 0)
+    coordinator.accept_segment(
+        _segment("добрый день разрешите", "item-1", 10, 20)
+    )
+    coordinator.accept_segment(_segment("разрешите взлет", "item-2", 30, 40))
+    coordinator.transmission_completed("ptt-1", 100)
+
+    _wait_for_emissions(emitted, 1)
+    assert emitted[0][1] == "добрый день разрешите взлет"
+
+
+def test_same_provider_identity_is_deduplicated_once() -> None:
+    emitted: list[tuple[object, ...]] = []
+    coordinator = LiveGoldenPttCoordinator(
+        lambda *values: emitted.append(values), settle_seconds=0.01
+    )
+    coordinator.reset_and_arm()
+    coordinator.transmission_started("ptt-1", 0)
+    segment = _segment("добрый день", "same-item", 10, 20)
+    coordinator.accept_segment(segment)
+    coordinator.accept_segment(segment)
+    coordinator.transmission_completed("ptt-1", 100)
+
+    _wait_for_emissions(emitted, 1)
+    assert emitted[0][1] == "добрый день"
+    assert emitted[0][3] == 1
+
+
+def test_legitimate_repetition_inside_provider_text_is_preserved_exactly() -> None:
+    emitted: list[tuple[object, ...]] = []
+    coordinator = LiveGoldenPttCoordinator(
+        lambda *values: emitted.append(values), settle_seconds=0.01
+    )
+    coordinator.reset_and_arm()
+    coordinator.transmission_started("ptt-1", 0)
+    coordinator.accept_segment(_segment("очень очень", "item-1", 10, 20))
+    coordinator.accept_segment(_segment("важно", "item-2", 30, 40))
+    coordinator.transmission_completed("ptt-1", 100)
+
+    _wait_for_emissions(emitted, 1)
+    assert emitted[0][1] == "очень очень важно"
+
+
+def test_three_independent_fragments_remain_in_arrival_order() -> None:
+    emitted: list[tuple[object, ...]] = []
+    coordinator = LiveGoldenPttCoordinator(
+        lambda *values: emitted.append(values), settle_seconds=0.01
+    )
+    coordinator.reset_and_arm()
+    coordinator.transmission_started("ptt-1", 0)
+    coordinator.accept_segment(_segment("tower", "item-1", 10, 20))
+    coordinator.accept_segment(_segment("viper two one", "item-2", 30, 40))
+    coordinator.accept_segment(_segment("request takeoff", "item-3", 50, 60))
+    coordinator.transmission_completed("ptt-1", 100)
+
+    _wait_for_emissions(emitted, 1)
+    assert emitted[0][1] == "tower viper two one request takeoff"
 
 
 def test_pre_boundary_final_segment_needs_no_later_provider_speech_stop() -> None:
@@ -308,22 +420,23 @@ def test_two_ptts_do_not_cross_contaminate_and_drop_stale_segment() -> None:
     coordinator.reset_and_arm()
     coordinator.transmission_started("ptt-1", 0)
     coordinator.accept_segment(_segment("A", "a", 10, 20))
-    coordinator.accept_segment(_segment("B", "b", 30, 40))
+    coordinator.accept_segment(_segment("A B", "b", 0, 20))
+    stale = _segment("STALE", "stale", 50, 60)
     coordinator.transmission_completed("ptt-1", 100)
     _wait_for_emissions(emitted, 1)
 
     coordinator.arm_next()
     coordinator.transmission_started("ptt-2", 200)
-    coordinator.accept_segment(_segment("STALE", "stale", 50, 60))
-    coordinator.accept_segment(_segment("C", "c", 210, 220))
-    coordinator.accept_segment(_segment("D", "d", 230, 240))
+    coordinator.accept_segment(stale)
+    coordinator.accept_segment(_segment("C", "c", 10, 20))
+    coordinator.accept_segment(_segment("C D", "d", 0, 20))
     coordinator.transmission_completed("ptt-2", 300)
     _wait_for_emissions(emitted, 2)
 
     assert [value[1] for value in emitted] == ["A B", "C D"]
 
 
-def test_positioned_segment_outside_pending_ptt_is_not_guessed_into_it() -> None:
+def test_non_monotonic_provider_position_does_not_override_local_ptt_time() -> None:
     emitted: list[tuple[object, ...]] = []
 
     def emit(*values: object) -> None:
@@ -332,12 +445,29 @@ def test_positioned_segment_outside_pending_ptt_is_not_guessed_into_it() -> None
     coordinator = LiveGoldenPttCoordinator(emit, settle_seconds=0.01)
     coordinator.reset_and_arm()
     coordinator.transmission_started("ptt-2", 200)
-    coordinator.accept_segment(_segment("STALE", "stale", 50, 60))
-    coordinator.accept_segment(_segment("CURRENT", "current", 210, 220))
+    coordinator.accept_segment(_segment("CURRENT", "current", 0, 20))
     coordinator.transmission_completed("ptt-2", 300)
     _wait_for_emissions(emitted, 1)
 
     assert emitted[0][1] == "CURRENT"
+
+
+def test_delayed_cumulative_extension_before_settle_replaces_early_hypothesis() -> None:
+    emitted: list[tuple[object, ...]] = []
+    coordinator = LiveGoldenPttCoordinator(
+        lambda *values: emitted.append(values), settle_seconds=0.04
+    )
+    coordinator.reset_and_arm()
+    coordinator.transmission_started("ptt-1", 0)
+    coordinator.accept_segment(_segment("добрый день", "item-1", 100, 300))
+    coordinator.transmission_completed("ptt-1", 900)
+    time.sleep(0.01)
+    coordinator.accept_segment(
+        _segment("добрый день разрешите взлет", "item-2", 0, 20)
+    )
+
+    _wait_for_emissions(emitted, 1)
+    assert emitted[0][1] == "добрый день разрешите взлет"
 
 
 def test_pending_ptt_cancel_prevents_late_semantic_dispatch() -> None:
@@ -367,11 +497,31 @@ def test_coordinator_preserves_bad_raw_stt_without_rewriting() -> None:
     coordinator.reset_and_arm()
     coordinator.transmission_started("ptt-1", 0)
     coordinator.accept_segment(_segment("выключить", "item-1", 10, 20))
-    coordinator.accept_segment(_segment("разрешите все", "item-2", 30, 40))
+    coordinator.accept_segment(
+        _segment("выключить разрешите", "item-2", 30, 40)
+    )
+    coordinator.accept_segment(
+        _segment("выключить разрешите все", "item-3", 0, 20)
+    )
     coordinator.transmission_completed("ptt-1", 100)
 
     _wait_for_emissions(emitted, 1)
     assert emitted[0][1] == "выключить разрешите все"
+
+
+def test_distinct_provider_events_preserve_genuine_repeated_phrase() -> None:
+    emitted: list[tuple[object, ...]] = []
+    coordinator = LiveGoldenPttCoordinator(
+        lambda *values: emitted.append(values), settle_seconds=0.01
+    )
+    coordinator.reset_and_arm()
+    coordinator.transmission_started("ptt-1", 0)
+    coordinator.accept_segment(_segment("да", "item-1", 10, 20))
+    coordinator.accept_segment(_segment("да", "item-2", 30, 40))
+    coordinator.transmission_completed("ptt-1", 100)
+
+    _wait_for_emissions(emitted, 1)
+    assert emitted[0][1] == "да да"
 
 
 def test_real_transcript_runs_one_qwen_local_protected_composition_and_one_radio_tx(

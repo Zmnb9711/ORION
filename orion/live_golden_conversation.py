@@ -182,8 +182,10 @@ class LiveGoldenRuntimeContext:
 class _PendingPhysicalPtt:
     transmission_id: str
     provider_audio_start_ms: int
+    started_at: float
     provider_audio_end_ms: int | None = None
     segments: list[tuple[int, RealtimeTranscriptSegment]] = field(default_factory=list)
+    aggregate: str = ""
     timer: threading.Timer | None = None
     timer_token: int = 0
 
@@ -193,6 +195,29 @@ class _CompletedPhysicalPtt:
     transmission_id: str
     provider_audio_start_ms: int
     provider_audio_end_ms: int
+
+
+def _merge_transcript_text(existing: str, incoming: str) -> tuple[str, str]:
+    """Merge exact provider text without lexical correction or fuzzy matching."""
+
+    existing_tokens = tuple(existing.split())
+    incoming_tokens = tuple(incoming.split())
+    if not existing_tokens:
+        return " ".join(incoming_tokens), "INITIAL"
+    if (
+        len(incoming_tokens) > len(existing_tokens)
+        and incoming_tokens[: len(existing_tokens)] == existing_tokens
+    ):
+        return " ".join(incoming_tokens), "CUMULATIVE_EXTENSION"
+    for overlap in range(min(len(existing_tokens), len(incoming_tokens)), 0, -1):
+        if overlap == len(incoming_tokens):
+            continue
+        if existing_tokens[-overlap:] == incoming_tokens[:overlap]:
+            return (
+                " ".join((*existing_tokens, *incoming_tokens[overlap:])),
+                "EXACT_OVERLAP",
+            )
+    return " ".join((*existing_tokens, *incoming_tokens)), "INDEPENDENT_APPEND"
 
 
 class LiveGoldenPttCoordinator:
@@ -217,6 +242,7 @@ class LiveGoldenPttCoordinator:
             maxlen=_COMPLETED_PTT_HISTORY
         )
         self._seen_provider_items: set[str] = set()
+        self._seen_provider_events: set[str] = set()
 
     def reset_and_arm(self) -> None:
         with self._lock:
@@ -225,6 +251,7 @@ class LiveGoldenPttCoordinator:
             self._armed = True
             self._completed.clear()
             self._seen_provider_items.clear()
+            self._seen_provider_events.clear()
 
     def arm_next(self) -> None:
         with self._lock:
@@ -237,6 +264,7 @@ class LiveGoldenPttCoordinator:
             self._cancel_pending_locked()
             self._completed.clear()
             self._seen_provider_items.clear()
+            self._seen_provider_events.clear()
 
     def transmission_started(
         self, transmission_id: str, provider_audio_start_ms: int
@@ -247,6 +275,7 @@ class LiveGoldenPttCoordinator:
             self._pending[transmission_id] = _PendingPhysicalPtt(
                 transmission_id=transmission_id,
                 provider_audio_start_ms=provider_audio_start_ms,
+                started_at=time.monotonic(),
             )
         realtime_test_evidence.record(
             "live_golden_ptt_started",
@@ -287,32 +316,42 @@ class LiveGoldenPttCoordinator:
             if not self._armed:
                 return
             provider_item_id = segment.provider_item_id
-            if provider_item_id and provider_item_id in self._seen_provider_items:
+            event_id = segment.event_id
+            duplicate_identity = (
+                bool(provider_item_id and provider_item_id in self._seen_provider_items)
+                or bool(event_id and event_id in self._seen_provider_events)
+            )
+            if duplicate_identity:
+                realtime_test_evidence.record(
+                    "live_golden_transcript_segment_duplicate_dropped",
+                    provider_item_id=provider_item_id,
+                    event_id=event_id,
+                    merge_decision="IDENTITY_DUPLICATE",
+                )
                 return
             position = (
                 segment.provider_audio_start_ms
                 if segment.provider_audio_start_ms is not None
                 else segment.provider_audio_end_ms
             )
-            if self._completed_for_position_locked(position) is not None:
-                realtime_test_evidence.record(
-                    "live_golden_stale_segment_dropped",
-                    provider_item_id=provider_item_id,
-                    provider_position_ms=position,
-                )
-                return
-            pending = self._pending_for_position_locked(position)
+            pending = self._pending_for_segment_locked(segment, position)
             if pending is None:
                 realtime_test_evidence.record(
                     "live_golden_unmatched_segment_dropped",
                     provider_item_id=provider_item_id,
+                    event_id=event_id,
                     provider_position_ms=position,
                 )
                 return
             if provider_item_id:
                 self._seen_provider_items.add(provider_item_id)
+            if event_id:
+                self._seen_provider_events.add(event_id)
             self._sequence += 1
             pending.segments.append((self._sequence, segment))
+            pending.aggregate, merge_decision = _merge_transcript_text(
+                pending.aggregate, text
+            )
             segment_index = len(pending.segments)
             if pending.provider_audio_end_ms is not None:
                 self._schedule_locked(pending)
@@ -323,20 +362,41 @@ class LiveGoldenPttCoordinator:
             segment_index=segment_index,
             provider_start_ms=segment.provider_audio_start_ms,
             provider_end_ms=segment.provider_audio_end_ms,
+            merge_decision=merge_decision,
         )
+
+    def _pending_for_segment_locked(
+        self,
+        segment: RealtimeTranscriptSegment,
+        provider_audio_ms: int | None,
+    ) -> _PendingPhysicalPtt | None:
+        stopped_at = segment.speech_stopped_at
+        if stopped_at is not None:
+            eligible = tuple(
+                pending
+                for pending in self._pending.values()
+                if stopped_at >= pending.started_at
+            )
+            if eligible:
+                return max(eligible, key=lambda pending: pending.started_at)
+            return None
+        if self._completed_for_position_locked(provider_audio_ms) is not None:
+            return None
+        return self._pending_for_position_locked(provider_audio_ms)
 
     def _pending_for_position_locked(
         self, provider_audio_ms: int | None
     ) -> _PendingPhysicalPtt | None:
         ordered = tuple(self._pending.values())
         if provider_audio_ms is not None:
+            matches: list[_PendingPhysicalPtt] = []
             for pending in ordered:
                 end = pending.provider_audio_end_ms
                 if provider_audio_ms >= pending.provider_audio_start_ms and (
                     end is None or provider_audio_ms <= end
                 ):
-                    return pending
-            return None
+                    matches.append(pending)
+            return matches[0] if len(matches) == 1 else None
         return ordered[0] if len(ordered) == 1 else None
 
     def _completed_for_position_locked(
@@ -389,10 +449,14 @@ class LiveGoldenPttCoordinator:
                 )
             )
             ordered = [item for _, item in sorted(pending.segments, key=lambda item: item[0])]
-            parts = [item.transcript.strip() for item in ordered if item.transcript.strip()]
-            if parts:
+            if pending.aggregate:
                 self._armed = False
-                emission = (transmission_id, " ".join(parts), ordered[-1], len(parts))
+                emission = (
+                    transmission_id,
+                    pending.aggregate,
+                    ordered[-1],
+                    len(ordered),
+                )
         if emission is None:
             realtime_test_evidence.record(
                 "live_golden_empty_ptt_discarded",
