@@ -20,11 +20,14 @@ from orion.radio_contracts import (
     RadioFailureCode,
     RadioModulation,
     RadioReadiness,
+    RadioStreamingTransmissionRequest,
     RadioTransmissionRequest,
     RadioTransmissionState,
     RadioTransportCapability,
     RadioTransportStatus,
+    StreamingPcmAudio,
 )
+from orion.radio_streaming import BoundedPcmStream
 from orion.radio_router import RadioRouter
 
 
@@ -52,6 +55,7 @@ class FakeRadioTransportAdapter:
         self.started = False
         self.shutdown_calls = 0
         self.transmit_calls: list[RadioTransmissionRequest] = []
+        self.streaming_calls: list[RadioStreamingTransmissionRequest] = []
         self.cancel_calls: list[str] = []
         self.entered = threading.Event()
         self.release = threading.Event()
@@ -124,6 +128,21 @@ class FakeRadioTransportAdapter:
         self.release.set()
         return True
 
+    def transmit_streaming(
+        self,
+        request: RadioStreamingTransmissionRequest,
+    ) -> RadioAdapterTxResult:
+        self.streaming_calls.append(request)
+        now = datetime.now(UTC)
+        return RadioAdapterTxResult(
+            tx_correlation_id=request.context.tx_correlation_id,
+            outcome=RadioAdapterOutcome.COMPLETED,
+            started_at=now,
+            completed_at=now,
+            frame_count=1,
+            duration_ms=40.0,
+        )
+
     def shutdown(self, timeout_s: float) -> bool:
         assert timeout_s > 0
         self.shutdown_calls += 1
@@ -156,6 +175,48 @@ def _request(
         audio=FinalizedPcmAudio(pcm=pcm, sample_rate_hz=44_100),
         transport_id=transport_id,
     )
+
+
+def _stream_request(tx_id: str) -> RadioStreamingTransmissionRequest:
+    source = BoundedPcmStream(
+        tx_id,
+        sample_rate_hz=44_100,
+        prebuffer_ms=40,
+        max_buffer_ms=80,
+        max_total_bytes=8_000,
+    )
+    source.feed(b"\x00\x00" * 1_764)
+    source.finish()
+    base = _request(tx_id)
+    return RadioStreamingTransmissionRequest(
+        context=base.context,
+        audio=StreamingPcmAudio(stream=source, sample_rate_hz=44_100),
+        transport_id=base.transport_id,
+    )
+
+
+def test_streaming_submission_requires_capability_and_uses_one_router_lifecycle() -> None:
+    unsupported = FakeRadioTransportAdapter()
+    router = _started_router(unsupported)
+    rejected = router.submit_streaming(_stream_request("stream-unsupported"))
+    assert not rejected.accepted
+    assert rejected.failure is not None
+    assert rejected.failure.code is RadioFailureCode.UNSUPPORTED_CAPABILITY
+    router.shutdown()
+
+    supported = FakeRadioTransportAdapter(
+        capabilities=REQUIRED_TX_CAPABILITIES
+        | {RadioTransportCapability.TX_STREAMING_AUDIO}
+    )
+    router = _started_router(supported)
+    accepted = router.submit_streaming(_stream_request("stream-supported"))
+    assert accepted.accepted
+    snapshot = router.wait("stream-supported", 1.0)
+    assert snapshot is not None
+    assert snapshot.state is RadioTransmissionState.COMPLETED
+    assert len(supported.streaming_calls) == 1
+    assert supported.transmit_calls == []
+    router.shutdown()
 
 
 def _started_router(

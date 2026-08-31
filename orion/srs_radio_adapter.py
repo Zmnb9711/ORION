@@ -8,6 +8,7 @@ from typing import Callable, Protocol
 
 from orion.radio_contracts import (
     REQUIRED_TX_CAPABILITIES,
+    FinalizedPcmAudio,
     PcmSampleFormat,
     RadioAdapterOutcome,
     RadioAdapterTxResult,
@@ -15,10 +16,12 @@ from orion.radio_contracts import (
     RadioFailureCode,
     RadioModulation,
     RadioReadiness,
+    RadioStreamingTransmissionRequest,
     RadioTransmissionRequest,
     RadioTransportCapability,
     RadioTransportStatus,
 )
+from orion.radio_streaming import BoundedPcmStream
 from orion.srs_protocol import AM, FM
 from orion.srs_radio_transport import SrsState
 
@@ -50,6 +53,9 @@ class SrsTxCompletion:
     queue_to_complete_ms: float
     frame_count: int
     duration_ms: float
+    underrun_count: int = 0
+    underrun_silence_ms: float = 0.0
+    max_buffered_bytes: int = 0
 
 
 class SrsTransmissionPort(Protocol):
@@ -61,6 +67,13 @@ class SrsTransmissionPort(Protocol):
         self,
         tx_correlation_id: str,
         pcm44: bytes,
+        timeout_s: float,
+    ) -> SrsTxCompletion: ...
+
+    def transmit_srs_pcm_stream(
+        self,
+        tx_correlation_id: str,
+        stream: BoundedPcmStream,
         timeout_s: float,
     ) -> SrsTxCompletion: ...
 
@@ -89,7 +102,9 @@ class SrsRadioTransportAdapter:
         self._stopped = False
 
     def capabilities(self) -> frozenset[RadioTransportCapability]:
-        return REQUIRED_TX_CAPABILITIES
+        return REQUIRED_TX_CAPABILITIES | {
+            RadioTransportCapability.TX_STREAMING_AUDIO
+        }
 
     def status(self) -> RadioTransportStatus:
         if self._stopped:
@@ -218,6 +233,102 @@ class SrsRadioTransportAdapter:
         )
         return _failed_result(tx_id, code, message, self._now())
 
+    def transmit_streaming(
+        self,
+        request: RadioStreamingTransmissionRequest,
+    ) -> RadioAdapterTxResult:
+        """Keep one adapter lifecycle open while bounded PCM arrives."""
+
+        tx_id = str(request.context.tx_correlation_id)
+        began_at = self._now()
+        if not self._started or self._stopped:
+            return _failed_result(
+                tx_id,
+                RadioFailureCode.NOT_READY,
+                "SRS radio adapter is not started",
+                began_at,
+            )
+        if self.status().readiness is not RadioReadiness.READY:
+            return _failed_result(
+                tx_id,
+                RadioFailureCode.NOT_READY,
+                "SRS radio transport is not ready",
+                began_at,
+            )
+        try:
+            runtime = self._port.srs_adapter_runtime()
+            failure = validate_srs_stream_request(request, runtime)
+            if failure is not None:
+                return RadioAdapterTxResult(
+                    tx_correlation_id=tx_id,
+                    outcome=RadioAdapterOutcome.FAILED,
+                    completed_at=began_at,
+                    failure=failure,
+                )
+            self._record(
+                "srs_adapter_tx_started",
+                tx_correlation_id=tx_id,
+                frequency_hz=request.context.target_frequency_hz,
+                modulation=request.context.modulation.value,
+                radio_entity_id=request.context.radio_entity.entity_id,
+                streaming=True,
+            )
+            completion = self._port.transmit_srs_pcm_stream(
+                tx_id,
+                request.audio.stream,
+                request.timeout_s,
+            )
+            first_tx_at = began_at + timedelta(
+                milliseconds=completion.queue_to_first_tx_ms
+            )
+            completed_at = began_at + timedelta(
+                milliseconds=completion.queue_to_complete_ms
+            )
+            self._record(
+                "srs_adapter_tx_completed",
+                tx_correlation_id=tx_id,
+                frames=completion.frame_count,
+                duration_ms=completion.duration_ms,
+                streaming=True,
+                underrun_count=completion.underrun_count,
+                underrun_silence_inserted_ms=completion.underrun_silence_ms,
+                max_buffered_bytes=completion.max_buffered_bytes,
+            )
+            return RadioAdapterTxResult(
+                tx_correlation_id=tx_id,
+                outcome=RadioAdapterOutcome.COMPLETED,
+                started_at=first_tx_at,
+                completed_at=completed_at,
+                frame_count=completion.frame_count,
+                duration_ms=completion.duration_ms,
+            )
+        except TimeoutError:
+            code = RadioFailureCode.TX_TIMEOUT
+            message = "SRS streaming radio transmission timed out"
+        except RuntimeError as exc:
+            if "cancel" in str(exc).casefold():
+                return RadioAdapterTxResult(
+                    tx_correlation_id=tx_id,
+                    outcome=RadioAdapterOutcome.CANCELLED,
+                    completed_at=self._now(),
+                    failure=_failure(
+                        RadioFailureCode.TX_CANCELLED,
+                        "SRS streaming radio transmission was cancelled",
+                    ),
+                )
+            code = RadioFailureCode.TX_REJECTED
+            message = "SRS streaming radio transmission failed"
+        except Exception:
+            code = RadioFailureCode.TRANSPORT_ERROR
+            message = "SRS streaming radio transport failed"
+        self._record(
+            "srs_adapter_tx_failed",
+            tx_correlation_id=tx_id,
+            failure_code=code.value,
+            streaming=True,
+        )
+        return _failed_result(tx_id, code, message, self._now())
+
     def cancel(self, tx_correlation_id: str) -> bool:
         self._record(
             "srs_adapter_cancel_unsupported",
@@ -321,6 +432,35 @@ def validate_srs_request(
             "Requested coalition does not match this SRS endpoint",
         )
     return None
+
+
+def validate_srs_stream_request(
+    request: RadioStreamingTransmissionRequest,
+    runtime: SrsAdapterRuntime,
+) -> RadioFailure | None:
+    audio = request.audio
+    if audio.sample_format is not PcmSampleFormat.SIGNED_16_LE:
+        return _failure(
+            RadioFailureCode.UNSUPPORTED_CAPABILITY,
+            "SRS adapter supports signed PCM16LE only",
+        )
+    if audio.sample_rate_hz != SRS_PCM_INPUT_RATE or audio.channels != 1:
+        return _failure(
+            RadioFailureCode.UNSUPPORTED_CAPABILITY,
+            "SRS adapter supports streaming mono PCM at 44.1 kHz",
+        )
+    placeholder = RadioTransmissionRequest(
+        context=request.context,
+        audio=FinalizedPcmAudio(
+            pcm=b"\x00\x00",
+            sample_rate_hz=audio.sample_rate_hz,
+            sample_format=audio.sample_format,
+            channels=audio.channels,
+        ),
+        transport_id=request.transport_id,
+        timeout_s=request.timeout_s,
+    )
+    return validate_srs_request(placeholder, runtime)
 
 
 def _failure(code: RadioFailureCode, message: str) -> RadioFailure:

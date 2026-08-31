@@ -92,6 +92,7 @@ _ALLOWED_FIELDS = {
     "provider_media_generated",
     "provider_media_reached_transport",
     "radio_stt_provider",
+    "tts_output_mode",
     "client_event_id",
     "client_item_event_id",
     "client_response_event_id",
@@ -206,6 +207,18 @@ _ALLOWED_FIELDS = {
     "validated_pcm_bytes",
     "body_chunk_callback_at",
     "body_chunk_callback_bytes",
+    "streaming",
+    "chunk_index",
+    "prebuffer_target_ms",
+    "prebuffer_actual_ms",
+    "prebuffer_actual_bytes",
+    "max_buffered_ms",
+    "max_buffered_bytes",
+    "underrun_count",
+    "underrun_silence_inserted_ms",
+    "provider_complete_latency_ms",
+    "first_srs_tx_frame_latency_ms",
+    "total_tx_duration_ms",
 }
 
 
@@ -217,6 +230,7 @@ class RealtimeTestEvidenceStatus:
     provider: str | None = None
     transport: str | None = None
     radio_stt_provider: str | None = None
+    tts_output_mode: str | None = None
     speechkit_stt_input_capture_enabled: bool = False
     event_count: int = 0
     dropped_event_count: int = 0
@@ -248,6 +262,7 @@ class RealtimeTestEvidenceRecorder:
         self._provider: str | None = None
         self._transport: str | None = None
         self._radio_stt_provider: str | None = None
+        self._tts_output_mode: str | None = None
         self._speechkit_stt_input_capture_enabled = False
         self._build_sha: str | None = None
         self._build_branch: str | None = None
@@ -272,6 +287,7 @@ class RealtimeTestEvidenceRecorder:
         provider: str,
         transport: str,
         radio_stt_provider: str | None = None,
+        tts_output_mode: str | None = None,
         capture_speechkit_stt_input_audio: bool = False,
         build_sha: str | None = None,
         build_branch: str | None = None,
@@ -282,6 +298,11 @@ class RealtimeTestEvidenceRecorder:
         radio_stt_provider_value = (
             self._identifier(radio_stt_provider, "radio STT provider")
             if radio_stt_provider is not None
+            else None
+        )
+        tts_output_mode_value = (
+            self._identifier(tts_output_mode, "TTS output mode")
+            if tts_output_mode is not None
             else None
         )
         with self._lock:
@@ -306,6 +327,7 @@ class RealtimeTestEvidenceRecorder:
             self._provider = provider_value
             self._transport = transport_value
             self._radio_stt_provider = radio_stt_provider_value
+            self._tts_output_mode = tts_output_mode_value
             self._speechkit_stt_input_capture_enabled = bool(
                 capture_speechkit_stt_input_audio
             )
@@ -1032,6 +1054,7 @@ class RealtimeTestEvidenceRecorder:
             provider = self._provider or "unknown"
             transport = self._transport or "unknown"
             radio_stt_provider = self._radio_stt_provider or "not_applicable"
+            tts_output_mode = self._tts_output_mode or "not_applicable"
             build_sha = self._build_sha or "unknown"
             build_branch = self._build_branch or "unknown"
             build_version = self._build_version or "unknown"
@@ -1120,6 +1143,7 @@ class RealtimeTestEvidenceRecorder:
                 f"provider={provider}\n"
                 f"transport={transport}\n"
                 f"radio_stt_provider={radio_stt_provider}\n"
+                f"tts_output_mode={tts_output_mode}\n"
                 f"speechkit_stt_input_audio_opt_in={str(speechkit_stt_input_capture_enabled).lower()}\n"
                 f"speechkit_stt_input_audio_artifacts={len(speechkit_stt_input_audio)}\n"
                 f"event_count={len(events)}\n"
@@ -1205,6 +1229,7 @@ class RealtimeTestEvidenceRecorder:
             radio_stt_provider=(
                 self._radio_stt_provider if self._active else None
             ),
+            tts_output_mode=self._tts_output_mode if self._active else None,
             speechkit_stt_input_capture_enabled=(
                 self._speechkit_stt_input_capture_enabled if self._active else False
             ),

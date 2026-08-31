@@ -18,6 +18,7 @@ from pydantic import (
 
 from orion.communication_contracts import CommunicationDomain, CommunicationPriority
 from orion.interaction_contracts import ContextReference, CorrelationId
+from orion.radio_streaming import BoundedPcmStream
 
 
 TransportId = Annotated[
@@ -74,6 +75,7 @@ class PcmSampleFormat(StrEnum):
 
 class RadioTransportCapability(StrEnum):
     TX_AUDIO = "tx_audio"
+    TX_STREAMING_AUDIO = "tx_streaming_audio"
     TX_COMPLETION = "tx_completion"
     FREQUENCY = "frequency"
     MODULATION = "modulation"
@@ -194,6 +196,37 @@ class FinalizedPcmAudio(_RadioModel):
 class RadioTransmissionRequest(_RadioModel):
     context: RadioContext
     audio: FinalizedPcmAudio = Field(repr=False)
+    transport_id: TransportId | None = None
+    timeout_s: float = Field(default=35.0, gt=0, le=120.0)
+
+
+class StreamingPcmAudio(_RadioModel):
+    """One bounded PCM stream admitted as a single logical transmission."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        allow_inf_nan=False,
+        arbitrary_types_allowed=True,
+    )
+
+    stream: BoundedPcmStream = Field(repr=False)
+    sample_rate_hz: int = Field(ge=8_000, le=192_000)
+    sample_format: PcmSampleFormat = PcmSampleFormat.SIGNED_16_LE
+    channels: int = Field(default=1, ge=1, le=1)
+
+    @model_validator(mode="after")
+    def validate_stream_format(self) -> Self:
+        if self.stream.sample_rate_hz != self.sample_rate_hz:
+            raise ValueError("Streaming PCM source sample rate does not match its contract")
+        if self.stream.channels != self.channels or self.stream.sample_width_bytes != 2:
+            raise ValueError("Streaming PCM source format does not match its contract")
+        return self
+
+
+class RadioStreamingTransmissionRequest(_RadioModel):
+    context: RadioContext
+    audio: StreamingPcmAudio = Field(repr=False)
     transport_id: TransportId | None = None
     timeout_s: float = Field(default=35.0, gt=0, le=120.0)
 
@@ -337,6 +370,11 @@ class RadioTransportAdapter(Protocol):
     def start(self) -> RadioTransportStatus: ...
 
     def transmit(self, request: RadioTransmissionRequest) -> RadioAdapterTxResult: ...
+
+    def transmit_streaming(
+        self,
+        request: RadioStreamingTransmissionRequest,
+    ) -> RadioAdapterTxResult: ...
 
     def cancel(self, tx_correlation_id: str) -> bool: ...
 

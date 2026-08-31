@@ -30,16 +30,23 @@ def start_test_evidence(request: RealtimeTestEvidenceStart) -> dict[str, object]
     try:
         identity = load_build_identity()
         radio_stt_provider: str | None = None
+        tts_output_mode: str | None = None
         if request.provider == "yandex" and request.transport == "srs":
             from orion.yandex_srs_live_core import yandex_srs_live
 
-            selected = yandex_srs_live.status().radio_stt_provider.value
+            status = yandex_srs_live.status()
+            selected = status.radio_stt_provider.value
             radio_stt_provider = _RADIO_STT_EVIDENCE_VALUES[selected]
+            selected_tts = getattr(status, "tts_output_mode", None)
+            tts_output_mode = (
+                selected_tts.value if selected_tts is not None else "speechkit_rest"
+            )
         return asdict(
             realtime_test_evidence.start(
                 provider=request.provider,
                 transport=request.transport,
                 radio_stt_provider=radio_stt_provider,
+                tts_output_mode=tts_output_mode,
                 capture_speechkit_stt_input_audio=(
                     request.capture_speechkit_stt_input_audio
                 ),

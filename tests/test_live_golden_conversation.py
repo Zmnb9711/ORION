@@ -24,6 +24,7 @@ from orion.planner_contracts import (
     PlannerUsage,
 )
 from orion.realtime_test_evidence import RealtimeTestEvidenceRecorder
+from orion.radio_streaming import StreamingPcmEvent
 from orion.realtime_audio_transport import (
     FinalizedUserUtterance,
     RealtimeTranscriptSegment,
@@ -31,6 +32,7 @@ from orion.realtime_audio_transport import (
 from orion.srs_radio_adapter import SrsAdapterRuntime
 from orion.srs_radio_transport import SrsState
 from orion.tool_gateway_contracts import ToolArguments
+from orion.yandex_speechkit_streaming_tts import SpeechKitTtsOutputMode
 
 
 class _Run:
@@ -104,6 +106,27 @@ class _SpeechKit:
         return bytes(4_800), case.finalized_text
 
 
+class _StreamingFailureBeforeTx:
+    async def stream(
+        self,
+        _text: str,
+        _api_key: str,
+        *,
+        response_id: str,
+        cancelled,
+    ):  # noqa: ANN001, ANN202
+        assert not cancelled()
+        yield StreamingPcmEvent(
+            response_id=response_id,
+            pcm=b"",
+            sample_rate_hz=48_000,
+            channels=1,
+            sample_width_bytes=2,
+            chunk_index=0,
+            error="bounded fake provider failure",
+        )
+
+
 class _Endpoint:
     def __init__(self) -> None:
         self.suppression: list[bool] = []
@@ -162,6 +185,8 @@ def _service(
     monkeypatch,
     *,
     gate: threading.Event | None = None,
+    tts_output_mode: SpeechKitTtsOutputMode = SpeechKitTtsOutputMode.REST_BUFFERED,
+    streaming_speechkit_factory=None,  # noqa: ANN001
 ) -> tuple[
     LiveGoldenConversationService,
     _Endpoint,
@@ -182,6 +207,9 @@ def _service(
     runner = live_module.LiveGoldenCaseRunner(
         provider_factory=lambda _config: provider,
         speechkit_factory=_SpeechKit,
+        streaming_speechkit_factory=(
+            streaming_speechkit_factory or live_module.SpeechKitStreamingTtsClient
+        ),
     )
     service = LiveGoldenConversationService(runner=runner, ptt_settle_seconds=0.01)
     endpoint = _Endpoint()
@@ -191,9 +219,45 @@ def _service(
             folder_id="folder-id",
             endpoint=endpoint,
             main_session_id="yandex-main-session",
+            tts_output_mode=tts_output_mode,
         )
     )
     return service, endpoint, recorder, provider
+
+
+def test_streaming_failure_before_radio_falls_back_once_to_buffered_rest(
+    tmp_path,
+    monkeypatch,
+) -> None:  # noqa: ANN001
+    service, endpoint, recorder, _provider = _service(
+        tmp_path,
+        monkeypatch,
+        tts_output_mode=SpeechKitTtsOutputMode.STREAMING_V3,
+        streaming_speechkit_factory=_StreamingFailureBeforeTx,
+    )
+    service.start(capture_audio=False)
+    service.input_transmission_started("srs-fallback-ptt", 0)
+    service.accept_transcript_segment(
+        _segment("Добрый день Разрешите взлёт", "fallback-item", 0, 900)
+    )
+    service.input_transmission_completed("srs-fallback-ptt", 1_000)
+    _wait_for(service, LiveGoldenState.AWAITING_REVIEW)
+    assert len(endpoint.transmissions) == 1
+    service.stop()
+    output = recorder.stop_and_export()
+    with zipfile.ZipFile(output) as archive:
+        events = [
+            json.loads(line)
+            for line in archive.read("events.jsonl").decode("utf-8").splitlines()
+        ]
+        summary = json.loads(archive.read("live-golden-summary.json"))
+    assert sum(
+        event["event"] == "speechkit_stream_tts_rest_fallback"
+        for event in events
+    ) == 1
+    case = summary["runs"][0]["cases"][0]
+    assert case["speechkit"]["streaming_rest_fallback"] is True
+    assert case["speechkit"]["output_mode"] == "speechkit_rest"
 
 
 def _segment(

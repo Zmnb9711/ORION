@@ -25,6 +25,7 @@ from orion.radio_contracts import (
     RadioReadiness,
     RadioRouterShutdownResult,
     RadioSubmissionResult,
+    RadioStreamingTransmissionRequest,
     RadioTransmissionRequest,
     RadioTransmissionSnapshot,
     RadioTransmissionState,
@@ -55,7 +56,7 @@ _TERMINAL_STATES = {
 
 @dataclass(slots=True)
 class _TransmissionRecord:
-    request: RadioTransmissionRequest | None
+    request: RadioTransmissionRequest | RadioStreamingTransmissionRequest | None
     signature: str
     snapshot: RadioTransmissionSnapshot
     done: threading.Event = field(default_factory=threading.Event)
@@ -170,6 +171,21 @@ class RadioRouter:
 
     def submit(self, request: RadioTransmissionRequest) -> RadioSubmissionResult:
         """Validate, deduplicate and enqueue one finalized PCM transmission."""
+
+        return self._submit(request)
+
+    def submit_streaming(
+        self,
+        request: RadioStreamingTransmissionRequest,
+    ) -> RadioSubmissionResult:
+        """Admit one bounded stream into the same serialized radio lifecycle."""
+
+        return self._submit(request)
+
+    def _submit(
+        self,
+        request: RadioTransmissionRequest | RadioStreamingTransmissionRequest,
+    ) -> RadioSubmissionResult:
 
         signature = _request_signature(request)
         tx_id = str(request.context.tx_correlation_id)
@@ -472,7 +488,15 @@ class RadioRouter:
                 self._active_id = tx_id
                 self._record(active, RadioDiagnosticStage.STARTED)
             try:
-                result = adapter.transmit(request)
+                if isinstance(request, RadioStreamingTransmissionRequest):
+                    transmit_streaming = getattr(adapter, "transmit_streaming", None)
+                    if transmit_streaming is None:
+                        raise RuntimeError(
+                            "Radio transport does not implement streaming transmission"
+                        )
+                    result = transmit_streaming(request)
+                else:
+                    result = adapter.transmit(request)
             except Exception:
                 result = RadioAdapterTxResult(
                     tx_correlation_id=request.context.tx_correlation_id,
@@ -508,7 +532,7 @@ class RadioRouter:
 
     def _resolve_adapter(
         self,
-        request: RadioTransmissionRequest,
+        request: RadioTransmissionRequest | RadioStreamingTransmissionRequest,
         transport_id: str | None,
     ) -> tuple[RadioTransportAdapter | None, RadioFailure | None]:
         if transport_id is None:
@@ -531,7 +555,12 @@ class RadioRouter:
             )
         try:
             capabilities = adapter.capabilities()
-            missing = REQUIRED_TX_CAPABILITIES - capabilities
+            required = REQUIRED_TX_CAPABILITIES
+            if isinstance(request, RadioStreamingTransmissionRequest):
+                required = required | {
+                    RadioTransportCapability.TX_STREAMING_AUDIO
+                }
+            missing = required - capabilities
             status = adapter.status()
         except Exception:
             return None, _failure(
@@ -641,7 +670,7 @@ class RadioRouter:
 
     def _reject(
         self,
-        request: RadioTransmissionRequest,
+        request: RadioTransmissionRequest | RadioStreamingTransmissionRequest,
         code: RadioFailureCode,
         message: str,
         transport_id: str | None,
@@ -654,7 +683,7 @@ class RadioRouter:
 
     def _reject_with_failure(
         self,
-        request: RadioTransmissionRequest,
+        request: RadioTransmissionRequest | RadioStreamingTransmissionRequest,
         failure: RadioFailure,
         transport_id: str | None,
     ) -> RadioSubmissionResult:
@@ -688,7 +717,7 @@ class RadioRouter:
 
     def _record_request(
         self,
-        request: RadioTransmissionRequest,
+        request: RadioTransmissionRequest | RadioStreamingTransmissionRequest,
         stage: RadioDiagnosticStage,
         transport_id: str,
         failure_code: RadioFailureCode | None = None,
@@ -767,17 +796,29 @@ def _normalized_failure(failure: RadioFailure, transport_id: str) -> RadioFailur
     )
 
 
-def _request_signature(request: RadioTransmissionRequest) -> str:
-    payload = {
-        "context": request.context.model_dump(mode="json"),
-        "transport_id": request.transport_id,
-        "timeout_s": request.timeout_s,
-        "audio": {
+def _request_signature(
+    request: RadioTransmissionRequest | RadioStreamingTransmissionRequest,
+) -> str:
+    if isinstance(request, RadioStreamingTransmissionRequest):
+        audio = {
+            "streaming": True,
+            "sample_rate_hz": request.audio.sample_rate_hz,
+            "sample_format": request.audio.sample_format.value,
+            "channels": request.audio.channels,
+            "response_id": request.audio.stream.response_id,
+        }
+    else:
+        audio = {
             "sample_rate_hz": request.audio.sample_rate_hz,
             "sample_format": request.audio.sample_format.value,
             "channels": request.audio.channels,
             "pcm_sha256": hashlib.sha256(request.audio.pcm).hexdigest(),
-        },
+        }
+    payload = {
+        "context": request.context.model_dump(mode="json"),
+        "transport_id": request.transport_id,
+        "timeout_s": request.timeout_s,
+        "audio": audio,
     }
     encoded = json.dumps(
         payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")

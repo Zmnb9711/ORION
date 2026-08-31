@@ -53,6 +53,7 @@ def test_transport_default_and_supported_payload_matrix() -> None:
     )
     assert payload["provider"] == "yandex" and payload["transport"] == "srs"
     assert payload["radio_stt_provider"] == "yandex_realtime"
+    assert payload["tts_output_mode"] == "speechkit_rest"
     assert payload["srs"] == {
         "host": "radio.local",
         "port": 5002,
@@ -119,6 +120,7 @@ def test_hardware_payload_uses_selected_yandex_srs_configuration_and_saved_crede
         "api_key": "yandex-secret",
         "folder_id": "folder",
         "radio_stt_provider": "yandex_realtime",
+        "tts_output_mode": "speechkit_rest",
         "srs": {"host": "radio.local", "port": 5002, "eam_password": "eam-secret"},
     }
 
@@ -142,6 +144,39 @@ def test_speechkit_v3_radio_stt_selection_is_explicit_and_reuses_yandex_credenti
     assert payload["api_key"] == "same-yandex-key"
     assert payload["radio_stt_provider"] == "speechkit_v3"
     assert "speechkit_api_key" not in payload
+
+
+def test_experimental_streaming_tts_selector_is_explicit_and_persisted_in_payload() -> None:
+    config = CloudVoiceConfig(
+        cloud_provider="yandex",
+        voice_transport="srs",
+        tts_output_mode="speechkit_v3_streaming",
+        yandex_folder_id="folder",
+        srs_host="radio.local",
+    )
+    payload = LauncherCloudVoiceSectionsMixin._realtime_start_payload(
+        config,
+        "unused-qwen",
+        "same-yandex-key",
+        "eam-memory-only",
+    )
+    assert payload["tts_output_mode"] == "speechkit_v3_streaming"
+
+
+def test_unknown_tts_output_mode_is_rejected_without_fallback() -> None:
+    config = CloudVoiceConfig(
+        cloud_provider="yandex",
+        voice_transport="srs",
+        tts_output_mode="unknown",
+        yandex_folder_id="folder",
+    )
+    with pytest.raises(ValueError, match="Unsupported SRS TTS output mode"):
+        LauncherCloudVoiceSectionsMixin._realtime_start_payload(
+            config,
+            "unused-qwen",
+            "yandex-key",
+            "eam-memory-only",
+        )
 
 
 def test_official_process_and_orion_radio_statuses_cannot_be_confused() -> None:

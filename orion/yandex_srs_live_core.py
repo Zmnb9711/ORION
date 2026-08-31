@@ -20,9 +20,12 @@ from orion.radio_contracts import (
     RadioContext,
     RadioEntityRef,
     RadioFailureCode,
+    RadioStreamingTransmissionRequest,
     RadioTransmissionRequest,
     RadioTransmissionState,
+    StreamingPcmAudio,
 )
+from orion.radio_streaming import BoundedPcmStream, StreamingPcmState
 from orion.radio_router import RadioRouter
 from orion.realtime_audio_transport import (
     RealtimeInputTransmissionCompleted,
@@ -69,6 +72,7 @@ from orion.srs_tx_state import (
 from orion.yandex_live_diagnostics import YandexLiveDiagnostics
 from orion.yandex_realtime_provider import YANDEX_INPUT_RATE, sanitize_yandex_error
 from orion.yandex_realtime_session import YandexRealtimeSession
+from orion.yandex_speechkit_streaming_tts import SpeechKitTtsOutputMode
 
 YANDEX_BLOCK_FRAMES = 882
 YANDEX_BLOCK_BYTES = YANDEX_BLOCK_FRAMES * 2
@@ -80,6 +84,8 @@ MAX_RESPONSE_STATES = 4
 SHUTDOWN_TIMEOUT_SECONDS = 6.0
 SRS_DECODE_RATE_HZ = 16_000
 SRS_TX_CONFIRM_TIMEOUT_SECONDS = 1.0
+STREAM_UNDERRUN_SILENCE_LIMIT_MS = 120
+STREAM_PCM_READ_BYTES = YANDEX_BLOCK_BYTES * 5
 
 
 class YandexSrsState(StrEnum):
@@ -104,6 +110,7 @@ class YandexSrsStartRequest(BaseModel):
     modulation: int = AM
     eam_password: SecretStr
     radio_stt_provider: RadioSttProvider = RadioSttProvider.YANDEX_REALTIME
+    tts_output_mode: SpeechKitTtsOutputMode = SpeechKitTtsOutputMode.REST_BUFFERED
 
 
 class YandexSrsStatus(BaseModel):
@@ -116,6 +123,7 @@ class YandexSrsStatus(BaseModel):
     frequency_hz: float = 251_000_000.0
     modulation: int = AM
     radio_stt_provider: RadioSttProvider = RadioSttProvider.YANDEX_REALTIME
+    tts_output_mode: SpeechKitTtsOutputMode = SpeechKitTtsOutputMode.REST_BUFFERED
     radio_registered: bool = False
     udp_registered: bool = False
     input_chunks: int = 0
@@ -152,6 +160,12 @@ class _ResponseState:
 class _PreparedResponse:
     response_id: str
     pcm44: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedStreamingResponse:
+    response_id: str
+    stream: BoundedPcmStream
 
 
 @dataclass(slots=True)
@@ -231,7 +245,9 @@ class SrsYandexPcmEndpoint:
             | RealtimeInputTransmissionStarted
             | RealtimeInputTransmissionCompleted
         ] = queue.Queue(maxsize=250)
-        self.tx_queue: queue.Queue[_PreparedResponse | None] = queue.Queue(maxsize=1)
+        self.tx_queue: queue.Queue[
+            _PreparedResponse | _PreparedStreamingResponse | None
+        ] = queue.Queue(maxsize=1)
         self.responses: dict[str, _ResponseState] = {}
         self.rx_accumulator = bytearray()
         self.packet_id = 1
@@ -252,7 +268,9 @@ class SrsYandexPcmEndpoint:
         self._probe_lock = threading.Lock()
         self._probe_tx_started: dict[str, tuple[threading.Event, float | None]] = {}
         self._probe_tx_completed: dict[str, tuple[threading.Event, float | None]] = {}
-        self._probe_tx_results: dict[str, tuple[int, float]] = {}
+        self._probe_tx_results: dict[str, SrsTxCompletion] = {}
+        self._probe_tx_failures: dict[str, str] = {}
+        self._last_stream_completion: dict[str, SrsTxCompletion] = {}
         self.radio_adapter: SrsRadioTransportAdapter | None = None
         self.radio_router: RadioRouter | None = None
         self._stop_lock = threading.Lock()
@@ -1167,6 +1185,84 @@ class SrsYandexPcmEndpoint:
             "duration_ms": snapshot.duration_ms or 0.0,
         }
 
+    def transmit_streaming_audio(
+        self,
+        response_id: str,
+        stream: BoundedPcmStream,
+        timeout_s: float,
+        *,
+        source_domain: CommunicationDomain,
+        priority: CommunicationPriority,
+        entity_id: str,
+    ) -> dict[str, float | int]:
+        """Admit one bounded PCM source before provider EOS and await its drain."""
+
+        router = self.radio_router
+        if router is None:
+            raise RuntimeError("SRS RadioRouter is not started")
+        runtime = self.srs_adapter_runtime()
+        coalition = {1: "red", 2: "blue"}.get(runtime.coalition)
+        request = RadioStreamingTransmissionRequest(
+            context=RadioContext(
+                tx_correlation_id=response_id,
+                source_domain=source_domain,
+                radio_entity=RadioEntityRef(
+                    entity_id=entity_id,
+                    operational_callsign=runtime.bot_name,
+                    coalition=coalition,
+                ),
+                target_frequency_hz=runtime.frequency_hz,
+                modulation=radio_modulation_from_srs(runtime.modulation),
+                communication_priority=priority,
+            ),
+            audio=StreamingPcmAudio(
+                stream=stream,
+                sample_rate_hz=stream.sample_rate_hz,
+            ),
+            transport_id=SRS_ADAPTER_ID,
+            timeout_s=timeout_s,
+        )
+        submitted = router.submit_streaming(request)
+        if not submitted.accepted:
+            assert submitted.failure is not None
+            raise RuntimeError(
+                "SRS RadioRouter rejected streaming response: "
+                f"{submitted.failure.code.value}"
+            )
+        snapshot = router.wait(response_id, timeout_s + 0.5)
+        if snapshot is None or snapshot.state not in {
+            RadioTransmissionState.COMPLETED,
+            RadioTransmissionState.FAILED,
+            RadioTransmissionState.CANCELLED,
+        }:
+            raise TimeoutError("Timed out waiting for streaming SRS TX completion")
+        if snapshot.state is not RadioTransmissionState.COMPLETED:
+            failure = snapshot.failure
+            if failure is not None and failure.code is RadioFailureCode.TX_TIMEOUT:
+                raise TimeoutError("Timed out waiting for streaming SRS tx_completed")
+            code = failure.code.value if failure is not None else snapshot.state.value
+            raise RuntimeError(f"SRS streaming radio transmission failed: {code}")
+        if snapshot.started_at is None or snapshot.completed_at is None:
+            raise RuntimeError("SRS streaming adapter completed without timing markers")
+        completion = self._last_stream_completion.pop(response_id, None)
+        return {
+            "queue_to_first_tx_ms": (
+                snapshot.started_at - snapshot.enqueued_at
+            ).total_seconds()
+            * 1000,
+            "queue_to_complete_ms": (
+                snapshot.completed_at - snapshot.enqueued_at
+            ).total_seconds()
+            * 1000,
+            "frame_count": snapshot.frame_count or 0,
+            "duration_ms": snapshot.duration_ms or 0.0,
+            "underrun_count": completion.underrun_count if completion else 0,
+            "underrun_silence_inserted_ms": (
+                completion.underrun_silence_ms if completion else 0.0
+            ),
+            "max_buffered_bytes": completion.max_buffered_bytes if completion else 0,
+        }
+
     def srs_adapter_runtime(self) -> SrsAdapterRuntime:
         return SrsAdapterRuntime(
             state=self.radio.state,
@@ -1210,6 +1306,7 @@ class SrsYandexPcmEndpoint:
                 self._probe_tx_started[response_id] = (started_event, None)
                 self._probe_tx_completed[response_id] = (completed_event, None)
                 self._probe_tx_results.pop(response_id, None)
+                self._probe_tx_failures.pop(response_id, None)
                 queued_at = self.clock()
                 try:
                     self.tx_queue.put_nowait(
@@ -1244,13 +1341,88 @@ class SrsYandexPcmEndpoint:
                 raise RuntimeError(
                     "SRS probe TX completed without a correlated frame result"
                 )
-            frame_count, duration_ms = result
             return SrsTxCompletion(
                 queue_to_first_tx_ms=(started_at - queued_at) * 1000,
                 queue_to_complete_ms=(completed_at - queued_at) * 1000,
-                frame_count=frame_count,
-                duration_ms=duration_ms,
+                frame_count=result.frame_count,
+                duration_ms=result.duration_ms,
             )
+
+    def transmit_srs_pcm_stream(
+        self,
+        tx_correlation_id: str,
+        stream: BoundedPcmStream,
+        timeout_s: float,
+    ) -> SrsTxCompletion:
+        """Queue one prebuffered source and keep one physical SRS TX lifecycle."""
+
+        response_id = tx_correlation_id
+        if not response_id or len(response_id) > 200:
+            raise ValueError("Streaming response ID is invalid")
+        if stream.response_id != response_id:
+            raise ValueError("Streaming response ID does not match its radio request")
+        if stream.sample_rate_hz != YANDEX_INPUT_RATE:
+            raise ValueError("SRS streaming input must be mono PCM16 at 44.1 kHz")
+        if timeout_s <= 0:
+            raise ValueError("Streaming SRS TX timeout must be positive")
+        snapshot = stream.snapshot()
+        if snapshot.buffered_bytes < stream.prebuffer_bytes and (
+            snapshot.state is StreamingPcmState.OPEN
+        ):
+            raise ValueError("Streaming SRS TX requires the configured prebuffer")
+        with self._probe_lock:
+            if self.failure() is not None or self.stop_event.is_set():
+                raise RuntimeError("SRS endpoint is unavailable for streaming TX")
+            started_event = threading.Event()
+            completed_event = threading.Event()
+            with self._lock:
+                if self.tracker.bot_tx_active or not self.tx_queue.empty():
+                    raise RuntimeError("SRS TX is busy; streaming response was not queued")
+                self._probe_tx_started[response_id] = (started_event, None)
+                self._probe_tx_completed[response_id] = (completed_event, None)
+                self._probe_tx_results.pop(response_id, None)
+                self._probe_tx_failures.pop(response_id, None)
+                queued_at = self.clock()
+                try:
+                    self.tx_queue.put_nowait(
+                        _PreparedStreamingResponse(response_id, stream)
+                    )
+                except queue.Full as exc:
+                    self._probe_tx_started.pop(response_id, None)
+                    self._probe_tx_completed.pop(response_id, None)
+                    raise RuntimeError("SRS TX queue rejected streaming response") from exc
+            if not completed_event.wait(timeout_s):
+                stream.cancel()
+                with self._lock:
+                    self._probe_tx_started.pop(response_id, None)
+                    self._probe_tx_completed.pop(response_id, None)
+                    self._probe_tx_results.pop(response_id, None)
+                    self._probe_tx_failures.pop(response_id, None)
+                raise TimeoutError("Timed out waiting for streaming SRS tx_completed")
+            with self._lock:
+                started_at = self._probe_tx_started.pop(
+                    response_id, (started_event, None)
+                )[1]
+                completed_at = self._probe_tx_completed.pop(
+                    response_id, (completed_event, None)
+                )[1]
+                result = self._probe_tx_results.pop(response_id, None)
+                failure = self._probe_tx_failures.pop(response_id, None)
+            if failure is not None:
+                raise RuntimeError(failure)
+            if started_at is None or completed_at is None or result is None:
+                raise RuntimeError("Streaming SRS TX ended without correlated markers")
+            completion = SrsTxCompletion(
+                queue_to_first_tx_ms=(started_at - queued_at) * 1000,
+                queue_to_complete_ms=(completed_at - queued_at) * 1000,
+                frame_count=result.frame_count,
+                duration_ms=result.duration_ms,
+                underrun_count=result.underrun_count,
+                underrun_silence_ms=result.underrun_silence_ms,
+                max_buffered_bytes=result.max_buffered_bytes,
+            )
+            self._last_stream_completion[response_id] = completion
+            return completion
 
     def _tx_worker(self) -> None:
         pacer = TxPacer(clock=self.clock)
@@ -1269,90 +1441,256 @@ class SrsYandexPcmEndpoint:
             if self.stop_event.is_set():
                 return
             try:
-                response_id = prepared.response_id
-                pcm16 = self.tx_resampler.process(prepared.pcm44, end_of_input=True)
-                frames, padding = split_tx_pcm(pcm16, OPUS_FRAME_BYTES)
-                encoded_frames = tuple(self.encoder.encode(frame) for frame in frames)
-                tx_started = False
-
-                def send_frame(opus: bytes, _sent_at: float) -> None:
-                    nonlocal tx_started
-                    packet = VoicePacket(
-                        audio=opus,
-                        frequencies=(
-                            Frequency(self.config.frequency_hz, self.config.modulation),
-                        ),
-                        unit_id=self.config.unit_id,
-                        packet_id=self.packet_id,
-                        retransmission_count=0,
-                        original_client_guid=self.radio.client_guid,
-                        current_sender_guid=self.radio.client_guid,
-                    )
-                    self.radio.send_voice(encode_voice_packet(packet))
-                    if not tx_started:
-                        tx_started = True
-                        with self._lock:
-                            marker = self._probe_tx_started.get(response_id)
-                            if marker is not None:
-                                self._probe_tx_started[response_id] = (
-                                    marker[0],
-                                    self.clock(),
-                                )
-                                marker[0].set()
-                        self.diagnostics.record(
-                            "srs_tx_started",
-                            response_id=response_id,
-                            packet_id=self.packet_id,
-                        )
-                    self.packet_id += 1
-
-                report = pacer.send(encoded_frames, send_frame, self.stop_event)
+                if isinstance(prepared, _PreparedStreamingResponse):
+                    completion = self._send_streaming_response(prepared)
+                    frames_sent = completion.frame_count
+                else:
+                    completion = self._send_finalized_response(prepared, pacer)
+                    frames_sent = completion.frame_count
                 self.tx_transmissions += 1
-                self.tx_frames += report.sent_frames
+                self.tx_frames += frames_sent
                 self._status(
-                    output_chunks_delta=report.sent_frames,
+                    output_chunks_delta=frames_sent,
                     tx_transmissions=self.tx_transmissions,
                     tx_frames=self.tx_frames,
                     udp_packets_sent=self.radio.udp_packets_sent,
                 )
-                self.diagnostics.record(
-                    "tx_completed",
-                    response_id=response_id,
-                    frames=report.sent_frames,
-                    final_padding_samples=padding,
-                    median_jitter_ms=report.median_jitter_ms,
-                    max_jitter_ms=report.max_jitter_ms,
-                    cumulative_drift_ms=report.cumulative_drift_ms,
-                )
-                with self._lock:
-                    marker = self._probe_tx_completed.get(response_id)
-                    if marker is not None:
-                        completed_at = self.clock()
-                        started_marker = self._probe_tx_started.get(response_id)
-                        started_at = (
-                            started_marker[1] if started_marker is not None else None
-                        )
-                        duration_ms = (
-                            max(0.0, (completed_at - started_at) * 1000)
-                            if started_at is not None
-                            else 0.0
-                        )
-                        self._probe_tx_completed[response_id] = (
-                            marker[0],
-                            completed_at,
-                        )
-                        self._probe_tx_results[response_id] = (
-                            report.sent_frames,
-                            duration_ms,
-                        )
-                        marker[0].set()
+                self._complete_tx_marker(prepared.response_id, completion)
             except Exception as exc:
-                if not self.stop_event.is_set():
+                if isinstance(prepared, _PreparedStreamingResponse):
+                    prepared.stream.fail(sanitize_srs_error(exc))
+                    self._fail_streaming_tx(prepared.response_id, exc)
+                elif not self.stop_event.is_set():
                     self._set_failure(exc)
             finally:
                 with self._lock:
                     self.tracker.bot_tx_active = False
                 self.tx_resampler.reset()
+
+    def _send_finalized_response(
+        self,
+        prepared: _PreparedResponse,
+        pacer: TxPacer,
+    ) -> SrsTxCompletion:
+        response_id = prepared.response_id
+        pcm16 = self.tx_resampler.process(prepared.pcm44, end_of_input=True)
+        frames, padding = split_tx_pcm(pcm16, OPUS_FRAME_BYTES)
+        encoded_frames = tuple(self.encoder.encode(frame) for frame in frames)
+        tx_started = False
+
+        def send_frame(opus: bytes, _sent_at: float) -> None:
+            nonlocal tx_started
+            tx_started = self._send_srs_frame(response_id, opus, tx_started)
+
+        report = pacer.send(encoded_frames, send_frame, self.stop_event)
+        self.diagnostics.record(
+            "tx_completed",
+            response_id=response_id,
+            frames=report.sent_frames,
+            final_padding_samples=padding,
+            median_jitter_ms=report.median_jitter_ms,
+            max_jitter_ms=report.max_jitter_ms,
+            cumulative_drift_ms=report.cumulative_drift_ms,
+        )
+        return SrsTxCompletion(
+            queue_to_first_tx_ms=0.0,
+            queue_to_complete_ms=0.0,
+            frame_count=report.sent_frames,
+            duration_ms=0.0,
+        )
+
+    def _send_streaming_response(
+        self,
+        prepared: _PreparedStreamingResponse,
+    ) -> SrsTxCompletion:
+        response_id = prepared.response_id
+        source = prepared.stream
+        resampler = make_tx_resampler()
+        pcm16 = bytearray()
+        provider_eos = False
+        started_at: float | None = None
+        frame_count = 0
+        padding_samples = 0
+        tx_started = False
+        underrun_count = 0
+        underrun_silence_ms = 0.0
+        consecutive_underrun_ms = 0.0
+
+        while not self.stop_event.is_set():
+            while len(pcm16) < OPUS_FRAME_BYTES and not provider_eos:
+                read = source.read(STREAM_PCM_READ_BYTES)
+                if read.data:
+                    pcm16.extend(resampler.process(read.data, end_of_input=False))
+                    consecutive_underrun_ms = 0.0
+                    continue
+                if read.state is StreamingPcmState.END_OF_STREAM:
+                    pcm16.extend(resampler.process(b"", end_of_input=True))
+                    provider_eos = True
+                    break
+                if read.state is StreamingPcmState.FAILED:
+                    raise RuntimeError(read.error or "Streaming TTS provider failed")
+                if read.state is StreamingPcmState.CANCELLED:
+                    raise RuntimeError("Streaming TTS radio response was cancelled")
+                if started_at is None:
+                    read = source.read(STREAM_PCM_READ_BYTES, timeout_s=0.1)
+                    if read.data:
+                        pcm16.extend(resampler.process(read.data, end_of_input=False))
+                        continue
+                    continue
+                deadline = started_at + frame_count * 0.040
+                remaining = max(0.0, deadline - self.clock())
+                if remaining:
+                    read = source.read(
+                        STREAM_PCM_READ_BYTES,
+                        timeout_s=remaining,
+                    )
+                    if read.data:
+                        pcm16.extend(resampler.process(read.data, end_of_input=False))
+                        consecutive_underrun_ms = 0.0
+                        continue
+                    if read.state is StreamingPcmState.END_OF_STREAM:
+                        pcm16.extend(resampler.process(b"", end_of_input=True))
+                        provider_eos = True
+                        break
+                    if read.state is StreamingPcmState.FAILED:
+                        raise RuntimeError(
+                            read.error or "Streaming TTS provider failed"
+                        )
+                    if read.state is StreamingPcmState.CANCELLED:
+                        raise RuntimeError(
+                            "Streaming TTS radio response was cancelled"
+                        )
+                if len(pcm16) < OPUS_FRAME_BYTES and not provider_eos:
+                    consecutive_underrun_ms += 40.0
+                    if consecutive_underrun_ms > STREAM_UNDERRUN_SILENCE_LIMIT_MS:
+                        raise RuntimeError(
+                            "Streaming TTS stalled beyond the bounded underrun policy"
+                        )
+                    pcm16.extend(bytes(OPUS_FRAME_BYTES))
+                    underrun_count += 1
+                    underrun_silence_ms += 40.0
+
+            if provider_eos and not pcm16:
+                break
+            if provider_eos and len(pcm16) < OPUS_FRAME_BYTES:
+                missing = OPUS_FRAME_BYTES - len(pcm16)
+                padding_samples = missing // 2
+                pcm16.extend(bytes(missing))
+            if len(pcm16) < OPUS_FRAME_BYTES:
+                continue
+            frame = bytes(pcm16[:OPUS_FRAME_BYTES])
+            del pcm16[:OPUS_FRAME_BYTES]
+            if started_at is None:
+                started_at = self.clock()
+            deadline = started_at + frame_count * 0.040
+            remaining = deadline - self.clock()
+            if remaining > 0 and self.stop_event.wait(remaining):
+                break
+            opus = self.encoder.encode(frame)
+            tx_started = self._send_srs_frame(response_id, opus, tx_started)
+            frame_count += 1
+
+        if not frame_count:
+            raise RuntimeError("Streaming TTS ended without a transmittable PCM frame")
+        snapshot = source.snapshot()
+        self.diagnostics.record(
+            "tx_completed",
+            response_id=response_id,
+            frames=frame_count,
+            final_padding_samples=padding_samples,
+            streaming=True,
+            underrun_count=underrun_count,
+            underrun_silence_inserted_ms=underrun_silence_ms,
+            max_buffered_bytes=snapshot.max_buffered_bytes,
+        )
+        return SrsTxCompletion(
+            queue_to_first_tx_ms=0.0,
+            queue_to_complete_ms=0.0,
+            frame_count=frame_count,
+            duration_ms=0.0,
+            underrun_count=underrun_count,
+            underrun_silence_ms=underrun_silence_ms,
+            max_buffered_bytes=snapshot.max_buffered_bytes,
+        )
+
+    def _send_srs_frame(
+        self,
+        response_id: str,
+        opus: bytes,
+        tx_started: bool,
+    ) -> bool:
+        packet_id = self.packet_id
+        packet = VoicePacket(
+            audio=opus,
+            frequencies=(Frequency(self.config.frequency_hz, self.config.modulation),),
+            unit_id=self.config.unit_id,
+            packet_id=packet_id,
+            retransmission_count=0,
+            original_client_guid=self.radio.client_guid,
+            current_sender_guid=self.radio.client_guid,
+        )
+        self.radio.send_voice(encode_voice_packet(packet))
+        if not tx_started:
+            with self._lock:
+                marker = self._probe_tx_started.get(response_id)
+                if marker is not None:
+                    self._probe_tx_started[response_id] = (
+                        marker[0],
+                        self.clock(),
+                    )
+                    marker[0].set()
+            self.diagnostics.record(
+                "srs_tx_started",
+                response_id=response_id,
+                packet_id=packet_id,
+            )
+        self.packet_id += 1
+        return True
+
+    def _complete_tx_marker(
+        self,
+        response_id: str,
+        completion: SrsTxCompletion,
+    ) -> None:
+        with self._lock:
+            marker = self._probe_tx_completed.get(response_id)
+            if marker is None:
+                return
+            completed_at = self.clock()
+            started_marker = self._probe_tx_started.get(response_id)
+            started_at = started_marker[1] if started_marker is not None else None
+            duration_ms = (
+                max(0.0, (completed_at - started_at) * 1000)
+                if started_at is not None
+                else 0.0
+            )
+            self._probe_tx_completed[response_id] = (marker[0], completed_at)
+            self._probe_tx_results[response_id] = SrsTxCompletion(
+                queue_to_first_tx_ms=0.0,
+                queue_to_complete_ms=0.0,
+                frame_count=completion.frame_count,
+                duration_ms=duration_ms,
+                underrun_count=completion.underrun_count,
+                underrun_silence_ms=completion.underrun_silence_ms,
+                max_buffered_bytes=completion.max_buffered_bytes,
+            )
+            marker[0].set()
+
+    def _fail_streaming_tx(self, response_id: str, exc: BaseException) -> None:
+        safe = sanitize_srs_error(exc)
+        with self._lock:
+            marker = self._probe_tx_completed.get(response_id)
+            if marker is None:
+                return
+            completed_at = self.clock()
+            self._probe_tx_completed[response_id] = (marker[0], completed_at)
+            self._probe_tx_failures[response_id] = safe
+            marker[0].set()
+        self.diagnostics.record(
+            "speechkit_stream_tts_failed",
+            response_id=response_id,
+            error_type=type(exc).__name__,
+        )
 
     def shutdown_srs_adapter(self, timeout_s: float) -> bool:
         return self._stop_transport_resources(timeout_s)
@@ -1453,6 +1791,7 @@ class YandexSrsLiveService:
                 frequency_hz=request.frequency_hz,
                 modulation=request.modulation,
                 radio_stt_provider=request.radio_stt_provider,
+                tts_output_mode=request.tts_output_mode,
             )
             self._thread = threading.Thread(
                 target=self._run,
@@ -1563,6 +1902,7 @@ class YandexSrsLiveService:
                         folder_id=request.folder_id,
                         endpoint=endpoint,
                         main_session_id=voice_session_id,
+                        tts_output_mode=request.tts_output_mode,
                     )
                 )
 

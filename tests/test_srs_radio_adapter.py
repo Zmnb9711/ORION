@@ -16,9 +16,13 @@ from orion.radio_contracts import (
     RadioFailureCode,
     RadioModulation,
     RadioReadiness,
+    RadioStreamingTransmissionRequest,
+    StreamingPcmAudio,
     RadioTransmissionRequest,
     RadioTransmissionState,
+    RadioTransportCapability,
 )
+from orion.radio_streaming import BoundedPcmStream, StreamingPcmState
 from orion.radio_router import RadioRouter
 from orion.srs_protocol import AM, FM
 from orion.srs_radio_adapter import (
@@ -45,6 +49,7 @@ class FakeSrsPort:
         self.failure = failure
         self.block = block
         self.calls: list[tuple[str, bytes, float]] = []
+        self.stream_calls: list[tuple[str, bytes, float]] = []
         self.shutdown_calls: list[float] = []
         self.entered = threading.Event()
         self.release = threading.Event()
@@ -82,6 +87,29 @@ class FakeSrsPort:
             udp_registered=False,
         )
         return True
+
+    def transmit_srs_pcm_stream(
+        self,
+        tx_correlation_id: str,
+        stream: BoundedPcmStream,
+        timeout_s: float,
+    ) -> SrsTxCompletion:
+        output = bytearray()
+        while True:
+            read = stream.read(8_820, timeout_s=0.1)
+            output.extend(read.data)
+            if read.state is StreamingPcmState.END_OF_STREAM and not read.data:
+                break
+            if read.state in {StreamingPcmState.FAILED, StreamingPcmState.CANCELLED}:
+                raise RuntimeError(read.error or read.state.value)
+        self.stream_calls.append((tx_correlation_id, bytes(output), timeout_s))
+        return SrsTxCompletion(
+            queue_to_first_tx_ms=3.0,
+            queue_to_complete_ms=123.0,
+            frame_count=3,
+            duration_ms=120.0,
+            max_buffered_bytes=stream.snapshot().max_buffered_bytes,
+        )
 
 
 def _runtime(**updates: object) -> SrsAdapterRuntime:
@@ -130,6 +158,25 @@ def _request(
     )
 
 
+def _stream_request(tx_id: str = "srs-streaming-tx") -> RadioStreamingTransmissionRequest:
+    source = BoundedPcmStream(
+        tx_id,
+        sample_rate_hz=44_100,
+        prebuffer_ms=40,
+        max_buffer_ms=200,
+        max_total_bytes=44_100,
+    )
+    source.feed(b"\x01\x00" * 1_764)
+    source.finish()
+    base = _request(tx_id)
+    return RadioStreamingTransmissionRequest(
+        context=base.context,
+        audio=StreamingPcmAudio(stream=source, sample_rate_hz=44_100),
+        transport_id=SRS_ADAPTER_ID,
+        timeout_s=2.0,
+    )
+
+
 @pytest.mark.parametrize(
     ("state", "expected"),
     [
@@ -164,9 +211,23 @@ def test_ready_without_both_registration_prerequisites_is_degraded() -> None:
 def test_adapter_identity_capabilities_and_truthful_cancellation() -> None:
     adapter = SrsRadioTransportAdapter(FakeSrsPort())
     assert adapter.transport_id == "srs"
-    assert adapter.capabilities() == REQUIRED_TX_CAPABILITIES
+    assert adapter.capabilities() == REQUIRED_TX_CAPABILITIES | {
+        RadioTransportCapability.TX_STREAMING_AUDIO
+    }
     assert adapter.start().readiness is RadioReadiness.READY
     assert adapter.cancel("active-srs-tx") is False
+
+
+def test_adapter_streams_one_ordered_source_as_one_transmission() -> None:
+    port = FakeSrsPort()
+    adapter = SrsRadioTransportAdapter(port)
+    adapter.start()
+    result = adapter.transmit_streaming(_stream_request())
+    assert result.outcome is RadioAdapterOutcome.COMPLETED
+    assert result.frame_count == 3
+    assert result.duration_ms == 120.0
+    assert len(port.stream_calls) == 1
+    assert port.stream_calls[0][1] == b"\x01\x00" * 1_764
 
 
 @pytest.mark.parametrize(

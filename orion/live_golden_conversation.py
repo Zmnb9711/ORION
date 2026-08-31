@@ -48,8 +48,14 @@ from orion.realtime_audio_transport import (
     RealtimeTranscriptSegment,
 )
 from orion.realtime_test_evidence import realtime_test_evidence
+from orion.radio_streaming import (
+    BoundedPcmStream,
+    Pcm16ChunkAligner,
+    StreamingPcmSnapshot,
+)
 from orion.srs_radio_adapter import SrsAdapterRuntime
 from orion.srs_radio_transport import SrsState
+from orion.srs_resampler import StreamingPcm16Resampler
 from orion.yandex_hybrid_probe import (
     SpeechKitAttemptContext,
     SpeechKitTtsClient,
@@ -61,6 +67,11 @@ from orion.yandex_qwen_planner import (
     YandexQwenPlannerConfig,
     YandexQwenPlannerProvider,
 )
+from orion.yandex_speechkit_streaming_tts import (
+    SPEECHKIT_STREAM_TTS_RATE_HZ,
+    SpeechKitStreamingTtsClient,
+    SpeechKitTtsOutputMode,
+)
 
 
 CALLSIGN = "Viper 2-1"
@@ -71,7 +82,15 @@ PRIMARY_CASE_COUNT = 6
 TX_TIMEOUT_S = 40.0
 PROVIDER_DEADLINE_S = 60.0
 PTT_TRANSCRIPT_SETTLE_S = 1.0
+# The isolated probe delivered 685 ms first, then paused 975 ms.  A 1000 ms
+# prebuffer spans that measured gap; a 2000 ms ceiling bounds the provider's
+# faster-than-realtime output while producer backpressure preserves every sample.
 _COMPLETED_PTT_HISTORY = 8
+STREAM_PREBUFFER_MS = 1_000
+STREAM_MAX_BUFFER_MS = 2_000
+STREAM_FEED_SLICE_MS = 100
+STREAM_RADIO_RATE_HZ = 44_100
+STREAM_MAX_PCM_BYTES = STREAM_RADIO_RATE_HZ * 2 * 30
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,6 +191,17 @@ class LiveGoldenEndpoint(Protocol):
         entity_id: str,
     ) -> dict[str, float | int]: ...
 
+    def transmit_streaming_audio(
+        self,
+        response_id: str,
+        stream: BoundedPcmStream,
+        timeout_s: float,
+        *,
+        source_domain: CommunicationDomain,
+        priority: CommunicationPriority,
+        entity_id: str,
+    ) -> dict[str, float | int]: ...
+
 
 @dataclass(slots=True)
 class LiveGoldenRuntimeContext:
@@ -179,6 +209,7 @@ class LiveGoldenRuntimeContext:
     folder_id: str
     endpoint: LiveGoldenEndpoint
     main_session_id: str
+    tts_output_mode: SpeechKitTtsOutputMode = SpeechKitTtsOutputMode.REST_BUFFERED
 
 
 @dataclass(slots=True)
@@ -481,8 +512,25 @@ class LiveGoldenCaseFailure(RuntimeError):
         self.stage = stage
 
 
+class _StreamingBeforeTxFailure(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class _StreamingTxOutcome:
+    tx: dict[str, float | int]
+    snapshot: StreamingPcmSnapshot
+    first_audio_latency_ms: float
+    provider_complete_latency_ms: float
+    provider_completed_at: float
+    radio_submitted_at: float
+    radio_completed_at: float
+    first_srs_tx_frame_latency_ms: float
+
+
 ProviderFactory = Callable[[YandexQwenPlannerConfig], PlannerProvider]
 SpeechKitFactory = Callable[[], SpeechKitTtsClient]
+StreamingSpeechKitFactory = Callable[[], SpeechKitStreamingTtsClient]
 
 
 class LiveGoldenCaseRunner:
@@ -491,10 +539,14 @@ class LiveGoldenCaseRunner:
         *,
         provider_factory: ProviderFactory = YandexQwenPlannerProvider,
         speechkit_factory: SpeechKitFactory = SpeechKitTtsClient,
+        streaming_speechkit_factory: StreamingSpeechKitFactory = (
+            SpeechKitStreamingTtsClient
+        ),
         monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         self._provider_factory = provider_factory
         self._speechkit_factory = speechkit_factory
+        self._streaming_speechkit_factory = streaming_speechkit_factory
         self._monotonic = monotonic
 
     def run(
@@ -591,55 +643,127 @@ class LiveGoldenCaseRunner:
         )
 
         response_id = f"live-golden-{run_id[:8]}-{case.case_id}"
-        pcm48 = asyncio.run(
-            self._synthesize(
-                context=context,
-                run_id=run_id,
-                case=case,
-                response_id=response_id,
-                final_text=outcome.final_text,
-            )
+        source_domain = (
+            CommunicationDomain.ATC if protected else CommunicationDomain.GENERAL
         )
-        speechkit_completed = self._monotonic()
-        pcm44 = normalize_speechkit_pcm(pcm48)
-        if not pcm44 or len(pcm44) % 2:
-            raise LiveGoldenCaseFailure("speechkit", "SpeechKit produced invalid PCM")
-        if cancelled():
-            raise LiveGoldenCaseFailure(
-                "cancelled_before_radio",
-                "Live Golden case was cancelled before radio admission",
+        streaming_requested = (
+            context.tts_output_mode is SpeechKitTtsOutputMode.STREAMING_V3
+        )
+        streaming_used = False
+        streaming_fallback = False
+        streaming_metrics: dict[str, float | int | bool] = {}
+        pcm44 = b""
+        pcm_bytes = 0
+        pcm_sha256 = ""
+
+        if streaming_requested:
+            try:
+                stream_outcome = asyncio.run(
+                    self._stream_to_radio(
+                        context=context,
+                        run_id=run_id,
+                        case=case,
+                        response_id=response_id,
+                        final_text=outcome.final_text,
+                        source_domain=source_domain,
+                        priority=outcome.plan.priority,
+                        cancelled=cancelled,
+                        capture_audio=capture_audio,
+                        semantic_ready_at=atc_completed,
+                    )
+                )
+            except _StreamingBeforeTxFailure as exc:
+                streaming_fallback = True
+                realtime_test_evidence.record(
+                    "speechkit_stream_tts_rest_fallback",
+                    probe_run_id=run_id,
+                    probe_case_id=case.case_id,
+                    response_id=response_id,
+                    reason=str(exc),
+                )
+            else:
+                streaming_used = True
+                tx = stream_outcome.tx
+                snapshot = stream_outcome.snapshot
+                pcm44 = snapshot.captured_pcm or b""
+                pcm_bytes = snapshot.total_pcm_bytes
+                pcm_sha256 = snapshot.pcm_sha256
+                speechkit_completed = stream_outcome.provider_completed_at
+                radio_submitted = stream_outcome.radio_submitted_at
+                radio_completed = stream_outcome.radio_completed_at
+                streaming_metrics = {
+                    "first_provider_audio_latency_ms": (
+                        stream_outcome.first_audio_latency_ms
+                    ),
+                    "provider_complete_latency_ms": (
+                        stream_outcome.provider_complete_latency_ms
+                    ),
+                    "first_srs_tx_frame_latency_ms": (
+                        stream_outcome.first_srs_tx_frame_latency_ms
+                    ),
+                    "prebuffer_target_ms": STREAM_PREBUFFER_MS,
+                    "max_buffered_bytes": snapshot.max_buffered_bytes,
+                    "underrun_count": int(tx.get("underrun_count", 0)),
+                    "underrun_silence_inserted_ms": float(
+                        tx.get("underrun_silence_inserted_ms", 0.0)
+                    ),
+                }
+
+        if not streaming_used:
+            pcm48 = asyncio.run(
+                self._synthesize(
+                    context=context,
+                    run_id=run_id,
+                    case=case,
+                    response_id=response_id,
+                    final_text=outcome.final_text,
+                )
             )
+            speechkit_completed = self._monotonic()
+            pcm44 = normalize_speechkit_pcm(pcm48)
+            if not pcm44 or len(pcm44) % 2:
+                raise LiveGoldenCaseFailure(
+                    "speechkit", "SpeechKit produced invalid PCM"
+                )
+            if cancelled():
+                raise LiveGoldenCaseFailure(
+                    "cancelled_before_radio",
+                    "Live Golden case was cancelled before radio admission",
+                )
+            pcm_bytes = len(pcm44)
+            pcm_sha256 = hashlib.sha256(pcm44).hexdigest()
+            radio_submitted = self._monotonic()
+            realtime_test_evidence.record(
+                "live_golden_radio_admission_requested",
+                probe_run_id=run_id,
+                probe_case_id=case.case_id,
+                response_id=response_id,
+                pcm_bytes=pcm_bytes,
+            )
+            tx = context.endpoint.transmit_finalized_audio(
+                response_id,
+                pcm44,
+                TX_TIMEOUT_S,
+                source_domain=source_domain,
+                priority=outcome.plan.priority,
+                entity_id="orion.live-golden",
+            )
+            radio_completed = self._monotonic()
 
         artifact = None
         if capture_audio:
+            if not pcm44:
+                raise LiveGoldenCaseFailure(
+                    "speechkit_stream_capture",
+                    "Streaming response audio capture was unavailable",
+                )
             artifact = realtime_test_evidence.record_live_golden_audio(
                 run_id=run_id,
                 case_id=case.case_id,
                 response_id=response_id,
                 pcm44=pcm44,
             )
-        radio_submitted = self._monotonic()
         radio_runtime = context.endpoint.srs_adapter_runtime()
-        realtime_test_evidence.record(
-            "live_golden_radio_admission_requested",
-            probe_run_id=run_id,
-            probe_case_id=case.case_id,
-            response_id=response_id,
-            pcm_bytes=len(pcm44),
-        )
-        tx = context.endpoint.transmit_finalized_audio(
-            response_id,
-            pcm44,
-            TX_TIMEOUT_S,
-            source_domain=(
-                CommunicationDomain.ATC
-                if protected
-                else CommunicationDomain.GENERAL
-            ),
-            priority=outcome.plan.priority,
-            entity_id="orion.live-golden",
-        )
-        radio_completed = self._monotonic()
         tx_event_fields = {
             "probe_run_id": run_id,
             "probe_case_id": case.case_id,
@@ -703,7 +827,7 @@ class LiveGoldenCaseRunner:
             == case.expects_free,
             "local_composition_only": True,
             "composed_text_not_returned_to_qwen": True,
-            "speechkit_synthesized": bool(pcm44),
+            "speechkit_synthesized": pcm_bytes > 0,
             "radio_router_completed": True,
             "srs_adapter_completed": int(tx.get("frame_count", 0)) > 0,
             "audibility_not_inferred_from_tx": True,
@@ -766,11 +890,19 @@ class LiveGoldenCaseRunner:
                 "provider_request_id": "NOT OBSERVABLE",
                 "voice": SPEECHKIT_VOICE,
                 "role": SPEECHKIT_ROLE,
+                "output_mode": (
+                    SpeechKitTtsOutputMode.STREAMING_V3.value
+                    if streaming_used
+                    else SpeechKitTtsOutputMode.REST_BUFFERED.value
+                ),
+                "streaming_requested": streaming_requested,
+                "streaming_rest_fallback": streaming_fallback,
                 "input_is_local_final_composition": True,
                 "pcm_input_rate_hz": 48_000,
                 "pcm_radio_rate_hz": 44_100,
-                "pcm_bytes": len(pcm44),
-                "pcm_sha256": hashlib.sha256(pcm44).hexdigest(),
+                "pcm_bytes": pcm_bytes,
+                "pcm_sha256": pcm_sha256,
+                **streaming_metrics,
             },
             "audio_artifact": artifact or "NOT CAPTURED",
             "radio": {
@@ -802,6 +934,11 @@ class LiveGoldenCaseRunner:
                 "speechkit_to_srs_tx_start": round(
                     float(tx.get("queue_to_first_tx_ms", 0.0)), 3
                 ),
+                "semantic_response_ready_to_first_srs_tx_frame": round(
+                    (radio_submitted - atc_completed) * 1000
+                    + float(tx.get("queue_to_first_tx_ms", 0.0)),
+                    3,
+                ),
                 "speech_end_to_srs_tx_start": (
                     _speech_to_tx_start_ms(
                         speech_stopped_at,
@@ -817,6 +954,294 @@ class LiveGoldenCaseRunner:
             "internal_result": "PASS" if all(validations.values()) else "FAIL",
             "acoustic_review": "NOT OBSERVABLE",
         }
+
+    async def _stream_to_radio(
+        self,
+        *,
+        context: LiveGoldenRuntimeContext,
+        run_id: str,
+        case: LiveGoldenCase,
+        response_id: str,
+        final_text: str,
+        source_domain: CommunicationDomain,
+        priority: CommunicationPriority,
+        cancelled: Callable[[], bool],
+        capture_audio: bool,
+        semantic_ready_at: float,
+    ) -> _StreamingTxOutcome:
+        started_at = self._monotonic()
+        source = BoundedPcmStream(
+            response_id,
+            sample_rate_hz=STREAM_RADIO_RATE_HZ,
+            prebuffer_ms=STREAM_PREBUFFER_MS,
+            max_buffer_ms=STREAM_MAX_BUFFER_MS,
+            max_total_bytes=STREAM_MAX_PCM_BYTES,
+            capture=capture_audio,
+        )
+        aligner = Pcm16ChunkAligner()
+        resampler = StreamingPcm16Resampler(
+            SPEECHKIT_STREAM_TTS_RATE_HZ,
+            STREAM_RADIO_RATE_HZ,
+        )
+        tx_task: asyncio.Task[dict[str, float | int]] | None = None
+        radio_submitted_at: float | None = None
+        first_audio_at: float | None = None
+        provider_completed_at: float | None = None
+        provider_chunks = 0
+        provider_pcm_bytes = 0
+        slice_bytes = STREAM_RADIO_RATE_HZ * 2 * STREAM_FEED_SLICE_MS // 1000
+
+        realtime_test_evidence.record(
+            "speechkit_stream_tts_started",
+            probe_run_id=run_id,
+            probe_case_id=case.case_id,
+            response_id=response_id,
+            prebuffer_target_ms=STREAM_PREBUFFER_MS,
+            max_buffered_ms=STREAM_MAX_BUFFER_MS,
+        )
+
+        def start_radio_if_ready(*, provider_eos: bool = False) -> None:
+            nonlocal tx_task, radio_submitted_at
+            if tx_task is not None:
+                return
+            snapshot = source.snapshot()
+            if snapshot.buffered_bytes < source.prebuffer_bytes and not provider_eos:
+                return
+            if snapshot.buffered_bytes <= 0:
+                raise _StreamingBeforeTxFailure(
+                    "SpeechKit streaming response ended without PCM"
+                )
+            actual_ms = (
+                snapshot.buffered_bytes / (STREAM_RADIO_RATE_HZ * 2) * 1000
+            )
+            realtime_test_evidence.record(
+                "speechkit_stream_tts_prebuffer_ready",
+                probe_run_id=run_id,
+                probe_case_id=case.case_id,
+                response_id=response_id,
+                prebuffer_target_ms=STREAM_PREBUFFER_MS,
+                prebuffer_actual_ms=actual_ms,
+                prebuffer_actual_bytes=snapshot.buffered_bytes,
+            )
+            radio_submitted_at = self._monotonic()
+            realtime_test_evidence.record(
+                "speechkit_stream_tts_srs_start_requested",
+                probe_run_id=run_id,
+                probe_case_id=case.case_id,
+                response_id=response_id,
+                elapsed_ms=(radio_submitted_at - started_at) * 1000,
+            )
+            realtime_test_evidence.record(
+                "live_golden_radio_admission_requested",
+                probe_run_id=run_id,
+                probe_case_id=case.case_id,
+                response_id=response_id,
+                pcm_bytes=snapshot.total_pcm_bytes,
+                streaming=True,
+            )
+            tx_task = asyncio.create_task(
+                asyncio.to_thread(
+                    context.endpoint.transmit_streaming_audio,
+                    response_id,
+                    source,
+                    TX_TIMEOUT_S,
+                    source_domain=source_domain,
+                    priority=priority,
+                    entity_id="orion.live-golden",
+                )
+            )
+
+        async def feed_radio_pcm(pcm44: bytes) -> None:
+            for offset in range(0, len(pcm44), slice_bytes):
+                if cancelled():
+                    source.cancel()
+                    raise LiveGoldenCaseFailure(
+                        "cancelled_streaming_tts",
+                        "Live Golden streaming response was cancelled",
+                    )
+                if tx_task is not None and tx_task.done():
+                    await tx_task
+                piece = pcm44[offset : offset + slice_bytes]
+                if piece:
+                    await asyncio.to_thread(source.feed, piece, timeout_s=TX_TIMEOUT_S)
+                    start_radio_if_ready()
+
+        client = self._streaming_speechkit_factory()
+        async for event in client.stream(
+            final_text,
+            context.api_key,
+            response_id=response_id,
+            cancelled=cancelled,
+        ):
+            if event.response_id != response_id:
+                source.fail("SpeechKit streaming response correlation mismatch")
+                raise LiveGoldenCaseFailure(
+                    "speechkit_stream_correlation",
+                    "SpeechKit streaming response correlation mismatch",
+                )
+            if event.cancelled:
+                source.cancel()
+                realtime_test_evidence.record(
+                    "speechkit_stream_tts_cancelled",
+                    probe_run_id=run_id,
+                    probe_case_id=case.case_id,
+                    response_id=response_id,
+                    chunk_count=provider_chunks,
+                    byte_count=provider_pcm_bytes,
+                )
+                if tx_task is not None:
+                    await asyncio.gather(tx_task, return_exceptions=True)
+                raise LiveGoldenCaseFailure(
+                    "cancelled_streaming_tts",
+                    "Live Golden streaming response was cancelled",
+                )
+            if event.error is not None:
+                source.fail(event.error)
+                realtime_test_evidence.record(
+                    "speechkit_stream_tts_failed",
+                    probe_run_id=run_id,
+                    probe_case_id=case.case_id,
+                    response_id=response_id,
+                    chunk_count=provider_chunks,
+                    byte_count=provider_pcm_bytes,
+                    reason=event.error,
+                    status=("after_tx_start" if tx_task is not None else "before_tx_start"),
+                )
+                if tx_task is None:
+                    raise _StreamingBeforeTxFailure(event.error)
+                await asyncio.gather(tx_task, return_exceptions=True)
+                raise LiveGoldenCaseFailure(
+                    "speechkit_stream_after_tx",
+                    "SpeechKit streaming failed after radio transmission started",
+                )
+            if event.end_of_stream:
+                aligner.finish()
+                tail = resampler.process(b"", end_of_input=True)
+                if tail:
+                    await feed_radio_pcm(tail)
+                source.finish()
+                provider_completed_at = self._monotonic()
+                realtime_test_evidence.record(
+                    "speechkit_stream_tts_provider_completed",
+                    probe_run_id=run_id,
+                    probe_case_id=case.case_id,
+                    response_id=response_id,
+                    chunk_count=provider_chunks,
+                    byte_count=provider_pcm_bytes,
+                    provider_complete_latency_ms=(
+                        provider_completed_at - started_at
+                    )
+                    * 1000,
+                )
+                start_radio_if_ready(provider_eos=True)
+                break
+            provider_chunks += 1
+            provider_pcm_bytes += len(event.pcm)
+            now = self._monotonic()
+            if first_audio_at is None:
+                first_audio_at = now
+                realtime_test_evidence.record(
+                    "speechkit_stream_tts_first_audio",
+                    probe_run_id=run_id,
+                    probe_case_id=case.case_id,
+                    response_id=response_id,
+                    first_provider_audio_latency_ms=(now - started_at) * 1000,
+                    byte_count=len(event.pcm),
+                )
+            realtime_test_evidence.record(
+                "speechkit_stream_tts_chunk_received",
+                probe_run_id=run_id,
+                probe_case_id=case.case_id,
+                response_id=response_id,
+                chunk_index=event.chunk_index,
+                chunk_count=provider_chunks,
+                byte_count=len(event.pcm),
+            )
+            aligned = aligner.push(event.pcm)
+            if aligned:
+                await feed_radio_pcm(
+                    resampler.process(aligned, end_of_input=False)
+                )
+
+        if provider_completed_at is None or first_audio_at is None:
+            source.fail("SpeechKit stream closed without complete audio")
+            if tx_task is None:
+                raise _StreamingBeforeTxFailure(
+                    "SpeechKit stream closed without complete audio"
+                )
+            await asyncio.gather(tx_task, return_exceptions=True)
+            raise LiveGoldenCaseFailure(
+                "speechkit_stream_incomplete",
+                "SpeechKit stream closed without complete audio",
+            )
+        if tx_task is None or radio_submitted_at is None:
+            raise _StreamingBeforeTxFailure(
+                "SpeechKit stream did not reach radio prebuffer"
+            )
+        active_tx_task = tx_task
+        assert active_tx_task is not None
+        while not active_tx_task.done():
+            if cancelled():
+                source.cancel()
+                await asyncio.gather(active_tx_task, return_exceptions=True)
+                realtime_test_evidence.record(
+                    "speechkit_stream_tts_cancelled",
+                    probe_run_id=run_id,
+                    probe_case_id=case.case_id,
+                    response_id=response_id,
+                    chunk_count=provider_chunks,
+                    byte_count=provider_pcm_bytes,
+                )
+                raise LiveGoldenCaseFailure(
+                    "cancelled_streaming_tts",
+                    "Live Golden streaming response was cancelled while draining",
+                )
+            await asyncio.sleep(0.05)
+        tx = await active_tx_task
+        radio_completed_at = self._monotonic()
+        snapshot = source.snapshot()
+        first_srs_latency_ms = (
+            (radio_submitted_at - semantic_ready_at) * 1000
+            + float(tx.get("queue_to_first_tx_ms", 0.0))
+        )
+        max_buffered_ms = (
+            snapshot.max_buffered_bytes / (STREAM_RADIO_RATE_HZ * 2) * 1000
+        )
+        realtime_test_evidence.record(
+            "speechkit_stream_tts_buffer_drained",
+            probe_run_id=run_id,
+            probe_case_id=case.case_id,
+            response_id=response_id,
+            byte_count=snapshot.total_pcm_bytes,
+            max_buffered_bytes=snapshot.max_buffered_bytes,
+            max_buffered_ms=max_buffered_ms,
+        )
+        realtime_test_evidence.record(
+            "speechkit_stream_tts_completed",
+            probe_run_id=run_id,
+            probe_case_id=case.case_id,
+            response_id=response_id,
+            chunk_count=provider_chunks,
+            byte_count=snapshot.total_pcm_bytes,
+            first_provider_audio_latency_ms=(first_audio_at - started_at) * 1000,
+            provider_complete_latency_ms=(provider_completed_at - started_at) * 1000,
+            first_srs_tx_frame_latency_ms=first_srs_latency_ms,
+            total_tx_duration_ms=float(tx.get("duration_ms", 0.0)),
+            underrun_count=int(tx.get("underrun_count", 0)),
+            underrun_silence_inserted_ms=float(
+                tx.get("underrun_silence_inserted_ms", 0.0)
+            ),
+        )
+        return _StreamingTxOutcome(
+            tx=tx,
+            snapshot=snapshot,
+            first_audio_latency_ms=(first_audio_at - started_at) * 1000,
+            provider_complete_latency_ms=(provider_completed_at - started_at) * 1000,
+            provider_completed_at=provider_completed_at,
+            radio_submitted_at=radio_submitted_at,
+            radio_completed_at=radio_completed_at,
+            first_srs_tx_frame_latency_ms=first_srs_latency_ms,
+        )
 
     async def _synthesize(
         self,

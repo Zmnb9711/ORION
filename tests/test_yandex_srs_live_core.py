@@ -8,6 +8,8 @@ import time
 import wave
 import zipfile
 
+import pytest
+
 from orion.srs_diagnostics import SrsTransportDiagnostics
 from orion.srs_protocol import (
     Frequency,
@@ -26,6 +28,7 @@ from orion.realtime_audio_transport import (
     RealtimeInputTransmissionStarted,
 )
 from orion.realtime_test_evidence import RealtimeTestEvidenceRecorder
+from orion.radio_streaming import BoundedPcmStream
 from orion.yandex_speechkit_stt import (
     SpeechKitProviderEvent,
     SpeechKitV3RadioSttAdapter,
@@ -269,6 +272,67 @@ def test_srs_rx_decode_resample_historical_tail_boundary_and_completed_tx(
     assert len(tx_started) == 1
     assert tx_started[0]["response_id"] == "r1"
     assert tx_started[0]["packet_id"] == 1
+    endpoint.stop()
+
+
+def test_streaming_srs_tx_opens_once_and_completes_only_after_source_drain(
+    tmp_path,
+) -> None:  # noqa: ANN001
+    clock = Clock()
+    endpoint, radio, _status = make_endpoint(tmp_path, clock)
+    endpoint.connect_radio()
+    endpoint.start()
+    source = BoundedPcmStream(
+        "streaming-srs-1",
+        sample_rate_hz=44_100,
+        prebuffer_ms=100,
+        max_buffer_ms=200,
+        max_total_bytes=44_100,
+        capture=True,
+    )
+    expected = b"\x01\x00" * 8_820
+    source.feed(expected)
+    source.finish()
+    completion = endpoint.transmit_srs_pcm_stream(
+        "streaming-srs-1",
+        source,
+        2.0,
+    )
+    assert completion.frame_count > 0
+    assert source.snapshot().buffered_bytes == 0
+    assert source.snapshot().captured_pcm == expected
+    assert radio.sent
+    starts = [
+        event
+        for event in endpoint.diagnostics.snapshot()
+        if event["event"] == "srs_tx_started"
+        and event.get("response_id") == "streaming-srs-1"
+    ]
+    assert len(starts) == 1
+    endpoint.stop()
+
+
+def test_streaming_srs_tx_inserts_at_most_120ms_silence_then_aborts_stall(
+    tmp_path,
+) -> None:  # noqa: ANN001
+    clock = Clock()
+    endpoint, radio, _status = make_endpoint(tmp_path, clock)
+    endpoint.connect_radio()
+    endpoint.start()
+    source = BoundedPcmStream(
+        "streaming-stall-1",
+        sample_rate_hz=44_100,
+        prebuffer_ms=100,
+        max_buffer_ms=200,
+        max_total_bytes=44_100,
+    )
+    source.feed(b"\x01\x00" * 4_410)
+    with pytest.raises(RuntimeError, match="bounded underrun policy"):
+        endpoint.transmit_srs_pcm_stream("streaming-stall-1", source, 2.0)
+    assert source.snapshot().state.value == "failed"
+    # The fake resampler yields two source-backed frames. Exactly three more
+    # frames are allowed by the 120 ms continuity budget; the fourth gap aborts.
+    assert len(radio.sent) == 5
     endpoint.stop()
 
 

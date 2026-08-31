@@ -17,6 +17,7 @@ from orion.realtime_test_evidence import (
     realtime_test_evidence,
 )
 from orion.yandex_srs_live_core import RadioSttProvider, yandex_srs_live
+from orion.yandex_speechkit_streaming_tts import SpeechKitTtsOutputMode
 
 
 def test_explicit_test_session_exports_bounded_sanitized_evidence(tmp_path) -> None:  # noqa: ANN001
@@ -342,7 +343,10 @@ def test_core_evidence_captures_actual_speechkit_selector_and_resolved_build_sha
     monkeypatch.setattr(
         yandex_srs_live,
         "status",
-        lambda: SimpleNamespace(radio_stt_provider=RadioSttProvider.SPEECHKIT_V3),
+        lambda: SimpleNamespace(
+            radio_stt_provider=RadioSttProvider.SPEECHKIT_V3,
+            tts_output_mode=SpeechKitTtsOutputMode.STREAMING_V3,
+        ),
     )
     if realtime_test_evidence.status().active:
         realtime_test_evidence.stop_and_export()
@@ -359,6 +363,7 @@ def test_core_evidence_captures_actual_speechkit_selector_and_resolved_build_sha
     assert started.status_code == 200
     assert started.json()["build_sha"] == current_sha
     assert started.json()["radio_stt_provider"] == "speechkit_v3_external_eou"
+    assert started.json()["tts_output_mode"] == "speechkit_v3_streaming"
     assert started.json()["speechkit_stt_input_capture_enabled"] is True
 
     stopped = client.post("/v1/realtime/test-evidence/stop-export")
@@ -367,5 +372,6 @@ def test_core_evidence_captures_actual_speechkit_selector_and_resolved_build_sha
         manifest = archive.read("manifest.txt").decode("utf-8")
     assert f"orion_build_sha={current_sha}" in summary
     assert "radio_stt_provider=speechkit_v3_external_eou" in summary
+    assert "tts_output_mode=speechkit_v3_streaming" in summary
     assert "speechkit_stt_input_audio_opt_in=true" in manifest
     assert "speechkit_stt_input_audio_included=false" in manifest

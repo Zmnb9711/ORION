@@ -45,6 +45,7 @@ class CloudVoiceConfig:
     qwen_model: str = "qwen3.5-omni-flash-realtime"
     yandex_folder_id: str = ""
     radio_stt_provider: str = "yandex_realtime"
+    tts_output_mode: str = "speechkit_rest"
     srs_host: str = "127.0.0.1"
     srs_port: int = 5002
     srs_server_path: str = ""
@@ -333,10 +334,17 @@ class LauncherCloudVoiceSectionsMixin:
             "Yandex Realtime (legacy)": "yandex_realtime",
             "SpeechKit v3 External EOU": "speechkit_v3",
         }
+        tts_output_labels = {
+            "SpeechKit REST (buffered)": "speechkit_rest",
+            "SpeechKit v3 StreamSynthesis (experimental)": (
+                "speechkit_v3_streaming"
+            ),
+        }
         reverse_provider = {value: label for label, value in provider_labels.items()}
         reverse_transport = {value: label for label, value in transport_labels.items()}
         reverse_region = {value: label for label, value in region_labels.items()}
         reverse_radio_stt = {value: label for label, value in radio_stt_labels.items()}
+        reverse_tts_output = {value: label for label, value in tts_output_labels.items()}
 
         provider = StringVar(value=reverse_provider.get(config.cloud_provider, "Qwen Realtime"))
         transport = StringVar(value=reverse_transport.get(config.voice_transport, "Direct Audio"))
@@ -350,6 +358,12 @@ class LauncherCloudVoiceSectionsMixin:
             value=reverse_radio_stt.get(
                 config.radio_stt_provider,
                 "Yandex Realtime (legacy)",
+            )
+        )
+        tts_output_mode = StringVar(
+            value=reverse_tts_output.get(
+                config.tts_output_mode,
+                "SpeechKit REST (buffered)",
             )
         )
         srs_host = StringVar(value=config.srs_host)
@@ -463,6 +477,28 @@ class LauncherCloudVoiceSectionsMixin:
             wraplength=780,
             justify="left",
         ).pack(anchor="w", pady=(0, 12))
+        ttk.Label(
+            srs_fields,
+            text="SRS RADIO TEXT-TO-SPEECH OUTPUT",
+            style="CardTitle.TLabel",
+        ).pack(anchor="w")
+        ttk.Combobox(
+            srs_fields,
+            textvariable=tts_output_mode,
+            values=tuple(tts_output_labels),
+            state="readonly",
+            width=48,
+        ).pack(anchor="w", pady=(6, 4))
+        ttk.Label(
+            srs_fields,
+            text=(
+                "REST remains the proven default. StreamSynthesis is an experimental "
+                "bounded-prebuffer output path for latency field testing."
+            ),
+            style="CardText.TLabel",
+            wraplength=780,
+            justify="left",
+        ).pack(anchor="w", pady=(0, 12))
 
         ttk.Label(srs_fields, textvariable=srs_server_status, style="CardText.TLabel").pack(
             anchor="w"
@@ -564,6 +600,7 @@ class LauncherCloudVoiceSectionsMixin:
                 qwen_model=model.get().strip() or "qwen3.5-omni-flash-realtime",
                 yandex_folder_id=yandex_folder_id.get().strip(),
                 radio_stt_provider=radio_stt_labels[radio_stt_provider.get()],
+                tts_output_mode=tts_output_labels[tts_output_mode.get()],
                 srs_host=srs_host.get().strip() or "127.0.0.1",
                 srs_port=selected_srs_port,
                 srs_server_path=srs_server_path.get().strip(),
@@ -991,6 +1028,14 @@ class LauncherCloudVoiceSectionsMixin:
                     "eam_password": password,
                 }
                 payload["radio_stt_provider"] = config.radio_stt_provider
+                if config.tts_output_mode not in {
+                    "speechkit_rest",
+                    "speechkit_v3_streaming",
+                }:
+                    raise ValueError(
+                        f"Unsupported SRS TTS output mode: {config.tts_output_mode}"
+                    )
+                payload["tts_output_mode"] = config.tts_output_mode
             return payload
         return {
             "provider": "qwen",
