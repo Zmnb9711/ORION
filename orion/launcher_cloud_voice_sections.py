@@ -44,6 +44,7 @@ class CloudVoiceConfig:
     qwen_workspace_id: str = ""
     qwen_model: str = "qwen3.5-omni-flash-realtime"
     yandex_folder_id: str = ""
+    radio_stt_provider: str = "yandex_realtime"
     srs_host: str = "127.0.0.1"
     srs_port: int = 5002
     srs_server_path: str = ""
@@ -315,9 +316,14 @@ class LauncherCloudVoiceSectionsMixin:
         provider_labels = {"Qwen Realtime": "qwen_realtime", "Yandex Realtime": "yandex"}
         transport_labels = {"Direct Audio": "direct", "SRS Radio": "srs"}
         region_labels = {"Singapore": "singapore", "China (Beijing)": "beijing"}
+        radio_stt_labels = {
+            "Yandex Realtime (legacy)": "yandex_realtime",
+            "SpeechKit v3 External EOU": "speechkit_v3",
+        }
         reverse_provider = {value: label for label, value in provider_labels.items()}
         reverse_transport = {value: label for label, value in transport_labels.items()}
         reverse_region = {value: label for label, value in region_labels.items()}
+        reverse_radio_stt = {value: label for label, value in radio_stt_labels.items()}
 
         provider = StringVar(value=reverse_provider.get(config.cloud_provider, "Qwen Realtime"))
         transport = StringVar(value=reverse_transport.get(config.voice_transport, "Direct Audio"))
@@ -327,6 +333,12 @@ class LauncherCloudVoiceSectionsMixin:
         api_key = StringVar(value=self._current_qwen_api_key())
         yandex_api_key = StringVar(value=self._current_yandex_api_key())
         yandex_folder_id = StringVar(value=config.yandex_folder_id)
+        radio_stt_provider = StringVar(
+            value=reverse_radio_stt.get(
+                config.radio_stt_provider,
+                "Yandex Realtime (legacy)",
+            )
+        )
         srs_host = StringVar(value=config.srs_host)
         srs_port = StringVar(value=str(config.srs_port))
         srs_server_path = StringVar(value=config.srs_server_path)
@@ -416,6 +428,28 @@ class LauncherCloudVoiceSectionsMixin:
         ttk.Entry(srs_fields, textvariable=srs_eam_password, show="*", width=72).pack(
             anchor="w", fill=X, pady=(6, 12)
         )
+        ttk.Label(
+            srs_fields,
+            text="SRS RADIO SPEECH-TO-TEXT",
+            style="CardTitle.TLabel",
+        ).pack(anchor="w")
+        ttk.Combobox(
+            srs_fields,
+            textvariable=radio_stt_provider,
+            values=tuple(radio_stt_labels),
+            state="readonly",
+            width=42,
+        ).pack(anchor="w", pady=(6, 4))
+        ttk.Label(
+            srs_fields,
+            text=(
+                "SpeechKit v3 uses the physical SRS transmission end as External EOU. "
+                "Yandex Realtime remains available as the legacy/reference radio path."
+            ),
+            style="CardText.TLabel",
+            wraplength=780,
+            justify="left",
+        ).pack(anchor="w", pady=(0, 12))
 
         ttk.Label(srs_fields, textvariable=srs_server_status, style="CardText.TLabel").pack(
             anchor="w"
@@ -516,6 +550,7 @@ class LauncherCloudVoiceSectionsMixin:
                 qwen_workspace_id=workspace.get().strip(),
                 qwen_model=model.get().strip() or "qwen3.5-omni-flash-realtime",
                 yandex_folder_id=yandex_folder_id.get().strip(),
+                radio_stt_provider=radio_stt_labels[radio_stt_provider.get()],
                 srs_host=srs_host.get().strip() or "127.0.0.1",
                 srs_port=selected_srs_port,
                 srs_server_path=srs_server_path.get().strip(),
@@ -628,10 +663,10 @@ class LauncherCloudVoiceSectionsMixin:
         ttk.Label(
             box,
             text=(
-                "Real speech via official SRS Client → existing Yandex transcript → "
+                "Real speech via official SRS Client → selected Yandex radio STT → "
                 "Qwen FREE/OPERATIONAL → controlled Golden ATC → FAP_RUSSIAN_ATC → "
-                "SpeechKit → existing RadioRouter/SRS adapter. Start Yandex + SRS and "
-                "Test Session first. DCS is not required."
+                "SpeechKit → existing RadioRouter/SRS adapter. Start Yandex Voice + SRS "
+                "and Test Session first. DCS is not required."
             ),
             style="CardText.TLabel",
             wraplength=780,
@@ -918,6 +953,13 @@ class LauncherCloudVoiceSectionsMixin:
                 "folder_id": config.yandex_folder_id,
             }
             if transport == "srs":
+                if config.radio_stt_provider not in {
+                    "yandex_realtime",
+                    "speechkit_v3",
+                }:
+                    raise ValueError(
+                        f"Unsupported SRS radio STT provider: {config.radio_stt_provider}"
+                    )
                 password = srs_eam_password.strip()
                 if not password:
                     raise ValueError("SRS EAM password is required")
@@ -928,6 +970,7 @@ class LauncherCloudVoiceSectionsMixin:
                     "port": config.srs_port,
                     "eam_password": password,
                 }
+                payload["radio_stt_provider"] = config.radio_stt_provider
             return payload
         return {
             "provider": "qwen",

@@ -12,6 +12,7 @@ def test_cloud_voice_config_round_trip_contains_only_non_secret_settings(tmp_pat
         qwen_workspace_id="workspace-123",
         qwen_model="qwen3.5-omni-flash-realtime",
         yandex_folder_id="folder-123",
+        radio_stt_provider="speechkit_v3",
         srs_host="radio.local",
         srs_port=5003,
         srs_server_path=r"C:\SRS\Server\SRS-Server.exe",

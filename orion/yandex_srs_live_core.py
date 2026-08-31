@@ -70,6 +70,7 @@ RESPONSE_MAX_SECONDS = 30
 RESPONSE_MAX_BYTES = YANDEX_INPUT_RATE * 2 * RESPONSE_MAX_SECONDS
 MAX_RESPONSE_STATES = 4
 SHUTDOWN_TIMEOUT_SECONDS = 6.0
+SRS_DECODE_RATE_HZ = 16_000
 
 
 class YandexSrsState(StrEnum):
@@ -77,6 +78,11 @@ class YandexSrsState(StrEnum):
     STARTING = "starting"
     STREAMING = "streaming"
     ERROR = "error"
+
+
+class RadioSttProvider(StrEnum):
+    YANDEX_REALTIME = "yandex_realtime"
+    SPEECHKIT_V3 = "speechkit_v3"
 
 
 class YandexSrsStartRequest(BaseModel):
@@ -88,6 +94,7 @@ class YandexSrsStartRequest(BaseModel):
     frequency_hz: float = Field(default=251_000_000.0, gt=0)
     modulation: int = AM
     eam_password: SecretStr
+    radio_stt_provider: RadioSttProvider = RadioSttProvider.YANDEX_REALTIME
 
 
 class YandexSrsStatus(BaseModel):
@@ -99,6 +106,7 @@ class YandexSrsStatus(BaseModel):
     coalition: int | None = None
     frequency_hz: float = 251_000_000.0
     modulation: int = AM
+    radio_stt_provider: RadioSttProvider = RadioSttProvider.YANDEX_REALTIME
     radio_registered: bool = False
     udp_registered: bool = False
     input_chunks: int = 0
@@ -152,12 +160,23 @@ class SrsYandexPcmEndpoint:
         rx_resampler_factory: Callable[[], StreamingPcm16Resampler] = make_rx_resampler,
         tx_resampler_factory: Callable[[], StreamingPcm16Resampler] = make_tx_resampler,
         clock: Callable[[], float] = time.monotonic,
+        provider_input_rate_hz: int = YANDEX_INPUT_RATE,
     ) -> None:
+        if provider_input_rate_hz not in {SRS_DECODE_RATE_HZ, YANDEX_INPUT_RATE}:
+            raise ValueError("Unsupported SRS provider PCM rate")
         self.config = config
         self.stop_event = stop_event
         self.diagnostics = diagnostics
         self._status = status_callback
         self.clock = clock
+        self.pcm_format = RealtimePcmFormat(sample_rate=provider_input_rate_hz)
+        self._input_block_frames = provider_input_rate_hz // 50
+        self._input_block_bytes = self._input_block_frames * 2
+        self._trailing_silence_blocks = (
+            TRAILING_SILENCE_BLOCKS
+            if provider_input_rate_hz == YANDEX_INPUT_RATE
+            else 0
+        )
         self.decoder = decoder_factory()
         self.encoder = encoder_factory()
         self.rx_resampler = rx_resampler_factory()
@@ -289,8 +308,11 @@ class SrsYandexPcmEndpoint:
                 )
                 return
             self.decoded_samples += len(decoded) // 2
-            resampled = self.rx_resampler.process(decoded)
-            self.resampled_rx_samples += len(resampled) // 2
+            if self.pcm_format.sample_rate == SRS_DECODE_RATE_HZ:
+                provider_pcm = decoded
+            else:
+                provider_pcm = self.rx_resampler.process(decoded)
+                self.resampled_rx_samples += len(provider_pcm) // 2
             if self._active_rx_transmission_id is None:
                 self._active_rx_transmission_id = (
                     f"srs-ptt-{self.tracker.counters.transmissions_started:06d}"
@@ -305,10 +327,10 @@ class SrsYandexPcmEndpoint:
                     "rx_transmission_started",
                     physical_transmission_id=self._active_rx_transmission_id,
                 )
-            self.rx_accumulator.extend(resampled)
-            while len(self.rx_accumulator) >= YANDEX_BLOCK_BYTES:
-                block = bytes(self.rx_accumulator[:YANDEX_BLOCK_BYTES])
-                del self.rx_accumulator[:YANDEX_BLOCK_BYTES]
+            self.rx_accumulator.extend(provider_pcm)
+            while len(self.rx_accumulator) >= self._input_block_bytes:
+                block = bytes(self.rx_accumulator[: self._input_block_bytes])
+                del self.rx_accumulator[: self._input_block_bytes]
                 if not self._enqueue_input(block):
                     return
                 self._status(input_chunks_delta=1)
@@ -335,14 +357,14 @@ class SrsYandexPcmEndpoint:
                     continue
                 if self.rx_accumulator:
                     self.rx_accumulator.extend(
-                        bytes(YANDEX_BLOCK_BYTES - len(self.rx_accumulator))
+                        bytes(self._input_block_bytes - len(self.rx_accumulator))
                     )
                     if not self._enqueue_input(bytes(self.rx_accumulator)):
                         return
                     self.rx_accumulator.clear()
                     self._status(input_chunks_delta=1)
-                silence = bytes(YANDEX_BLOCK_BYTES)
-                for _ in range(TRAILING_SILENCE_BLOCKS):
+                silence = bytes(self._input_block_bytes)
+                for _ in range(self._trailing_silence_blocks):
                     if not self._enqueue_input(silence):
                         return
                     self._status(input_chunks_delta=1)
@@ -370,7 +392,9 @@ class SrsYandexPcmEndpoint:
                     boundary_marker_queued=True,
                     boundary_gap_ms=int(RX_END_GAP_SECONDS * 1000),
                     physical_transmission_id=transmission_id,
-                    trailing_silence_ms=TRAILING_SILENCE_MS,
+                    trailing_silence_ms=(
+                        TRAILING_SILENCE_MS if self._trailing_silence_blocks else 0
+                    ),
                 )
 
     def read_input(
@@ -896,6 +920,7 @@ class YandexSrsLiveService:
                 session_id=session_id,
                 frequency_hz=request.frequency_hz,
                 modulation=request.modulation,
+                radio_stt_provider=request.radio_stt_provider,
             )
             self._thread = threading.Thread(
                 target=self._run,
@@ -920,7 +945,8 @@ class YandexSrsLiveService:
         )
         yandex_diagnostics = YandexLiveDiagnostics(session_id, api_key)
         endpoint: SrsYandexPcmEndpoint | None = None
-        main_yandex_session_id: str | None = None
+        main_voice_session_id: str | None = None
+        hybrid_attached = False
         try:
             config = SrsRadioConfig(
                 host=request.host,
@@ -935,6 +961,11 @@ class YandexSrsLiveService:
                 stop_event,
                 srs_diagnostics,
                 self._set,
+                provider_input_rate_hz=(
+                    SRS_DECODE_RATE_HZ
+                    if request.radio_stt_provider is RadioSttProvider.SPEECHKIT_V3
+                    else YANDEX_INPUT_RATE
+                ),
             )
             endpoint.connect_radio()
 
@@ -942,11 +973,16 @@ class YandexSrsLiveService:
                 self._set(
                     state=YandexSrsState.STREAMING,
                     phase="listening",
-                    message="Yandex SRS voice is running",
+                    message=(
+                        "SpeechKit v3 SRS voice is running"
+                        if request.radio_stt_provider
+                        is RadioSttProvider.SPEECHKIT_V3
+                        else "Yandex SRS voice is running"
+                    ),
                 )
 
-            def session_ready(yandex_session_id: str) -> None:
-                nonlocal main_yandex_session_id
+            def session_ready(voice_session_id: str) -> None:
+                nonlocal main_voice_session_id, hybrid_attached
                 from orion.live_golden_conversation import (
                     LiveGoldenRuntimeContext,
                     live_golden_conversation,
@@ -959,55 +995,76 @@ class YandexSrsLiveService:
 
                 if endpoint is None:
                     raise RuntimeError(
-                        "SRS endpoint is unavailable during Yandex handshake"
+                        "SRS endpoint is unavailable during provider handshake"
                     )
-                main_yandex_session_id = yandex_session_id
-                yandex_hybrid_probe.attach(
-                    HybridRuntimeContext(
-                        api_key=api_key,
-                        folder_id=request.folder_id,
-                        endpoint=endpoint,
-                        main_session_id=yandex_session_id,
-                        context_version=realtime_test_evidence.current_context_version,
+                main_voice_session_id = voice_session_id
+                if request.radio_stt_provider is RadioSttProvider.YANDEX_REALTIME:
+                    yandex_hybrid_probe.attach(
+                        HybridRuntimeContext(
+                            api_key=api_key,
+                            folder_id=request.folder_id,
+                            endpoint=endpoint,
+                            main_session_id=voice_session_id,
+                            context_version=(
+                                realtime_test_evidence.current_context_version
+                            ),
+                        )
                     )
-                )
+                    hybrid_attached = True
                 live_golden_conversation.attach(
                     LiveGoldenRuntimeContext(
                         api_key=api_key,
                         folder_id=request.folder_id,
                         endpoint=endpoint,
-                        main_session_id=yandex_session_id,
+                        main_session_id=voice_session_id,
                     )
                 )
 
             from orion.live_golden_conversation import live_golden_conversation
 
-            asyncio.run(
-                YandexRealtimeSession(
-                    api_key,
-                    request.folder_id,
-                    endpoint,
-                    stop_event,
-                    yandex_diagnostics,
-                    on_streaming=streaming,
-                    on_session_ready=session_ready,
-                    on_user_transcript_segment=(
-                        live_golden_conversation.accept_transcript_segment
-                    ),
-                    on_input_transmission_started=(
-                        live_golden_conversation.input_transmission_started
-                    ),
-                    on_input_transmission_completed=(
-                        live_golden_conversation.input_transmission_completed
-                    ),
-                    on_provider_input_activity=(
-                        live_golden_conversation.provider_input_activity
-                    ),
-                    suppress_provider_responses=(
-                        live_golden_conversation.suppress_provider_responses
-                    ),
-                ).run()
-            )
+            if request.radio_stt_provider is RadioSttProvider.SPEECHKIT_V3:
+                from orion.yandex_speechkit_stt import SpeechKitV3RadioSttAdapter
+
+                asyncio.run(
+                    SpeechKitV3RadioSttAdapter(
+                        api_key,
+                        endpoint,
+                        stop_event,
+                        yandex_diagnostics,
+                        on_streaming=streaming,
+                        on_session_ready=session_ready,
+                        on_finalized_utterance=(
+                            live_golden_conversation.accept_native_finalized_utterance
+                        ),
+                    ).run()
+                )
+            else:
+                asyncio.run(
+                    YandexRealtimeSession(
+                        api_key,
+                        request.folder_id,
+                        endpoint,
+                        stop_event,
+                        yandex_diagnostics,
+                        on_streaming=streaming,
+                        on_session_ready=session_ready,
+                        on_user_transcript_segment=(
+                            live_golden_conversation.accept_transcript_segment
+                        ),
+                        on_input_transmission_started=(
+                            live_golden_conversation.input_transmission_started
+                        ),
+                        on_input_transmission_completed=(
+                            live_golden_conversation.input_transmission_completed
+                        ),
+                        on_provider_input_activity=(
+                            live_golden_conversation.provider_input_activity
+                        ),
+                        suppress_provider_responses=(
+                            live_golden_conversation.suppress_provider_responses
+                        ),
+                    ).run()
+                )
         except Exception as exc:
             safe = sanitize_yandex_error(
                 sanitize_srs_error(exc, api_key, eam_password),
@@ -1024,12 +1081,13 @@ class YandexSrsLiveService:
             )
         finally:
             stop_event.set()
-            if main_yandex_session_id is not None:
+            if main_voice_session_id is not None:
                 from orion.live_golden_conversation import live_golden_conversation
                 from orion.yandex_hybrid_probe import yandex_hybrid_probe
 
-                live_golden_conversation.detach(main_yandex_session_id)
-                yandex_hybrid_probe.detach(main_yandex_session_id)
+                live_golden_conversation.detach(main_voice_session_id)
+                if hybrid_attached:
+                    yandex_hybrid_probe.detach(main_voice_session_id)
             if endpoint is not None:
                 endpoint.stop()
             with self._lock:

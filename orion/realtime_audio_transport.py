@@ -45,6 +45,20 @@ class RealtimeTranscriptSegment:
     provider_audio_end_ms: int | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class FinalizedUserUtterance:
+    """One provider-native final correlated to one physical input transmission."""
+
+    transmission_id: str
+    transcript: str
+    provider_id: str
+    provider_session_id: str
+    provider_final_index: int
+    event_id: str
+    provider_item_id: str
+    finalized_at: float
+
+
 class RealtimePcmEndpoint(Protocol):
     transport_id: str
     pcm_format: RealtimePcmFormat

@@ -37,7 +37,9 @@ cloud-realtime = [
   "websocket-client>=1.8,<2.0",
 ]
 srs-radio = [
+  "grpcio>=1.83.1,<2.0",
   "numpy>=1.23,<3.0",
+  "protobuf>=7.35.1,<8.0",
   "samplerate==0.2.4",
 ]
 

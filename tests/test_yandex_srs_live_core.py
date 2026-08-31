@@ -89,7 +89,9 @@ class FakeRadio:
         self.state = SrsState.STOPPED
 
 
-def make_endpoint(tmp_path, clock: Clock):  # noqa: ANN001, ANN201
+def make_endpoint(
+    tmp_path, clock: Clock, *, provider_input_rate_hz: int = 44_100
+):  # noqa: ANN001, ANN201
     radio_holder: list[FakeRadio] = []
 
     def radio_factory(_config, callback, _events):  # noqa: ANN001, ANN202
@@ -113,6 +115,7 @@ def make_endpoint(tmp_path, clock: Clock):  # noqa: ANN001, ANN201
         rx_resampler_factory=lambda: FakeResampler(b"r" * YANDEX_BLOCK_BYTES),  # type: ignore[arg-type]
         tx_resampler_factory=lambda: FakeResampler(bytes(1280 * 2 + 200)),  # type: ignore[arg-type]
         clock=clock,
+        provider_input_rate_hz=provider_input_rate_hz,
     )
     return endpoint, radio_holder[0], status
 
@@ -172,6 +175,39 @@ def test_srs_rx_decode_resample_historical_tail_boundary_and_completed_tx(
     assert len(tx_started) == 1
     assert tx_started[0]["response_id"] == "r1"
     assert tx_started[0]["packet_id"] == 1
+    endpoint.stop()
+
+
+def test_speechkit_input_uses_original_16khz_pcm_without_realtime_resample_or_tail(
+    tmp_path,
+) -> None:  # noqa: ANN001
+    clock = Clock()
+    endpoint, _radio, _status = make_endpoint(
+        tmp_path,
+        clock,
+        provider_input_rate_hz=16_000,
+    )
+    endpoint.connect_radio()
+    endpoint.start()
+    endpoint._on_radio_datagram(human_packet())
+
+    assert endpoint.pcm_format == endpoint.pcm_format.__class__(sample_rate=16_000)
+    assert endpoint.read_input(0.1) == RealtimeInputTransmissionStarted(
+        "srs-ptt-000001"
+    )
+    assert endpoint.read_input(0.1) == bytes(640)
+    assert endpoint.read_input(0.1) == bytes(640)
+    assert endpoint.resampled_rx_samples == 0
+
+    clock.now = 10.7
+    completed = endpoint.read_input(1.0)
+    assert completed == RealtimeInputTransmissionCompleted("srs-ptt-000001")
+    assert endpoint.input_queue.empty()
+    events = endpoint.diagnostics.snapshot()
+    boundary = next(
+        event for event in events if event["event"] == "rx_transmission_completed"
+    )
+    assert boundary["trailing_silence_ms"] == 0
     endpoint.stop()
 
 

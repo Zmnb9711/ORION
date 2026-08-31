@@ -1,8 +1,8 @@
 """Bounded Live Golden Conversation Mode A orchestration.
 
-The active Yandex/SRS session remains the sole speech-input and radio owner.
-Yandex Realtime contributes only its finalized user transcript while its normal
-generated response is cancelled and suppressed.  Qwen supplies one strict
+The active provider/SRS session remains the sole speech-input and radio owner.
+Yandex Realtime may contribute coordinated transcript segments; a native radio
+STT provider may contribute one finalized physical utterance. Qwen supplies one strict
 FREE/OPERATIONAL decomposition; Core owns ATC, phraseology and composition.
 """
 
@@ -43,7 +43,10 @@ from orion.mixed_conversation import (
 from orion.pilot_phraseology import PilotPhraseologyResolver
 from orion.pilot_phraseology_catalog import build_pilot_phraseology_catalog
 from orion.planner import PlannerProvider
-from orion.realtime_audio_transport import RealtimeTranscriptSegment
+from orion.realtime_audio_transport import (
+    FinalizedUserUtterance,
+    RealtimeTranscriptSegment,
+)
 from orion.realtime_test_evidence import realtime_test_evidence
 from orion.srs_radio_adapter import SrsAdapterRuntime
 from orion.srs_radio_transport import SrsState
@@ -1039,6 +1042,37 @@ class LiveGoldenConversationService:
             last_segment.speech_stopped_at,
         )
 
+    def accept_native_finalized_utterance(
+        self, utterance: FinalizedUserUtterance
+    ) -> None:
+        """Bypass Realtime-only settle/merge for a provider-native PTT final."""
+
+        accepted = self.accept_transcript(
+            utterance.transcript,
+            utterance.transmission_id,
+            utterance.event_id,
+            utterance.provider_item_id,
+            utterance.finalized_at,
+        )
+        if accepted:
+            realtime_test_evidence.record(
+                "live_golden_utterance_finalized",
+                physical_transmission_id=utterance.transmission_id,
+                provider_item_id=utterance.provider_item_id,
+                segment_count=1,
+                stt_provider=utterance.provider_id,
+                final_index=utterance.provider_final_index,
+                native_finalization=True,
+            )
+            realtime_test_evidence.record(
+                "speechkit_stt_semantic_dispatch",
+                physical_transmission_id=utterance.transmission_id,
+                provider_item_id=utterance.provider_item_id,
+                stt_provider=utterance.provider_id,
+                final_index=utterance.provider_final_index,
+                semantic_dispatch_count=1,
+            )
+
     def accept_transcript(
         self,
         transcript: str,
@@ -1046,24 +1080,24 @@ class LiveGoldenConversationService:
         event_id: str,
         provider_item_id: str,
         speech_stopped_at: float | None,
-    ) -> None:
+    ) -> bool:
         text = transcript.strip()
         if not text:
-            return
+            return False
         with self._lock:
             if self._status.state is not LiveGoldenState.WAITING_INPUT:
-                return
+                return False
             if provider_item_id and provider_item_id in self._seen_provider_items:
-                return
+                return False
             if provider_item_id:
                 self._seen_provider_items.add(provider_item_id)
             index = self._status.case_number - 1
             if index < 0 or index >= len(LIVE_GOLDEN_CORPUS):
-                return
+                return False
             context = self._context
             run_id = self._status.run_id
             if context is None or run_id is None:
-                return
+                return False
             generation = self._generation
             case = LIVE_GOLDEN_CORPUS[index]
             capture_audio = self._status.capture_audio
@@ -1091,6 +1125,7 @@ class LiveGoldenConversationService:
             name="orion-live-golden-case",
             daemon=True,
         ).start()
+        return True
 
     def _process_case(
         self,

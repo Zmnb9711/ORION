@@ -28,6 +28,7 @@ class RealtimeLiveStartRequest(BaseModel):
     region: str = "singapore"
     model: str = "qwen3.5-omni-flash-realtime"
     voice: str = "Tina"
+    radio_stt_provider: str = "yandex_realtime"
     srs: SrsLiveStartRequest | None = None
 
 
@@ -193,6 +194,7 @@ class RealtimeLiveCoordinator:
             )
             if transport_id == "direct":
                 payload.pop("srs", None)
+                payload.pop("radio_stt_provider", None)
             result = provider.start_live(payload)
             with self._lock:
                 if generation == self._generation:

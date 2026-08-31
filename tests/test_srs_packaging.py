@@ -18,6 +18,9 @@ def test_source_offline_native_smoke_and_asset_provenance() -> None:
     assert result["ok"] is True
     assert result["opus_version"] == "libopus 1.6.1"
     assert result["decoded_bytes"] == 1280
+    assert result["speechkit_stt"]["sample_rate_hz"] == 16_000
+    assert result["speechkit_stt"]["external_eou"] is True
+    assert result["speechkit_stt"]["network_used"] is False
     assert result["network_used"] is False
     assert result["audio_devices_opened"] is False
     dll = ROOT / "orion/native/win_amd64/opus.dll"
@@ -47,6 +50,8 @@ def test_build_workflows_assign_srs_native_runtime_to_core_not_launcher() -> Non
         assert "--exclude-module samplerate" in launcher_line
         assert "--exclude-module numpy" in launcher_line
         assert "--exclude-module orion.srs_radio_adapter" in launcher_line
+        assert "--exclude-module orion.yandex_speechkit_stt" in launcher_line
+        assert "--exclude-module orion.yandex_speechkit_v3_proto" in launcher_line
         assert "--srs-control-smoke" in source
         assert "--integrated-product-smoke" in source
         assert "dist-product/Launcher/ORION-Launcher.exe" in source

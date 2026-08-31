@@ -24,7 +24,10 @@ from orion.planner_contracts import (
     PlannerUsage,
 )
 from orion.realtime_test_evidence import RealtimeTestEvidenceRecorder
-from orion.realtime_audio_transport import RealtimeTranscriptSegment
+from orion.realtime_audio_transport import (
+    FinalizedUserUtterance,
+    RealtimeTranscriptSegment,
+)
 from orion.srs_radio_adapter import SrsAdapterRuntime
 from orion.srs_radio_transport import SrsState
 from orion.tool_gateway_contracts import ToolArguments
@@ -450,6 +453,42 @@ def test_non_monotonic_provider_position_does_not_override_local_ptt_time() -> N
     _wait_for_emissions(emitted, 1)
 
     assert emitted[0][1] == "CURRENT"
+
+
+def test_speechkit_native_final_bypasses_realtime_ptt_settle_only_for_native_path(
+    monkeypatch,
+) -> None:  # noqa: ANN001
+    service = LiveGoldenConversationService(ptt_settle_seconds=60.0)
+    accepted: list[tuple[object, ...]] = []
+
+    def accept(*args: object) -> bool:
+        accepted.append(args)
+        return True
+
+    monkeypatch.setattr(service, "accept_transcript", accept)
+    service.accept_native_finalized_utterance(
+        FinalizedUserUtterance(
+            transmission_id="srs-ptt-1",
+            transcript="так он недоступен",
+            provider_id="speechkit_v3",
+            provider_session_id="provider-session",
+            provider_final_index=2,
+            event_id="final-2",
+            provider_item_id="item-2",
+            finalized_at=123.0,
+        )
+    )
+
+    assert accepted == [
+        (
+            "так он недоступен",
+            "srs-ptt-1",
+            "final-2",
+            "item-2",
+            123.0,
+        )
+    ]
+    assert service._ptt_coordinator._pending == {}
 
 
 def test_delayed_cumulative_extension_before_settle_replaces_early_hypothesis() -> None:

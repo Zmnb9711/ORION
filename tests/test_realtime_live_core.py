@@ -15,9 +15,11 @@ class _Provider:
         self.state = "stopped"
         self.starts = 0
         self.stops = 0
+        self.payloads: list[dict[str, Any]] = []
 
     def start_live(self, payload: dict[str, Any]) -> RealtimeLiveStatus:
         self.starts += 1
+        self.payloads.append(payload)
         self.state = "streaming"
         return self.live_status()
 
@@ -96,10 +98,12 @@ def test_provider_transport_matrix_and_legacy_direct_default() -> None:
         transport="srs",
         api_key="memory-only",
         folder_id="folder",
+        radio_stt_provider="speechkit_v3",
         srs={"eam_password": "eam-memory-only"},
     )
     coordinator.start(srs)
     assert yandex_srs.starts == 1
+    assert yandex_srs.payloads[0]["radio_stt_provider"] == "speechkit_v3"
     assert coordinator.status().transport == "srs"
     coordinator.stop()
 
