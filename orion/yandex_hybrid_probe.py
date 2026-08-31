@@ -15,6 +15,7 @@ import re
 import threading
 import time
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Awaitable, Callable, Protocol
 from urllib.parse import urlencode
@@ -265,6 +266,126 @@ class SpeechKitAttemptContext:
 
 SpeechKitAttemptObserver = Callable[[str, dict[str, object]], None]
 
+_NOT_OBSERVABLE = "NOT_OBSERVABLE"
+_SPEECHKIT_TTS_PROVIDER = "speechkit_rest_v1"
+
+
+def _phase_timestamp() -> str:
+    return datetime.now(UTC).isoformat(timespec="milliseconds")
+
+
+def _elapsed_phase_ms(started: float | None, completed: float | None) -> float | str:
+    if started is None or completed is None:
+        return _NOT_OBSERVABLE
+    return round(max(0.0, completed - started) * 1000, 3)
+
+
+@dataclass(slots=True)
+class _SpeechKitSessionTelemetry:
+    client_created_at: str
+    session_created_at: str | None = None
+    session_create_ms: float | None = None
+
+
+@dataclass(slots=True)
+class _SpeechKitAttemptTelemetry:
+    emit: Callable[[str, dict[str, object]], None]
+    started_monotonic: float
+    attempt_number: int
+    points: dict[str, float] = field(default_factory=dict)
+    connection_classification: str = _NOT_OBSERVABLE
+    latest_phase: str = "attempt_started"
+    cumulative_body_bytes: int = 0
+
+    def mark(
+        self,
+        phase: str,
+        event: str,
+        timestamp_field: str,
+        *,
+        now: float | None = None,
+        **fields: object,
+    ) -> None:
+        if phase in self.points:
+            return
+        observed_at = time.monotonic() if now is None else now
+        self.points[phase] = observed_at
+        self.latest_phase = phase
+        self.emit(
+            event,
+            {
+                timestamp_field: _phase_timestamp(),
+                **fields,
+            },
+        )
+
+    def safe_mark(
+        self,
+        phase: str,
+        event: str,
+        timestamp_field: str,
+        **fields: object,
+    ) -> None:
+        # A TraceConfig observer must never be able to change synthesis behavior.
+        try:
+            if phase in self.points:
+                return
+            self.points[phase] = time.monotonic()
+            self.latest_phase = phase
+            self.emit(
+                event,
+                {
+                    timestamp_field: _phase_timestamp(),
+                    **fields,
+                },
+            )
+        except Exception:
+            return
+
+    def summary(self, *, completed: float, pcm_validation_ms: float | str) -> dict[str, object]:
+        points = self.points
+        return {
+            "connection_classification": self.connection_classification,
+            "latest_tts_phase": self.latest_phase,
+            "connection_acquire_ms": _elapsed_phase_ms(
+                points.get("connection_acquire_started"),
+                points.get("connection_acquired"),
+            ),
+            "dns_resolve_ms": _elapsed_phase_ms(
+                points.get("dns_started"),
+                points.get("dns_completed"),
+            ),
+            "connection_create_ms": _elapsed_phase_ms(
+                points.get("connection_create_started"),
+                points.get("connection_create_completed"),
+            ),
+            "request_to_headers_ms": _elapsed_phase_ms(
+                points.get("request_dispatched"),
+                points.get("response_headers"),
+            ),
+            "request_to_first_body_ms": _elapsed_phase_ms(
+                points.get("request_dispatched"),
+                points.get("first_body_byte"),
+            ),
+            "headers_to_first_body_ms": _elapsed_phase_ms(
+                points.get("response_headers"),
+                points.get("first_body_byte"),
+            ),
+            "first_body_to_complete_ms": _elapsed_phase_ms(
+                points.get("first_body_byte"),
+                points.get("body_completed"),
+            ),
+            "body_read_ms": _elapsed_phase_ms(
+                points.get("body_read_started"),
+                points.get("body_completed"),
+            ),
+            "pcm_validation_ms": pcm_validation_ms,
+            "total_attempt_ms": round(
+                max(0.0, completed - self.started_monotonic) * 1000,
+                3,
+            ),
+        }
+
 
 def _speechkit_failure(exc: Exception) -> tuple[str, int | None, bool]:
     """Return a safe category, optional HTTP status, and retry decision."""
@@ -313,6 +434,9 @@ class SpeechKitTtsClient:
     ) -> None:
         self._sleep = sleep
         self._session: Any = None
+        self._session_telemetry = _SpeechKitSessionTelemetry(
+            client_created_at=_phase_timestamp(),
+        )
 
     @staticmethod
     def _timeout() -> Any:
@@ -321,11 +445,9 @@ class SpeechKitTtsClient:
         return aiohttp.ClientTimeout(total=PROBE_TIMEOUT_S, connect=5.0)
 
     async def __aenter__(self) -> SpeechKitTtsClient:
-        import aiohttp
-
         if self._session is not None:
             raise RuntimeError("SpeechKit client session is already open")
-        self._session = aiohttp.ClientSession(timeout=self._timeout())
+        self._session = self._create_session()
         return self
 
     async def __aexit__(self, *_args: object) -> None:
@@ -342,8 +464,6 @@ class SpeechKitTtsClient:
         attempt_context: SpeechKitAttemptContext | None = None,
         observer: SpeechKitAttemptObserver | None = None,
     ) -> tuple[bytes, str]:
-        import aiohttp
-
         url, headers, body = speechkit_request(case, api_key=api_key)
         if self._session is not None:
             return await self._synthesize_with_session(
@@ -356,7 +476,7 @@ class SpeechKitTtsClient:
                 attempt_context,
                 observer,
             )
-        async with aiohttp.ClientSession(timeout=self._timeout()) as client:
+        async with self._create_session() as client:
             return await self._synthesize_with_session(
                 client,
                 case,
@@ -388,39 +508,153 @@ class SpeechKitTtsClient:
                 case,
                 attempt_number=attempt,
             )
+            telemetry = _SpeechKitAttemptTelemetry(
+                emit=lambda event, fields: self._emit_attempt(
+                    observer,
+                    event,
+                    attempt_context,
+                    case,
+                    attempt_number=attempt,
+                    tts_provider=_SPEECHKIT_TTS_PROVIDER,
+                    **fields,
+                ),
+                started_monotonic=started,
+                attempt_number=attempt,
+            )
+            if attempt == 1:
+                telemetry.emit(
+                    "speechkit_tts_client_created",
+                    {
+                        "client_created_at": self._session_telemetry.client_created_at,
+                    },
+                )
+                telemetry.emit(
+                    "speechkit_tts_session_created",
+                    {
+                        "session_created_at": self._session_telemetry.session_created_at
+                        or _NOT_OBSERVABLE,
+                        "session_create_ms": self._session_telemetry.session_create_ms
+                        if self._session_telemetry.session_create_ms is not None
+                        else _NOT_OBSERVABLE,
+                    },
+                )
+            pcm_validation_ms: float | str = _NOT_OBSERVABLE
             try:
-                async with client.post(url, headers=headers, data=body) as response:
+                async with client.post(
+                    url,
+                    headers=headers,
+                    data=body,
+                    trace_request_ctx={"speechkit_tts_attempt": telemetry},
+                ) as response:
+                    telemetry.points["body_read_started"] = time.monotonic()
+                    telemetry.latest_phase = "body_read_started"
                     payload = await response.read()
+                    body_completed = time.monotonic()
+                    telemetry.mark(
+                        "body_completed",
+                        "speechkit_tts_body_completed",
+                        "body_completed_at",
+                        now=body_completed,
+                        raw_response_bytes=len(payload),
+                        cumulative_body_bytes=max(
+                            telemetry.cumulative_body_bytes,
+                            len(payload),
+                        ),
+                    )
                     if response.status != 200:
                         raise SpeechKitProviderError.from_payload(
                             response.status,
                             payload,
                             secret=api_key,
                         )
+                validation_started = time.monotonic()
                 if not payload or len(payload) % 2:
+                    validation_failed = time.monotonic()
+                    pcm_validation_ms = round(
+                        max(0.0, validation_failed - validation_started) * 1000,
+                        3,
+                    )
+                    telemetry.mark(
+                        "pcm_validation_failed",
+                        "speechkit_tts_pcm_validation_failed",
+                        "pcm_validation_failed_at",
+                        now=validation_failed,
+                        pcm_validation_ms=pcm_validation_ms,
+                        raw_response_bytes=len(payload),
+                    )
                     raise ValueError("SpeechKit returned invalid LPCM audio")
+                validation_completed = time.monotonic()
+                pcm_validation_ms = round(
+                    max(0.0, validation_completed - validation_started) * 1000,
+                    3,
+                )
+                telemetry.mark(
+                    "pcm_validated",
+                    "speechkit_tts_pcm_validated",
+                    "pcm_validated_at",
+                    now=validation_completed,
+                    pcm_validation_ms=pcm_validation_ms,
+                    raw_response_bytes=len(payload),
+                    validated_pcm_bytes=len(payload),
+                    sample_rate_hz=SPEECHKIT_RATE,
+                    channels=1,
+                    pcm_duration_ms=round(
+                        len(payload) / (SPEECHKIT_RATE * 2) * 1000,
+                        3,
+                    ),
+                )
             except asyncio.CancelledError:
+                completed = time.monotonic()
+                telemetry.emit(
+                    "speechkit_tts_attempt_completed",
+                    {
+                        "attempt_completed_at": _phase_timestamp(),
+                        "status": "cancelled",
+                        "retry_scheduled": False,
+                        "retry_exhausted": False,
+                        **telemetry.summary(
+                            completed=completed,
+                            pcm_validation_ms=pcm_validation_ms,
+                        ),
+                    },
+                )
                 self._emit_attempt(
                     observer,
                     "speechkit_attempt_cancelled",
                     attempt_context,
                     case,
                     attempt_number=attempt,
-                    elapsed_ms=(time.monotonic() - started) * 1000,
+                    elapsed_ms=(completed - started) * 1000,
                     retry_scheduled=False,
                     retry_exhausted=False,
                 )
                 raise
             except Exception as exc:
+                completed = time.monotonic()
                 category, http_status, retryable = _speechkit_failure(exc)
                 retry_scheduled = retryable and attempt < SPEECHKIT_MAX_ATTEMPTS
+                telemetry.emit(
+                    "speechkit_tts_attempt_completed",
+                    {
+                        "attempt_completed_at": _phase_timestamp(),
+                        "status": "failed",
+                        "failure_category": category,
+                        "http_status": http_status,
+                        "retry_scheduled": retry_scheduled,
+                        "retry_exhausted": retryable and not retry_scheduled,
+                        **telemetry.summary(
+                            completed=completed,
+                            pcm_validation_ms=pcm_validation_ms,
+                        ),
+                    },
+                )
                 self._emit_attempt(
                     observer,
                     "speechkit_attempt_failed",
                     attempt_context,
                     case,
                     attempt_number=attempt,
-                    elapsed_ms=(time.monotonic() - started) * 1000,
+                    elapsed_ms=(completed - started) * 1000,
                     failure_category=category,
                     http_status=http_status,
                     retry_scheduled=retry_scheduled,
@@ -440,19 +674,180 @@ class SpeechKitTtsClient:
                     )
                     raise
                 continue
+            completed = time.monotonic()
+            telemetry.emit(
+                "speechkit_tts_attempt_completed",
+                {
+                    "attempt_completed_at": _phase_timestamp(),
+                    "status": "succeeded",
+                    "retry_scheduled": False,
+                    "retry_exhausted": False,
+                    **telemetry.summary(
+                        completed=completed,
+                        pcm_validation_ms=pcm_validation_ms,
+                    ),
+                },
+            )
             self._emit_attempt(
                 observer,
                 "speechkit_attempt_succeeded",
                 attempt_context,
                 case,
                 attempt_number=attempt,
-                elapsed_ms=(time.monotonic() - started) * 1000,
+                elapsed_ms=(completed - started) * 1000,
                 pcm_bytes=len(payload),
                 retry_scheduled=False,
                 retry_exhausted=False,
             )
             return payload, case.finalized_text
         raise AssertionError("SpeechKit retry loop exhausted without a result")
+
+    def _create_session(self) -> Any:
+        import aiohttp
+
+        started = time.monotonic()
+        session = aiohttp.ClientSession(
+            timeout=self._timeout(),
+            trace_configs=[self._trace_config()],
+        )
+        completed = time.monotonic()
+        self._session_telemetry.session_created_at = _phase_timestamp()
+        self._session_telemetry.session_create_ms = round(
+            max(0.0, completed - started) * 1000,
+            3,
+        )
+        return session
+
+    def _trace_config(self) -> Any:
+        import aiohttp
+
+        trace = aiohttp.TraceConfig()
+        trace.on_request_start.append(self._trace_request_start)
+        trace.on_connection_queued_start.append(self._trace_connection_queued_start)
+        trace.on_connection_create_start.append(self._trace_connection_create_start)
+        trace.on_connection_create_end.append(self._trace_connection_create_end)
+        trace.on_connection_reuseconn.append(self._trace_connection_reuse)
+        trace.on_dns_resolvehost_start.append(self._trace_dns_start)
+        trace.on_dns_resolvehost_end.append(self._trace_dns_end)
+        trace.on_request_end.append(self._trace_request_end)
+        trace.on_response_chunk_received.append(self._trace_response_chunk)
+        return trace
+
+    @staticmethod
+    def _trace_attempt(trace_config_ctx: Any) -> _SpeechKitAttemptTelemetry | None:
+        request_ctx = getattr(trace_config_ctx, "trace_request_ctx", None)
+        if not isinstance(request_ctx, dict):
+            return None
+        attempt = request_ctx.get("speechkit_tts_attempt")
+        return attempt if isinstance(attempt, _SpeechKitAttemptTelemetry) else None
+
+    @classmethod
+    async def _trace_request_start(cls, _session: Any, trace_ctx: Any, _params: Any) -> None:
+        if attempt := cls._trace_attempt(trace_ctx):
+            attempt.safe_mark(
+                "request_dispatched",
+                "speechkit_tts_request_dispatched",
+                "request_dispatched_at",
+            )
+
+    @classmethod
+    async def _trace_connection_queued_start(
+        cls, _session: Any, trace_ctx: Any, _params: Any
+    ) -> None:
+        if attempt := cls._trace_attempt(trace_ctx):
+            attempt.safe_mark(
+                "connection_acquire_started",
+                "speechkit_tts_connection_acquire_started",
+                "connection_acquire_started_at",
+                acquisition_source="pool_queue",
+            )
+
+    @classmethod
+    async def _trace_connection_create_start(
+        cls, _session: Any, trace_ctx: Any, _params: Any
+    ) -> None:
+        if attempt := cls._trace_attempt(trace_ctx):
+            attempt.safe_mark(
+                "connection_acquire_started",
+                "speechkit_tts_connection_acquire_started",
+                "connection_acquire_started_at",
+                acquisition_source="connection_create",
+            )
+            attempt.points.setdefault("connection_create_started", time.monotonic())
+
+    @classmethod
+    async def _trace_connection_create_end(
+        cls, _session: Any, trace_ctx: Any, _params: Any
+    ) -> None:
+        if attempt := cls._trace_attempt(trace_ctx):
+            observed_at = time.monotonic()
+            attempt.points.setdefault("connection_create_completed", observed_at)
+            attempt.connection_classification = "NEW_CONNECTION"
+            attempt.safe_mark(
+                "connection_acquired",
+                "speechkit_tts_connection_acquired",
+                "connection_acquired_at",
+                connection_classification="NEW_CONNECTION",
+            )
+
+    @classmethod
+    async def _trace_connection_reuse(
+        cls, _session: Any, trace_ctx: Any, _params: Any
+    ) -> None:
+        if attempt := cls._trace_attempt(trace_ctx):
+            attempt.connection_classification = "REUSED_CONNECTION"
+            attempt.safe_mark(
+                "connection_acquired",
+                "speechkit_tts_connection_acquired",
+                "connection_acquired_at",
+                connection_classification="REUSED_CONNECTION",
+            )
+
+    @classmethod
+    async def _trace_dns_start(cls, _session: Any, trace_ctx: Any, _params: Any) -> None:
+        if attempt := cls._trace_attempt(trace_ctx):
+            attempt.safe_mark(
+                "dns_started",
+                "speechkit_tts_dns_started",
+                "dns_started_at",
+            )
+
+    @classmethod
+    async def _trace_dns_end(cls, _session: Any, trace_ctx: Any, _params: Any) -> None:
+        if attempt := cls._trace_attempt(trace_ctx):
+            attempt.safe_mark(
+                "dns_completed",
+                "speechkit_tts_dns_completed",
+                "dns_completed_at",
+            )
+
+    @classmethod
+    async def _trace_request_end(cls, _session: Any, trace_ctx: Any, _params: Any) -> None:
+        if attempt := cls._trace_attempt(trace_ctx):
+            # aiohttp supplies the response object here after response headers
+            # are available; the response body has not yet been read by us.
+            attempt.safe_mark(
+                "response_headers",
+                "speechkit_tts_response_headers_received",
+                "response_headers_at",
+            )
+
+    @classmethod
+    async def _trace_response_chunk(cls, _session: Any, trace_ctx: Any, params: Any) -> None:
+        if attempt := cls._trace_attempt(trace_ctx):
+            chunk = getattr(params, "chunk", b"")
+            if not isinstance(chunk, (bytes, bytearray)) or not chunk:
+                return
+            attempt.cumulative_body_bytes += len(chunk)
+            # aiohttp 3.14 emits this hook from ClientResponse.read() after
+            # content.read() has completed. It is not a wire-level first byte.
+            attempt.safe_mark(
+                "body_chunk_callback",
+                "speechkit_tts_body_chunk_callback",
+                "body_chunk_callback_at",
+                body_chunk_callback_bytes=len(chunk),
+                cumulative_body_bytes=attempt.cumulative_body_bytes,
+            )
 
     @staticmethod
     def _emit_attempt(

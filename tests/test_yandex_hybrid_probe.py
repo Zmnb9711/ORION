@@ -5,6 +5,7 @@ import hashlib
 import threading
 import time
 import zipfile
+from types import SimpleNamespace
 from urllib.parse import parse_qs
 
 import aiohttp
@@ -81,7 +82,15 @@ class FakeSpeechKitSession:
     async def close(self) -> None:
         pass
 
-    def post(self, url: str, *, headers: dict[str, str], data: bytes) -> FakeSpeechKitResponse:
+    def post(
+        self,
+        url: str,
+        *,
+        headers: dict[str, str],
+        data: bytes,
+        trace_request_ctx: object | None = None,
+    ) -> FakeSpeechKitResponse:
+        del trace_request_ctx
         self.request = (url, headers, data)
         return self.response
 
@@ -107,6 +116,117 @@ class SequencedSpeechKitSession:
         if isinstance(outcome, Exception):
             raise outcome
         return outcome
+
+
+class TraceAwareSpeechKitResponse:
+    def __init__(
+        self,
+        session: TraceAwareSpeechKitSession,
+        trace_request_ctx: object,
+        *,
+        payload: bytes,
+        connection: str,
+        fail_body_read: bool = False,
+        omit_first_body_callback: bool = False,
+    ) -> None:
+        self.status = 200
+        self._session = session
+        self._trace_ctx = session.trace.trace_config_ctx(
+            trace_request_ctx=trace_request_ctx,
+        )
+        self._payload = payload
+        self._connection = connection
+        self._fail_body_read = fail_body_read
+        self._omit_first_body_callback = omit_first_body_callback
+
+    async def _send(self, signal_name: str, **params: object) -> None:
+        signal = getattr(self._session.trace, signal_name)
+        for callback in signal:
+            await callback(self._session, self._trace_ctx, SimpleNamespace(**params))
+
+    async def __aenter__(self):  # noqa: ANN204
+        await self._send("on_request_start")
+        if self._connection == "connect_failure":
+            await self._send("on_connection_create_start")
+            raise aiohttp.ConnectionTimeoutError("connect")
+        if self._connection == "new":
+            await self._send("on_connection_create_start")
+            await self._send("on_dns_resolvehost_start")
+            await self._send("on_dns_resolvehost_end")
+            await self._send("on_connection_create_end")
+        elif self._connection == "reused":
+            await self._send("on_connection_reuseconn")
+        await self._send("on_request_end")
+        return self
+
+    async def __aexit__(self, *_args: object) -> None:
+        pass
+
+    async def read(self) -> bytes:
+        if self._fail_body_read:
+            raise aiohttp.ClientPayloadError("truncated")
+        if not self._omit_first_body_callback:
+            await self._send("on_response_chunk_received", chunk=self._payload)
+        return self._payload
+
+
+class TraceAwareSpeechKitSession:
+    def __init__(
+        self,
+        trace: aiohttp.TraceConfig,
+        *,
+        outcomes: list[str],
+        payload: bytes = bytes(960),
+        fail_body_read: bool = False,
+        omit_first_body_callback: bool = False,
+    ) -> None:
+        self.trace = trace
+        self.outcomes = outcomes
+        self.payload = payload
+        self.fail_body_read = fail_body_read
+        self.omit_first_body_callback = omit_first_body_callback
+
+    async def __aenter__(self):  # noqa: ANN204
+        return self
+
+    async def __aexit__(self, *_args: object) -> None:
+        pass
+
+    async def close(self) -> None:
+        pass
+
+    def post(self, *_args: object, **kwargs: object) -> TraceAwareSpeechKitResponse:
+        return TraceAwareSpeechKitResponse(
+            self,
+            kwargs["trace_request_ctx"],
+            payload=self.payload,
+            connection=self.outcomes.pop(0),
+            fail_body_read=self.fail_body_read,
+            omit_first_body_callback=self.omit_first_body_callback,
+        )
+
+
+def _trace_session_factory(
+    monkeypatch,
+    *,
+    outcomes: list[str],
+    payload: bytes = bytes(960),
+    fail_body_read: bool = False,
+    omit_first_body_callback: bool = False,
+) -> None:  # noqa: ANN001
+    def factory(**kwargs: object) -> TraceAwareSpeechKitSession:
+        trace = kwargs["trace_configs"]
+        assert isinstance(trace, list)
+        assert len(trace) == 1
+        return TraceAwareSpeechKitSession(
+            trace[0],
+            outcomes=outcomes,
+            payload=payload,
+            fail_body_read=fail_body_read,
+            omit_first_body_callback=omit_first_body_callback,
+        )
+
+    monkeypatch.setattr(aiohttp, "ClientSession", factory)
 
 
 def _attempt_context() -> SpeechKitAttemptContext:
@@ -185,12 +305,221 @@ def test_speechkit_success_returns_bounded_lpcm_and_uses_api_key_header(monkeypa
         _url, headers, body = session.request
         assert headers["Authorization"] == "Api-Key top-secret"
         assert b"top-secret" not in body
-        assert [event for event, _fields in events] == [
+        assert [event for event, _fields in events if event.startswith("speechkit_attempt_")] == [
             "speechkit_attempt_started",
             "speechkit_attempt_succeeded",
         ]
         assert events[-1][1]["attempt_number"] == 1
         assert events[-1][1]["pcm_bytes"] == len(pcm)
+
+    asyncio.run(scenario())
+
+
+def test_speechkit_success_emits_ordered_phase_telemetry(monkeypatch) -> None:  # noqa: ANN001
+    async def scenario() -> None:
+        pcm = bytes(range(256)) * 4
+        _trace_session_factory(monkeypatch, outcomes=["new"], payload=pcm)
+        events: list[tuple[str, dict[str, object]]] = []
+        outer_started = time.monotonic()
+        audio, _text = await SpeechKitTtsClient().synthesize(
+            hybrid_probe_cases()[0],
+            "top-secret",
+            attempt_context=_attempt_context(),
+            observer=lambda event, fields: events.append((event, fields)),
+        )
+        outer_ms = (time.monotonic() - outer_started) * 1000
+
+        assert audio == pcm
+        phase_events = [
+            event
+            for event, _fields in events
+            if event.startswith("speechkit_tts_")
+        ]
+        assert phase_events == [
+            "speechkit_tts_client_created",
+            "speechkit_tts_session_created",
+            "speechkit_tts_request_dispatched",
+            "speechkit_tts_connection_acquire_started",
+            "speechkit_tts_dns_started",
+            "speechkit_tts_dns_completed",
+            "speechkit_tts_connection_acquired",
+            "speechkit_tts_response_headers_received",
+            "speechkit_tts_body_chunk_callback",
+            "speechkit_tts_body_completed",
+            "speechkit_tts_pcm_validated",
+            "speechkit_tts_attempt_completed",
+        ]
+        completed = next(
+            fields
+            for event, fields in events
+            if event == "speechkit_tts_attempt_completed"
+        )
+        assert completed["connection_classification"] == "NEW_CONNECTION"
+        session_created = next(
+            fields for event, fields in events if event == "speechkit_tts_session_created"
+        )
+        assert isinstance(session_created["session_create_ms"], float)
+        assert isinstance(completed["request_to_headers_ms"], float)
+        assert completed["request_to_first_body_ms"] == "NOT_OBSERVABLE"
+        assert completed["headers_to_first_body_ms"] == "NOT_OBSERVABLE"
+        assert completed["first_body_to_complete_ms"] == "NOT_OBSERVABLE"
+        assert isinstance(completed["body_read_ms"], float)
+        assert isinstance(completed["pcm_validation_ms"], float)
+        assert 0 <= completed["total_attempt_ms"] <= outer_ms + 5
+        assert completed["latest_tts_phase"] == "pcm_validated"
+        validated = next(
+            fields for event, fields in events if event == "speechkit_tts_pcm_validated"
+        )
+        assert validated["raw_response_bytes"] == len(pcm)
+        assert validated["validated_pcm_bytes"] == len(pcm)
+        assert validated["sample_rate_hz"] == 48_000
+        assert validated["channels"] == 1
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    ("connection", "expected"),
+    [
+        ("new", "NEW_CONNECTION"),
+        ("reused", "REUSED_CONNECTION"),
+        ("none", "NOT_OBSERVABLE"),
+    ],
+)
+def test_speechkit_connection_classification_is_trace_derived(
+    monkeypatch,
+    connection: str,
+    expected: str,
+) -> None:  # noqa: ANN001
+    async def scenario() -> None:
+        _trace_session_factory(monkeypatch, outcomes=[connection])
+        events: list[tuple[str, dict[str, object]]] = []
+        await SpeechKitTtsClient().synthesize(
+            hybrid_probe_cases()[0],
+            "top-secret",
+            attempt_context=_attempt_context(),
+            observer=lambda event, fields: events.append((event, fields)),
+        )
+        completed = next(
+            fields
+            for event, fields in events
+            if event == "speechkit_tts_attempt_completed"
+        )
+        assert completed["connection_classification"] == expected
+        if connection == "reused":
+            assert completed["connection_acquire_ms"] == "NOT_OBSERVABLE"
+
+    asyncio.run(scenario())
+
+
+def test_speechkit_missing_body_chunk_trace_is_nonfatal_and_first_byte_is_not_invented(
+    monkeypatch,
+) -> None:  # noqa: ANN001
+    async def scenario() -> None:
+        pcm = bytes(960)
+        _trace_session_factory(
+            monkeypatch,
+            outcomes=["new"],
+            payload=pcm,
+            omit_first_body_callback=True,
+        )
+        events: list[tuple[str, dict[str, object]]] = []
+        audio, _text = await SpeechKitTtsClient().synthesize(
+            hybrid_probe_cases()[0],
+            "top-secret",
+            attempt_context=_attempt_context(),
+            observer=lambda event, fields: events.append((event, fields)),
+        )
+        assert audio == pcm
+        assert not any(event == "speechkit_tts_body_chunk_callback" for event, _ in events)
+        completed = next(
+            fields
+            for event, fields in events
+            if event == "speechkit_tts_attempt_completed"
+        )
+        assert completed["headers_to_first_body_ms"] == "NOT_OBSERVABLE"
+        assert completed["first_body_to_complete_ms"] == "NOT_OBSERVABLE"
+
+    asyncio.run(scenario())
+
+
+def test_speechkit_failed_connect_records_last_bounded_phase(monkeypatch) -> None:  # noqa: ANN001
+    async def scenario() -> None:
+        _trace_session_factory(
+            monkeypatch,
+            outcomes=["connect_failure", "connect_failure", "connect_failure"],
+        )
+        events: list[tuple[str, dict[str, object]]] = []
+        with pytest.raises(aiohttp.ConnectionTimeoutError):
+            await SpeechKitTtsClient(sleep=_no_sleep).synthesize(
+                hybrid_probe_cases()[0],
+                "top-secret",
+                attempt_context=_attempt_context(),
+                observer=lambda event, fields: events.append((event, fields)),
+            )
+        completions = [
+            fields
+            for event, fields in events
+            if event == "speechkit_tts_attempt_completed"
+        ]
+        assert [item["attempt_number"] for item in completions] == [1, 2, 3]
+        assert all(item["status"] == "failed" for item in completions)
+        assert all(item["failure_category"] == "connect_timeout" for item in completions)
+        assert all(item["latest_tts_phase"] == "connection_acquire_started" for item in completions)
+        assert all(item["connection_classification"] == "NOT_OBSERVABLE" for item in completions)
+
+    asyncio.run(scenario())
+
+
+def test_speechkit_failed_body_read_records_headers_without_body_completion(monkeypatch) -> None:  # noqa: ANN001
+    async def scenario() -> None:
+        _trace_session_factory(
+            monkeypatch,
+            outcomes=["new", "new", "new"],
+            fail_body_read=True,
+        )
+        events: list[tuple[str, dict[str, object]]] = []
+        with pytest.raises(aiohttp.ClientPayloadError):
+            await SpeechKitTtsClient(sleep=_no_sleep).synthesize(
+                hybrid_probe_cases()[0],
+                "top-secret",
+                attempt_context=_attempt_context(),
+                observer=lambda event, fields: events.append((event, fields)),
+            )
+        completions = [
+            fields
+            for event, fields in events
+            if event == "speechkit_tts_attempt_completed"
+        ]
+        assert len(completions) == 3
+        assert all(item["failure_category"] == "response_body_failure" for item in completions)
+        assert all(item["latest_tts_phase"] == "body_read_started" for item in completions)
+        assert not any(event == "speechkit_tts_body_completed" for event, _ in events)
+
+    asyncio.run(scenario())
+
+
+def test_speechkit_invalid_pcm_records_validation_failure_phase(monkeypatch) -> None:  # noqa: ANN001
+    async def scenario() -> None:
+        _trace_session_factory(monkeypatch, outcomes=["new"], payload=b"x")
+        events: list[tuple[str, dict[str, object]]] = []
+        with pytest.raises(ValueError, match="invalid LPCM"):
+            await SpeechKitTtsClient(sleep=_no_sleep).synthesize(
+                hybrid_probe_cases()[0],
+                "top-secret",
+                attempt_context=_attempt_context(),
+                observer=lambda event, fields: events.append((event, fields)),
+            )
+        assert any(event == "speechkit_tts_body_completed" for event, _ in events)
+        assert any(event == "speechkit_tts_pcm_validation_failed" for event, _ in events)
+        completed = next(
+            fields
+            for event, fields in events
+            if event == "speechkit_tts_attempt_completed"
+        )
+        assert completed["failure_category"] == "invalid_audio"
+        assert completed["latest_tts_phase"] == "pcm_validation_failed"
+        assert isinstance(completed["pcm_validation_ms"], float)
 
     asyncio.run(scenario())
 
@@ -233,14 +562,15 @@ def test_speechkit_connection_timeout_then_success_is_bounded_and_observable(mon
         )
         assert audio == bytes(960)
         assert session.requests == 2
-        assert [event for event, _fields in events] == [
+        assert [event for event, _fields in events if event.startswith("speechkit_attempt_")] == [
             "speechkit_attempt_started",
             "speechkit_attempt_failed",
             "speechkit_attempt_started",
             "speechkit_attempt_succeeded",
         ]
-        assert events[1][1]["failure_category"] == "connect_timeout"
-        assert events[1][1]["retry_scheduled"] is True
+        failure = next(fields for event, fields in events if event == "speechkit_attempt_failed")
+        assert failure["failure_category"] == "connect_timeout"
+        assert failure["retry_scheduled"] is True
         assert events[-1][1]["attempt_number"] == 2
 
     asyncio.run(scenario())
@@ -740,6 +1070,37 @@ def test_speechkit_attempt_observability_is_bounded_and_secret_free(tmp_path) ->
     assert '"failure_category": "connect_timeout"' in events
     assert '"retry_scheduled": true' in events
     assert "unsafe_detail" not in events
+    assert "top-secret" not in events
+    assert "Authorization" not in events
+
+
+def test_speechkit_phase_evidence_keeps_only_safe_bounded_scalars(tmp_path) -> None:  # noqa: ANN001
+    recorder = RealtimeTestEvidenceRecorder(tmp_path)
+    recorder.start(provider="yandex", transport="srs")
+    recorder.record(
+        "speechkit_tts_attempt_completed",
+        probe_run_id="run123",
+        probe_case_id="heading-137",
+        response_id="live-golden-run123-mixed-ru-1",
+        attempt_number=1,
+        tts_provider="speechkit_rest_v1",
+        connection_classification="NEW_CONNECTION",
+        latest_tts_phase="pcm_validated",
+        request_to_headers_ms=4200.25,
+        request_to_first_body_ms="NOT_OBSERVABLE",
+        body_read_ms=11.5,
+        pcm_validation_ms=0.05,
+        total_attempt_ms=4212.0,
+        unsafe_headers="Authorization: Api-Key top-secret",
+    )
+    output = recorder.stop_and_export()
+    with zipfile.ZipFile(output) as archive:
+        events = archive.read("events.jsonl").decode("utf-8")
+    assert '"tts_provider": "speechkit_rest_v1"' in events
+    assert '"connection_classification": "NEW_CONNECTION"' in events
+    assert '"request_to_first_body_ms": "NOT_OBSERVABLE"' in events
+    assert '"total_attempt_ms": 4212.0' in events
+    assert "unsafe_headers" not in events
     assert "top-secret" not in events
     assert "Authorization" not in events
 
