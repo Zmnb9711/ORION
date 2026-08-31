@@ -26,6 +26,8 @@ _FORBIDDEN = {
 }
 
 _ALLOWED_PCM_SCALARS = {
+    "candidate_pcm_bytes",
+    "candidate_pcm_limit_bytes",
     "decoded_pcm_bytes",
     "framed_pcm_bytes",
     "speechkit_pcm_bytes_before_eou",

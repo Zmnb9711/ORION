@@ -221,6 +221,7 @@ class _PhysicalTurn:
     last_input_write_timestamp: str | None = None
     last_input_write_monotonic_ns: int | None = None
     eou_sent: bool = False
+    terminal_final_seen: bool = False
     final_text: str | None = None
     final_index: int | None = None
     session_uuid: str = ""
@@ -357,7 +358,7 @@ class SpeechKitV3RadioSttAdapter:
     def _start_turn(self, marker: RealtimeInputTransmissionStarted) -> None:
         if self._state is not SpeechKitSttState.READY:
             raise SpeechKitSttProtocolError(
-                "New physical PTT arrived before the previous SpeechKit barrier"
+                "New local SpeechKit turn arrived while the provider barrier is pending"
             )
         if self._active is not None or self._pending is not None:
             raise SpeechKitSttProtocolError("SpeechKit physical-turn ownership is ambiguous")
@@ -516,44 +517,59 @@ class SpeechKitV3RadioSttAdapter:
         self._provider_session_uuid = session_uuid
 
     def _accept_final(self, event: SpeechKitProviderEvent) -> None:
-        if not event.transcript.strip():
-            self._diagnostics.record(
-                "speechkit_stt_empty_final_ignored",
-                stt_provider=self.provider_id,
-                final_index=event.final_index,
-                closing=not self._accepting_finals,
-            )
-            return
         turn = self._pending
         if not self._accepting_finals or self._stop.is_set():
+            event_name = (
+                "speechkit_stt_empty_final_ignored"
+                if not event.transcript.strip()
+                else "speechkit_stt_late_final_ignored"
+            )
             self._diagnostics.record(
-                "speechkit_stt_late_final_ignored",
+                event_name,
                 stt_provider=self.provider_id,
                 final_index=event.final_index,
+                closing=True,
             )
             return
         if self._state is not SpeechKitSttState.WAITING_FINAL or turn is None:
-            raise SpeechKitSttProtocolError("Meaningful SpeechKit FINAL has no pending PTT")
-        if turn.final_text is not None:
-            raise SpeechKitSttProtocolError("Multiple meaningful FINALs mapped to one PTT")
+            raise SpeechKitSttProtocolError("Terminal SpeechKit FINAL has no pending PTT")
+        if turn.terminal_final_seen:
+            raise SpeechKitSttProtocolError("Multiple terminal FINALs mapped to one PTT")
         if self._last_final_index is not None and event.final_index <= self._last_final_index:
             raise SpeechKitSttProtocolError("SpeechKit final_index did not advance")
+        if turn.final_index is not None and event.final_index != turn.final_index:
+            raise SpeechKitSttProtocolError("SpeechKit FINAL/EOU_UPDATE index mismatch")
+        turn.terminal_final_seen = True
         turn.final_text = event.transcript
         turn.final_index = event.final_index
         turn.session_uuid = event.session_uuid or self._provider_session_uuid
         turn.received_data_ms = event.received_data_ms
         turn.final_time_ms = event.final_time_ms
-        self._diagnostics.record(
-            "speechkit_stt_final",
-            stt_provider=self.provider_id,
-            physical_transmission_id=turn.transmission_id,
-            speechkit_session_uuid=turn.session_uuid,
-            final_index=event.final_index,
-            received_data_ms=event.received_data_ms,
-            final_time_ms=event.final_time_ms,
-            characters=len(event.transcript),
-            response_wall_time_ms=event.response_wall_time_ms,
-        )
+        if event.transcript.strip():
+            self._diagnostics.record(
+                "speechkit_stt_final",
+                stt_provider=self.provider_id,
+                physical_transmission_id=turn.transmission_id,
+                speechkit_session_uuid=turn.session_uuid,
+                final_index=event.final_index,
+                received_data_ms=event.received_data_ms,
+                final_time_ms=event.final_time_ms,
+                characters=len(event.transcript),
+                response_wall_time_ms=event.response_wall_time_ms,
+                terminal_final_observed=True,
+                final_text_empty=False,
+            )
+        else:
+            self._diagnostics.record(
+                "speechkit_stt_empty_final_observed",
+                stt_provider=self.provider_id,
+                physical_transmission_id=turn.transmission_id,
+                final_index=event.final_index,
+                received_data_ms=event.received_data_ms,
+                final_time_ms=event.final_time_ms,
+                terminal_final_observed=True,
+                final_text_empty=True,
+            )
         self._finalize_if_complete(turn)
 
     def _accept_eou_update(self, event: SpeechKitProviderEvent) -> None:
@@ -591,7 +607,7 @@ class SpeechKitV3RadioSttAdapter:
         self._finalize_if_complete(turn)
 
     def _finalize_if_complete(self, turn: _PhysicalTurn) -> None:
-        if turn.final_text is None or not turn.eou_update_seen:
+        if not turn.terminal_final_seen or not turn.eou_update_seen:
             return
         if turn.final_index is None:
             raise SpeechKitSttProtocolError("SpeechKit final barrier has no final_index")
@@ -601,12 +617,29 @@ class SpeechKitV3RadioSttAdapter:
             raise SpeechKitSttProtocolError("SpeechKit External-EOU cursor barrier mismatch")
         if self._pending is not turn:
             raise SpeechKitSttProtocolError("SpeechKit pending-turn identity changed")
+        final_text = turn.final_text or ""
+        final_text_empty = not final_text.strip()
+        self._pending = None
+        self._last_final_index = turn.final_index
+        self._state = SpeechKitSttState.READY
+        self._diagnostics.record(
+            "speechkit_stt_barrier_completed",
+            stt_provider=self.provider_id,
+            physical_transmission_id=turn.transmission_id,
+            speechkit_session_uuid=turn.session_uuid or self._local_session_id,
+            final_index=turn.final_index,
+            barrier_completed=True,
+            final_text_empty=final_text_empty,
+            utterance_emitted=not final_text_empty,
+        )
+        if final_text_empty:
+            return
         provider_session_id = turn.session_uuid or self._local_session_id
         event_id = f"speechkit-final-{provider_session_id}-{turn.final_index}"
         provider_item_id = f"speechkit-item-{provider_session_id}-{turn.final_index}"
         utterance = FinalizedUserUtterance(
             transmission_id=turn.transmission_id,
-            transcript=turn.final_text,
+            transcript=final_text,
             provider_id=self.provider_id,
             provider_session_id=provider_session_id,
             provider_final_index=turn.final_index,
@@ -614,12 +647,9 @@ class SpeechKitV3RadioSttAdapter:
             provider_item_id=provider_item_id,
             finalized_at=time.monotonic(),
         )
-        self._pending = None
-        self._last_final_index = turn.final_index
-        self._state = SpeechKitSttState.READY
         realtime_test_evidence.record_transcript(
             "user",
-            turn.final_text,
+            final_text,
             turn_id=turn.transmission_id,
             event_id=event_id,
             provider_item_id=provider_item_id,

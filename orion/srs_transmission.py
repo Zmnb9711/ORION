@@ -127,6 +127,15 @@ class TransmissionTracker:
         self.counters.transmissions_completed += 1
         return completed
 
+    def discard_active(self) -> str | None:
+        """Discard an unconfirmed packet candidate without inventing a TX end."""
+
+        discarded = self.active_origin_guid
+        self.active_origin_guid = None
+        self.active_started_at = None
+        self.active_packet_count = 0
+        return discarded
+
     def channel_clear(self, now: float) -> bool:
         self.expire(now)
         return (

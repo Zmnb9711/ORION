@@ -85,6 +85,24 @@ def provider_turn(index: int, text: str) -> list[SpeechKitProviderEvent]:
     ]
 
 
+def empty_provider_turn(
+    index: int,
+    *,
+    eou_update_first: bool = False,
+) -> list[SpeechKitProviderEvent]:
+    cursor = (index + 1) * 1_000
+    common = {
+        "session_uuid": "provider-session-1",
+        "final_index": index,
+        "received_data_ms": cursor,
+        "final_time_ms": cursor,
+        "eou_time_ms": cursor,
+    }
+    final = SpeechKitProviderEvent(kind="final", transcript="", **common)
+    eou_update = SpeechKitProviderEvent(kind="eou_update", **common)
+    return [eou_update, final] if eou_update_first else [final, eou_update]
+
+
 class FakePort:
     def __init__(
         self,
@@ -322,6 +340,99 @@ def test_three_sequential_ptts_share_one_rpc_and_remain_independent() -> None:
     assert port.eou_count == 3
 
 
+@pytest.mark.parametrize("eou_update_first", [False, True])
+def test_empty_terminal_final_completes_barrier_in_either_provider_order(
+    eou_update_first: bool,
+) -> None:
+    async def scenario() -> None:
+        endpoint, diagnostics, stop = FakeEndpoint(), FakeDiagnostics(), threading.Event()
+        port = FakePort(
+            [empty_provider_turn(0, eou_update_first=eou_update_first)]
+        )
+        utterances: list[FinalizedUserUtterance] = []
+        endpoint.add_turn("ptt-empty")
+        adapter = SpeechKitV3RadioSttAdapter(
+            "unit-secret",
+            endpoint,
+            stop,
+            diagnostics,
+            port_factory=lambda: port,
+            on_finalized_utterance=utterances.append,
+        )
+        task = asyncio.create_task(adapter.run())
+        deadline = asyncio.get_running_loop().time() + 1.0
+        while not any(
+            event == "speechkit_stt_barrier_completed"
+            for event, _fields in diagnostics.events
+        ):
+            assert asyncio.get_running_loop().time() < deadline
+            await asyncio.sleep(0.001)
+
+        assert adapter.state.value == "ready"
+        assert adapter._last_final_index == 0
+        assert utterances == []
+        barrier = next(
+            fields
+            for event, fields in diagnostics.events
+            if event == "speechkit_stt_barrier_completed"
+        )
+        assert barrier["barrier_completed"] is True
+        assert barrier["final_text_empty"] is True
+        assert barrier["utterance_emitted"] is False
+        stop.set()
+        await task
+
+    asyncio.run(scenario())
+
+
+def test_empty_terminal_turn_does_not_block_next_meaningful_ptt() -> None:
+    async def scenario() -> None:
+        endpoint, diagnostics, stop = FakeEndpoint(), FakeDiagnostics(), threading.Event()
+        port = FakePort(
+            [empty_provider_turn(0), provider_turn(1, "добрый день")]
+        )
+        utterances: list[FinalizedUserUtterance] = []
+        endpoint.add_turn("ptt-empty")
+        adapter = SpeechKitV3RadioSttAdapter(
+            "unit-secret",
+            endpoint,
+            stop,
+            diagnostics,
+            port_factory=lambda: port,
+            on_finalized_utterance=utterances.append,
+        )
+        task = asyncio.create_task(adapter.run())
+        deadline = asyncio.get_running_loop().time() + 1.0
+        while sum(
+            event == "speechkit_stt_barrier_completed"
+            for event, _fields in diagnostics.events
+        ) < 1:
+            assert asyncio.get_running_loop().time() < deadline
+            await asyncio.sleep(0.001)
+
+        endpoint.add_turn("ptt-real")
+        while not utterances:
+            assert asyncio.get_running_loop().time() < deadline
+            await asyncio.sleep(0.001)
+        stop.set()
+        await task
+
+        assert [(item.transmission_id, item.transcript) for item in utterances] == [
+            ("ptt-real", "добрый день")
+        ]
+        assert utterances[0].provider_final_index == 1
+        assert port.eou_count == 2
+        barriers = [
+            fields
+            for event, fields in diagnostics.events
+            if event == "speechkit_stt_barrier_completed"
+        ]
+        assert [item["final_text_empty"] for item in barriers] == [True, False]
+        assert [item["utterance_emitted"] for item in barriers] == [False, True]
+
+    asyncio.run(scenario())
+
+
 def test_internal_silence_and_partial_do_not_finalize_before_physical_completion() -> None:
     async def scenario() -> None:
         endpoint, diagnostics, stop = FakeEndpoint(), FakeDiagnostics(), threading.Event()
@@ -405,7 +516,7 @@ def test_next_ptt_before_previous_barrier_fails_closed_without_contamination() -
     endpoint.add_turn("ptt-2")
     utterances: list[FinalizedUserUtterance] = []
 
-    with pytest.raises(SpeechKitSttProtocolError, match="previous SpeechKit barrier"):
+    with pytest.raises(SpeechKitSttProtocolError, match="provider barrier is pending"):
         run_adapter(endpoint, port, stop, diagnostics, utterances.append)
 
     assert utterances == [] and port.eou_count == 1

@@ -206,6 +206,9 @@ class SrsYandexPcmEndpoint:
         self.pcm_format = RealtimePcmFormat(sample_rate=provider_input_rate_hz)
         self._input_block_frames = provider_input_rate_hz // 50
         self._input_block_bytes = self._input_block_frames * 2
+        self._candidate_pcm_limit_bytes = int(
+            provider_input_rate_hz * 2 * SRS_TX_CONFIRM_TIMEOUT_SECONDS
+        )
         self._trailing_silence_blocks = (
             TRAILING_SILENCE_BLOCKS
             if provider_input_rate_hz == YANDEX_INPUT_RATE
@@ -259,6 +262,7 @@ class SrsYandexPcmEndpoint:
         self._tx_state_confirmed_transmission_id: str | None = None
         self._tx_state_confirmed_sending_on: int | None = None
         self._tx_state_candidate_started_at: float | None = None
+        self._tx_state_candidate_promoted = False
         self._tx_state_started_timestamp: str | None = None
         self._last_authoritative_tx_end_at: float | None = None
         self._tx_state_listener = (
@@ -451,6 +455,105 @@ class SrsYandexPcmEndpoint:
             tx_state_confirmed=True,
             snapshot_timestamp=snapshot.received_timestamp,
         )
+        self._promote_packet_candidate(snapshot)
+
+    def _promote_packet_candidate(self, snapshot: SrsTxStateSnapshot) -> None:
+        transmission_id = self._active_rx_transmission_id
+        turn_evidence = self._rx_turn_evidence
+        if (
+            transmission_id is None
+            or turn_evidence is None
+            or self._tx_state_candidate_promoted
+        ):
+            return
+        if (
+            self._tx_state_confirmed_transmission_id != transmission_id
+            or snapshot.sending_on != self._expected_sending_on
+        ):
+            return
+        if not self._enqueue_input(
+            RealtimeInputTransmissionStarted(transmission_id=transmission_id)
+        ):
+            return
+        self._tx_state_candidate_promoted = True
+        candidate_started = self._tx_state_candidate_started_at
+        correlation_wait_ms = (
+            round(max(0.0, snapshot.received_at - candidate_started) * 1000, 3)
+            if candidate_started is not None
+            else None
+        )
+        self.diagnostics.record(
+            "srs_packet_candidate_promoted",
+            physical_transmission_id=transmission_id,
+            first_packet_id=turn_evidence.first_packet_id,
+            last_packet_id=turn_evidence.last_packet_id,
+            accepted_packet_count=turn_evidence.accepted_packet_count,
+            candidate_pcm_bytes=len(self.rx_accumulator),
+            correlation_wait_ms=correlation_wait_ms,
+            sending_on=snapshot.sending_on,
+            tx_state_confirmed=True,
+        )
+        self.diagnostics.record(
+            "rx_transmission_started",
+            physical_transmission_id=transmission_id,
+            boundary_source="srs_tx_state",
+        )
+        self._drain_rx_blocks()
+
+    def _drain_rx_blocks(self) -> bool:
+        while len(self.rx_accumulator) >= self._input_block_bytes:
+            block = bytes(self.rx_accumulator[: self._input_block_bytes])
+            del self.rx_accumulator[: self._input_block_bytes]
+            if not self._enqueue_input(block):
+                return False
+            if self._rx_turn_evidence is not None:
+                self._rx_turn_evidence.framed_pcm_bytes += len(block)
+            self._status(input_chunks_delta=1)
+        return True
+
+    def _discard_unconfirmed_candidate(self, *, reason: str) -> None:
+        transmission_id = self._active_rx_transmission_id
+        turn_evidence = self._rx_turn_evidence
+        if transmission_id is None or self._tx_state_candidate_promoted:
+            return
+        self.diagnostics.record(
+            "srs_packet_candidate_discarded",
+            physical_transmission_id=transmission_id,
+            reason=reason,
+            candidate_pcm_bytes=len(self.rx_accumulator),
+            candidate_pcm_limit_bytes=self._candidate_pcm_limit_bytes,
+            accepted_packet_count=(
+                turn_evidence.accepted_packet_count
+                if turn_evidence is not None
+                else 0
+            ),
+            first_packet_id=(
+                turn_evidence.first_packet_id if turn_evidence is not None else None
+            ),
+            last_packet_id=(
+                turn_evidence.last_packet_id if turn_evidence is not None else None
+            ),
+            is_sending=(
+                self._tx_state_latest.is_sending
+                if self._tx_state_latest is not None
+                else None
+            ),
+            sending_on=(
+                self._tx_state_latest.sending_on
+                if self._tx_state_latest is not None
+                else None
+            ),
+            eou_triggered_by_7082=False,
+        )
+        self.rx_accumulator.clear()
+        self.tracker.discard_active()
+        self._active_rx_transmission_id = None
+        self._rx_turn_evidence = None
+        self._tx_state_candidate_started_at = None
+        self._tx_state_candidate_promoted = False
+        self._tx_state_confirmed_transmission_id = None
+        self._tx_state_confirmed_sending_on = None
+        self._tx_state_started_timestamp = None
 
     def _on_radio_datagram(self, datagram: bytes) -> None:
         try:
@@ -525,37 +628,52 @@ class SrsYandexPcmEndpoint:
             if self._active_rx_transmission_id is None:
                 self._active_rx_transmission_id = turn_evidence.transmission_id
                 self._tx_state_candidate_started_at = now
-                if not self._enqueue_input(
-                    RealtimeInputTransmissionStarted(
-                        transmission_id=self._active_rx_transmission_id
+                self._tx_state_candidate_promoted = False
+                if self._authoritative_tx_state:
+                    latest = self._tx_state_latest
+                    self.diagnostics.record(
+                        "srs_packet_candidate_started",
+                        physical_transmission_id=self._active_rx_transmission_id,
+                        first_packet_id=turn_evidence.first_packet_id,
+                        confirmation_timeout_ms=(
+                            SRS_TX_CONFIRM_TIMEOUT_SECONDS * 1000
+                        ),
+                        candidate_pcm_limit_bytes=self._candidate_pcm_limit_bytes,
+                        is_sending=(latest.is_sending if latest is not None else None),
+                        sending_on=(latest.sending_on if latest is not None else None),
                     )
-                ):
-                    return
-                self.diagnostics.record(
-                    "rx_transmission_started",
-                    physical_transmission_id=self._active_rx_transmission_id,
-                    boundary_source=(
-                        "srs_tx_state"
-                        if self._authoritative_tx_state
-                        else "packet_quiescence"
-                    ),
-                )
-                latest = self._tx_state_latest
-                if (
-                    self._authoritative_tx_state
-                    and latest is not None
-                    and latest.is_sending
-                    and latest.sending_on == self._expected_sending_on
-                ):
-                    self._confirm_tx_state(latest)
+                else:
+                    if not self._enqueue_input(
+                        RealtimeInputTransmissionStarted(
+                            transmission_id=self._active_rx_transmission_id
+                        )
+                    ):
+                        return
+                    self._tx_state_candidate_promoted = True
+                    self.diagnostics.record(
+                        "rx_transmission_started",
+                        physical_transmission_id=self._active_rx_transmission_id,
+                        boundary_source="packet_quiescence",
+                    )
             self.rx_accumulator.extend(provider_pcm)
-            while len(self.rx_accumulator) >= self._input_block_bytes:
-                block = bytes(self.rx_accumulator[: self._input_block_bytes])
-                del self.rx_accumulator[: self._input_block_bytes]
-                if not self._enqueue_input(block):
-                    return
-                turn_evidence.framed_pcm_bytes += len(block)
-                self._status(input_chunks_delta=1)
+            if (
+                self._authoritative_tx_state
+                and not self._tx_state_candidate_promoted
+                and len(self.rx_accumulator) > self._candidate_pcm_limit_bytes
+            ):
+                self._discard_unconfirmed_candidate(reason="pcm_buffer_limit")
+                return
+            latest = self._tx_state_latest
+            if (
+                self._authoritative_tx_state
+                and not self._tx_state_candidate_promoted
+                and latest is not None
+                and latest.is_sending
+                and latest.sending_on == self._expected_sending_on
+            ):
+                self._confirm_tx_state(latest)
+            if self._tx_state_candidate_promoted and not self._drain_rx_blocks():
+                return
             counters = self.tracker.counters
             self._status(
                 udp_packets_received=self.radio.udp_packets_received,
@@ -671,6 +789,7 @@ class SrsYandexPcmEndpoint:
         self._rx_turn_evidence = None
         self._rx_end_injected_at = self.tracker.last_human_packet_at
         self._tx_state_candidate_started_at = None
+        self._tx_state_candidate_promoted = False
         self._tx_state_confirmed_transmission_id = None
         self._tx_state_confirmed_sending_on = None
         self._tx_state_started_timestamp = None
@@ -709,18 +828,8 @@ class SrsYandexPcmEndpoint:
                         and now - candidate_started
                         >= SRS_TX_CONFIRM_TIMEOUT_SECONDS
                     ):
-                        self.diagnostics.record(
-                            "srs_tx_state_stale",
-                            reason="active_turn_not_confirmed",
-                            active_orion_turn_id=active_id,
-                            confirmation_timeout_ms=(
-                                SRS_TX_CONFIRM_TIMEOUT_SECONDS * 1000
-                            ),
-                        )
-                        self._set_failure(
-                            RuntimeError(
-                                "SRS TX-state did not confirm the active radio turn"
-                            )
+                        self._discard_unconfirmed_candidate(
+                            reason="tx_state_not_confirmed"
                         )
                     continue
                 last_packet_at = self.tracker.last_human_packet_at
