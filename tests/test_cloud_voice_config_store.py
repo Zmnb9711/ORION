@@ -50,3 +50,15 @@ def test_legacy_backend_fields_are_ignored(tmp_path) -> None:  # noqa: ANN001
     assert config.qwen_region == "beijing"
     assert not hasattr(config, "voice_backend")
     assert not hasattr(config, "fallback_backend")
+
+
+def test_config_without_radio_selector_migrates_to_explicit_legacy_default(tmp_path) -> None:  # noqa: ANN001
+    store = CloudVoiceConfigStore(tmp_path)
+    store.path.write_text(
+        '{"cloud_provider":"yandex","voice_transport":"srs"}',
+        encoding="utf-8",
+    )
+
+    config = store.load()
+
+    assert config.radio_stt_provider == "yandex_realtime"

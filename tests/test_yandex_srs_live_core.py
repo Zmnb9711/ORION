@@ -19,9 +19,14 @@ from orion.realtime_audio_transport import (
 from orion.yandex_srs_live_core import (
     MAX_RESPONSE_STATES,
     RESPONSE_MAX_BYTES,
+    SRS_DECODE_RATE_HZ,
     TRAILING_SILENCE_BLOCKS,
+    YANDEX_INPUT_RATE,
     YANDEX_BLOCK_BYTES,
+    RadioSttProvider,
     SrsYandexPcmEndpoint,
+    YandexSrsLiveService,
+    YandexSrsStartRequest,
 )
 
 HUMAN = "HHHHHHHHHHHHHHHHHHHHHH"
@@ -209,6 +214,101 @@ def test_speechkit_input_uses_original_16khz_pcm_without_realtime_resample_or_ta
     )
     assert boundary["trailing_silence_ms"] == 0
     endpoint.stop()
+
+
+def test_service_selector_instantiates_speechkit_adapter_only(monkeypatch) -> None:  # noqa: ANN001
+    calls: list[tuple[str, int]] = []
+
+    class Endpoint:
+        def connect_radio(self) -> None:
+            calls.append(("connect", 0))
+
+        def stop(self) -> None:
+            calls.append(("stop", 0))
+
+    def endpoint_factory(*_args, provider_input_rate_hz: int, **_kwargs):  # noqa: ANN202
+        calls.append(("endpoint_rate", provider_input_rate_hz))
+        return Endpoint()
+
+    class Adapter:
+        def __init__(self, *_args, **_kwargs) -> None:  # noqa: ANN002, ANN003
+            calls.append(("speechkit", 0))
+
+        async def run(self) -> None:
+            return None
+
+    class ForbiddenRealtime:
+        def __init__(self, *_args, **_kwargs) -> None:  # noqa: ANN002, ANN003
+            raise AssertionError("Legacy Realtime must not be instantiated")
+
+    monkeypatch.setattr(
+        "orion.yandex_speechkit_stt.SpeechKitV3RadioSttAdapter",
+        Adapter,
+    )
+    monkeypatch.setattr(
+        "orion.yandex_srs_live_core.YandexRealtimeSession",
+        ForbiddenRealtime,
+    )
+    service = YandexSrsLiveService(endpoint_factory=endpoint_factory)
+    service._run(
+        YandexSrsStartRequest(
+            api_key="memory-only",
+            folder_id="folder",
+            eam_password="eam-memory-only",
+            radio_stt_provider=RadioSttProvider.SPEECHKIT_V3,
+        ),
+        "session-speechkit",
+        threading.Event(),
+    )
+
+    assert ("endpoint_rate", SRS_DECODE_RATE_HZ) in calls
+    assert ("speechkit", 0) in calls
+
+
+def test_service_selector_instantiates_legacy_realtime_only(monkeypatch) -> None:  # noqa: ANN001
+    calls: list[tuple[str, int]] = []
+
+    class Endpoint:
+        def connect_radio(self) -> None:
+            calls.append(("connect", 0))
+
+        def stop(self) -> None:
+            calls.append(("stop", 0))
+
+    def endpoint_factory(*_args, provider_input_rate_hz: int, **_kwargs):  # noqa: ANN202
+        calls.append(("endpoint_rate", provider_input_rate_hz))
+        return Endpoint()
+
+    class Session:
+        def __init__(self, *_args, **_kwargs) -> None:  # noqa: ANN002, ANN003
+            calls.append(("realtime", 0))
+
+        async def run(self) -> None:
+            return None
+
+    class ForbiddenSpeechKit:
+        def __init__(self, *_args, **_kwargs) -> None:  # noqa: ANN002, ANN003
+            raise AssertionError("SpeechKit must not be instantiated")
+
+    monkeypatch.setattr("orion.yandex_srs_live_core.YandexRealtimeSession", Session)
+    monkeypatch.setattr(
+        "orion.yandex_speechkit_stt.SpeechKitV3RadioSttAdapter",
+        ForbiddenSpeechKit,
+    )
+    service = YandexSrsLiveService(endpoint_factory=endpoint_factory)
+    service._run(
+        YandexSrsStartRequest(
+            api_key="memory-only",
+            folder_id="folder",
+            eam_password="eam-memory-only",
+            radio_stt_provider=RadioSttProvider.YANDEX_REALTIME,
+        ),
+        "session-realtime",
+        threading.Event(),
+    )
+
+    assert ("endpoint_rate", YANDEX_INPUT_RATE) in calls
+    assert ("realtime", 0) in calls
 
 
 def test_incomplete_cancelled_oversized_and_stop_never_transmit(

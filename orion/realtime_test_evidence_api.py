@@ -13,6 +13,11 @@ from orion.realtime_test_evidence import realtime_test_evidence
 
 router = APIRouter(prefix="/v1/realtime/test-evidence", tags=["Realtime Test Evidence"])
 
+_RADIO_STT_EVIDENCE_VALUES = {
+    "yandex_realtime": "yandex_realtime_legacy",
+    "speechkit_v3": "speechkit_v3_external_eou",
+}
+
 
 class RealtimeTestEvidenceStart(BaseModel):
     provider: str = Field(min_length=1, max_length=40)
@@ -23,10 +28,17 @@ class RealtimeTestEvidenceStart(BaseModel):
 def start_test_evidence(request: RealtimeTestEvidenceStart) -> dict[str, object]:
     try:
         identity = load_build_identity()
+        radio_stt_provider: str | None = None
+        if request.provider == "yandex" and request.transport == "srs":
+            from orion.yandex_srs_live_core import yandex_srs_live
+
+            selected = yandex_srs_live.status().radio_stt_provider.value
+            radio_stt_provider = _RADIO_STT_EVIDENCE_VALUES[selected]
         return asdict(
             realtime_test_evidence.start(
                 provider=request.provider,
                 transport=request.transport,
+                radio_stt_provider=radio_stt_provider,
                 build_sha=identity.sha,
                 build_branch=identity.branch,
                 build_version=identity.version,

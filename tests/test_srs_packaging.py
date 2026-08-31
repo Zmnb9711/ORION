@@ -55,6 +55,25 @@ def test_build_workflows_assign_srs_native_runtime_to_core_not_launcher() -> Non
         assert "--srs-control-smoke" in source
         assert "--integrated-product-smoke" in source
         assert "dist-product/Launcher/ORION-Launcher.exe" in source
+        assert "python -m orion.build_identity_packaging" in source
+        assert "dist/ORION-Core/build-identity.json" in source
+        assert "dist/ORION-Launcher/build-identity.json" in source
+
+
+def test_installer_layout_copies_adjacent_identity_markers_and_upgrade_overwrites_stale() -> None:
+    installer = (ROOT / "packaging/orion-alpha.iss").read_text(encoding="utf-8")
+    workflow = (ROOT / ".github/workflows/installer-smoke.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'Source: "{#ProductSourceDir}\\Core\\*"; DestDir: "{app}\\Core"' in installer
+    assert (
+        'Source: "{#ProductSourceDir}\\Launcher\\*"; DestDir: "{app}\\Launcher"'
+        in installer
+    )
+    assert "$launcherIdentity = Join-Path $launcherDir \"build-identity.json\"" in workflow
+    assert "$coreIdentity = Join-Path $coreDir \"build-identity.json\"" in workflow
+    assert "Repair install retained stale build identity" in workflow
 
 
 def test_orion_distribution_never_contains_external_srs_applications() -> None:

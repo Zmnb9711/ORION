@@ -69,6 +69,7 @@ _ALLOWED_FIELDS = {
     "stt_provider",
     "provider_media_generated",
     "provider_media_reached_transport",
+    "radio_stt_provider",
     "client_event_id",
     "client_item_event_id",
     "client_response_event_id",
@@ -129,6 +130,7 @@ class RealtimeTestEvidenceStatus:
     started_at: str | None = None
     provider: str | None = None
     transport: str | None = None
+    radio_stt_provider: str | None = None
     event_count: int = 0
     dropped_event_count: int = 0
     user_transcript_count: int = 0
@@ -158,6 +160,7 @@ class RealtimeTestEvidenceRecorder:
         self._started_at: datetime | None = None
         self._provider: str | None = None
         self._transport: str | None = None
+        self._radio_stt_provider: str | None = None
         self._build_sha: str | None = None
         self._build_branch: str | None = None
         self._build_version: str | None = None
@@ -178,12 +181,18 @@ class RealtimeTestEvidenceRecorder:
         *,
         provider: str,
         transport: str,
+        radio_stt_provider: str | None = None,
         build_sha: str | None = None,
         build_branch: str | None = None,
         build_version: str | None = None,
     ) -> RealtimeTestEvidenceStatus:
         provider_value = self._identifier(provider, "provider")
         transport_value = self._identifier(transport, "transport")
+        radio_stt_provider_value = (
+            self._identifier(radio_stt_provider, "radio STT provider")
+            if radio_stt_provider is not None
+            else None
+        )
         with self._lock:
             if self._active:
                 raise ValueError("A realtime test session is already active")
@@ -203,6 +212,7 @@ class RealtimeTestEvidenceRecorder:
             self._started_at = datetime.now(UTC)
             self._provider = provider_value
             self._transport = transport_value
+            self._radio_stt_provider = radio_stt_provider_value
             candidate_sha = (
                 build_sha or os.environ.get("ORION_BUILD_SHA") or "unknown"
             ).strip()
@@ -851,6 +861,7 @@ class RealtimeTestEvidenceRecorder:
             started_at = self._started_at
             provider = self._provider or "unknown"
             transport = self._transport or "unknown"
+            radio_stt_provider = self._radio_stt_provider or "not_applicable"
             build_sha = self._build_sha or "unknown"
             build_branch = self._build_branch or "unknown"
             build_version = self._build_version or "unknown"
@@ -922,6 +933,7 @@ class RealtimeTestEvidenceRecorder:
                 f"orion_build_version={build_version}\n"
                 f"provider={provider}\n"
                 f"transport={transport}\n"
+                f"radio_stt_provider={radio_stt_provider}\n"
                 f"event_count={len(events)}\n"
                 f"dropped_event_count={dropped}\n"
                 f"user_transcript_count={user_transcript_count}\n"
@@ -1001,6 +1013,9 @@ class RealtimeTestEvidenceRecorder:
             ),
             provider=self._provider if self._active else None,
             transport=self._transport if self._active else None,
+            radio_stt_provider=(
+                self._radio_stt_provider if self._active else None
+            ),
             event_count=len(self._events) if self._active else 0,
             dropped_event_count=self._dropped if self._active else 0,
             user_transcript_count=self._user_transcript_count if self._active else 0,

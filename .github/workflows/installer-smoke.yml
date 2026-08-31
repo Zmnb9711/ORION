@@ -47,6 +47,15 @@ jobs:
           python -m PyInstaller --noconfirm --clean --onedir --windowed --name ORION-Core --collect-submodules orion --collect-submodules uvicorn --collect-submodules websocket --collect-submodules aiohttp --collect-all samplerate --collect-all numpy --add-binary "orion/native/win_amd64/opus.dll;native/win_amd64" --add-data "orion/native/licenses;native/licenses" --add-data "dcs-export;dcs-export" --add-data "dcs-mission-pack;dcs-mission-pack" --add-data "dcs-mission-template;dcs-mission-template" --icon branding/orion.ico orion/core_main.py
           python -m PyInstaller --noconfirm --clean --onedir --windowed --name ORION-Launcher --collect-submodules orion --collect-submodules uvicorn --collect-submodules websocket --collect-submodules aiohttp --exclude-module grpc --exclude-module google.protobuf --exclude-module samplerate --exclude-module numpy --exclude-module orion.srs_opus --exclude-module orion.srs_resampler --exclude-module orion.srs_protocol --exclude-module orion.srs_transmission --exclude-module orion.srs_radio_transport --exclude-module orion.srs_radio_adapter --exclude-module orion.srs_diagnostics --exclude-module orion.yandex_speechkit_stt --exclude-module orion.yandex_speechkit_v3_proto --exclude-module orion.yandex_srs_live_core --add-data "dcs-export;dcs-export" --icon branding/orion.ico --add-data "branding/orion.ico;branding" orion/launcher_main.py
 
+      - name: Stamp exact frozen build identity
+        shell: pwsh
+        run: |
+          python -m orion.build_identity_packaging --core-dir dist/ORION-Core --launcher-dir dist/ORION-Launcher --sha "${{ github.sha }}" --branch "${{ github.ref_name }}"
+          foreach ($marker in @("dist/ORION-Core/build-identity.json","dist/ORION-Launcher/build-identity.json")) {
+            $identity = Get-Content $marker -Raw | ConvertFrom-Json
+            if ($identity.sha -ne "${{ github.sha }}") { throw "Frozen build identity mismatch: $marker" }
+          }
+
       - name: Run offline frozen Launcher SRS control smoke
         shell: pwsh
         run: |
@@ -122,6 +131,8 @@ jobs:
           $integrationDir = Join-Path $installDir "Integration"
           $launcher = Join-Path $launcherDir "ORION-Launcher.exe"
           $core = Join-Path $coreDir "ORION-Core.exe"
+          $launcherIdentity = Join-Path $launcherDir "build-identity.json"
+          $coreIdentity = Join-Path $coreDir "build-identity.json"
           $export = Join-Path $integrationDir "DCS\Export\Export.lua"
           $uninstaller = Join-Path $installDir "unins000.exe"
           $runtimeDir = Join-Path $env:LOCALAPPDATA "ORION\runtime"
@@ -132,8 +143,11 @@ jobs:
           }
 
           Invoke-Setup "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-"
-          foreach ($path in @($launcher,$core,$export,$uninstaller,$runtimeDir)) {
+          foreach ($path in @($launcher,$core,$launcherIdentity,$coreIdentity,$export,$uninstaller,$runtimeDir)) {
             if (-not (Test-Path $path)) { throw "Installed payload missing: $path" }
+          }
+          foreach ($marker in @($launcherIdentity,$coreIdentity)) {
+            if ((Get-Content $marker -Raw | ConvertFrom-Json).sha -ne "${{ github.sha }}") { throw "Installed build identity mismatch: $marker" }
           }
           $nativeResult = Join-Path $env:RUNNER_TEMP "orion-installed-core-srs-native.json"
           $nativeProcess = Start-Process $core -ArgumentList @("--srs-native-smoke",$nativeResult) -Wait -PassThru
@@ -150,10 +164,16 @@ jobs:
           Set-Content "$installDir\Voice\ORION-Voice.exe" "controlled legacy fixture"
           Set-Content "$runtimeDir\voice\state.json" "{}"
           Set-Content "$runtimeDir\stt\whisper.cpp\legacy.bin" "controlled legacy fixture"
+          $staleIdentity = @{sha="5eae997e76e208727141bf596eb73141be55e0b9";branch="dev/adr004-post-389";version="0.2.0-alpha"} | ConvertTo-Json
+          Set-Content $launcherIdentity $staleIdentity
+          Set-Content $coreIdentity $staleIdentity
 
           Invoke-Setup "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-"
-          foreach ($path in @($launcher,$core,$export,$uninstaller)) {
+          foreach ($path in @($launcher,$core,$launcherIdentity,$coreIdentity,$export,$uninstaller)) {
             if (-not (Test-Path $path)) { throw "Payload missing after repair install: $path" }
+          }
+          foreach ($marker in @($launcherIdentity,$coreIdentity)) {
+            if ((Get-Content $marker -Raw | ConvertFrom-Json).sha -ne "${{ github.sha }}") { throw "Repair install retained stale build identity: $marker" }
           }
 
           $coreProcess = Start-Process -FilePath $core -PassThru

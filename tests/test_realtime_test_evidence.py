@@ -3,20 +3,30 @@ from __future__ import annotations
 import json
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
+import orion.realtime_test_evidence_api as evidence_api
 from orion.app import app
+from orion.build_identity import BuildIdentity
 from orion.realtime_test_evidence import (
     RealtimeTestEvidenceRecorder,
     realtime_test_evidence,
 )
+from orion.yandex_srs_live_core import RadioSttProvider, yandex_srs_live
 
 
 def test_explicit_test_session_exports_bounded_sanitized_evidence(tmp_path) -> None:  # noqa: ANN001
     recorder = RealtimeTestEvidenceRecorder(tmp_path)
-    status = recorder.start(provider="yandex", transport="srs", build_sha="abcdef1")
+    status = recorder.start(
+        provider="yandex",
+        transport="srs",
+        radio_stt_provider="yandex_realtime_legacy",
+        build_sha="abcdef1",
+    )
     assert status.active and status.test_session_id
+    assert status.radio_stt_provider == "yandex_realtime_legacy"
     recorder.record(
         "response_first_audio",
         turn_id="turn_001",
@@ -43,6 +53,7 @@ def test_explicit_test_session_exports_bounded_sanitized_evidence(tmp_path) -> N
         ]
         event = json.loads(archive.read("events.jsonl"))
         manifest = archive.read("manifest.txt").decode("utf-8")
+        summary = archive.read("session-summary.txt").decode("utf-8")
         combined = b"".join(archive.read(name) for name in archive.namelist())
     assert event["turn_id"] == "turn_001"
     assert event["context_generation"] == 42
@@ -55,6 +66,7 @@ def test_explicit_test_session_exports_bounded_sanitized_evidence(tmp_path) -> N
     assert b"31.505" not in combined
     assert "user_transcript_observability=NOT OBSERVABLE" in manifest
     assert "assistant_transcript_observability=NOT OBSERVABLE" in manifest
+    assert "radio_stt_provider=yandex_realtime_legacy" in summary
     assert not recorder.status().active
 
 
@@ -217,3 +229,42 @@ def test_core_api_exposes_explicit_start_status_and_stop_export(tmp_path, monkey
     assert stopped.status_code == 200
     assert stopped.json()["active"] is False
     assert Path(stopped.json()["export_path"]).exists()
+
+
+def test_core_evidence_captures_actual_speechkit_selector_and_resolved_build_sha(
+    tmp_path, monkeypatch
+) -> None:  # noqa: ANN001
+    current_sha = "255f2007abd44885d24d8dd2e45974d2873e4b14"
+    monkeypatch.setattr(realtime_test_evidence, "_runtime_dir", tmp_path)
+    monkeypatch.setattr(
+        evidence_api,
+        "load_build_identity",
+        lambda: BuildIdentity(
+            current_sha,
+            "dev/adr004-post-389",
+            "0.2.0-alpha",
+            "frozen_marker",
+        ),
+    )
+    monkeypatch.setattr(
+        yandex_srs_live,
+        "status",
+        lambda: SimpleNamespace(radio_stt_provider=RadioSttProvider.SPEECHKIT_V3),
+    )
+    if realtime_test_evidence.status().active:
+        realtime_test_evidence.stop_and_export()
+
+    client = TestClient(app)
+    started = client.post(
+        "/v1/realtime/test-evidence/start",
+        json={"provider": "yandex", "transport": "srs"},
+    )
+    assert started.status_code == 200
+    assert started.json()["build_sha"] == current_sha
+    assert started.json()["radio_stt_provider"] == "speechkit_v3_external_eou"
+
+    stopped = client.post("/v1/realtime/test-evidence/stop-export")
+    with zipfile.ZipFile(stopped.json()["export_path"]) as archive:
+        summary = archive.read("session-summary.txt").decode("utf-8")
+    assert f"orion_build_sha={current_sha}" in summary
+    assert "radio_stt_provider=speechkit_v3_external_eou" in summary

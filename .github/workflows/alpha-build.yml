@@ -37,6 +37,14 @@ jobs:
       - name: Build ORION Launcher
         shell: pwsh
         run: python -m PyInstaller --noconfirm --clean --onedir --windowed --name ORION-Launcher --collect-submodules orion --collect-submodules uvicorn --collect-submodules websocket --collect-submodules aiohttp --exclude-module grpc --exclude-module google.protobuf --exclude-module samplerate --exclude-module numpy --exclude-module orion.srs_opus --exclude-module orion.srs_resampler --exclude-module orion.srs_protocol --exclude-module orion.srs_transmission --exclude-module orion.srs_radio_transport --exclude-module orion.srs_radio_adapter --exclude-module orion.srs_diagnostics --exclude-module orion.yandex_speechkit_stt --exclude-module orion.yandex_speechkit_v3_proto --exclude-module orion.yandex_srs_live_core --add-data "dcs-export;dcs-export" --icon branding/orion.ico --add-data "branding/orion.ico;branding" orion/launcher_main.py
+      - name: Stamp exact frozen build identity
+        shell: pwsh
+        run: |
+          python -m orion.build_identity_packaging --core-dir dist/ORION-Core --launcher-dir dist/ORION-Launcher --sha "${{ github.sha }}" --branch "${{ github.ref_name }}"
+          foreach ($marker in @("dist/ORION-Core/build-identity.json","dist/ORION-Launcher/build-identity.json")) {
+            $identity = Get-Content $marker -Raw | ConvertFrom-Json
+            if ($identity.sha -ne "${{ github.sha }}") { throw "Frozen build identity mismatch: $marker" }
+          }
       - name: Run offline frozen Launcher SRS control smoke
         shell: pwsh
         run: |
