@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 from orion.app import app
+from orion.realtime_live_core import RealtimeLiveStartRequest
 from orion.realtime_provider import RealtimeLiveStatus
 from orion import realtime_tool_api
 
@@ -86,6 +87,36 @@ def test_provider_neutral_start_is_provider_discriminated(monkeypatch) -> None: 
     )
     assert response.status_code == 200
     assert response.json()["provider"] == "yandex"
+    assert len(seen) == 1
+
+
+def test_live_start_api_preserves_streaming_tts_and_rejects_unknown(
+    monkeypatch,
+) -> None:  # noqa: ANN001
+    seen: list[RealtimeLiveStartRequest] = []
+
+    def start(request):  # noqa: ANN001, ANN202
+        seen.append(request)
+        return RealtimeLiveStatus(provider="yandex", state="starting", message="starting")
+
+    monkeypatch.setattr(realtime_tool_api.realtime_live, "start", start)
+    payload = {
+        "provider": "yandex",
+        "transport": "srs",
+        "api_key": "memory-only",
+        "folder_id": "folder",
+        "tts_output_mode": "speechkit_v3_streaming",
+        "srs": {"eam_password": "eam-memory-only"},
+    }
+    response = client.post("/v1/realtime/live/start", json=payload)
+    assert response.status_code == 200
+    assert seen[0].model_dump()["tts_output_mode"] == "speechkit_v3_streaming"
+
+    invalid = client.post(
+        "/v1/realtime/live/start",
+        json={**payload, "tts_output_mode": "unknown"},
+    )
+    assert invalid.status_code == 422
     assert len(seen) == 1
 
 

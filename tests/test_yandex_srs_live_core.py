@@ -10,6 +10,7 @@ import zipfile
 
 import pytest
 
+from orion.live_golden_conversation import LiveGoldenRuntimeContext
 from orion.srs_diagnostics import SrsTransportDiagnostics
 from orion.srs_protocol import (
     Frequency,
@@ -33,6 +34,7 @@ from orion.yandex_speechkit_stt import (
     SpeechKitProviderEvent,
     SpeechKitV3RadioSttAdapter,
 )
+from orion.yandex_speechkit_streaming_tts import SpeechKitTtsOutputMode
 from orion.yandex_srs_live_core import (
     MAX_RESPONSE_STATES,
     RESPONSE_MAX_BYTES,
@@ -1092,6 +1094,7 @@ def test_wrong_sending_on_discards_candidate_without_provider_turn(
 
 def test_service_selector_instantiates_speechkit_adapter_only(monkeypatch) -> None:  # noqa: ANN001
     calls: list[tuple[str, int]] = []
+    live_contexts: list[LiveGoldenRuntimeContext] = []
 
     class Endpoint:
         def connect_radio(self) -> None:
@@ -1111,11 +1114,12 @@ def test_service_selector_instantiates_speechkit_adapter_only(monkeypatch) -> No
         return Endpoint()
 
     class Adapter:
-        def __init__(self, *_args, **_kwargs) -> None:  # noqa: ANN002, ANN003
+        def __init__(self, *_args, **kwargs) -> None:  # noqa: ANN002, ANN003
             calls.append(("speechkit", 0))
+            self._on_session_ready = kwargs["on_session_ready"]
 
         async def run(self) -> None:
-            return None
+            self._on_session_ready("speechkit-session")
 
     class ForbiddenRealtime:
         def __init__(self, *_args, **_kwargs) -> None:  # noqa: ANN002, ANN003
@@ -1129,6 +1133,14 @@ def test_service_selector_instantiates_speechkit_adapter_only(monkeypatch) -> No
         "orion.yandex_srs_live_core.YandexRealtimeSession",
         ForbiddenRealtime,
     )
+    monkeypatch.setattr(
+        "orion.live_golden_conversation.live_golden_conversation.attach",
+        live_contexts.append,
+    )
+    monkeypatch.setattr(
+        "orion.live_golden_conversation.live_golden_conversation.detach",
+        lambda _session_id: None,
+    )
     service = YandexSrsLiveService(endpoint_factory=endpoint_factory)
     service._run(
         YandexSrsStartRequest(
@@ -1136,6 +1148,7 @@ def test_service_selector_instantiates_speechkit_adapter_only(monkeypatch) -> No
             folder_id="folder",
             eam_password="eam-memory-only",
             radio_stt_provider=RadioSttProvider.SPEECHKIT_V3,
+            tts_output_mode=SpeechKitTtsOutputMode.STREAMING_V3,
         ),
         "session-speechkit",
         threading.Event(),
@@ -1144,6 +1157,11 @@ def test_service_selector_instantiates_speechkit_adapter_only(monkeypatch) -> No
     assert ("endpoint_rate", SRS_DECODE_RATE_HZ) in calls
     assert ("authoritative_tx_state", 1) in calls
     assert ("speechkit", 0) in calls
+    assert len(live_contexts) == 1
+    assert (
+        live_contexts[0].tts_output_mode
+        is SpeechKitTtsOutputMode.STREAMING_V3
+    )
 
 
 def test_service_selector_instantiates_legacy_realtime_only(monkeypatch) -> None:  # noqa: ANN001

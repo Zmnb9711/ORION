@@ -230,6 +230,8 @@ class RealtimeTestEvidenceStatus:
     provider: str | None = None
     transport: str | None = None
     radio_stt_provider: str | None = None
+    configured_tts_output_mode: str | None = None
+    effective_tts_output_mode: str | None = None
     tts_output_mode: str | None = None
     speechkit_stt_input_capture_enabled: bool = False
     event_count: int = 0
@@ -262,6 +264,8 @@ class RealtimeTestEvidenceRecorder:
         self._provider: str | None = None
         self._transport: str | None = None
         self._radio_stt_provider: str | None = None
+        self._configured_tts_output_mode: str | None = None
+        self._effective_tts_output_mode: str | None = None
         self._tts_output_mode: str | None = None
         self._speechkit_stt_input_capture_enabled = False
         self._build_sha: str | None = None
@@ -288,6 +292,8 @@ class RealtimeTestEvidenceRecorder:
         transport: str,
         radio_stt_provider: str | None = None,
         tts_output_mode: str | None = None,
+        configured_tts_output_mode: str | None = None,
+        effective_tts_output_mode: str | None = None,
         capture_speechkit_stt_input_audio: bool = False,
         build_sha: str | None = None,
         build_branch: str | None = None,
@@ -300,9 +306,22 @@ class RealtimeTestEvidenceRecorder:
             if radio_stt_provider is not None
             else None
         )
-        tts_output_mode_value = (
-            self._identifier(tts_output_mode, "TTS output mode")
-            if tts_output_mode is not None
+        configured_tts_output_mode_value = (
+            self._identifier(
+                configured_tts_output_mode,
+                "configured TTS output mode",
+            )
+            if configured_tts_output_mode is not None
+            else None
+        )
+        effective_source = (
+            effective_tts_output_mode
+            if effective_tts_output_mode is not None
+            else tts_output_mode
+        )
+        effective_tts_output_mode_value = (
+            self._identifier(effective_source, "effective TTS output mode")
+            if effective_source is not None
             else None
         )
         with self._lock:
@@ -327,7 +346,9 @@ class RealtimeTestEvidenceRecorder:
             self._provider = provider_value
             self._transport = transport_value
             self._radio_stt_provider = radio_stt_provider_value
-            self._tts_output_mode = tts_output_mode_value
+            self._configured_tts_output_mode = configured_tts_output_mode_value
+            self._effective_tts_output_mode = effective_tts_output_mode_value
+            self._tts_output_mode = effective_tts_output_mode_value
             self._speechkit_stt_input_capture_enabled = bool(
                 capture_speechkit_stt_input_audio
             )
@@ -1054,6 +1075,12 @@ class RealtimeTestEvidenceRecorder:
             provider = self._provider or "unknown"
             transport = self._transport or "unknown"
             radio_stt_provider = self._radio_stt_provider or "not_applicable"
+            configured_tts_output_mode = (
+                self._configured_tts_output_mode or "not_observable"
+            )
+            effective_tts_output_mode = (
+                self._effective_tts_output_mode or "not_applicable"
+            )
             tts_output_mode = self._tts_output_mode or "not_applicable"
             build_sha = self._build_sha or "unknown"
             build_branch = self._build_branch or "unknown"
@@ -1143,6 +1170,8 @@ class RealtimeTestEvidenceRecorder:
                 f"provider={provider}\n"
                 f"transport={transport}\n"
                 f"radio_stt_provider={radio_stt_provider}\n"
+                f"configured_tts_output_mode={configured_tts_output_mode}\n"
+                f"effective_tts_output_mode={effective_tts_output_mode}\n"
                 f"tts_output_mode={tts_output_mode}\n"
                 f"speechkit_stt_input_audio_opt_in={str(speechkit_stt_input_capture_enabled).lower()}\n"
                 f"speechkit_stt_input_audio_artifacts={len(speechkit_stt_input_audio)}\n"
@@ -1228,6 +1257,12 @@ class RealtimeTestEvidenceRecorder:
             transport=self._transport if self._active else None,
             radio_stt_provider=(
                 self._radio_stt_provider if self._active else None
+            ),
+            configured_tts_output_mode=(
+                self._configured_tts_output_mode if self._active else None
+            ),
+            effective_tts_output_mode=(
+                self._effective_tts_output_mode if self._active else None
             ),
             tts_output_mode=self._tts_output_mode if self._active else None,
             speechkit_stt_input_capture_enabled=(

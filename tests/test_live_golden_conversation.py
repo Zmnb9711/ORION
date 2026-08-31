@@ -9,6 +9,10 @@ from pathlib import Path
 import orion.live_golden_conversation as live_module
 
 from orion.communication_contracts import CommunicationDomain
+from orion.launcher_cloud_voice_sections import (
+    CloudVoiceConfig,
+    LauncherCloudVoiceSectionsMixin,
+)
 from orion.live_golden_conversation import (
     LIVE_GOLDEN_CORPUS,
     LiveGoldenAcousticReview,
@@ -29,10 +33,13 @@ from orion.realtime_audio_transport import (
     FinalizedUserUtterance,
     RealtimeTranscriptSegment,
 )
+from orion.realtime_live_core import RealtimeLiveCoordinator, RealtimeLiveStartRequest
+from orion.realtime_provider import RealtimeLiveStatus
 from orion.srs_radio_adapter import SrsAdapterRuntime
 from orion.srs_radio_transport import SrsState
 from orion.tool_gateway_contracts import ToolArguments
 from orion.yandex_speechkit_streaming_tts import SpeechKitTtsOutputMode
+from orion.yandex_srs_live_core import YandexSrsStartRequest, YandexSrsStatus
 
 
 class _Run:
@@ -258,6 +265,93 @@ def test_streaming_failure_before_radio_falls_back_once_to_buffered_rest(
     case = summary["runs"][0]["cases"][0]
     assert case["speechkit"]["streaming_rest_fallback"] is True
     assert case["speechkit"]["output_mode"] == "speechkit_rest"
+
+
+def test_launcher_to_live_golden_streaming_provider_propagates_end_to_end(
+    tmp_path,
+    monkeypatch,
+) -> None:  # noqa: ANN001
+    class Bridge:
+        provider_id = "yandex"
+        transport_id = "srs"
+
+        def __init__(self) -> None:
+            self.request: YandexSrsStartRequest | None = None
+            self.runtime_status: YandexSrsStatus | None = None
+            self.state = "stopped"
+
+        def start_live(self, payload):  # noqa: ANN001, ANN202
+            srs = payload.pop("srs")
+            self.request = YandexSrsStartRequest.model_validate({**payload, **srs})
+            self.runtime_status = YandexSrsStatus(
+                state="streaming",
+                radio_stt_provider=self.request.radio_stt_provider,
+                tts_output_mode=self.request.tts_output_mode,
+            )
+            self.state = "streaming"
+            return self.live_status()
+
+        def live_status(self) -> RealtimeLiveStatus:
+            return RealtimeLiveStatus(
+                provider="yandex",
+                transport="srs",
+                state=self.state,
+            )
+
+        def stop_live(self) -> RealtimeLiveStatus:
+            self.state = "stopped"
+            return self.live_status()
+
+    selected = CloudVoiceConfig(
+        cloud_provider="yandex",
+        voice_transport="srs",
+        yandex_folder_id="folder",
+        radio_stt_provider="speechkit_v3",
+        tts_output_mode="speechkit_v3_streaming",
+    )
+    launcher_payload = LauncherCloudVoiceSectionsMixin._realtime_start_payload(
+        selected,
+        "unused-qwen",
+        "memory-only-yandex",
+        "memory-only-eam",
+    )
+    core_request = RealtimeLiveStartRequest.model_validate(launcher_payload)
+    assert core_request.model_dump()["tts_output_mode"] == "speechkit_v3_streaming"
+
+    bridge = Bridge()
+    RealtimeLiveCoordinator([bridge]).start(core_request)
+    assert bridge.request is not None
+    assert bridge.runtime_status is not None
+    assert bridge.request.tts_output_mode is SpeechKitTtsOutputMode.STREAMING_V3
+    assert (
+        bridge.runtime_status.tts_output_mode
+        is SpeechKitTtsOutputMode.STREAMING_V3
+    )
+
+    streaming_factories: list[object] = []
+
+    def streaming_factory() -> _StreamingFailureBeforeTx:
+        streaming_factories.append(object())
+        return _StreamingFailureBeforeTx()
+
+    service, endpoint, recorder, _provider = _service(
+        tmp_path,
+        monkeypatch,
+        tts_output_mode=bridge.request.tts_output_mode,
+        streaming_speechkit_factory=streaming_factory,
+    )
+    service.start(capture_audio=False)
+    service.input_transmission_started("srs-propagation-ptt", 0)
+    service.accept_transcript_segment(
+        _segment("Добрый день Разрешите взлёт", "propagation-item", 0, 900)
+    )
+    service.input_transmission_completed("srs-propagation-ptt", 1_000)
+    _wait_for(service, LiveGoldenState.AWAITING_REVIEW)
+
+    assert len(streaming_factories) == 1
+    assert len(endpoint.transmissions) == 1
+    service.stop()
+    recorder.stop_and_export()
 
 
 def _segment(
@@ -668,6 +762,9 @@ def test_real_transcript_runs_one_qwen_local_protected_composition_and_one_radio
     )
     assert case["final_composed_text"].count(case["protected_fragment"]) == 1
     assert case["radio"]["frame_count"] == 5
+    assert case["speechkit"]["output_mode"] == "speechkit_rest"
+    assert case["speechkit"]["streaming_requested"] is False
+    assert case["speechkit"]["streaming_rest_fallback"] is False
     assert case["acoustic_review"] == "clear"
     assert "live-golden-audio/mixed-ru-1.wav" in names
     assert "orion_build_sha=9f38d449" in session

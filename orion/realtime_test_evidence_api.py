@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 
 from orion.build_identity import load_build_identity
 from orion.realtime_test_evidence import realtime_test_evidence
+from orion.yandex_speechkit_streaming_tts import SpeechKitTtsOutputMode
 
 
 router = APIRouter(prefix="/v1/realtime/test-evidence", tags=["Realtime Test Evidence"])
@@ -23,6 +24,7 @@ class RealtimeTestEvidenceStart(BaseModel):
     provider: str = Field(min_length=1, max_length=40)
     transport: str = Field(min_length=1, max_length=40)
     capture_speechkit_stt_input_audio: bool = False
+    configured_tts_output_mode: SpeechKitTtsOutputMode | None = None
 
 
 @router.post("/start")
@@ -30,7 +32,7 @@ def start_test_evidence(request: RealtimeTestEvidenceStart) -> dict[str, object]
     try:
         identity = load_build_identity()
         radio_stt_provider: str | None = None
-        tts_output_mode: str | None = None
+        effective_tts_output_mode: str | None = None
         if request.provider == "yandex" and request.transport == "srs":
             from orion.yandex_srs_live_core import yandex_srs_live
 
@@ -38,15 +40,21 @@ def start_test_evidence(request: RealtimeTestEvidenceStart) -> dict[str, object]
             selected = status.radio_stt_provider.value
             radio_stt_provider = _RADIO_STT_EVIDENCE_VALUES[selected]
             selected_tts = getattr(status, "tts_output_mode", None)
-            tts_output_mode = (
+            effective_tts_output_mode = (
                 selected_tts.value if selected_tts is not None else "speechkit_rest"
             )
+        configured_tts_output_mode = (
+            request.configured_tts_output_mode.value
+            if request.configured_tts_output_mode is not None
+            else None
+        )
         return asdict(
             realtime_test_evidence.start(
                 provider=request.provider,
                 transport=request.transport,
                 radio_stt_provider=radio_stt_provider,
-                tts_output_mode=tts_output_mode,
+                configured_tts_output_mode=configured_tts_output_mode,
+                effective_tts_output_mode=effective_tts_output_mode,
                 capture_speechkit_stt_input_audio=(
                     request.capture_speechkit_stt_input_audio
                 ),

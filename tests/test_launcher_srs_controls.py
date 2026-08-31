@@ -265,7 +265,10 @@ def test_launcher_test_session_uses_active_core_provider_transport_and_core_endp
         raise AssertionError(path)
 
     launcher._realtime_core_json = request
-    started = launcher._start_test_evidence(CloudVoiceConfig(), True)
+    started = launcher._start_test_evidence(
+        CloudVoiceConfig(tts_output_mode="speechkit_v3_streaming"),
+        True,
+    )
     stopped = launcher._stop_test_evidence()
     assert started["active"] is True
     assert stopped["export_path"] == r"C:\evidence\session.zip"
@@ -279,6 +282,7 @@ def test_launcher_test_session_uses_active_core_provider_transport_and_core_endp
                 "provider": "yandex",
                 "transport": "srs",
                 "capture_speechkit_stt_input_audio": True,
+                "configured_tts_output_mode": "speechkit_v3_streaming",
             },
         ),
         ("/v1/realtime/test-evidence/stop-export", "POST", None),

@@ -6,6 +6,7 @@ import pytest
 
 from orion.realtime_live_core import RealtimeLiveCoordinator, RealtimeLiveStartRequest
 from orion.realtime_provider import RealtimeLiveStatus
+from orion.yandex_speechkit_streaming_tts import SpeechKitTtsOutputMode
 
 
 class _Provider:
@@ -106,6 +107,86 @@ def test_provider_transport_matrix_and_legacy_direct_default() -> None:
     assert yandex_srs.payloads[0]["radio_stt_provider"] == "speechkit_v3"
     assert coordinator.status().transport == "srs"
     coordinator.stop()
+
+
+def test_tts_output_mode_survives_validation_model_dump_and_coordinator() -> None:
+    yandex_srs = _Provider("yandex", "srs")
+    coordinator = RealtimeLiveCoordinator([yandex_srs])
+    request = RealtimeLiveStartRequest.model_validate(
+        {
+            "provider": "yandex",
+            "transport": "srs",
+            "api_key": "memory-only",
+            "folder_id": "folder",
+            "tts_output_mode": "speechkit_v3_streaming",
+            "srs": {"eam_password": "eam-memory-only"},
+        }
+    )
+
+    assert request.tts_output_mode is SpeechKitTtsOutputMode.STREAMING_V3
+    assert (
+        request.model_dump()["tts_output_mode"]
+        is SpeechKitTtsOutputMode.STREAMING_V3
+    )
+    coordinator.start(request)
+    assert (
+        yandex_srs.payloads[0]["tts_output_mode"]
+        is SpeechKitTtsOutputMode.STREAMING_V3
+    )
+
+
+def test_tts_output_mode_missing_defaults_to_rest_and_invalid_fails() -> None:
+    legacy = RealtimeLiveStartRequest(
+        provider="yandex",
+        transport="srs",
+        api_key="memory-only",
+        folder_id="folder",
+        srs={"eam_password": "eam-memory-only"},
+    )
+    assert legacy.tts_output_mode is SpeechKitTtsOutputMode.REST_BUFFERED
+
+    with pytest.raises(ValueError, match="tts_output_mode"):
+        RealtimeLiveStartRequest.model_validate(
+            {
+                "provider": "yandex",
+                "transport": "srs",
+                "api_key": "memory-only",
+                "folder_id": "folder",
+                "tts_output_mode": "unknown",
+                "srs": {"eam_password": "eam-memory-only"},
+            }
+        )
+
+
+def test_active_session_keeps_tts_snapshot_until_stop_and_restart() -> None:
+    yandex_srs = _Provider("yandex", "srs")
+    coordinator = RealtimeLiveCoordinator([yandex_srs])
+
+    def request(mode: SpeechKitTtsOutputMode) -> RealtimeLiveStartRequest:
+        return RealtimeLiveStartRequest(
+            provider="yandex",
+            transport="srs",
+            api_key="memory-only",
+            folder_id="folder",
+            tts_output_mode=mode,
+            srs={"eam_password": "eam-memory-only"},
+        )
+
+    coordinator.start(request(SpeechKitTtsOutputMode.REST_BUFFERED))
+    with pytest.raises(ValueError, match="already active"):
+        coordinator.start(request(SpeechKitTtsOutputMode.STREAMING_V3))
+    assert len(yandex_srs.payloads) == 1
+    assert (
+        yandex_srs.payloads[0]["tts_output_mode"]
+        is SpeechKitTtsOutputMode.REST_BUFFERED
+    )
+
+    coordinator.stop()
+    coordinator.start(request(SpeechKitTtsOutputMode.STREAMING_V3))
+    assert (
+        yandex_srs.payloads[1]["tts_output_mode"]
+        is SpeechKitTtsOutputMode.STREAMING_V3
+    )
 
 
 def test_qwen_srs_is_explicitly_rejected_without_fallback() -> None:

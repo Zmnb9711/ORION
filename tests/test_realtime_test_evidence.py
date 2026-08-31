@@ -309,6 +309,7 @@ def test_core_api_exposes_explicit_start_status_and_stop_export(tmp_path, monkey
             "provider": "yandex",
             "transport": "srs",
             "capture_speechkit_stt_input_audio": True,
+            "configured_tts_output_mode": "speechkit_v3_streaming",
         },
     )
     assert started.status_code == 200
@@ -358,11 +359,14 @@ def test_core_evidence_captures_actual_speechkit_selector_and_resolved_build_sha
             "provider": "yandex",
             "transport": "srs",
             "capture_speechkit_stt_input_audio": True,
+            "configured_tts_output_mode": "speechkit_v3_streaming",
         },
     )
     assert started.status_code == 200
     assert started.json()["build_sha"] == current_sha
     assert started.json()["radio_stt_provider"] == "speechkit_v3_external_eou"
+    assert started.json()["configured_tts_output_mode"] == "speechkit_v3_streaming"
+    assert started.json()["effective_tts_output_mode"] == "speechkit_v3_streaming"
     assert started.json()["tts_output_mode"] == "speechkit_v3_streaming"
     assert started.json()["speechkit_stt_input_capture_enabled"] is True
 
@@ -372,6 +376,8 @@ def test_core_evidence_captures_actual_speechkit_selector_and_resolved_build_sha
         manifest = archive.read("manifest.txt").decode("utf-8")
     assert f"orion_build_sha={current_sha}" in summary
     assert "radio_stt_provider=speechkit_v3_external_eou" in summary
+    assert "configured_tts_output_mode=speechkit_v3_streaming" in summary
+    assert "effective_tts_output_mode=speechkit_v3_streaming" in summary
     assert "tts_output_mode=speechkit_v3_streaming" in summary
     assert "speechkit_stt_input_audio_opt_in=true" in manifest
     assert "speechkit_stt_input_audio_included=false" in manifest

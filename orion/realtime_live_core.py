@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field, SecretStr
 from orion.qwen_live_audio_core import QwenLiveStartRequest, qwen_live_audio
 from orion.realtime_provider import RealtimeLiveStatus
 from orion.yandex_live_audio_core import YandexLiveStartRequest, yandex_live_audio
+from orion.yandex_speechkit_streaming_tts import SpeechKitTtsOutputMode
 
 
 class SrsLiveStartRequest(BaseModel):
@@ -29,6 +30,7 @@ class RealtimeLiveStartRequest(BaseModel):
     model: str = "qwen3.5-omni-flash-realtime"
     voice: str = "Tina"
     radio_stt_provider: str = "yandex_realtime"
+    tts_output_mode: SpeechKitTtsOutputMode = SpeechKitTtsOutputMode.REST_BUFFERED
     srs: SrsLiveStartRequest | None = None
 
 
@@ -195,6 +197,7 @@ class RealtimeLiveCoordinator:
             if transport_id == "direct":
                 payload.pop("srs", None)
                 payload.pop("radio_stt_provider", None)
+                payload.pop("tts_output_mode", None)
             result = provider.start_live(payload)
             with self._lock:
                 if generation == self._generation:

@@ -843,6 +843,7 @@ class LauncherCloudVoiceSectionsMixin:
             evidence_config = CloudVoiceConfig(
                 cloud_provider=provider_labels[provider.get()],
                 voice_transport=transport_labels[transport.get()],
+                tts_output_mode=tts_output_labels[tts_output_mode.get()],
             )
             self._start_test_evidence_async(
                 evidence_config,
@@ -1105,16 +1106,19 @@ class LauncherCloudVoiceSectionsMixin:
             return {**current, "already_active": True}
         live_status = self._realtime_core_json("/v1/realtime/live/status")
         provider, transport = self._selected_test_evidence_identity(config, live_status)
+        payload: dict[str, object] = {
+            "provider": provider,
+            "transport": transport,
+            "capture_speechkit_stt_input_audio": (
+                capture_speechkit_stt_input_audio
+            ),
+        }
+        if provider == "yandex" and transport == "srs":
+            payload["configured_tts_output_mode"] = config.tts_output_mode
         return self._realtime_core_json(
             "/v1/realtime/test-evidence/start",
             method="POST",
-            payload={
-                "provider": provider,
-                "transport": transport,
-                "capture_speechkit_stt_input_audio": (
-                    capture_speechkit_stt_input_audio
-                ),
-            },
+            payload=payload,
         )
 
     def _test_evidence_status(self) -> dict[str, object]:
