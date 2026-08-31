@@ -30,6 +30,18 @@ class RealtimeInputTransmissionCompleted:
 
     transmission_id: str
     boundary: str = "transport_transmission_end"
+    first_accepted_packet_timestamp: str | None = None
+    last_accepted_packet_timestamp: str | None = None
+    accepted_packet_count: int | None = None
+    first_packet_id: int | None = None
+    last_packet_id: int | None = None
+    sequence_gap_count: int | None = None
+    decode_error_count: int | None = None
+    decoded_pcm_bytes: int | None = None
+    padding_bytes: int | None = None
+    framed_pcm_bytes: int | None = None
+    packet_quiescence_completed_timestamp: str | None = None
+    boundary_gap_ms: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

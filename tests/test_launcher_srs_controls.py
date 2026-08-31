@@ -185,6 +185,7 @@ def test_launcher_ui_contains_ordered_commands_and_manual_connect_instruction() 
     assert "START LIVE" in text and "STOP LIVE" in text
     assert text.index("START LIVE") < text.index("START TEST SESSION")
     assert "STOP & EXPORT TEST SESSION" in text
+    assert "Include SpeechKit STT input WAV in Test Evidence" in text
     assert "SpeechKit v3 External EOU" in text
     assert "Yandex Realtime (legacy)" in text
     assert "OPEN EXPORT FOLDER" in text
@@ -221,7 +222,7 @@ def test_launcher_test_session_uses_active_core_provider_transport_and_core_endp
         raise AssertionError(path)
 
     launcher._realtime_core_json = request
-    started = launcher._start_test_evidence(CloudVoiceConfig())
+    started = launcher._start_test_evidence(CloudVoiceConfig(), True)
     stopped = launcher._stop_test_evidence()
     assert started["active"] is True
     assert stopped["export_path"] == r"C:\evidence\session.zip"
@@ -231,7 +232,11 @@ def test_launcher_test_session_uses_active_core_provider_transport_and_core_endp
         (
             "/v1/realtime/test-evidence/start",
             "POST",
-            {"provider": "yandex", "transport": "srs"},
+            {
+                "provider": "yandex",
+                "transport": "srs",
+                "capture_speechkit_stt_input_audio": True,
+            },
         ),
         ("/v1/realtime/test-evidence/stop-export", "POST", None),
     ]
@@ -270,6 +275,9 @@ def test_launcher_duplicate_start_and_status_refresh_never_create_another_record
     assert format_test_evidence_status(refreshed) == (
         "Test Session: RECORDING — YANDEX / SRS | events=7"
     )
+    assert format_test_evidence_status(
+        {**refreshed, "speechkit_stt_input_capture_enabled": True}
+    ).endswith("| STT WAV=ON")
 
 
 def test_voice_and_tray_shutdown_do_not_own_external_srs_processes() -> None:

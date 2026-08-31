@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import queue
 import threading
+import wave
 import zipfile
 from collections.abc import Callable
 from typing import cast
@@ -188,6 +190,100 @@ def test_one_physical_ptt_emits_exactly_one_native_final_after_eou_barrier() -> 
     assert port.eou_count == 1
     assert port.open_count == port.session_options_count == 1
     assert endpoint.started and endpoint.stopped and port.closed
+
+
+def test_opt_in_captures_exact_successfully_written_pcm_and_eou_accounting(
+    tmp_path,
+    monkeypatch,
+) -> None:  # noqa: ANN001
+    recorder = RealtimeTestEvidenceRecorder(tmp_path)
+    recorder.start(
+        provider="yandex",
+        transport="srs",
+        radio_stt_provider="speechkit_v3_external_eou",
+        capture_speechkit_stt_input_audio=True,
+    )
+    monkeypatch.setattr(
+        "orion.yandex_speechkit_stt.realtime_test_evidence",
+        recorder,
+    )
+    monkeypatch.setattr(
+        "orion.yandex_live_diagnostics.realtime_test_evidence",
+        recorder,
+    )
+    endpoint, stop = FakeEndpoint(), threading.Event()
+    diagnostics = YandexLiveDiagnostics("test-session", "unit-secret", tmp_path)
+    blocks = (b"\x01\x00" * 320, b"\x02\x00" * 320)
+    endpoint.items.put_nowait(RealtimeInputTransmissionStarted("srs-ptt-000001"))
+    for block in blocks:
+        endpoint.items.put_nowait(block)
+    endpoint.items.put_nowait(
+        RealtimeInputTransmissionCompleted(
+            "srs-ptt-000001",
+            first_accepted_packet_timestamp="2026-08-31T10:00:00.000+00:00",
+            last_accepted_packet_timestamp="2026-08-31T10:00:01.000+00:00",
+            accepted_packet_count=2,
+            first_packet_id=10,
+            last_packet_id=11,
+            sequence_gap_count=0,
+            decode_error_count=0,
+            decoded_pcm_bytes=1_200,
+            padding_bytes=80,
+            framed_pcm_bytes=1_280,
+            packet_quiescence_completed_timestamp=(
+                "2026-08-31T10:00:01.400+00:00"
+            ),
+            boundary_gap_ms=400,
+        )
+    )
+    port = FakePort([provider_turn(0, "добрый день")])
+
+    def accepted(_utterance: FinalizedUserUtterance) -> None:
+        stop.set()
+
+    run_adapter(endpoint, port, stop, diagnostics, accepted)
+    assert port.audio == list(blocks)
+    eou = next(
+        event
+        for event in diagnostics.snapshot()
+        if event["event"] == "speechkit_stt_eou_sent"
+    )
+    assert eou["speechkit_pcm_bytes_before_eou"] == 1_280
+    assert eou["decoded_pcm_bytes"] == 1_200
+    assert eou["padding_bytes"] == 80
+    assert eou["framed_pcm_bytes"] == 1_280
+    assert eou["decoded_plus_padding_matches_framed"] is True
+    assert eou["framed_matches_speechkit"] is True
+    assert eou["artifact_included"] is True
+    assert eou["eou_sent_timestamp"]
+    assert eou["last_input_write_timestamp"]
+    assert eou["eou_sent_monotonic_ns"] > eou["last_input_write_monotonic_ns"]
+
+    output = recorder.stop_and_export()
+    with zipfile.ZipFile(output) as archive:
+        wav_bytes = archive.read(
+            "speechkit-stt-input/srs-ptt-000001.wav"
+        )
+        evidence_events = [
+            json.loads(line)
+            for line in archive.read("events.jsonl").decode("utf-8").splitlines()
+        ]
+    evidence_eou = next(
+        event
+        for event in evidence_events
+        if event["event"] == "speechkit_stt_eou_sent"
+    )
+    assert evidence_eou["accepted_packet_count"] == 2
+    assert evidence_eou["speechkit_pcm_bytes_before_eou"] == 1_280
+    assert evidence_eou["framed_matches_speechkit"] is True
+    assert "unit-secret" not in json.dumps(evidence_events)
+    with wave.open(io.BytesIO(wav_bytes), "rb") as captured:
+        assert (captured.getframerate(), captured.getnchannels(), captured.getsampwidth()) == (
+            16_000,
+            1,
+            2,
+        )
+        assert captured.readframes(captured.getnframes()) == b"".join(blocks)
 
 
 def test_three_sequential_ptts_share_one_rpc_and_remain_independent() -> None:

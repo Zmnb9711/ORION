@@ -81,7 +81,15 @@ def format_test_evidence_status(result: Mapping[str, object]) -> str:
         provider = str(result.get("provider") or "unknown").upper()
         transport = str(result.get("transport") or "unknown").upper()
         count = int(str(result.get("event_count") or 0))
-        return f"Test Session: RECORDING — {provider} / {transport} | events={count}"
+        capture = (
+            " | STT WAV=ON"
+            if bool(result.get("speechkit_stt_input_capture_enabled"))
+            else ""
+        )
+        return (
+            f"Test Session: RECORDING — {provider} / {transport} | "
+            f"events={count}{capture}"
+        )
     export_path = str(result.get("last_export_path") or "").strip()
     return f"Test Session: OFF{f' — Last export: {export_path}' if export_path else ''}"
 
@@ -766,6 +774,12 @@ class LauncherCloudVoiceSectionsMixin:
             command=lambda: self._hybrid_review_async(hybrid_review.get(), hybrid_status),
         ).pack(side=LEFT)
 
+        capture_speechkit_stt_input_audio = BooleanVar(value=False)
+        ttk.Checkbutton(
+            box,
+            text="Include SpeechKit STT input WAV in Test Evidence",
+            variable=capture_speechkit_stt_input_audio,
+        ).pack(anchor="w", pady=(12, 0))
         ttk.Label(
             box,
             textvariable=test_evidence_status,
@@ -791,6 +805,7 @@ class LauncherCloudVoiceSectionsMixin:
             self._start_test_evidence_async(
                 evidence_config,
                 test_evidence_status,
+                capture_speechkit_stt_input_audio.get(),
             )
 
         ttk.Button(
@@ -1030,7 +1045,11 @@ class LauncherCloudVoiceSectionsMixin:
             raise ValueError("Qwen + SRS Radio is not available in v0.1")
         return provider, transport
 
-    def _start_test_evidence(self, config: CloudVoiceConfig) -> dict[str, object]:
+    def _start_test_evidence(
+        self,
+        config: CloudVoiceConfig,
+        capture_speechkit_stt_input_audio: bool = False,
+    ) -> dict[str, object]:
         current = self._test_evidence_status()
         if bool(current.get("active")):
             return {**current, "already_active": True}
@@ -1039,7 +1058,13 @@ class LauncherCloudVoiceSectionsMixin:
         return self._realtime_core_json(
             "/v1/realtime/test-evidence/start",
             method="POST",
-            payload={"provider": provider, "transport": transport},
+            payload={
+                "provider": provider,
+                "transport": transport,
+                "capture_speechkit_stt_input_audio": (
+                    capture_speechkit_stt_input_audio
+                ),
+            },
         )
 
     def _test_evidence_status(self) -> dict[str, object]:
@@ -1205,12 +1230,16 @@ class LauncherCloudVoiceSectionsMixin:
         self,
         config: CloudVoiceConfig,
         status_var: StringVar,
+        capture_speechkit_stt_input_audio: bool = False,
     ) -> None:
         generation = self._qwen_view_generation
 
         def worker() -> None:
             try:
-                result = self._start_test_evidence(config)
+                result = self._start_test_evidence(
+                    config,
+                    capture_speechkit_stt_input_audio,
+                )
                 text = format_test_evidence_status(result)
                 if bool(result.get("already_active")):
                     text += " — already active"

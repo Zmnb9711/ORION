@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import io
+import wave
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -76,6 +78,66 @@ def test_recorder_is_noop_until_explicitly_started(tmp_path) -> None:  # noqa: A
     recorder.record_transcript("user", "must not persist", turn_id="turn_001")
     assert recorder.status().event_count == 0
     assert recorder.status().user_transcript_count == 0
+
+
+def test_speechkit_input_wav_is_exact_and_explicitly_opted_in(tmp_path) -> None:  # noqa: ANN001
+    recorder = RealtimeTestEvidenceRecorder(tmp_path)
+    pcm_blocks = (b"\x01\x00" * 320, b"\x02\x00" * 320)
+    status = recorder.start(
+        provider="yandex",
+        transport="srs",
+        radio_stt_provider="speechkit_v3_external_eou",
+        capture_speechkit_stt_input_audio=True,
+    )
+    assert status.speechkit_stt_input_capture_enabled is True
+    assert recorder.begin_speechkit_stt_input("srs-ptt-000001") is True
+    assert all(
+        recorder.append_speechkit_stt_input("srs-ptt-000001", block)
+        for block in pcm_blocks
+    )
+    assert recorder.finalize_speechkit_stt_input(
+        "srs-ptt-000001",
+        expected_pcm_bytes=sum(map(len, pcm_blocks)),
+    )
+
+    output = recorder.stop_and_export()
+    with zipfile.ZipFile(output) as archive:
+        name = "speechkit-stt-input/srs-ptt-000001.wav"
+        assert name in archive.namelist()
+        wav_bytes = archive.read(name)
+        manifest = archive.read("manifest.txt").decode("utf-8")
+        summary = archive.read("session-summary.txt").decode("utf-8")
+    with wave.open(io.BytesIO(wav_bytes), "rb") as captured:
+        assert captured.getframerate() == 16_000
+        assert captured.getnchannels() == 1
+        assert captured.getsampwidth() == 2
+        assert captured.readframes(captured.getnframes()) == b"".join(pcm_blocks)
+    assert "format_version=6" in manifest
+    assert "speechkit_stt_input_audio_opt_in=true" in manifest
+    assert "speechkit_stt_input_audio_included=true" in manifest
+    assert "radio_received_audio_included=true" in manifest
+    assert "speechkit_stt_input_capture_scope=accepted_target_channel_turns" in manifest
+    assert "unrelated_srs_audio_included=NOT OBSERVABLE" in manifest
+    assert "credentials_included=false" in manifest
+    assert "speechkit_stt_input_audio_artifacts=1" in summary
+
+
+def test_speechkit_input_audio_is_absent_by_default(tmp_path) -> None:  # noqa: ANN001
+    recorder = RealtimeTestEvidenceRecorder(tmp_path)
+    recorder.start(provider="yandex", transport="srs")
+    assert recorder.begin_speechkit_stt_input("srs-ptt-000001") is False
+    assert recorder.append_speechkit_stt_input(
+        "srs-ptt-000001", b"\x01\x00" * 320
+    ) is False
+    output = recorder.stop_and_export()
+    with zipfile.ZipFile(output) as archive:
+        assert not any(
+            name.startswith("speechkit-stt-input/") for name in archive.namelist()
+        )
+        manifest = archive.read("manifest.txt").decode("utf-8")
+    assert "speechkit_stt_input_audio_opt_in=false" in manifest
+    assert "speechkit_stt_input_audio_included=false" in manifest
+    assert "radio_received_audio_included=false" in manifest
 
 
 def test_explicit_session_records_ordered_correlated_provider_transcripts(tmp_path) -> None:  # noqa: ANN001
@@ -215,7 +277,11 @@ def test_core_api_exposes_explicit_start_status_and_stop_export(tmp_path, monkey
     client = TestClient(app)
     started = client.post(
         "/v1/realtime/test-evidence/start",
-        json={"provider": "yandex", "transport": "srs"},
+        json={
+            "provider": "yandex",
+            "transport": "srs",
+            "capture_speechkit_stt_input_audio": True,
+        },
     )
     assert started.status_code == 200
     assert started.json()["active"] is True
@@ -257,14 +323,22 @@ def test_core_evidence_captures_actual_speechkit_selector_and_resolved_build_sha
     client = TestClient(app)
     started = client.post(
         "/v1/realtime/test-evidence/start",
-        json={"provider": "yandex", "transport": "srs"},
+        json={
+            "provider": "yandex",
+            "transport": "srs",
+            "capture_speechkit_stt_input_audio": True,
+        },
     )
     assert started.status_code == 200
     assert started.json()["build_sha"] == current_sha
     assert started.json()["radio_stt_provider"] == "speechkit_v3_external_eou"
+    assert started.json()["speechkit_stt_input_capture_enabled"] is True
 
     stopped = client.post("/v1/realtime/test-evidence/stop-export")
     with zipfile.ZipFile(stopped.json()["export_path"]) as archive:
         summary = archive.read("session-summary.txt").decode("utf-8")
+        manifest = archive.read("manifest.txt").decode("utf-8")
     assert f"orion_build_sha={current_sha}" in summary
     assert "radio_stt_provider=speechkit_v3_external_eou" in summary
+    assert "speechkit_stt_input_audio_opt_in=true" in manifest
+    assert "speechkit_stt_input_audio_included=false" in manifest

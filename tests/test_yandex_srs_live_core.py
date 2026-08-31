@@ -56,6 +56,20 @@ class FakeCodec:
         self.closed = True
 
 
+class FailOnceDecoder:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def decode(self, _packet: bytes) -> bytes:
+        self.calls += 1
+        if self.calls == 1:
+            raise RuntimeError("deterministic decode failure")
+        return bytes(1280)
+
+    def close(self) -> None:
+        return None
+
+
 class FakeResampler:
     def __init__(self, output: bytes) -> None:
         self.output = output
@@ -95,7 +109,11 @@ class FakeRadio:
 
 
 def make_endpoint(
-    tmp_path, clock: Clock, *, provider_input_rate_hz: int = 44_100
+    tmp_path,
+    clock: Clock,
+    *,
+    provider_input_rate_hz: int = 44_100,
+    decoded_pcm: bytes = bytes(1280),
 ):  # noqa: ANN001, ANN201
     radio_holder: list[FakeRadio] = []
 
@@ -115,7 +133,7 @@ def make_endpoint(
         SrsTransportDiagnostics("test", secrets=("memory-only",), runtime_dir=tmp_path),
         update,
         radio_factory=radio_factory,
-        decoder_factory=lambda: FakeCodec(bytes(1280)),  # type: ignore[arg-type]
+        decoder_factory=lambda: FakeCodec(decoded_pcm),  # type: ignore[arg-type]
         encoder_factory=lambda: FakeCodec(b""),  # type: ignore[arg-type]
         rx_resampler_factory=lambda: FakeResampler(b"r" * YANDEX_BLOCK_BYTES),  # type: ignore[arg-type]
         tx_resampler_factory=lambda: FakeResampler(bytes(1280 * 2 + 200)),  # type: ignore[arg-type]
@@ -162,7 +180,8 @@ def test_srs_rx_decode_resample_historical_tail_boundary_and_completed_tx(
         except queue.Empty:
             pass
     assert queued[:-1] == [bytes(YANDEX_BLOCK_BYTES)] * TRAILING_SILENCE_BLOCKS
-    assert queued[-1] == RealtimeInputTransmissionCompleted("srs-ptt-000001")
+    assert isinstance(queued[-1], RealtimeInputTransmissionCompleted)
+    assert queued[-1].transmission_id == "srs-ptt-000001"
     assert endpoint.input_queue.empty()
 
     endpoint.response_started("r1")
@@ -206,13 +225,104 @@ def test_speechkit_input_uses_original_16khz_pcm_without_realtime_resample_or_ta
 
     clock.now = 10.7
     completed = endpoint.read_input(1.0)
-    assert completed == RealtimeInputTransmissionCompleted("srs-ptt-000001")
+    assert isinstance(completed, RealtimeInputTransmissionCompleted)
+    assert completed.transmission_id == "srs-ptt-000001"
     assert endpoint.input_queue.empty()
     events = endpoint.diagnostics.snapshot()
     boundary = next(
         event for event in events if event["event"] == "rx_transmission_completed"
     )
     assert boundary["trailing_silence_ms"] == 0
+    endpoint.stop()
+
+
+def test_speechkit_srs_packet_timeline_and_pcm_accounting_are_exact(
+    tmp_path,
+) -> None:  # noqa: ANN001
+    clock = Clock()
+    endpoint, _radio, _status = make_endpoint(
+        tmp_path,
+        clock,
+        provider_input_rate_hz=16_000,
+        decoded_pcm=bytes(1_000),
+    )
+    endpoint.connect_radio()
+    endpoint.start()
+    endpoint._on_radio_datagram(human_packet(10))
+    clock.now = 10.02
+    endpoint._on_radio_datagram(human_packet(12))
+
+    assert endpoint.read_input(0.1) == RealtimeInputTransmissionStarted(
+        "srs-ptt-000001"
+    )
+    assert endpoint.read_input(0.1) == bytes(640)
+    assert endpoint.read_input(0.1) == bytes(640)
+    assert endpoint.read_input(0.1) == bytes(640)
+    clock.now = 10.7
+    assert endpoint.read_input(1.0) == bytes(640)
+    completed = endpoint.read_input(0.1)
+    assert isinstance(completed, RealtimeInputTransmissionCompleted)
+    assert completed.transmission_id == "srs-ptt-000001"
+    assert completed.accepted_packet_count == 2
+    assert completed.first_packet_id == 10
+    assert completed.last_packet_id == 12
+    assert completed.sequence_gap_count == 1
+    assert completed.decode_error_count == 0
+    assert completed.decoded_pcm_bytes == 2_000
+    assert completed.padding_bytes == 560
+    assert completed.framed_pcm_bytes == 2_560
+    assert (
+        completed.decoded_pcm_bytes + completed.padding_bytes
+        == completed.framed_pcm_bytes
+    )
+    assert completed.first_accepted_packet_timestamp
+    assert completed.last_accepted_packet_timestamp
+    assert completed.packet_quiescence_completed_timestamp
+    assert completed.boundary_gap_ms == 400
+
+    boundary = next(
+        event
+        for event in endpoint.diagnostics.snapshot()
+        if event["event"] == "rx_transmission_completed"
+    )
+    assert boundary["accepted_packet_count"] == 2
+    assert boundary["first_packet_id"] == 10
+    assert boundary["last_packet_id"] == 12
+    assert boundary["sequence_gap_count"] == 1
+    assert boundary["decoded_pcm_bytes"] == 2_000
+    assert boundary["padding_bytes"] == 560
+    assert boundary["framed_pcm_bytes"] == 2_560
+    endpoint.stop()
+
+
+def test_speechkit_srs_timeline_counts_accepted_packet_decode_errors(
+    tmp_path,
+) -> None:  # noqa: ANN001
+    clock = Clock()
+    endpoint, _radio, _status = make_endpoint(
+        tmp_path,
+        clock,
+        provider_input_rate_hz=16_000,
+    )
+    endpoint.decoder = FailOnceDecoder()  # type: ignore[assignment]
+    endpoint.connect_radio()
+    endpoint.start()
+    endpoint._on_radio_datagram(human_packet(1))
+    clock.now = 10.02
+    endpoint._on_radio_datagram(human_packet(2))
+
+    assert endpoint.read_input(0.1) == RealtimeInputTransmissionStarted(
+        "srs-ptt-000001"
+    )
+    assert endpoint.read_input(0.1) == bytes(640)
+    assert endpoint.read_input(0.1) == bytes(640)
+    clock.now = 10.7
+    completed = endpoint.read_input(1.0)
+    assert isinstance(completed, RealtimeInputTransmissionCompleted)
+    assert completed.accepted_packet_count == 2
+    assert completed.decode_error_count == 1
+    assert completed.decoded_pcm_bytes == 1_280
+    assert completed.framed_pcm_bytes == 1_280
     endpoint.stop()
 
 

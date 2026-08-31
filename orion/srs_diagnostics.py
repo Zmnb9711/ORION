@@ -25,6 +25,12 @@ _FORBIDDEN = {
     "transcript",
 }
 
+_ALLOWED_PCM_SCALARS = {
+    "decoded_pcm_bytes",
+    "framed_pcm_bytes",
+    "speechkit_pcm_bytes_before_eou",
+}
+
 
 def sanitize_srs_error(value: object, *secrets: str) -> str:
     text = str(value).replace("\r", " ").replace("\n", " ")[:1000]
@@ -57,7 +63,10 @@ class SrsTransportDiagnostics:
         }
         for key, value in fields.items():
             lowered = key.casefold()
-            if any(token in lowered for token in _FORBIDDEN):
+            if (
+                any(token in lowered for token in _FORBIDDEN)
+                and lowered not in _ALLOWED_PCM_SCALARS
+            ):
                 continue
             if value is None or isinstance(value, (bool, int, float)):
                 safe[key] = value

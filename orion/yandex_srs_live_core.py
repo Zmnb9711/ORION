@@ -8,6 +8,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Callable
 
@@ -141,6 +142,21 @@ class _PreparedResponse:
     pcm44: bytes
 
 
+@dataclass(slots=True)
+class _RxTurnEvidence:
+    transmission_id: str
+    first_accepted_packet_timestamp: str
+    last_accepted_packet_timestamp: str
+    first_packet_id: int
+    last_packet_id: int
+    accepted_packet_count: int = 0
+    sequence_gap_count: int = 0
+    decode_error_count: int = 0
+    decoded_pcm_bytes: int = 0
+    padding_bytes: int = 0
+    framed_pcm_bytes: int = 0
+
+
 class SrsYandexPcmEndpoint:
     """Provider-native PCM endpoint backed by one SRS radio transport."""
 
@@ -209,6 +225,7 @@ class SrsYandexPcmEndpoint:
         self._failure: BaseException | None = None
         self._rx_end_injected_at: float | None = None
         self._active_rx_transmission_id: str | None = None
+        self._rx_turn_evidence: _RxTurnEvidence | None = None
         self._boundary_thread: threading.Thread | None = None
         self._tx_thread: threading.Thread | None = None
         self._probe_lock = threading.Lock()
@@ -292,21 +309,44 @@ class SrsYandexPcmEndpoint:
             return
         now = self.clock()
         with self._lock:
+            previous_sequence_gaps = self.tracker.counters.sequence_gaps
             decision = self.tracker.accept(packet, now)
             if decision is not PacketDecision.ACCEPTED:
                 self.diagnostics.record("rx_dropped", decision=decision.value)
                 return
+            accepted_at = datetime.now(UTC).isoformat(timespec="milliseconds")
+            sequence_gap_delta = (
+                self.tracker.counters.sequence_gaps - previous_sequence_gaps
+            )
+            if self._rx_turn_evidence is None:
+                transmission_id = (
+                    f"srs-ptt-{self.tracker.counters.transmissions_started:06d}"
+                )
+                self._rx_turn_evidence = _RxTurnEvidence(
+                    transmission_id=transmission_id,
+                    first_accepted_packet_timestamp=accepted_at,
+                    last_accepted_packet_timestamp=accepted_at,
+                    first_packet_id=packet.packet_id,
+                    last_packet_id=packet.packet_id,
+                )
+            turn_evidence = self._rx_turn_evidence
+            turn_evidence.last_accepted_packet_timestamp = accepted_at
+            turn_evidence.last_packet_id = packet.packet_id
+            turn_evidence.accepted_packet_count += 1
+            turn_evidence.sequence_gap_count += sequence_gap_delta
             self._rx_end_injected_at = None
             try:
                 decoded = self.decoder.decode(packet.audio)
             except Exception as exc:
                 self.opus_decode_errors += 1
+                turn_evidence.decode_error_count += 1
                 self.diagnostics.record(
                     "opus_decode_error",
                     error=str(exc),
                     count=self.opus_decode_errors,
                 )
                 return
+            turn_evidence.decoded_pcm_bytes += len(decoded)
             self.decoded_samples += len(decoded) // 2
             if self.pcm_format.sample_rate == SRS_DECODE_RATE_HZ:
                 provider_pcm = decoded
@@ -314,9 +354,7 @@ class SrsYandexPcmEndpoint:
                 provider_pcm = self.rx_resampler.process(decoded)
                 self.resampled_rx_samples += len(provider_pcm) // 2
             if self._active_rx_transmission_id is None:
-                self._active_rx_transmission_id = (
-                    f"srs-ptt-{self.tracker.counters.transmissions_started:06d}"
-                )
+                self._active_rx_transmission_id = turn_evidence.transmission_id
                 if not self._enqueue_input(
                     RealtimeInputTransmissionStarted(
                         transmission_id=self._active_rx_transmission_id
@@ -333,6 +371,7 @@ class SrsYandexPcmEndpoint:
                 del self.rx_accumulator[: self._input_block_bytes]
                 if not self._enqueue_input(block):
                     return
+                turn_evidence.framed_pcm_bytes += len(block)
                 self._status(input_chunks_delta=1)
             counters = self.tracker.counters
             self._status(
@@ -356,17 +395,23 @@ class SrsYandexPcmEndpoint:
                 if self._rx_end_injected_at == last_packet_at:
                     continue
                 if self.rx_accumulator:
-                    self.rx_accumulator.extend(
-                        bytes(self._input_block_bytes - len(self.rx_accumulator))
-                    )
+                    padding_bytes = self._input_block_bytes - len(self.rx_accumulator)
+                    self.rx_accumulator.extend(bytes(padding_bytes))
                     if not self._enqueue_input(bytes(self.rx_accumulator)):
                         return
+                    if self._rx_turn_evidence is not None:
+                        self._rx_turn_evidence.padding_bytes += padding_bytes
+                        self._rx_turn_evidence.framed_pcm_bytes += len(
+                            self.rx_accumulator
+                        )
                     self.rx_accumulator.clear()
                     self._status(input_chunks_delta=1)
                 silence = bytes(self._input_block_bytes)
                 for _ in range(self._trailing_silence_blocks):
                     if not self._enqueue_input(silence):
                         return
+                    if self._rx_turn_evidence is not None:
+                        self._rx_turn_evidence.framed_pcm_bytes += len(silence)
                     self._status(input_chunks_delta=1)
                 transmission_id = self._active_rx_transmission_id
                 if transmission_id is None:
@@ -375,14 +420,40 @@ class SrsYandexPcmEndpoint:
                         reason="no_decoded_input",
                     )
                     self._rx_end_injected_at = last_packet_at
+                    self._rx_turn_evidence = None
                     continue
+                turn_evidence = self._rx_turn_evidence
+                quiescence_completed_at = datetime.now(UTC).isoformat(
+                    timespec="milliseconds"
+                )
+                if turn_evidence is None:
+                    raise RuntimeError("SRS RX evidence state is missing at boundary")
                 if not self._enqueue_input(
                     RealtimeInputTransmissionCompleted(
-                        transmission_id=transmission_id
+                        transmission_id=transmission_id,
+                        first_accepted_packet_timestamp=(
+                            turn_evidence.first_accepted_packet_timestamp
+                        ),
+                        last_accepted_packet_timestamp=(
+                            turn_evidence.last_accepted_packet_timestamp
+                        ),
+                        accepted_packet_count=turn_evidence.accepted_packet_count,
+                        first_packet_id=turn_evidence.first_packet_id,
+                        last_packet_id=turn_evidence.last_packet_id,
+                        sequence_gap_count=turn_evidence.sequence_gap_count,
+                        decode_error_count=turn_evidence.decode_error_count,
+                        decoded_pcm_bytes=turn_evidence.decoded_pcm_bytes,
+                        padding_bytes=turn_evidence.padding_bytes,
+                        framed_pcm_bytes=turn_evidence.framed_pcm_bytes,
+                        packet_quiescence_completed_timestamp=(
+                            quiescence_completed_at
+                        ),
+                        boundary_gap_ms=int(RX_END_GAP_SECONDS * 1000),
                     )
                 ):
                     return
                 self._active_rx_transmission_id = None
+                self._rx_turn_evidence = None
                 self._rx_end_injected_at = last_packet_at
                 self._status(
                     transmissions_completed=self.tracker.counters.transmissions_completed
@@ -395,6 +466,21 @@ class SrsYandexPcmEndpoint:
                     trailing_silence_ms=(
                         TRAILING_SILENCE_MS if self._trailing_silence_blocks else 0
                     ),
+                    first_accepted_packet_timestamp=(
+                        turn_evidence.first_accepted_packet_timestamp
+                    ),
+                    last_accepted_packet_timestamp=(
+                        turn_evidence.last_accepted_packet_timestamp
+                    ),
+                    accepted_packet_count=turn_evidence.accepted_packet_count,
+                    first_packet_id=turn_evidence.first_packet_id,
+                    last_packet_id=turn_evidence.last_packet_id,
+                    sequence_gap_count=turn_evidence.sequence_gap_count,
+                    decode_error_count=turn_evidence.decode_error_count,
+                    decoded_pcm_bytes=turn_evidence.decoded_pcm_bytes,
+                    padding_bytes=turn_evidence.padding_bytes,
+                    framed_pcm_bytes=turn_evidence.framed_pcm_bytes,
+                    packet_quiescence_completed_timestamp=quiescence_completed_at,
                 )
 
     def read_input(

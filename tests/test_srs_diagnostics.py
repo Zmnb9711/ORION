@@ -18,6 +18,7 @@ def test_srs_diagnostics_are_bounded_scalar_only_and_redact_secrets(tmp_path) ->
         state="READY",
         radio_registered=True,
         udp_packets_received=5,
+        decoded_pcm_bytes=1280,
         error=f"failed {api_key} {eam}",
         raw_pcm=b"forbidden",
         opus_payload=b"forbidden",
@@ -29,6 +30,7 @@ def test_srs_diagnostics_are_bounded_scalar_only_and_redact_secrets(tmp_path) ->
     assert payload["state"] == "READY"
     assert payload["radio_registered"] is True
     assert payload["udp_packets_received"] == 5
+    assert payload["decoded_pcm_bytes"] == 1280
     assert api_key not in encoded and eam not in encoded
     for forbidden in ("raw_pcm", "opus_payload", "full_guid", "authorization"):
         assert forbidden not in payload

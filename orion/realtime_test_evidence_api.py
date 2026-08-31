@@ -22,6 +22,7 @@ _RADIO_STT_EVIDENCE_VALUES = {
 class RealtimeTestEvidenceStart(BaseModel):
     provider: str = Field(min_length=1, max_length=40)
     transport: str = Field(min_length=1, max_length=40)
+    capture_speechkit_stt_input_audio: bool = False
 
 
 @router.post("/start")
@@ -39,6 +40,9 @@ def start_test_evidence(request: RealtimeTestEvidenceStart) -> dict[str, object]
                 provider=request.provider,
                 transport=request.transport,
                 radio_stt_provider=radio_stt_provider,
+                capture_speechkit_stt_input_audio=(
+                    request.capture_speechkit_stt_input_audio
+                ),
                 build_sha=identity.sha,
                 build_branch=identity.branch,
                 build_version=identity.version,

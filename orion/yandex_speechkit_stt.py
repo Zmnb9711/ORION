@@ -11,6 +11,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Callable, Protocol
 
@@ -216,6 +217,9 @@ class _PhysicalTurn:
     started_at: float
     pcm_bytes: int = 0
     pcm_chunks: int = 0
+    capture_enabled: bool = False
+    last_input_write_timestamp: str | None = None
+    last_input_write_monotonic_ns: int | None = None
     eou_sent: bool = False
     final_text: str | None = None
     final_index: int | None = None
@@ -354,12 +358,19 @@ class SpeechKitV3RadioSttAdapter:
             )
         if self._active is not None or self._pending is not None:
             raise SpeechKitSttProtocolError("SpeechKit physical-turn ownership is ambiguous")
-        self._active = _PhysicalTurn(marker.transmission_id, time.monotonic())
+        self._active = _PhysicalTurn(
+            marker.transmission_id,
+            time.monotonic(),
+            capture_enabled=realtime_test_evidence.begin_speechkit_stt_input(
+                marker.transmission_id
+            ),
+        )
         self._state = SpeechKitSttState.TURN_ACTIVE
         self._diagnostics.record(
             "speechkit_stt_ptt_started",
             stt_provider=self.provider_id,
             physical_transmission_id=marker.transmission_id,
+            capture_enabled=self._active.capture_enabled,
         )
 
     async def _send_pcm(self, port: SpeechKitStreamingPort, pcm16le: bytes) -> None:
@@ -368,9 +379,18 @@ class SpeechKitV3RadioSttAdapter:
             raise SpeechKitSttProtocolError("SpeechKit PCM arrived outside an active PTT")
         if not pcm16le or len(pcm16le) % 2:
             raise ValueError("SpeechKit input PCM is empty or not int16-aligned")
+        if turn.capture_enabled and not realtime_test_evidence.append_speechkit_stt_input(
+            turn.transmission_id,
+            pcm16le,
+        ):
+            turn.capture_enabled = False
         await port.send_audio(pcm16le)
         turn.pcm_bytes += len(pcm16le)
         turn.pcm_chunks += 1
+        turn.last_input_write_timestamp = datetime.now(UTC).isoformat(
+            timespec="microseconds"
+        )
+        turn.last_input_write_monotonic_ns = time.monotonic_ns()
 
     async def _complete_turn(
         self,
@@ -391,13 +411,64 @@ class SpeechKitV3RadioSttAdapter:
         self._active = None
         self._pending = turn
         self._state = SpeechKitSttState.WAITING_FINAL
+        eou_sent_timestamp = datetime.now(UTC).isoformat(timespec="microseconds")
+        eou_sent_monotonic_ns = time.monotonic_ns()
+        if (
+            turn.last_input_write_monotonic_ns is not None
+            and eou_sent_monotonic_ns <= turn.last_input_write_monotonic_ns
+        ):
+            # Preserve causal ordering when the Windows monotonic clock has a
+            # coarser observable resolution than these adjacent operations.
+            eou_sent_monotonic_ns = turn.last_input_write_monotonic_ns + 1
+        artifact_included = False
+        if turn.capture_enabled:
+            artifact_included = realtime_test_evidence.finalize_speechkit_stt_input(
+                turn.transmission_id,
+                expected_pcm_bytes=turn.pcm_bytes,
+            )
         self._diagnostics.record(
             "speechkit_stt_eou_sent",
             stt_provider=self.provider_id,
             physical_transmission_id=turn.transmission_id,
             byte_count=turn.pcm_bytes,
+            speechkit_pcm_bytes_before_eou=turn.pcm_bytes,
             chunk_count=turn.pcm_chunks,
             eou_count=1,
+            eou_sent_timestamp=eou_sent_timestamp,
+            eou_sent_monotonic_ns=eou_sent_monotonic_ns,
+            last_input_write_timestamp=turn.last_input_write_timestamp,
+            last_input_write_monotonic_ns=turn.last_input_write_monotonic_ns,
+            capture_enabled=turn.capture_enabled,
+            artifact_included=artifact_included,
+            first_accepted_packet_timestamp=(
+                marker.first_accepted_packet_timestamp
+            ),
+            last_accepted_packet_timestamp=marker.last_accepted_packet_timestamp,
+            accepted_packet_count=marker.accepted_packet_count,
+            first_packet_id=marker.first_packet_id,
+            last_packet_id=marker.last_packet_id,
+            sequence_gap_count=marker.sequence_gap_count,
+            decode_error_count=marker.decode_error_count,
+            decoded_pcm_bytes=marker.decoded_pcm_bytes,
+            padding_bytes=marker.padding_bytes,
+            framed_pcm_bytes=marker.framed_pcm_bytes,
+            packet_quiescence_completed_timestamp=(
+                marker.packet_quiescence_completed_timestamp
+            ),
+            boundary_gap_ms=marker.boundary_gap_ms,
+            decoded_plus_padding_matches_framed=(
+                marker.decoded_pcm_bytes + marker.padding_bytes
+                == marker.framed_pcm_bytes
+                if marker.decoded_pcm_bytes is not None
+                and marker.padding_bytes is not None
+                and marker.framed_pcm_bytes is not None
+                else None
+            ),
+            framed_matches_speechkit=(
+                marker.framed_pcm_bytes == turn.pcm_bytes
+                if marker.framed_pcm_bytes is not None
+                else None
+            ),
         )
 
     async def _receive_worker(self, port: SpeechKitStreamingPort) -> None:

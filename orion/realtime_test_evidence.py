@@ -20,9 +20,11 @@ from orion.interaction_contracts import PresentationMode, SemanticResponse
 
 
 _ALLOWED_FIELDS = {
+    "accepted_packet_count",
     "active_turn_id",
     "aircraft_type",
     "attempt_number",
+    "artifact_included",
     "boundary",
     "boundary_gap_ms",
     "boundary_marker_queued",
@@ -30,6 +32,7 @@ _ALLOWED_FIELDS = {
     "byte_count",
     "characters",
     "chunk_count",
+    "capture_enabled",
     "clean",
     "close_code",
     "context_coalesced_count",
@@ -39,24 +42,39 @@ _ALLOWED_FIELDS = {
     "context_state",
     "context_update_count",
     "context_version",
+    "decode_error_count",
+    "decoded_pcm_bytes",
+    "decoded_plus_padding_matches_framed",
     "eou_count",
+    "eou_sent_monotonic_ns",
+    "eou_sent_timestamp",
     "eou_time_ms",
     "event_id",
     "external_eou",
     "final_index",
     "final_time_ms",
     "finalized_utterance_emitted",
+    "first_accepted_packet_timestamp",
+    "first_packet_id",
+    "framed_pcm_bytes",
+    "framed_matches_speechkit",
     "latency_latest_ms",
     "latency_maximum_ms",
     "latency_median_ms",
     "latency_p90_ms",
     "latency_sample_count",
+    "last_accepted_packet_timestamp",
+    "last_input_write_timestamp",
+    "last_input_write_monotonic_ns",
+    "last_packet_id",
     "local_close_owner",
     "merge_decision",
     "native_finalization",
     "internal_response",
     "output_modality",
     "packet_id",
+    "packet_quiescence_completed_timestamp",
+    "padding_bytes",
     "pcm_bytes",
     "physical_transmission_id",
     "frames",
@@ -104,6 +122,7 @@ _ALLOWED_FIELDS = {
     "semantic_dispatch_count",
     "speechkit_session_uuid",
     "sample_rate_hz",
+    "sequence_gap_count",
     "session_update_latency_ms",
     "yandex_session_id",
     "realtime_session_id",
@@ -115,6 +134,7 @@ _ALLOWED_FIELDS = {
     "queue_to_first_tx_ms",
     "queue_to_complete_ms",
     "speech_stopped_to_first_audio_ms",
+    "speechkit_pcm_bytes_before_eou",
     "status",
     "segment_count",
     "segment_index",
@@ -131,6 +151,7 @@ class RealtimeTestEvidenceStatus:
     provider: str | None = None
     transport: str | None = None
     radio_stt_provider: str | None = None
+    speechkit_stt_input_capture_enabled: bool = False
     event_count: int = 0
     dropped_event_count: int = 0
     user_transcript_count: int = 0
@@ -161,6 +182,7 @@ class RealtimeTestEvidenceRecorder:
         self._provider: str | None = None
         self._transport: str | None = None
         self._radio_stt_provider: str | None = None
+        self._speechkit_stt_input_capture_enabled = False
         self._build_sha: str | None = None
         self._build_branch: str | None = None
         self._build_version: str | None = None
@@ -175,6 +197,8 @@ class RealtimeTestEvidenceRecorder:
         self._hybrid_audio: dict[str, bytes] = {}
         self._live_golden_runs: dict[str, dict[str, object]] = {}
         self._live_golden_audio: dict[str, bytes] = {}
+        self._speechkit_stt_input_active: dict[str, bytearray] = {}
+        self._speechkit_stt_input_audio: dict[str, bytes] = {}
 
     def start(
         self,
@@ -182,6 +206,7 @@ class RealtimeTestEvidenceRecorder:
         provider: str,
         transport: str,
         radio_stt_provider: str | None = None,
+        capture_speechkit_stt_input_audio: bool = False,
         build_sha: str | None = None,
         build_branch: str | None = None,
         build_version: str | None = None,
@@ -207,12 +232,17 @@ class RealtimeTestEvidenceRecorder:
             self._hybrid_audio.clear()
             self._live_golden_runs.clear()
             self._live_golden_audio.clear()
+            self._speechkit_stt_input_active.clear()
+            self._speechkit_stt_input_audio.clear()
             self._active = True
             self._test_session_id = uuid4().hex
             self._started_at = datetime.now(UTC)
             self._provider = provider_value
             self._transport = transport_value
             self._radio_stt_provider = radio_stt_provider_value
+            self._speechkit_stt_input_capture_enabled = bool(
+                capture_speechkit_stt_input_audio
+            )
             candidate_sha = (
                 build_sha or os.environ.get("ORION_BUILD_SHA") or "unknown"
             ).strip()
@@ -236,6 +266,80 @@ class RealtimeTestEvidenceRecorder:
             ).strip()
             self._build_version = candidate_version[:80] or "unknown"
             return self._status_locked()
+
+    def begin_speechkit_stt_input(self, transmission_id: str) -> bool:
+        """Begin an in-memory, explicitly opted-in capture for one radio turn."""
+
+        with self._lock:
+            if not self._active or not self._speechkit_stt_input_capture_enabled:
+                return False
+            safe_id = self._identifier(
+                transmission_id,
+                "SpeechKit input transmission",
+                max_length=100,
+            )
+            if len(self._speechkit_stt_input_audio) >= 8:
+                return False
+            self._speechkit_stt_input_active[safe_id] = bytearray()
+            return True
+
+    def append_speechkit_stt_input(
+        self,
+        transmission_id: str,
+        pcm16le: bytes,
+    ) -> bool:
+        """Retain one successfully written provider PCM block without disk I/O."""
+
+        max_pcm_bytes = 16_000 * 2 * 30
+        if not pcm16le or len(pcm16le) % 2:
+            return False
+        with self._lock:
+            if not self._active or not self._speechkit_stt_input_capture_enabled:
+                return False
+            safe_id = self._identifier(
+                transmission_id,
+                "SpeechKit input transmission",
+                max_length=100,
+            )
+            buffer = self._speechkit_stt_input_active.get(safe_id)
+            if buffer is None:
+                return False
+            if len(buffer) + len(pcm16le) > max_pcm_bytes:
+                self._speechkit_stt_input_active.pop(safe_id, None)
+                return False
+            buffer.extend(pcm16le)
+            return True
+
+    def finalize_speechkit_stt_input(
+        self,
+        transmission_id: str,
+        *,
+        expected_pcm_bytes: int,
+    ) -> bool:
+        """Finalize one exact PCM16/mono/16-kHz WAV inside the future ZIP."""
+
+        with self._lock:
+            if not self._active or not self._speechkit_stt_input_capture_enabled:
+                return False
+            safe_id = self._identifier(
+                transmission_id,
+                "SpeechKit input transmission",
+                max_length=100,
+            )
+            pcm = self._speechkit_stt_input_active.pop(safe_id, None)
+            if pcm is None or not pcm or len(pcm) != expected_pcm_bytes:
+                return False
+            safe_id = safe_id.replace(":", "_")
+            buffer = io.BytesIO()
+            with wave.open(buffer, "wb") as output:
+                output.setnchannels(1)
+                output.setsampwidth(2)
+                output.setframerate(16_000)
+                output.writeframes(pcm)
+            self._speechkit_stt_input_audio[
+                f"speechkit-stt-input/{safe_id}.wav"
+            ] = buffer.getvalue()
+            return True
 
     def record(self, event: str, **fields: object) -> None:
         with self._lock:
@@ -875,6 +979,12 @@ class RealtimeTestEvidenceRecorder:
                 dict(item) for item in self._live_golden_runs.values()
             )
             live_golden_audio = dict(self._live_golden_audio)
+            speechkit_stt_input_audio = dict(self._speechkit_stt_input_audio)
+            speechkit_stt_input_capture_enabled = (
+                self._speechkit_stt_input_capture_enabled
+            )
+            self._speechkit_stt_input_active.clear()
+            self._speechkit_stt_input_audio.clear()
             self._active = False
 
             root = self._runtime_dir or Path(os.environ.get("ORION_RUNTIME_DIR", "runtime"))
@@ -898,16 +1008,25 @@ class RealtimeTestEvidenceRecorder:
                 members += ",live-golden-summary.json"
             if live_golden_audio:
                 members += "," + ",".join(sorted(live_golden_audio))
+            if speechkit_stt_input_audio:
+                members += "," + ",".join(sorted(speechkit_stt_input_audio))
+            raw_audio_included = bool(
+                hybrid_audio or live_golden_audio or speechkit_stt_input_audio
+            )
             manifest = (
                 "ORION realtime test evidence\n"
-                f"format_version={5 if live_golden_runs else (4 if hybrid_runs else 3)}\n"
+                f"format_version={6 if speechkit_stt_input_capture_enabled else (5 if live_golden_runs else (4 if hybrid_runs else 3))}\n"
                 f"test_session_id={session_id}\n"
                 f"members={members}\n"
-                f"raw_audio_included={str(bool(hybrid_audio or live_golden_audio)).lower()}\n"
+                f"raw_audio_included={str(raw_audio_included).lower()}\n"
                 f"synthetic_probe_audio_included={str(bool(hybrid_audio)).lower()}\n"
                 f"live_golden_response_audio_included={str(bool(live_golden_audio)).lower()}\n"
+                f"speechkit_stt_input_audio_opt_in={str(speechkit_stt_input_capture_enabled).lower()}\n"
+                f"speechkit_stt_input_audio_included={str(bool(speechkit_stt_input_audio)).lower()}\n"
+                f"radio_received_audio_included={str(bool(speechkit_stt_input_audio)).lower()}\n"
+                "speechkit_stt_input_capture_scope=accepted_target_channel_turns\n"
                 "microphone_audio_included=false\n"
-                "unrelated_srs_audio_included=false\n"
+                f"unrelated_srs_audio_included={'NOT OBSERVABLE' if speechkit_stt_input_audio else 'false'}\n"
                 f"transcripts_included={str(bool(user_transcript_count or assistant_transcript_count)).lower()}\n"
                 f"user_transcripts_included={str(bool(user_transcript_count)).lower()}\n"
                 f"assistant_transcripts_included={str(bool(assistant_transcript_count)).lower()}\n"
@@ -923,6 +1042,7 @@ class RealtimeTestEvidenceRecorder:
                 f"ia11_audio_artifacts={len(hybrid_audio)}\n"
                 f"live_golden_runs={len(live_golden_runs)}\n"
                 f"live_golden_audio_artifacts={len(live_golden_audio)}\n"
+                f"speechkit_stt_input_audio_artifacts={len(speechkit_stt_input_audio)}\n"
             )
             summary = (
                 f"test_session_id={session_id}\n"
@@ -934,6 +1054,8 @@ class RealtimeTestEvidenceRecorder:
                 f"provider={provider}\n"
                 f"transport={transport}\n"
                 f"radio_stt_provider={radio_stt_provider}\n"
+                f"speechkit_stt_input_audio_opt_in={str(speechkit_stt_input_capture_enabled).lower()}\n"
+                f"speechkit_stt_input_audio_artifacts={len(speechkit_stt_input_audio)}\n"
                 f"event_count={len(events)}\n"
                 f"dropped_event_count={dropped}\n"
                 f"user_transcript_count={user_transcript_count}\n"
@@ -998,6 +1120,7 @@ class RealtimeTestEvidenceRecorder:
                     sort_keys=True,
                 ) + "\n"
             archive_members.update(live_golden_audio)
+            archive_members.update(speechkit_stt_input_audio)
             self._write_zip(output, archive_members)
             self._last_export_path = output.resolve()
             return self._last_export_path
@@ -1015,6 +1138,9 @@ class RealtimeTestEvidenceRecorder:
             transport=self._transport if self._active else None,
             radio_stt_provider=(
                 self._radio_stt_provider if self._active else None
+            ),
+            speechkit_stt_input_capture_enabled=(
+                self._speechkit_stt_input_capture_enabled if self._active else False
             ),
             event_count=len(self._events) if self._active else 0,
             dropped_event_count=self._dropped if self._active else 0,

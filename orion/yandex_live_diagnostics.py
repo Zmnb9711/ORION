@@ -26,6 +26,11 @@ class YandexLiveDiagnostics:
         "token",
         "transcript",
     }
+    _ALLOWED_PCM_SCALARS = {
+        "decoded_pcm_bytes",
+        "framed_pcm_bytes",
+        "speechkit_pcm_bytes_before_eou",
+    }
 
     def __init__(self, session_id: str, api_key: str, runtime_dir: Path | None = None) -> None:
         self.session_id = session_id
@@ -43,7 +48,10 @@ class YandexLiveDiagnostics:
         }
         for key, value in fields.items():
             lowered = key.casefold()
-            if any(token in lowered for token in self._FORBIDDEN):
+            if (
+                any(token in lowered for token in self._FORBIDDEN)
+                and lowered not in self._ALLOWED_PCM_SCALARS
+            ):
                 continue
             if value is None or isinstance(value, (bool, int, float, str)):
                 safe[key] = sanitize_yandex_error(value, self._api_key) if isinstance(value, str) else value

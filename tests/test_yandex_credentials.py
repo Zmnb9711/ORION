@@ -45,6 +45,7 @@ def test_yandex_diagnostics_drop_credentials_and_audio_payloads(tmp_path) -> Non
         longitude=65.847,
         error="request failed for super-secret",
         byte_count=1764,
+        speechkit_pcm_bytes_before_eou=1280,
     )
     text = diagnostics.path.read_text(encoding="utf-8")
     assert "super-secret" not in text
@@ -54,3 +55,4 @@ def test_yandex_diagnostics_drop_credentials_and_audio_payloads(tmp_path) -> Non
     assert "65.847" not in text
     assert "[REDACTED]" in text
     assert '"byte_count": 1764' in text
+    assert '"speechkit_pcm_bytes_before_eou": 1280' in text
