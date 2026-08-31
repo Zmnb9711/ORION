@@ -171,6 +171,14 @@ def test_official_process_and_orion_radio_statuses_cannot_be_confused() -> None:
         "ORION SRS: READY"
     )
     assert format_orion_srs_status(
+        {
+            "transport": "srs",
+            "state": "streaming",
+            "phase": "listening",
+            "message": "SpeechKit v3 SRS voice is running | SRS TX STATE: READY",
+        }
+    ) == "ORION SRS: READY | SRS TX STATE: READY"
+    assert format_orion_srs_status(
         {"transport": "direct", "state": "streaming", "phase": "listening"}
     ) == "ORION SRS: NOT CONNECTED"
 

@@ -80,6 +80,33 @@ def test_recorder_is_noop_until_explicitly_started(tmp_path) -> None:  # noqa: A
     assert recorder.status().user_transcript_count == 0
 
 
+def test_srs_tx_state_evidence_retains_only_bounded_safe_scalars(tmp_path) -> None:  # noqa: ANN001
+    recorder = RealtimeTestEvidenceRecorder(tmp_path)
+    recorder.start(provider="yandex", transport="srs")
+    recorder.record(
+        "srs_tx_state_snapshot",
+        is_sending=True,
+        sending_on=1,
+        is_encrypted=0,
+        snapshot_age_ms=0.0,
+        active_orion_turn_id="srs-ptt-000001",
+        transition=True,
+        suppressed_snapshot_count=4,
+        valid_snapshot_count=35,
+        authorization="must-not-survive",
+    )
+    output = recorder.stop_and_export()
+    with zipfile.ZipFile(output) as archive:
+        raw = archive.read("events.jsonl").decode("utf-8")
+    event = json.loads(raw)
+    assert event["is_sending"] is True
+    assert event["sending_on"] == 1
+    assert event["snapshot_age_ms"] == 0.0
+    assert event["active_orion_turn_id"] == "srs-ptt-000001"
+    assert event["suppressed_snapshot_count"] == 4
+    assert "must-not-survive" not in raw
+
+
 def test_speechkit_input_wav_is_exact_and_explicitly_opted_in(tmp_path) -> None:  # noqa: ANN001
     recorder = RealtimeTestEvidenceRecorder(tmp_path)
     pcm_blocks = (b"\x01\x00" * 320, b"\x02\x00" * 320)

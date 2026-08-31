@@ -34,6 +34,7 @@ from orion.srs_opus import OPUS_FRAME_BYTES, OpusDecoder, OpusEncoder
 from orion.srs_protocol import (
     AM,
     Frequency,
+    SRS_EXTERNAL_AUDIO_RADIO_INDEX,
     SrsProtocolError,
     VoicePacket,
     decode_voice_packet,
@@ -55,9 +56,15 @@ from orion.srs_resampler import (
 from orion.srs_transmission import (
     PacketDecision,
     RX_END_GAP_SECONDS,
+    TX_GUARD_SECONDS,
     TransmissionTracker,
     TxPacer,
     split_tx_pcm,
+)
+from orion.srs_tx_state import (
+    SrsTxStateListener,
+    SrsTxStateListenerStatus,
+    SrsTxStateSnapshot,
 )
 from orion.yandex_live_diagnostics import YandexLiveDiagnostics
 from orion.yandex_realtime_provider import YANDEX_INPUT_RATE, sanitize_yandex_error
@@ -72,6 +79,7 @@ RESPONSE_MAX_BYTES = YANDEX_INPUT_RATE * 2 * RESPONSE_MAX_SECONDS
 MAX_RESPONSE_STATES = 4
 SHUTDOWN_TIMEOUT_SECONDS = 6.0
 SRS_DECODE_RATE_HZ = 16_000
+SRS_TX_CONFIRM_TIMEOUT_SECONDS = 1.0
 
 
 class YandexSrsState(StrEnum):
@@ -122,6 +130,10 @@ class YandexSrsStatus(BaseModel):
     tx_frames: int = 0
     malformed_packets: int = 0
     opus_decode_errors: int = 0
+    srs_tx_state_status: str = "not_required"
+    srs_tx_state_is_sending: bool | None = None
+    srs_tx_state_sending_on: int | None = None
+    srs_tx_state_snapshot_age_ms: float | None = None
     last_error: str | None = None
 
 
@@ -177,6 +189,10 @@ class SrsYandexPcmEndpoint:
         tx_resampler_factory: Callable[[], StreamingPcm16Resampler] = make_tx_resampler,
         clock: Callable[[], float] = time.monotonic,
         provider_input_rate_hz: int = YANDEX_INPUT_RATE,
+        authoritative_tx_state: bool = False,
+        tx_state_listener_factory: Callable[..., SrsTxStateListener] = (
+            SrsTxStateListener
+        ),
     ) -> None:
         if provider_input_rate_hz not in {SRS_DECODE_RATE_HZ, YANDEX_INPUT_RATE}:
             raise ValueError("Unsupported SRS provider PCM rate")
@@ -185,6 +201,8 @@ class SrsYandexPcmEndpoint:
         self.diagnostics = diagnostics
         self._status = status_callback
         self.clock = clock
+        self._authoritative_tx_state = authoritative_tx_state
+        self._expected_sending_on = SRS_EXTERNAL_AUDIO_RADIO_INDEX
         self.pcm_format = RealtimePcmFormat(sample_rate=provider_input_rate_hz)
         self._input_block_frames = provider_input_rate_hz // 50
         self._input_block_bytes = self._input_block_frames * 2
@@ -237,6 +255,23 @@ class SrsYandexPcmEndpoint:
         self._stop_lock = threading.Lock()
         self._resources_stopped = False
         self._provider_output_suppressed = False
+        self._tx_state_latest: SrsTxStateSnapshot | None = None
+        self._tx_state_confirmed_transmission_id: str | None = None
+        self._tx_state_confirmed_sending_on: int | None = None
+        self._tx_state_candidate_started_at: float | None = None
+        self._tx_state_started_timestamp: str | None = None
+        self._last_authoritative_tx_end_at: float | None = None
+        self._tx_state_listener = (
+            tx_state_listener_factory(
+                stop_event,
+                self._on_tx_state_snapshot,
+                self._on_tx_state_status,
+                lambda event, fields: self.diagnostics.record(event, **fields),
+                clock=clock,
+            )
+            if authoritative_tx_state
+            else None
+        )
 
     def connect_radio(self) -> None:
         self.radio.connect()
@@ -249,6 +284,12 @@ class SrsYandexPcmEndpoint:
             radio_registered=self.radio.radio_registered,
             udp_registered=self.radio.udp_registered,
         )
+        if self._tx_state_listener is not None:
+            self._status(
+                phase="srs_tx_state_connecting",
+                srs_tx_state_status=SrsTxStateListenerStatus.WAITING.value,
+            )
+            self._tx_state_listener.start()
 
     def start(self) -> None:
         if self._started:
@@ -298,6 +339,119 @@ class SrsYandexPcmEndpoint:
         if phase is not None:
             self._status(phase=phase)
 
+    def _on_tx_state_status(
+        self,
+        status: SrsTxStateListenerStatus,
+        snapshot_age_ms: float | None,
+    ) -> None:
+        message = (
+            "SpeechKit v3 SRS voice is running"
+            if self._started
+            else "Starting SpeechKit v3 SRS voice"
+        )
+        self._status(
+            srs_tx_state_status=status.value,
+            srs_tx_state_snapshot_age_ms=snapshot_age_ms,
+            message=f"{message} | SRS TX STATE: {status.value.upper()}",
+        )
+        if status is not SrsTxStateListenerStatus.STALE:
+            return
+        with self._lock:
+            active = self._active_rx_transmission_id is not None
+        if active:
+            self._set_failure(
+                RuntimeError(
+                    "SRS TX-state stream became stale during an active radio turn"
+                )
+            )
+
+    def _on_tx_state_snapshot(
+        self,
+        snapshot: SrsTxStateSnapshot,
+        previous: SrsTxStateSnapshot | None,
+    ) -> None:
+        with self._lock:
+            self._tx_state_latest = snapshot
+            self._status(
+                srs_tx_state_status=SrsTxStateListenerStatus.READY.value,
+                srs_tx_state_is_sending=snapshot.is_sending,
+                srs_tx_state_sending_on=snapshot.sending_on,
+                srs_tx_state_snapshot_age_ms=0.0,
+            )
+            active_id = self._active_rx_transmission_id
+            start_observed = snapshot.is_sending and (
+                previous is None or not previous.is_sending
+            )
+            end_observed = (
+                not snapshot.is_sending
+                and previous is not None
+                and previous.is_sending
+            )
+            if start_observed:
+                if snapshot.sending_on == self._expected_sending_on:
+                    self._tx_state_started_timestamp = snapshot.received_timestamp
+                self.diagnostics.record(
+                    "srs_tx_started",
+                    source="udp_7082",
+                    is_sending=True,
+                    sending_on=snapshot.sending_on,
+                    is_encrypted=snapshot.is_encrypted,
+                    active_orion_turn_id=active_id,
+                    transition_authoritative=previous is not None,
+                    snapshot_timestamp=snapshot.received_timestamp,
+                )
+            if snapshot.is_sending and active_id is not None:
+                if snapshot.sending_on == self._expected_sending_on:
+                    self._confirm_tx_state(snapshot)
+                elif self._tx_state_confirmed_transmission_id == active_id:
+                    self._set_failure(
+                        RuntimeError(
+                            "SRS TX-state radio ownership changed during an active turn"
+                        )
+                    )
+                    return
+            if not end_observed or previous is None:
+                return
+            if (
+                active_id is None
+                or self._tx_state_confirmed_transmission_id != active_id
+                or self._tx_state_confirmed_sending_on != previous.sending_on
+                or previous.sending_on != self._expected_sending_on
+            ):
+                self.diagnostics.record(
+                    "srs_tx_ended",
+                    source="udp_7082",
+                    sending_on=previous.sending_on,
+                    active_orion_turn_id=active_id,
+                    transition_authoritative=True,
+                    eou_triggered_by_7082=False,
+                    reason="uncorrelated_tx_state",
+                    snapshot_timestamp=snapshot.received_timestamp,
+                )
+                if previous.sending_on == self._expected_sending_on:
+                    self._tx_state_started_timestamp = None
+                return
+            self._complete_authoritative_turn(snapshot, previous.sending_on)
+
+    def _confirm_tx_state(self, snapshot: SrsTxStateSnapshot) -> None:
+        transmission_id = self._active_rx_transmission_id
+        if transmission_id is None:
+            return
+        if self._tx_state_confirmed_transmission_id == transmission_id:
+            return
+        self._tx_state_confirmed_transmission_id = transmission_id
+        self._tx_state_confirmed_sending_on = snapshot.sending_on
+        if self._tx_state_started_timestamp is None:
+            self._tx_state_started_timestamp = snapshot.received_timestamp
+        self.diagnostics.record(
+            "srs_tx_state_correlated",
+            active_orion_turn_id=transmission_id,
+            sending_on=snapshot.sending_on,
+            is_encrypted=snapshot.is_encrypted,
+            tx_state_confirmed=True,
+            snapshot_timestamp=snapshot.received_timestamp,
+        )
+
     def _on_radio_datagram(self, datagram: bytes) -> None:
         try:
             packet = decode_voice_packet(datagram)
@@ -309,8 +463,23 @@ class SrsYandexPcmEndpoint:
             return
         now = self.clock()
         with self._lock:
+            if self._authoritative_tx_state and (
+                self._tx_state_listener is None
+                or self._tx_state_listener.status
+                is not SrsTxStateListenerStatus.READY
+            ):
+                self._set_failure(
+                    RuntimeError(
+                        "SRS voice arrived without a healthy authoritative TX-state stream"
+                    )
+                )
+                return
             previous_sequence_gaps = self.tracker.counters.sequence_gaps
-            decision = self.tracker.accept(packet, now)
+            decision = self.tracker.accept(
+                packet,
+                now,
+                expire_on_quiescence=not self._authoritative_tx_state,
+            )
             if decision is not PacketDecision.ACCEPTED:
                 self.diagnostics.record("rx_dropped", decision=decision.value)
                 return
@@ -355,6 +524,7 @@ class SrsYandexPcmEndpoint:
                 self.resampled_rx_samples += len(provider_pcm) // 2
             if self._active_rx_transmission_id is None:
                 self._active_rx_transmission_id = turn_evidence.transmission_id
+                self._tx_state_candidate_started_at = now
                 if not self._enqueue_input(
                     RealtimeInputTransmissionStarted(
                         transmission_id=self._active_rx_transmission_id
@@ -364,7 +534,20 @@ class SrsYandexPcmEndpoint:
                 self.diagnostics.record(
                     "rx_transmission_started",
                     physical_transmission_id=self._active_rx_transmission_id,
+                    boundary_source=(
+                        "srs_tx_state"
+                        if self._authoritative_tx_state
+                        else "packet_quiescence"
+                    ),
                 )
+                latest = self._tx_state_latest
+                if (
+                    self._authoritative_tx_state
+                    and latest is not None
+                    and latest.is_sending
+                    and latest.sending_on == self._expected_sending_on
+                ):
+                    self._confirm_tx_state(latest)
             self.rx_accumulator.extend(provider_pcm)
             while len(self.rx_accumulator) >= self._input_block_bytes:
                 block = bytes(self.rx_accumulator[: self._input_block_bytes])
@@ -384,10 +567,162 @@ class SrsYandexPcmEndpoint:
                 opus_decode_errors=self.opus_decode_errors,
             )
 
+    def _flush_authoritative_rx_pcm(self) -> bool:
+        if not self.rx_accumulator:
+            return True
+        padding_bytes = self._input_block_bytes - len(self.rx_accumulator)
+        self.rx_accumulator.extend(bytes(padding_bytes))
+        if not self._enqueue_input(bytes(self.rx_accumulator)):
+            return False
+        if self._rx_turn_evidence is not None:
+            self._rx_turn_evidence.padding_bytes += padding_bytes
+            self._rx_turn_evidence.framed_pcm_bytes += len(self.rx_accumulator)
+        self.rx_accumulator.clear()
+        self._status(input_chunks_delta=1)
+        return True
+
+    def _complete_authoritative_turn(
+        self,
+        snapshot: SrsTxStateSnapshot,
+        sending_on: int,
+    ) -> None:
+        transmission_id = self._active_rx_transmission_id
+        turn_evidence = self._rx_turn_evidence
+        if transmission_id is None or turn_evidence is None:
+            return
+        if not self._flush_authoritative_rx_pcm():
+            return
+        if not self._enqueue_input(
+            RealtimeInputTransmissionCompleted(
+                transmission_id=transmission_id,
+                boundary="srs_tx_state_end",
+                first_accepted_packet_timestamp=(
+                    turn_evidence.first_accepted_packet_timestamp
+                ),
+                last_accepted_packet_timestamp=(
+                    turn_evidence.last_accepted_packet_timestamp
+                ),
+                accepted_packet_count=turn_evidence.accepted_packet_count,
+                first_packet_id=turn_evidence.first_packet_id,
+                last_packet_id=turn_evidence.last_packet_id,
+                sequence_gap_count=turn_evidence.sequence_gap_count,
+                decode_error_count=turn_evidence.decode_error_count,
+                decoded_pcm_bytes=turn_evidence.decoded_pcm_bytes,
+                padding_bytes=turn_evidence.padding_bytes,
+                framed_pcm_bytes=turn_evidence.framed_pcm_bytes,
+                srs_tx_started_timestamp=self._tx_state_started_timestamp,
+                srs_tx_ended_timestamp=snapshot.received_timestamp,
+                srs_tx_sending_on=sending_on,
+                srs_tx_state_authoritative=True,
+            )
+        ):
+            return
+        self.tracker.complete_active()
+        self._status(
+            transmissions_completed=self.tracker.counters.transmissions_completed
+        )
+        self.diagnostics.record(
+            "srs_tx_ended",
+            source="udp_7082",
+            is_sending=False,
+            sending_on=sending_on,
+            is_encrypted=snapshot.is_encrypted,
+            active_orion_turn_id=transmission_id,
+            transition_authoritative=True,
+            eou_triggered_by_7082=True,
+            boundary_marker_queued=True,
+            snapshot_timestamp=snapshot.received_timestamp,
+            last_voice_packet_timestamp=(
+                turn_evidence.last_accepted_packet_timestamp
+            ),
+            accepted_packet_count=turn_evidence.accepted_packet_count,
+            sequence_gap_count=turn_evidence.sequence_gap_count,
+            decoded_pcm_bytes=turn_evidence.decoded_pcm_bytes,
+            padding_bytes=turn_evidence.padding_bytes,
+            framed_pcm_bytes=turn_evidence.framed_pcm_bytes,
+        )
+        self.diagnostics.record(
+            "rx_transmission_completed",
+            boundary_source="srs_tx_state",
+            boundary_marker_queued=True,
+            boundary_gap_ms=None,
+            physical_transmission_id=transmission_id,
+            trailing_silence_ms=0,
+            first_accepted_packet_timestamp=(
+                turn_evidence.first_accepted_packet_timestamp
+            ),
+            last_accepted_packet_timestamp=(
+                turn_evidence.last_accepted_packet_timestamp
+            ),
+            accepted_packet_count=turn_evidence.accepted_packet_count,
+            first_packet_id=turn_evidence.first_packet_id,
+            last_packet_id=turn_evidence.last_packet_id,
+            sequence_gap_count=turn_evidence.sequence_gap_count,
+            decode_error_count=turn_evidence.decode_error_count,
+            decoded_pcm_bytes=turn_evidence.decoded_pcm_bytes,
+            padding_bytes=turn_evidence.padding_bytes,
+            framed_pcm_bytes=turn_evidence.framed_pcm_bytes,
+            srs_tx_started_timestamp=self._tx_state_started_timestamp,
+            srs_tx_ended_timestamp=snapshot.received_timestamp,
+            srs_tx_sending_on=sending_on,
+            srs_tx_state_authoritative=True,
+        )
+        self._active_rx_transmission_id = None
+        self._rx_turn_evidence = None
+        self._rx_end_injected_at = self.tracker.last_human_packet_at
+        self._tx_state_candidate_started_at = None
+        self._tx_state_confirmed_transmission_id = None
+        self._tx_state_confirmed_sending_on = None
+        self._tx_state_started_timestamp = None
+        self._last_authoritative_tx_end_at = snapshot.received_at
+
+    def _channel_clear_for_tx(self, now: float) -> bool:
+        if not self._authoritative_tx_state:
+            return self.tracker.channel_clear(now)
+        listener = self._tx_state_listener
+        latest = self._tx_state_latest
+        if (
+            listener is None
+            or listener.status is not SrsTxStateListenerStatus.READY
+            or latest is None
+            or latest.is_sending
+            or self._active_rx_transmission_id is not None
+            or self.tracker.active_origin_guid is not None
+            or self.tracker.bot_tx_active
+        ):
+            return False
+        return self._last_authoritative_tx_end_at is None or (
+            now - self._last_authoritative_tx_end_at >= TX_GUARD_SECONDS
+        )
+
     def _boundary_worker(self) -> None:
         while not self.stop_event.wait(0.02):
             now = self.clock()
             with self._lock:
+                if self._authoritative_tx_state:
+                    candidate_started = self._tx_state_candidate_started_at
+                    active_id = self._active_rx_transmission_id
+                    if (
+                        active_id is not None
+                        and self._tx_state_confirmed_transmission_id != active_id
+                        and candidate_started is not None
+                        and now - candidate_started
+                        >= SRS_TX_CONFIRM_TIMEOUT_SECONDS
+                    ):
+                        self.diagnostics.record(
+                            "srs_tx_state_stale",
+                            reason="active_turn_not_confirmed",
+                            active_orion_turn_id=active_id,
+                            confirmation_timeout_ms=(
+                                SRS_TX_CONFIRM_TIMEOUT_SECONDS * 1000
+                            ),
+                        )
+                        self._set_failure(
+                            RuntimeError(
+                                "SRS TX-state did not confirm the active radio turn"
+                            )
+                        )
+                    continue
                 last_packet_at = self.tracker.last_human_packet_at
                 completed = self.tracker.expire(now)
                 if completed is None or last_packet_at is None:
@@ -819,7 +1154,7 @@ class SrsYandexPcmEndpoint:
                 return
             while not self.stop_event.wait(0.01):
                 with self._lock:
-                    if self.tracker.channel_clear(self.clock()):
+                    if self._channel_clear_for_tx(self.clock()):
                         self.tracker.bot_tx_active = True
                         break
             if self.stop_event.is_set():
@@ -919,6 +1254,8 @@ class SrsYandexPcmEndpoint:
                 return True
             deadline = time.monotonic() + max(0.01, timeout_s)
             self.stop_event.set()
+            if self._tx_state_listener is not None:
+                self._tx_state_listener.stop()
             try:
                 self.tx_queue.put_nowait(None)
             except queue.Full:
@@ -1052,10 +1389,23 @@ class YandexSrsLiveService:
                     if request.radio_stt_provider is RadioSttProvider.SPEECHKIT_V3
                     else YANDEX_INPUT_RATE
                 ),
+                authoritative_tx_state=(
+                    request.radio_stt_provider is RadioSttProvider.SPEECHKIT_V3
+                ),
             )
             endpoint.connect_radio()
 
             def streaming() -> None:
+                tx_state_suffix = ""
+                if (
+                    request.radio_stt_provider is RadioSttProvider.SPEECHKIT_V3
+                    and endpoint is not None
+                    and endpoint._tx_state_listener is not None
+                ):
+                    tx_state_suffix = (
+                        " | SRS TX STATE: "
+                        f"{endpoint._tx_state_listener.status.value.upper()}"
+                    )
                 self._set(
                     state=YandexSrsState.STREAMING,
                     phase="listening",
@@ -1064,7 +1414,8 @@ class YandexSrsLiveService:
                         if request.radio_stt_provider
                         is RadioSttProvider.SPEECHKIT_V3
                         else "Yandex SRS voice is running"
-                    ),
+                    )
+                    + tx_state_suffix,
                 )
 
             def session_ready(voice_session_id: str) -> None:

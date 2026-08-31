@@ -42,6 +42,10 @@ class RealtimeInputTransmissionCompleted:
     framed_pcm_bytes: int | None = None
     packet_quiescence_completed_timestamp: str | None = None
     boundary_gap_ms: int | None = None
+    srs_tx_started_timestamp: str | None = None
+    srs_tx_ended_timestamp: str | None = None
+    srs_tx_sending_on: int | None = None
+    srs_tx_state_authoritative: bool = False
 
 
 @dataclass(frozen=True, slots=True)

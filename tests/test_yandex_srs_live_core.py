@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import queue
 import threading
 import time
@@ -12,9 +13,18 @@ from orion.srs_protocol import (
     encode_voice_packet,
 )
 from orion.srs_radio_transport import SrsRadioConfig, SrsState
+from orion.srs_tx_state import (
+    SrsTxStateListenerStatus,
+    SrsTxStateSnapshot,
+)
 from orion.realtime_audio_transport import (
+    FinalizedUserUtterance,
     RealtimeInputTransmissionCompleted,
     RealtimeInputTransmissionStarted,
+)
+from orion.yandex_speechkit_stt import (
+    SpeechKitProviderEvent,
+    SpeechKitV3RadioSttAdapter,
 )
 from orion.yandex_srs_live_core import (
     MAX_RESPONSE_STATES,
@@ -108,12 +118,59 @@ class FakeRadio:
         self.state = SrsState.STOPPED
 
 
+class FakeTxStateListener:
+    def __init__(
+        self,
+        _session_stop,
+        on_snapshot,
+        on_status,
+        _diagnostic,
+        *,
+        clock,
+        initial_sending: bool = False,
+    ) -> None:  # noqa: ANN001
+        self._on_snapshot = on_snapshot
+        self._on_status = on_status
+        self._clock = clock
+        self._initial_sending = initial_sending
+        self.status = SrsTxStateListenerStatus.STOPPED
+        self.latest: SrsTxStateSnapshot | None = None
+
+    def start(self) -> None:
+        self.status = SrsTxStateListenerStatus.READY
+        self._on_status(self.status, 0.0)
+        self.emit(self._initial_sending)
+
+    def stop(self) -> None:
+        self.status = SrsTxStateListenerStatus.STOPPED
+
+    def emit(self, is_sending: bool, sending_on: int = 1) -> None:
+        previous = self.latest
+        snapshot = SrsTxStateSnapshot(
+            is_sending=is_sending,
+            sending_on=sending_on,
+            is_encrypted=0,
+            received_at=self._clock(),
+            received_timestamp=f"test-{self._clock():.3f}",
+        )
+        self.latest = snapshot
+        self.status = SrsTxStateListenerStatus.READY
+        self._on_status(self.status, 0.0)
+        self._on_snapshot(snapshot, previous)
+
+    def stale(self, age_ms: float = 1_001.0) -> None:
+        self.status = SrsTxStateListenerStatus.STALE
+        self._on_status(self.status, age_ms)
+
+
 def make_endpoint(
     tmp_path,
     clock: Clock,
     *,
     provider_input_rate_hz: int = 44_100,
     decoded_pcm: bytes = bytes(1280),
+    authoritative_tx_state: bool = False,
+    tx_state_initial_sending: bool = False,
 ):  # noqa: ANN001, ANN201
     radio_holder: list[FakeRadio] = []
 
@@ -127,6 +184,13 @@ def make_endpoint(
     def update(**changes: object) -> None:
         status.update(changes)
 
+    def tx_state_listener_factory(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        return FakeTxStateListener(
+            *args,
+            **kwargs,
+            initial_sending=tx_state_initial_sending,
+        )
+
     endpoint = SrsYandexPcmEndpoint(
         SrsRadioConfig(eam_password="memory-only"),
         threading.Event(),
@@ -139,6 +203,8 @@ def make_endpoint(
         tx_resampler_factory=lambda: FakeResampler(bytes(1280 * 2 + 200)),  # type: ignore[arg-type]
         clock=clock,
         provider_input_rate_hz=provider_input_rate_hz,
+        authoritative_tx_state=authoritative_tx_state,
+        tx_state_listener_factory=tx_state_listener_factory,
     )
     return endpoint, radio_holder[0], status
 
@@ -326,6 +392,360 @@ def test_speechkit_srs_timeline_counts_accepted_packet_decode_errors(
     endpoint.stop()
 
 
+def test_authoritative_tx_state_false_true_false_queues_one_completion(
+    tmp_path,
+) -> None:  # noqa: ANN001
+    clock = Clock()
+    endpoint, _radio, _status = make_endpoint(
+        tmp_path,
+        clock,
+        provider_input_rate_hz=16_000,
+        authoritative_tx_state=True,
+    )
+    endpoint.connect_radio()
+    endpoint.start()
+    listener = endpoint._tx_state_listener
+    assert isinstance(listener, FakeTxStateListener)
+
+    listener.emit(True, 1)
+    endpoint._on_radio_datagram(human_packet(1))
+    listener.emit(False, 1)
+    queued = [endpoint.read_input(0.1) for _ in range(4)]
+
+    assert queued[0] == RealtimeInputTransmissionStarted("srs-ptt-000001")
+    assert queued[1:3] == [bytes(640), bytes(640)]
+    completed = queued[3]
+    assert isinstance(completed, RealtimeInputTransmissionCompleted)
+    assert completed.boundary == "srs_tx_state_end"
+    assert completed.srs_tx_state_authoritative is True
+    assert completed.srs_tx_sending_on == 1
+    assert endpoint.input_queue.empty()
+    assert endpoint.tracker.counters.transmissions_completed == 1
+    endpoint.stop()
+
+
+def test_authoritative_tx_state_ignores_packet_gap_while_srs_tx_remains_true(
+    tmp_path,
+) -> None:  # noqa: ANN001
+    clock = Clock()
+    endpoint, _radio, _status = make_endpoint(
+        tmp_path,
+        clock,
+        provider_input_rate_hz=16_000,
+        authoritative_tx_state=True,
+    )
+    endpoint.connect_radio()
+    endpoint.start()
+    listener = endpoint._tx_state_listener
+    assert isinstance(listener, FakeTxStateListener)
+    listener.emit(True, 1)
+    endpoint._on_radio_datagram(human_packet(1))
+    clock.now += 0.7
+    time.sleep(0.06)
+
+    assert not any(
+        isinstance(item, RealtimeInputTransmissionCompleted)
+        for item in tuple(endpoint.input_queue.queue)
+    )
+    assert endpoint._channel_clear_for_tx(clock()) is False
+    endpoint._on_radio_datagram(human_packet(2))
+    listener.emit(True, 1)
+    listener.emit(False, 1)
+    assert endpoint._channel_clear_for_tx(clock()) is False
+    clock.now += 0.25
+    assert endpoint._channel_clear_for_tx(clock()) is True
+    queued = []
+    while not endpoint.input_queue.empty():
+        queued.append(endpoint.input_queue.get_nowait())
+    assert sum(isinstance(item, RealtimeInputTransmissionCompleted) for item in queued) == 1
+    assert endpoint.tracker.counters.transmissions_started == 1
+    endpoint.stop()
+
+
+def test_authoritative_tx_end_flushes_final_pcm_before_completion_marker(
+    tmp_path,
+) -> None:  # noqa: ANN001
+    clock = Clock()
+    endpoint, _radio, _status = make_endpoint(
+        tmp_path,
+        clock,
+        provider_input_rate_hz=16_000,
+        decoded_pcm=bytes(1_000),
+        authoritative_tx_state=True,
+    )
+    endpoint.connect_radio()
+    endpoint.start()
+    listener = endpoint._tx_state_listener
+    assert isinstance(listener, FakeTxStateListener)
+    listener.emit(True, 1)
+    endpoint._on_radio_datagram(human_packet(1))
+    listener.emit(False, 1)
+
+    queued = [endpoint.read_input(0.1) for _ in range(4)]
+    assert queued[0] == RealtimeInputTransmissionStarted("srs-ptt-000001")
+    assert queued[1:3] == [bytes(640), bytes(640)]
+    completed = queued[3]
+    assert isinstance(completed, RealtimeInputTransmissionCompleted)
+    assert completed.decoded_pcm_bytes == 1_000
+    assert completed.padding_bytes == 280
+    assert completed.framed_pcm_bytes == 1_280
+    endpoint.stop()
+
+
+def test_authoritative_false_without_confirmed_true_never_queues_ghost_eou(
+    tmp_path,
+) -> None:  # noqa: ANN001
+    clock = Clock()
+    endpoint, _radio, _status = make_endpoint(
+        tmp_path,
+        clock,
+        provider_input_rate_hz=16_000,
+        authoritative_tx_state=True,
+    )
+    endpoint.connect_radio()
+    endpoint.start()
+    listener = endpoint._tx_state_listener
+    assert isinstance(listener, FakeTxStateListener)
+    listener.emit(False, 1)
+    assert endpoint.input_queue.empty()
+    assert endpoint.tracker.counters.transmissions_completed == 0
+    endpoint.stop()
+
+
+def test_listener_starting_mid_tx_correlates_voice_and_closes_on_later_false(
+    tmp_path,
+) -> None:  # noqa: ANN001
+    clock = Clock()
+    endpoint, _radio, _status = make_endpoint(
+        tmp_path,
+        clock,
+        provider_input_rate_hz=16_000,
+        authoritative_tx_state=True,
+        tx_state_initial_sending=True,
+    )
+    endpoint.connect_radio()
+    endpoint.start()
+    listener = endpoint._tx_state_listener
+    assert isinstance(listener, FakeTxStateListener)
+    endpoint._on_radio_datagram(human_packet(1))
+    listener.emit(False, 1)
+
+    queued = []
+    while not endpoint.input_queue.empty():
+        queued.append(endpoint.input_queue.get_nowait())
+    completed = [
+        item for item in queued if isinstance(item, RealtimeInputTransmissionCompleted)
+    ]
+    assert len(completed) == 1
+    started = next(
+        event
+        for event in endpoint.diagnostics.snapshot()
+        if event["event"] == "srs_tx_started"
+    )
+    assert started["transition_authoritative"] is False
+    endpoint.stop()
+
+
+def test_three_authoritative_tx_cycles_remain_independent(
+    tmp_path,
+) -> None:  # noqa: ANN001
+    clock = Clock()
+    endpoint, _radio, _status = make_endpoint(
+        tmp_path,
+        clock,
+        provider_input_rate_hz=16_000,
+        authoritative_tx_state=True,
+    )
+    endpoint.connect_radio()
+    endpoint.start()
+    listener = endpoint._tx_state_listener
+    assert isinstance(listener, FakeTxStateListener)
+
+    for packet_id in range(1, 4):
+        listener.emit(True, 1)
+        endpoint._on_radio_datagram(human_packet(packet_id))
+        listener.emit(False, 1)
+    queued = []
+    while not endpoint.input_queue.empty():
+        queued.append(endpoint.input_queue.get_nowait())
+    starts = [item for item in queued if isinstance(item, RealtimeInputTransmissionStarted)]
+    ends = [item for item in queued if isinstance(item, RealtimeInputTransmissionCompleted)]
+    assert [item.transmission_id for item in starts] == [
+        "srs-ptt-000001",
+        "srs-ptt-000002",
+        "srs-ptt-000003",
+    ]
+    assert [item.transmission_id for item in ends] == [item.transmission_id for item in starts]
+    endpoint.stop()
+
+
+def test_three_7082_tx_cycles_emit_three_eous_on_one_persistent_rpc(
+    tmp_path,
+) -> None:  # noqa: ANN001
+    class Port:
+        def __init__(self) -> None:
+            self.responses: asyncio.Queue[SpeechKitProviderEvent | None] = (
+                asyncio.Queue()
+            )
+            self.open_count = 0
+            self.eou_count = 0
+            self.audio: list[bytes] = []
+
+        async def open(self, _api_key: str) -> None:
+            self.open_count += 1
+
+        async def send_audio(self, pcm16le: bytes) -> None:
+            self.audio.append(pcm16le)
+
+        async def send_eou(self) -> None:
+            index = self.eou_count
+            self.eou_count += 1
+            cursor = (index + 1) * 1_000
+            common = {
+                "session_uuid": "one-persistent-session",
+                "final_index": index,
+                "received_data_ms": cursor,
+                "final_time_ms": cursor,
+                "eou_time_ms": cursor,
+            }
+            await self.responses.put(
+                SpeechKitProviderEvent(
+                    kind="final",
+                    transcript=f"turn {index + 1}",
+                    **common,
+                )
+            )
+            await self.responses.put(SpeechKitProviderEvent(kind="eou_update", **common))
+
+        async def receive(self) -> SpeechKitProviderEvent | None:
+            return await self.responses.get()
+
+        async def done_writing(self) -> None:
+            await self.responses.put(None)
+
+        async def close(self) -> None:
+            return None
+
+    async def scenario() -> None:
+        clock = Clock()
+        endpoint, _radio, _status = make_endpoint(
+            tmp_path,
+            clock,
+            provider_input_rate_hz=16_000,
+            authoritative_tx_state=True,
+        )
+        endpoint.connect_radio()
+        listener = endpoint._tx_state_listener
+        assert isinstance(listener, FakeTxStateListener)
+        port = Port()
+        utterances: list[FinalizedUserUtterance] = []
+        adapter = SpeechKitV3RadioSttAdapter(
+            "memory-only",
+            endpoint,
+            endpoint.stop_event,
+            endpoint.diagnostics,
+            port_factory=lambda: port,
+            on_finalized_utterance=utterances.append,
+        )
+        task = asyncio.create_task(adapter.run())
+        while not endpoint._started:
+            await asyncio.sleep(0.001)
+        for packet_id in range(1, 4):
+            listener.emit(True, 1)
+            endpoint._on_radio_datagram(human_packet(packet_id))
+            listener.emit(False, 1)
+            deadline = time.monotonic() + 1.0
+            while len(utterances) < packet_id and time.monotonic() < deadline:
+                await asyncio.sleep(0.001)
+            assert len(utterances) == packet_id
+        endpoint.stop_event.set()
+        await task
+
+        assert [item.transcript for item in utterances] == ["turn 1", "turn 2", "turn 3"]
+        assert port.eou_count == 3
+        assert port.open_count == 1
+        assert len(port.audio) == 6
+
+    asyncio.run(scenario())
+
+
+def test_authoritative_tx_state_stale_during_active_turn_fails_closed(
+    tmp_path,
+) -> None:  # noqa: ANN001
+    clock = Clock()
+    endpoint, _radio, _status = make_endpoint(
+        tmp_path,
+        clock,
+        provider_input_rate_hz=16_000,
+        authoritative_tx_state=True,
+    )
+    endpoint.connect_radio()
+    endpoint.start()
+    listener = endpoint._tx_state_listener
+    assert isinstance(listener, FakeTxStateListener)
+    listener.emit(True, 1)
+    endpoint._on_radio_datagram(human_packet(1))
+    listener.stale()
+
+    assert isinstance(endpoint.failure(), RuntimeError)
+    assert not any(
+        isinstance(item, RealtimeInputTransmissionCompleted)
+        for item in tuple(endpoint.input_queue.queue)
+    )
+    endpoint.stop()
+
+
+def test_authoritative_tx_state_can_recover_while_idle(
+    tmp_path,
+) -> None:  # noqa: ANN001
+    clock = Clock()
+    endpoint, _radio, status = make_endpoint(
+        tmp_path,
+        clock,
+        provider_input_rate_hz=16_000,
+        authoritative_tx_state=True,
+    )
+    endpoint.connect_radio()
+    endpoint.start()
+    listener = endpoint._tx_state_listener
+    assert isinstance(listener, FakeTxStateListener)
+    listener.stale()
+    assert endpoint.failure() is None
+    listener.emit(False, 1)
+    assert status["srs_tx_state_status"] == "ready"
+    assert endpoint.failure() is None
+    endpoint.stop()
+
+
+def test_wrong_sending_on_does_not_finalize_active_turn(
+    tmp_path,
+) -> None:  # noqa: ANN001
+    clock = Clock()
+    endpoint, _radio, _status = make_endpoint(
+        tmp_path,
+        clock,
+        provider_input_rate_hz=16_000,
+        authoritative_tx_state=True,
+    )
+    endpoint.connect_radio()
+    endpoint.start()
+    listener = endpoint._tx_state_listener
+    assert isinstance(listener, FakeTxStateListener)
+    listener.emit(True, 2)
+    endpoint._on_radio_datagram(human_packet(1))
+    listener.emit(False, 2)
+    assert not any(
+        isinstance(item, RealtimeInputTransmissionCompleted)
+        for item in tuple(endpoint.input_queue.queue)
+    )
+    clock.now += 1.1
+    deadline = time.monotonic() + 0.5
+    while endpoint.failure() is None and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert isinstance(endpoint.failure(), RuntimeError)
+    endpoint.stop()
+
+
 def test_service_selector_instantiates_speechkit_adapter_only(monkeypatch) -> None:  # noqa: ANN001
     calls: list[tuple[str, int]] = []
 
@@ -336,8 +756,14 @@ def test_service_selector_instantiates_speechkit_adapter_only(monkeypatch) -> No
         def stop(self) -> None:
             calls.append(("stop", 0))
 
-    def endpoint_factory(*_args, provider_input_rate_hz: int, **_kwargs):  # noqa: ANN202
+    def endpoint_factory(
+        *_args,
+        provider_input_rate_hz: int,
+        authoritative_tx_state: bool,
+        **_kwargs,
+    ):  # noqa: ANN202
         calls.append(("endpoint_rate", provider_input_rate_hz))
+        calls.append(("authoritative_tx_state", int(authoritative_tx_state)))
         return Endpoint()
 
     class Adapter:
@@ -372,6 +798,7 @@ def test_service_selector_instantiates_speechkit_adapter_only(monkeypatch) -> No
     )
 
     assert ("endpoint_rate", SRS_DECODE_RATE_HZ) in calls
+    assert ("authoritative_tx_state", 1) in calls
     assert ("speechkit", 0) in calls
 
 
@@ -385,8 +812,14 @@ def test_service_selector_instantiates_legacy_realtime_only(monkeypatch) -> None
         def stop(self) -> None:
             calls.append(("stop", 0))
 
-    def endpoint_factory(*_args, provider_input_rate_hz: int, **_kwargs):  # noqa: ANN202
+    def endpoint_factory(
+        *_args,
+        provider_input_rate_hz: int,
+        authoritative_tx_state: bool,
+        **_kwargs,
+    ):  # noqa: ANN202
         calls.append(("endpoint_rate", provider_input_rate_hz))
+        calls.append(("authoritative_tx_state", int(authoritative_tx_state)))
         return Endpoint()
 
     class Session:
@@ -418,6 +851,7 @@ def test_service_selector_instantiates_legacy_realtime_only(monkeypatch) -> None
     )
 
     assert ("endpoint_rate", YANDEX_INPUT_RATE) in calls
+    assert ("authoritative_tx_state", 0) in calls
     assert ("realtime", 0) in calls
 
 

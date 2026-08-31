@@ -66,6 +66,11 @@ def format_orion_srs_status(result: Mapping[str, object]) -> str:
     if state == "error":
         return f"ORION SRS: ERROR — {result.get('message') or 'SRS session failed'}"
     if state == "streaming":
+        message = str(result.get("message") or "")
+        marker = "SRS TX STATE:"
+        if marker in message.upper():
+            tx_state = message.upper().split(marker, 1)[1].split("|", 1)[0].strip()
+            return f"ORION SRS: READY | SRS TX STATE: {tx_state}"
         return "ORION SRS: READY"
     if phase == "registering_radio":
         return "ORION SRS: REGISTERING RADIO"

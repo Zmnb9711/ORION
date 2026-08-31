@@ -100,6 +100,7 @@ class FakePort:
         self.open_count = 0
         self.session_options_count = 0
         self.audio: list[bytes] = []
+        self.writes: list[tuple[str, bytes | None]] = []
         self.eou_count = 0
         self.done_writing_count = 0
         self.closed = False
@@ -112,9 +113,11 @@ class FakePort:
 
     async def send_audio(self, pcm16le: bytes) -> None:
         self.audio.append(pcm16le)
+        self.writes.append(("audio", pcm16le))
 
     async def send_eou(self) -> None:
         self.eou_count += 1
+        self.writes.append(("eou", None))
         if not self.turn_events:
             return
         events = self.turn_events.pop(0)
@@ -220,6 +223,7 @@ def test_opt_in_captures_exact_successfully_written_pcm_and_eou_accounting(
     endpoint.items.put_nowait(
         RealtimeInputTransmissionCompleted(
             "srs-ptt-000001",
+            boundary="srs_tx_state_end",
             first_accepted_packet_timestamp="2026-08-31T10:00:00.000+00:00",
             last_accepted_packet_timestamp="2026-08-31T10:00:01.000+00:00",
             accepted_packet_count=2,
@@ -230,10 +234,12 @@ def test_opt_in_captures_exact_successfully_written_pcm_and_eou_accounting(
             decoded_pcm_bytes=1_200,
             padding_bytes=80,
             framed_pcm_bytes=1_280,
-            packet_quiescence_completed_timestamp=(
-                "2026-08-31T10:00:01.400+00:00"
-            ),
-            boundary_gap_ms=400,
+            packet_quiescence_completed_timestamp=None,
+            boundary_gap_ms=None,
+            srs_tx_started_timestamp="2026-08-31T10:00:00.100+00:00",
+            srs_tx_ended_timestamp="2026-08-31T10:00:01.200+00:00",
+            srs_tx_sending_on=1,
+            srs_tx_state_authoritative=True,
         )
     )
     port = FakePort([provider_turn(0, "добрый день")])
@@ -243,6 +249,7 @@ def test_opt_in_captures_exact_successfully_written_pcm_and_eou_accounting(
 
     run_adapter(endpoint, port, stop, diagnostics, accepted)
     assert port.audio == list(blocks)
+    assert port.writes == [("audio", blocks[0]), ("audio", blocks[1]), ("eou", None)]
     eou = next(
         event
         for event in diagnostics.snapshot()
@@ -255,6 +262,9 @@ def test_opt_in_captures_exact_successfully_written_pcm_and_eou_accounting(
     assert eou["decoded_plus_padding_matches_framed"] is True
     assert eou["framed_matches_speechkit"] is True
     assert eou["artifact_included"] is True
+    assert eou["boundary"] == "srs_tx_state_end"
+    assert eou["eou_triggered_by_7082"] is True
+    assert eou["srs_tx_sending_on"] == 1
     assert eou["eou_sent_timestamp"]
     assert eou["last_input_write_timestamp"]
     assert eou["eou_sent_monotonic_ns"] > eou["last_input_write_monotonic_ns"]
@@ -276,6 +286,9 @@ def test_opt_in_captures_exact_successfully_written_pcm_and_eou_accounting(
     assert evidence_eou["accepted_packet_count"] == 2
     assert evidence_eou["speechkit_pcm_bytes_before_eou"] == 1_280
     assert evidence_eou["framed_matches_speechkit"] is True
+    assert evidence_eou["eou_triggered_by_7082"] is True
+    assert evidence_eou["srs_tx_state_authoritative"] is True
+    assert evidence_eou["srs_tx_sending_on"] == 1
     assert "unit-secret" not in json.dumps(evidence_events)
     with wave.open(io.BytesIO(wav_bytes), "rb") as captured:
         assert (captured.getframerate(), captured.getnchannels(), captured.getsampwidth()) == (
@@ -408,6 +421,18 @@ def test_provider_error_before_final_fails_closed() -> None:
         run_adapter(endpoint, port, stop, diagnostics, utterances.append)
 
     assert utterances == []
+    assert diagnostics.events[-1][0] == "speechkit_stt_provider_error"
+
+
+def test_endpoint_fail_closed_stop_is_reported_as_provider_error() -> None:
+    endpoint, diagnostics, stop = FakeEndpoint(), FakeDiagnostics(), threading.Event()
+    endpoint.error = RuntimeError("authoritative SRS TX-state became stale")
+    stop.set()
+    port = FakePort([])
+
+    with pytest.raises(RuntimeError, match="TX-state became stale"):
+        run_adapter(endpoint, port, stop, diagnostics, lambda _item: None)
+
     assert diagnostics.events[-1][0] == "speechkit_stt_provider_error"
 
 

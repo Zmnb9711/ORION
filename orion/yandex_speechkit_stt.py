@@ -231,7 +231,7 @@ class _PhysicalTurn:
 
 
 class SpeechKitV3RadioSttAdapter:
-    """Map physical SRS PTT markers to persistent External-EOU turns."""
+    """Map SRS packet turns and authoritative TX ends to External-EOU turns."""
 
     provider_id = "speechkit_v3"
 
@@ -315,6 +315,9 @@ class SpeechKitV3RadioSttAdapter:
                     await self._complete_turn(port, item)
                 else:
                     await self._send_pcm(port, item)
+            failure = self._endpoint.failure()
+            if failure is not None:
+                raise failure
         except Exception as exc:
             self._state = SpeechKitSttState.ERROR
             self._diagnostics.record(
@@ -370,6 +373,7 @@ class SpeechKitV3RadioSttAdapter:
             "speechkit_stt_ptt_started",
             stt_provider=self.provider_id,
             physical_transmission_id=marker.transmission_id,
+            srs_packet_turn_id=marker.transmission_id,
             capture_enabled=self._active.capture_enabled,
         )
 
@@ -430,6 +434,7 @@ class SpeechKitV3RadioSttAdapter:
             "speechkit_stt_eou_sent",
             stt_provider=self.provider_id,
             physical_transmission_id=turn.transmission_id,
+            srs_packet_turn_id=turn.transmission_id,
             byte_count=turn.pcm_bytes,
             speechkit_pcm_bytes_before_eou=turn.pcm_bytes,
             chunk_count=turn.pcm_chunks,
@@ -456,6 +461,12 @@ class SpeechKitV3RadioSttAdapter:
                 marker.packet_quiescence_completed_timestamp
             ),
             boundary_gap_ms=marker.boundary_gap_ms,
+            boundary=marker.boundary,
+            srs_tx_started_timestamp=marker.srs_tx_started_timestamp,
+            srs_tx_ended_timestamp=marker.srs_tx_ended_timestamp,
+            srs_tx_sending_on=marker.srs_tx_sending_on,
+            srs_tx_state_authoritative=marker.srs_tx_state_authoritative,
+            eou_triggered_by_7082=marker.srs_tx_state_authoritative,
             decoded_plus_padding_matches_framed=(
                 marker.decoded_pcm_bytes + marker.padding_bytes
                 == marker.framed_pcm_bytes

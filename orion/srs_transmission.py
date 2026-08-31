@@ -67,8 +67,15 @@ class TransmissionTracker:
             return completed
         return None
 
-    def accept(self, packet: VoicePacket, now: float) -> PacketDecision:
-        self.expire(now)
+    def accept(
+        self,
+        packet: VoicePacket,
+        now: float,
+        *,
+        expire_on_quiescence: bool = True,
+    ) -> PacketDecision:
+        if expire_on_quiescence:
+            self.expire(now)
         if not is_target_frequency(packet, self.frequency_hz, self.modulation):
             self.counters.wrong_channel += 1
             return PacketDecision.WRONG_CHANNEL
@@ -107,6 +114,18 @@ class TransmissionTracker:
         self.active_packet_count += 1
         self.last_human_packet_at = now
         return PacketDecision.ACCEPTED
+
+    def complete_active(self) -> str | None:
+        """Complete packet accounting from an authoritative external boundary."""
+
+        completed = self.active_origin_guid
+        if completed is None:
+            return None
+        self.active_origin_guid = None
+        self.active_started_at = None
+        self.active_packet_count = 0
+        self.counters.transmissions_completed += 1
+        return completed
 
     def channel_clear(self, now: float) -> bool:
         self.expire(now)
