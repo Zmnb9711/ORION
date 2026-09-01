@@ -23,20 +23,22 @@ from typing import Callable, Protocol
 
 from pydantic import BaseModel, ConfigDict
 
-from orion.airport_surface import RunwayAvailability, RunwayState
-from orion.airport_surface_runtime import AirportSurfaceCoordinator
-from orion.airport_tower_runtime import AirportTowerController
-from orion.atc_core import AtcSessionIdentity
-from orion.atc_operations import FreshnessClass
-from orion.atc_runtime import AtcCoreFlow
+from orion.atc_status_query import (
+    ATC_STATUS_CONTRACT,
+    AtcStatusSemanticOutcome,
+    PersistentAtcSessionCoordinator,
+)
 from orion.communication_contracts import (
     CommunicationContext,
     CommunicationDomain,
     CommunicationPriority,
     CommunicationProfileId,
 )
-from orion.golden_takeoff_vertical import GoldenTakeoffVertical
-from orion.interaction_router import InteractionRouter, KnownContractRoute
+from orion.interaction_router import (
+    InteractionRouter,
+    KnownContractRoute,
+    KnownContractRoutingDecision,
+)
 from orion.mixed_conversation import (
     MixedConversationDecomposition,
     MixedDecompositionStatus,
@@ -45,7 +47,6 @@ from orion.mixed_conversation import (
     build_mixed_composition,
     request_mixed_decomposition,
 )
-from orion.pilot_phraseology import PilotPhraseologyResolver
 from orion.pilot_phraseology_catalog import build_pilot_phraseology_catalog
 from orion.planner import PlannerProvider
 from orion.realtime_audio_transport import (
@@ -105,6 +106,7 @@ class LiveGoldenCase:
     expects_free: bool
     expects_operational: bool
     primary: bool = True
+    expected_contract: str | None = None
 
 
 LIVE_GOLDEN_CORPUS = (
@@ -156,6 +158,20 @@ PURE_TAKEOFF_FIRST_CORPUS = (
         for case in LIVE_GOLDEN_CORPUS
         if case.case_id != "control-pure-operational"
     ),
+)
+
+ATC_STATUS_CASE = LiveGoldenCase(
+    "atc-status-current-controller",
+    "Какой диспетчер сейчас управляет моим полётом?",
+    False,
+    False,
+    False,
+    ATC_STATUS_CONTRACT,
+)
+
+PERSISTENT_ATC_STATUS_FIRST_CORPUS = (
+    PURE_TAKEOFF_FIRST_CORPUS[0],
+    ATC_STATUS_CASE,
 )
 
 
@@ -588,6 +604,7 @@ class LiveGoldenCaseRunner:
         speech_stopped_at: float | None,
         cancelled: Callable[[], bool],
         capture_audio: bool,
+        atc_sessions: PersistentAtcSessionCoordinator,
     ) -> dict[str, object]:
         accepted_at = self._monotonic()
         interaction_id = uuid.uuid4()
@@ -612,6 +629,40 @@ class LiveGoldenCaseRunner:
             qwen_required=route.qwen_required,
             elapsed_ms=(route_selected_at - accepted_at) * 1000,
         )
+
+        if route.contract == ATC_STATUS_CONTRACT:
+            if case.expected_contract != ATC_STATUS_CONTRACT:
+                raise LiveGoldenCaseFailure(
+                    "semantic_gate",
+                    "ATC status contract did not match the selected field case",
+                )
+            realtime_test_evidence.record(
+                "live_golden_semantic_route_executed",
+                probe_run_id=run_id,
+                probe_case_id=case.case_id,
+                route_selected=route.route.value,
+                contract=route.contract,
+                qwen_required=False,
+                qwen_call_count=0,
+            )
+            return self._run_atc_status_case(
+                context=context,
+                run_id=run_id,
+                case=case,
+                transcript=transcript,
+                turn_id=turn_id,
+                event_id=event_id,
+                provider_item_id=provider_item_id,
+                speech_stopped_at=speech_stopped_at,
+                cancelled=cancelled,
+                capture_audio=capture_audio,
+                atc_sessions=atc_sessions,
+                interaction_id=interaction_id,
+                language=route.language,
+                accepted_at=accepted_at,
+                route_selected_at=route_selected_at,
+                route=route,
+            )
 
         provider: PlannerProvider | None = None
         provider_result = None
@@ -690,7 +741,13 @@ class LiveGoldenCaseRunner:
                 "Recognized FREE/OPERATIONAL shape did not match the selected field case",
             )
 
-        identity, vertical = _controlled_takeoff_fixture(run_id, case.case_id)
+        identity, vertical, session_created = atc_sessions.get_or_create_takeoff_session(
+            main_session_id=context.main_session_id,
+            run_id=run_id,
+            callsign=CALLSIGN,
+            runway_id=RUNWAY,
+            facility_id="Golden Tower",
+        )
         outcome = build_mixed_composition(
             decomposition=decomposition,
             identity=identity,
@@ -724,12 +781,30 @@ class LiveGoldenCaseRunner:
             elapsed_ms=(atc_completed - interpretation_completed) * 1000,
         )
         golden = outcome.golden_result
+        if golden is not None:
+            atc_sessions.synchronize_takeoff_result(
+                main_session_id=context.main_session_id,
+                run_id=run_id,
+                result=golden,
+            )
+        realtime_test_evidence.record(
+            "live_golden_atc_session_bound",
+            probe_run_id=run_id,
+            probe_case_id=case.case_id,
+            interaction_id=str(interaction_id),
+            atc_session_id=str(identity.session_id),
+            session_created=session_created,
+            authority_scope="flight_traffic",
+            radio_entity_id="orion.atc.airport_tower",
+            qwen_call_count=qwen_call_count,
+        )
         osu_count = int(golden is not None and golden.semantic_unit is not None)
         phraseology_count = int(golden is not None and golden.fragment is not None)
         realtime_test_evidence.record(
             "live_golden_core_semantics_completed",
             probe_run_id=run_id,
             probe_case_id=case.case_id,
+            interaction_id=str(interaction_id),
             route_selected=route.route.value,
             qwen_call_count=qwen_call_count,
             atc_result=(
@@ -753,6 +828,9 @@ class LiveGoldenCaseRunner:
         source_domain = (
             CommunicationDomain.ATC if protected else CommunicationDomain.GENERAL
         )
+        radio_entity_id = (
+            "orion.atc.airport_tower" if protected else "orion.live-golden"
+        )
         streaming_requested = (
             context.tts_output_mode is SpeechKitTtsOutputMode.STREAMING_V3
         )
@@ -774,6 +852,7 @@ class LiveGoldenCaseRunner:
                         final_text=outcome.final_text,
                         source_domain=source_domain,
                         priority=outcome.plan.priority,
+                        entity_id=radio_entity_id,
                         cancelled=cancelled,
                         capture_audio=capture_audio,
                         semantic_ready_at=atc_completed,
@@ -853,7 +932,7 @@ class LiveGoldenCaseRunner:
                 TX_TIMEOUT_S,
                 source_domain=source_domain,
                 priority=outcome.plan.priority,
-                entity_id="orion.live-golden",
+                entity_id=radio_entity_id,
             )
             radio_completed = self._monotonic()
 
@@ -978,7 +1057,9 @@ class LiveGoldenCaseRunner:
                 "reasoning_passes_after_operational_truth": 0,
             },
             "atc": {
-                "context_origin": "CONTROLLED GOLDEN ATC FIXTURE",
+                "context_origin": "PERSISTENT CORE ATC SESSION",
+                "session_id": str(identity.session_id),
+                "session_created": session_created,
                 "callsign": CALLSIGN,
                 "runway": RUNWAY,
                 "decision": (
@@ -1040,6 +1121,7 @@ class LiveGoldenCaseRunner:
             "audio_artifact": artifact or "NOT CAPTURED",
             "radio": {
                 "correlation_id": response_id,
+                "entity_id": radio_entity_id,
                 "radio_router_admitted": True,
                 "srs_adapter_tx_started": True,
                 "srs_tx_completed": True,
@@ -1097,6 +1179,315 @@ class LiveGoldenCaseRunner:
             "acoustic_review": "NOT OBSERVABLE",
         }
 
+    def _run_atc_status_case(
+        self,
+        *,
+        context: LiveGoldenRuntimeContext,
+        run_id: str,
+        case: LiveGoldenCase,
+        transcript: str,
+        turn_id: str | None,
+        event_id: str,
+        provider_item_id: str,
+        speech_stopped_at: float | None,
+        cancelled: Callable[[], bool],
+        capture_audio: bool,
+        atc_sessions: PersistentAtcSessionCoordinator,
+        interaction_id: uuid.UUID,
+        language: str,
+        accepted_at: float,
+        route_selected_at: float,
+        route: KnownContractRoutingDecision,
+    ) -> dict[str, object]:
+        """Resolve one read-only ATC status contract and use the existing output path."""
+
+        outcome: AtcStatusSemanticOutcome = atc_sessions.query_status(
+            main_session_id=context.main_session_id,
+            run_id=run_id,
+            interaction_id=interaction_id,
+            language=language,
+        )
+        semantic_ready_at = self._monotonic()
+        result = outcome.result
+        realtime_test_evidence.record(
+            "live_golden_atc_status_resolved",
+            probe_run_id=run_id,
+            probe_case_id=case.case_id,
+            interaction_id=str(interaction_id),
+            atc_session_id=str(result.session_id) if result.session_id else "unavailable",
+            authority_scope="flight_traffic",
+            controller_agency=(
+                result.controller_agency.value if result.controller_agency else "unavailable"
+            ),
+            procedural_state=result.procedural_state or "unavailable",
+            runtime_revision_before=result.runtime_revision_before,
+            runtime_revision_after=result.runtime_revision_after,
+            atc_truth_unchanged=result.atc_truth_unchanged,
+            semantic_meaning=outcome.semantic_unit.semantic_meaning,
+            semantic_response_id=str(outcome.semantic_response.response_id),
+            radio_entity_id=outcome.radio_entity_id,
+            qwen_call_count=0,
+        )
+        if cancelled():
+            raise LiveGoldenCaseFailure("cancelled", "Live Golden case was cancelled")
+
+        response_id = f"live-golden-{run_id[:8]}-{case.case_id}"
+        priority = CommunicationPriority.ROUTINE
+        streaming_requested = (
+            context.tts_output_mode is SpeechKitTtsOutputMode.STREAMING_V3
+        )
+        streaming_used = False
+        streaming_fallback = False
+        streaming_metrics: dict[str, float | int | bool] = {}
+        pcm44 = b""
+        pcm_bytes = 0
+        pcm_sha256 = ""
+        if streaming_requested:
+            try:
+                stream_outcome = asyncio.run(
+                    self._stream_to_radio(
+                        context=context,
+                        run_id=run_id,
+                        case=case,
+                        response_id=response_id,
+                        final_text=outcome.final_text,
+                        source_domain=CommunicationDomain.ATC,
+                        priority=priority,
+                        entity_id=outcome.radio_entity_id,
+                        cancelled=cancelled,
+                        capture_audio=capture_audio,
+                        semantic_ready_at=semantic_ready_at,
+                    )
+                )
+            except _StreamingBeforeTxFailure as exc:
+                streaming_fallback = True
+                realtime_test_evidence.record(
+                    "speechkit_stream_tts_rest_fallback",
+                    probe_run_id=run_id,
+                    probe_case_id=case.case_id,
+                    response_id=response_id,
+                    reason=str(exc),
+                )
+            else:
+                streaming_used = True
+                tx = stream_outcome.tx
+                snapshot = stream_outcome.snapshot
+                pcm44 = snapshot.captured_pcm or b""
+                pcm_bytes = snapshot.total_pcm_bytes
+                pcm_sha256 = snapshot.pcm_sha256
+                speechkit_completed = stream_outcome.provider_completed_at
+                radio_submitted = stream_outcome.radio_submitted_at
+                radio_completed = stream_outcome.radio_completed_at
+                streaming_metrics = {
+                    "first_provider_audio_latency_ms": stream_outcome.first_audio_latency_ms,
+                    "provider_complete_latency_ms": stream_outcome.provider_complete_latency_ms,
+                    "first_srs_tx_frame_latency_ms": (
+                        stream_outcome.first_srs_tx_frame_latency_ms
+                    ),
+                    "prebuffer_target_ms": STREAM_PREBUFFER_MS,
+                    "max_buffered_bytes": snapshot.max_buffered_bytes,
+                    "underrun_count": int(tx.get("underrun_count", 0)),
+                    "underrun_silence_inserted_ms": float(
+                        tx.get("underrun_silence_inserted_ms", 0.0)
+                    ),
+                }
+
+        if not streaming_used:
+            pcm48 = asyncio.run(
+                self._synthesize(
+                    context=context,
+                    run_id=run_id,
+                    case=case,
+                    response_id=response_id,
+                    final_text=outcome.final_text,
+                )
+            )
+            speechkit_completed = self._monotonic()
+            pcm44 = normalize_speechkit_pcm(pcm48)
+            if not pcm44 or len(pcm44) % 2:
+                raise LiveGoldenCaseFailure("speechkit", "SpeechKit produced invalid PCM")
+            if cancelled():
+                raise LiveGoldenCaseFailure(
+                    "cancelled_before_radio",
+                    "Live Golden case was cancelled before radio admission",
+                )
+            pcm_bytes = len(pcm44)
+            pcm_sha256 = hashlib.sha256(pcm44).hexdigest()
+            radio_submitted = self._monotonic()
+            realtime_test_evidence.record(
+                "live_golden_radio_admission_requested",
+                probe_run_id=run_id,
+                probe_case_id=case.case_id,
+                response_id=response_id,
+                pcm_bytes=pcm_bytes,
+            )
+            tx = context.endpoint.transmit_finalized_audio(
+                response_id,
+                pcm44,
+                TX_TIMEOUT_S,
+                source_domain=CommunicationDomain.ATC,
+                priority=priority,
+                entity_id=outcome.radio_entity_id,
+            )
+            radio_completed = self._monotonic()
+
+        artifact = None
+        if capture_audio:
+            if not pcm44:
+                raise LiveGoldenCaseFailure(
+                    "speechkit_stream_capture",
+                    "Streaming response audio capture was unavailable",
+                )
+            artifact = realtime_test_evidence.record_live_golden_audio(
+                run_id=run_id,
+                case_id=case.case_id,
+                response_id=response_id,
+                pcm44=pcm44,
+            )
+        radio_runtime = context.endpoint.srs_adapter_runtime()
+        realtime_test_evidence.record(
+            "live_golden_srs_completion_correlated",
+            probe_run_id=run_id,
+            probe_case_id=case.case_id,
+            response_id=response_id,
+            frames=int(tx.get("frame_count", 0)),
+            duration_ms=float(tx.get("duration_ms", 0.0)),
+            queue_to_first_tx_ms=float(tx.get("queue_to_first_tx_ms", 0.0)),
+            queue_to_complete_ms=float(tx.get("queue_to_complete_ms", 0.0)),
+            status="completed",
+        )
+        validations = {
+            "real_spoken_input_observed": bool(turn_id and provider_item_id),
+            "semantic_decomposition_not_required": True,
+            "qwen_calls_zero": True,
+            "status_semantic_response_present": bool(outcome.semantic_response),
+            "status_query_read_only": result.atc_truth_unchanged,
+            "controller_not_inferred_from_text": True,
+            "frequency_not_invented": True,
+            "informational_core_renderer": True,
+            "speechkit_synthesized": pcm_bytes > 0,
+            "radio_router_completed": True,
+            "srs_adapter_completed": int(tx.get("frame_count", 0)) > 0,
+            "audibility_not_inferred_from_tx": True,
+        }
+        return {
+            "case_id": case.case_id,
+            "primary": case.primary,
+            "expected_prompt": case.prompt,
+            "input": {
+                "source": "real_human_speech_via_official_srs_client",
+                "final_transcript": transcript,
+                "turn_id": turn_id or "NOT OBSERVABLE",
+                "provider_event_id": event_id or "NOT OBSERVABLE",
+                "provider_item_id": provider_item_id or "NOT OBSERVABLE",
+            },
+            "semantic_route": {
+                "recognizer_evaluated": route.recognizer_evaluated,
+                "contract_matched": route.contract_matched,
+                "pure": route.pure,
+                "route_selected": route.route.value,
+                "reason_code": route.reason_code.value,
+                "contract": route.contract,
+                "qwen_required": False,
+                "qwen_call_count": 0,
+                "policy_version": route.policy_version,
+            },
+            "qwen": {"required": False, "call_count": 0, "provider": "NOT CALLED"},
+            "atc": {
+                "context_origin": "PERSISTENT CORE ATC SESSION",
+                "session_id": str(result.session_id) if result.session_id else None,
+                "facility_id": result.facility_id,
+                "authority_scope": "flight_traffic",
+                "controller_agency": (
+                    result.controller_agency.value if result.controller_agency else None
+                ),
+                "procedural_state": result.procedural_state,
+                "authority_available": result.authority_available,
+                "runtime_revision_before": result.runtime_revision_before,
+                "runtime_revision_after": result.runtime_revision_after,
+                "atc_truth_unchanged": result.atc_truth_unchanged,
+            },
+            "semantic_result": {
+                "osu": outcome.semantic_unit.model_dump(mode="json"),
+                "semantic_response": outcome.semantic_response.model_dump(mode="json"),
+                "presentation_response_count": 1,
+            },
+            "communication_profile": "NOT_APPLICABLE_DIAGNOSTIC",
+            "phraseology_entry_id": None,
+            "protected_slots": {
+                str(item.key): item.value
+                for item in outcome.semantic_unit.protected_values
+            },
+            "free_response": None,
+            "protected_fragment": None,
+            "final_composed_text": outcome.final_text,
+            "final_composed_text_sha256": hashlib.sha256(
+                outcome.final_text.encode("utf-8")
+            ).hexdigest(),
+            "composition_order": ["CORE_INFORMATIONAL"],
+            "speechkit": {
+                "correlation_id": response_id,
+                "provider_request_id": "NOT OBSERVABLE",
+                "voice": SPEECHKIT_VOICE,
+                "role": SPEECHKIT_ROLE,
+                "output_mode": (
+                    SpeechKitTtsOutputMode.STREAMING_V3.value
+                    if streaming_used
+                    else SpeechKitTtsOutputMode.REST_BUFFERED.value
+                ),
+                "streaming_requested": streaming_requested,
+                "streaming_rest_fallback": streaming_fallback,
+                "input_is_local_final_composition": True,
+                "pcm_input_rate_hz": 48_000,
+                "pcm_radio_rate_hz": 44_100,
+                "pcm_bytes": pcm_bytes,
+                "pcm_sha256": pcm_sha256,
+                **streaming_metrics,
+            },
+            "audio_artifact": artifact or "NOT CAPTURED",
+            "radio": {
+                "correlation_id": response_id,
+                "entity_id": outcome.radio_entity_id,
+                "radio_router_admitted": True,
+                "srs_adapter_tx_started": True,
+                "srs_tx_completed": True,
+                "srs_adapter_tx_completed": True,
+                "target_frequency_hz": radio_runtime.frequency_hz,
+                "modulation": radio_runtime.modulation,
+                "radio_registered": radio_runtime.radio_registered,
+                "udp_registered": radio_runtime.udp_registered,
+                **tx,
+            },
+            "latency_ms": {
+                "speech_end_to_semantic_input": _elapsed_ms(
+                    speech_stopped_at, accepted_at
+                ),
+                "semantic_input_to_route_selected": _elapsed_ms(
+                    accepted_at, route_selected_at
+                ),
+                "route_selected_to_atc_status_complete": _elapsed_ms(
+                    route_selected_at, semantic_ready_at
+                ),
+                "status_to_speechkit_complete": _elapsed_ms(
+                    semantic_ready_at, speechkit_completed
+                ),
+                "speechkit_to_srs_tx_start": round(
+                    float(tx.get("queue_to_first_tx_ms", 0.0)), 3
+                ),
+                "speech_end_to_srs_tx_start": _speech_to_tx_start_ms(
+                    speech_stopped_at,
+                    radio_submitted,
+                    float(tx.get("queue_to_first_tx_ms", 0.0)),
+                ),
+                "speech_end_to_srs_tx_complete": _elapsed_ms(
+                    speech_stopped_at, radio_completed
+                ),
+            },
+            "validation_assertions": validations,
+            "internal_result": "PASS" if all(validations.values()) else "FAIL",
+            "acoustic_review": "NOT OBSERVABLE",
+        }
+
     async def _stream_to_radio(
         self,
         *,
@@ -1110,6 +1501,7 @@ class LiveGoldenCaseRunner:
         cancelled: Callable[[], bool],
         capture_audio: bool,
         semantic_ready_at: float,
+        entity_id: str = "orion.live-golden",
     ) -> _StreamingTxOutcome:
         started_at = self._monotonic()
         source = BoundedPcmStream(
@@ -1189,7 +1581,7 @@ class LiveGoldenCaseRunner:
                     TX_TIMEOUT_S,
                     source_domain=source_domain,
                     priority=priority,
-                    entity_id="orion.live-golden",
+                    entity_id=entity_id,
                 )
             )
 
@@ -1425,12 +1817,14 @@ class LiveGoldenConversationService:
         runner: LiveGoldenCaseRunner | None = None,
         ptt_settle_seconds: float = PTT_TRANSCRIPT_SETTLE_S,
         corpus: tuple[LiveGoldenCase, ...] = LIVE_GOLDEN_CORPUS,
+        atc_sessions: PersistentAtcSessionCoordinator | None = None,
     ) -> None:
         if not corpus:
             raise ValueError("Live Golden corpus cannot be empty")
         self._lock = threading.RLock()
         self._context: LiveGoldenRuntimeContext | None = None
         self._runner = runner or LiveGoldenCaseRunner()
+        self._atc_sessions = atc_sessions or PersistentAtcSessionCoordinator()
         self._corpus = corpus
         self._status = LiveGoldenStatus(
             total_cases=len(corpus),
@@ -1484,6 +1878,7 @@ class LiveGoldenConversationService:
                 state="failed",
                 failure="compatible_session_closed",
             )
+        self._atc_sessions.release_main_session(main_session_id)
 
     def start(self, *, capture_audio: bool) -> LiveGoldenStatus:
         with self._lock:
@@ -1565,6 +1960,11 @@ class LiveGoldenConversationService:
                 run_id=run_id,
                 state="cancelled",
                 failure="operator_stop",
+            )
+        if context is not None and run_id is not None:
+            self._atc_sessions.release(
+                main_session_id=context.main_session_id,
+                run_id=run_id,
             )
         return self.status()
 
@@ -1729,6 +2129,7 @@ class LiveGoldenConversationService:
                 speech_stopped_at=speech_stopped_at,
                 cancelled=cancelled,
                 capture_audio=capture_audio,
+                atc_sessions=self._atc_sessions,
             )
         except Exception as exc:
             if cancelled():
@@ -1751,6 +2152,10 @@ class LiveGoldenConversationService:
                 run_id=run_id,
                 state="failed",
                 failure=safe,
+            )
+            self._atc_sessions.release(
+                main_session_id=context.main_session_id,
+                run_id=run_id,
             )
             with self._lock:
                 if not self._is_cancelled_locked(generation, run_id):
@@ -1806,6 +2211,11 @@ class LiveGoldenConversationService:
                     run_id=run_id,
                     state="complete",
                 )
+                if context is not None:
+                    self._atc_sessions.release(
+                        main_session_id=context.main_session_id,
+                        run_id=run_id,
+                    )
             else:
                 next_case = self._corpus[next_index]
                 self._status = self._status.model_copy(
@@ -1827,38 +2237,6 @@ class LiveGoldenConversationService:
 
     def _is_cancelled_locked(self, generation: int, run_id: str) -> bool:
         return generation != self._generation or self._status.run_id != run_id
-
-
-def _controlled_takeoff_fixture(
-    run_id: str,
-    case_id: str,
-) -> tuple[AtcSessionIdentity, GoldenTakeoffVertical]:
-    core = AtcCoreFlow()
-    surface = AirportSurfaceCoordinator(core)
-    tower = AirportTowerController(surface)
-    identity = AtcSessionIdentity(
-        session_id=uuid.uuid5(uuid.NAMESPACE_URL, f"orion-live-golden:{run_id}:{case_id}"),
-        mission_id="live-golden-controlled-fixture",
-        aircraft_id=CALLSIGN,
-        facility_id="Golden Tower",
-    )
-    core.open_session(identity)
-    tower.assume_runway_control(identity.session_id, reason="controlled Live Golden fixture")
-    tower.start_departure(session_id=identity.session_id, runway_id=RUNWAY)
-    surface.runways.observe(
-        RunwayState(
-            runway_id=RUNWAY,
-            availability=RunwayAvailability.CLEAR,
-            freshness=FreshnessClass.FRESH,
-            reason="controlled Live Golden fixture",
-        )
-    )
-    catalog = build_pilot_phraseology_catalog()
-    return identity, GoldenTakeoffVertical(
-        tower,
-        PilotPhraseologyResolver(catalog),
-        profile_id=CommunicationProfileId.FAP_RUSSIAN_ATC,
-    )
 
 
 def _configuration_fingerprint(runtime: SrsAdapterRuntime) -> str:
@@ -1900,5 +2278,5 @@ def _speech_to_tx_start_ms(
 
 
 live_golden_conversation = LiveGoldenConversationService(
-    corpus=PURE_TAKEOFF_FIRST_CORPUS
+    corpus=PERSISTENT_ATC_STATUS_FIRST_CORPUS
 )

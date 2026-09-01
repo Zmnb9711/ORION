@@ -315,6 +315,27 @@ def test_pure_ru_and_en_takeoff_route_before_qwen_without_provider_calls() -> No
     assert routes_by_profile == {KnownContractRoute.DETERMINISTIC_KNOWN_CONTRACT}
 
 
+def test_pure_ru_and_en_atc_status_route_before_qwen_without_provider_calls() -> None:
+    provider = OwnshipProvider()
+    selected = build_router(provider)
+
+    for utterance in (
+        "Какой диспетчер сейчас управляет моим полётом?",
+        "  КТО СЕЙЧАС УПРАВЛЯЕТ МОИМ ПОЛЕТОМ!!!  ",
+        "Who currently controls my flight?",
+        "WHICH CONTROLLER CURRENTLY CONTROLS MY FLIGHT.",
+    ):
+        decision = selected.route_known_contract(request(utterance), context())
+        assert decision.route is KnownContractRoute.DETERMINISTIC_KNOWN_CONTRACT
+        assert decision.reason_code is KnownContractReasonCode.PURE_ATC_STATUS_QUERY
+        assert decision.contract == "atc_status_query"
+        assert decision.contract_matched is decision.pure is True
+        assert decision.qwen_required is False
+        assert decision.requested_capability == "atc.status.current_flight_controller"
+
+    assert provider.requests == []
+
+
 def test_mixed_free_unknown_and_ambiguous_inputs_preserve_qwen_fallback() -> None:
     provider = OwnshipProvider()
     selected = build_router(provider)
@@ -330,6 +351,13 @@ def test_mixed_free_unknown_and_ambiguous_inputs_preserve_qwen_fallback() -> Non
         "unknown text",
         "Tower, hello, request takeoff and report departure frequency.",
         "Takeoff.",
+        "Добрый день! Кто сейчас управляет моим полётом?",
+        "Кто сейчас управляет моим полётом и какая частота?",
+        "Он спросил: кто сейчас управляет моим полётом?",
+        "Я не спрашиваю, кто сейчас управляет моим полётом",
+        "Кто диспетчер?",
+        "Какой диспетчер?",
+        "Кто управляет?",
     )
 
     for utterance in inputs:

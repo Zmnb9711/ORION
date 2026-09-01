@@ -23,6 +23,11 @@ from pydantic import (
 )
 
 from orion.communication_contracts import CommunicationContext, CommunicationDomain
+from orion.atc_status_query import (
+    ATC_STATUS_CAPABILITY,
+    AtcStatusIntentStatus,
+    classify_atc_status_query,
+)
 from orion.golden_takeoff_vertical import (
     TakeoffIntentKind,
     TakeoffIntentStatus,
@@ -84,6 +89,7 @@ class KnownContractRoute(StrEnum):
 
 class KnownContractReasonCode(StrEnum):
     PURE_TAKEOFF_CLEARANCE_REQUEST = "pure_takeoff_clearance_request"
+    PURE_ATC_STATUS_QUERY = "pure_atc_status_query"
     AMBIGUOUS_OR_MIXED_INPUT = "ambiguous_or_mixed_input"
     NO_KNOWN_CONTRACT_MATCH = "no_known_contract_match"
 
@@ -140,7 +146,7 @@ class KnownContractRoutingDecision(_RouterModel):
     reason_code: KnownContractReasonCode
     domain: CommunicationDomain
     requested_capability: CapabilityId | None = None
-    contract: Literal["takeoff_clearance_request"] | None = None
+    contract: Literal["takeoff_clearance_request", "atc_status_query"] | None = None
     language: str = Field(pattern=r"^(?:ru-RU|en-US)$")
     contract_matched: bool
     pure: bool
@@ -240,7 +246,7 @@ class InteractionRouter:
         request: InteractionRequest,
         communication: CommunicationContext,
     ) -> KnownContractRoutingDecision:
-        """Evaluate the one approved whole-utterance contract before Qwen."""
+        """Evaluate approved whole-utterance contracts before Qwen."""
 
         intent = classify_takeoff_intent(request.text)
         if (
@@ -255,6 +261,20 @@ class InteractionRouter:
                 requested_capability=TAKEOFF_CLEARANCE_CAPABILITY,
                 contract="takeoff_clearance_request",
                 language=intent.language,
+                contract_matched=True,
+                pure=True,
+                qwen_required=False,
+            )
+        status_intent = classify_atc_status_query(request.text)
+        if status_intent.status is AtcStatusIntentStatus.RECOGNIZED:
+            return KnownContractRoutingDecision(
+                interaction_id=request.interaction_id,
+                route=KnownContractRoute.DETERMINISTIC_KNOWN_CONTRACT,
+                reason_code=KnownContractReasonCode.PURE_ATC_STATUS_QUERY,
+                domain=communication.domain,
+                requested_capability=ATC_STATUS_CAPABILITY,
+                contract="atc_status_query",
+                language=status_intent.language,
                 contract_matched=True,
                 pure=True,
                 qwen_required=False,

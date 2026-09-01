@@ -8,12 +8,14 @@ from pathlib import Path
 
 import orion.live_golden_conversation as live_module
 
+from orion.atc_status_query import PersistentAtcSessionCoordinator
 from orion.communication_contracts import CommunicationDomain
 from orion.launcher_cloud_voice_sections import (
     CloudVoiceConfig,
     LauncherCloudVoiceSectionsMixin,
 )
 from orion.live_golden_conversation import (
+    ATC_STATUS_CASE,
     LIVE_GOLDEN_CORPUS,
     PURE_TAKEOFF_FIRST_CORPUS,
     LiveGoldenAcousticReview,
@@ -110,7 +112,10 @@ class _SpeechKit:
         return None
 
     async def synthesize(self, case, _api_key, **_kwargs):  # noqa: ANN001, ANN202
-        assert "Viper 2-1" in case.finalized_text or "Добрый день" in case.finalized_text
+        assert any(
+            marker in case.finalized_text
+            for marker in ("Viper 2-1", "Добрый день", "Диагностический статус ATC")
+        )
         return bytes(4_800), case.finalized_text
 
 
@@ -196,6 +201,7 @@ def _service(
     tts_output_mode: SpeechKitTtsOutputMode = SpeechKitTtsOutputMode.REST_BUFFERED,
     streaming_speechkit_factory=None,  # noqa: ANN001
     corpus=LIVE_GOLDEN_CORPUS,  # noqa: ANN001
+    atc_sessions=None,  # noqa: ANN001
 ) -> tuple[
     LiveGoldenConversationService,
     _Endpoint,
@@ -224,6 +230,7 @@ def _service(
         runner=runner,
         ptt_settle_seconds=0.01,
         corpus=corpus,
+        atc_sessions=atc_sessions,
     )
     endpoint = _Endpoint()
     service.attach(
@@ -747,7 +754,7 @@ def test_real_transcript_runs_one_qwen_local_protected_composition_and_one_radio
     _wait_for(service, LiveGoldenState.AWAITING_REVIEW)
     assert len(endpoint.transmissions) == 1
     assert endpoint.transmissions[0]["source_domain"] is CommunicationDomain.ATC
-    assert endpoint.transmissions[0]["entity_id"] == "orion.live-golden"
+    assert endpoint.transmissions[0]["entity_id"] == "orion.atc.airport_tower"
 
     reviewed = service.review(LiveGoldenAcousticReview.CLEAR)
     assert reviewed.state is LiveGoldenState.WAITING_INPUT
@@ -843,6 +850,83 @@ def test_pure_takeoff_routes_before_qwen_once_through_existing_atc_phraseology_a
         and event["qwen_call_count"] == 0
         and event["osu_count"] == 1
         and event["phraseology_count"] == 1
+        for event in events
+    )
+
+
+def test_takeoff_then_status_use_same_persistent_atc_session_without_qwen(
+    tmp_path,
+    monkeypatch,
+) -> None:  # noqa: ANN001
+    atc_sessions = PersistentAtcSessionCoordinator()
+    service, endpoint, recorder, provider = _service(
+        tmp_path,
+        monkeypatch,
+        corpus=(PURE_TAKEOFF_FIRST_CORPUS[0], ATC_STATUS_CASE),
+        atc_sessions=atc_sessions,
+    )
+    status = service.start(capture_audio=False)
+    assert status.next_prompt == "Разрешите взлёт."
+
+    assert service.accept_transcript(
+        "Разрешите взлёт.",
+        "takeoff-ptt",
+        "takeoff-event",
+        "takeoff-item",
+        time.monotonic(),
+    )
+    _wait_for(service, LiveGoldenState.AWAITING_REVIEW)
+    status = service.review(LiveGoldenAcousticReview.CLEAR)
+    assert status.next_prompt == ATC_STATUS_CASE.prompt
+
+    assert service.accept_transcript(
+        ATC_STATUS_CASE.prompt,
+        "status-ptt",
+        "status-event",
+        "status-item",
+        time.monotonic(),
+    )
+    _wait_for(service, LiveGoldenState.AWAITING_REVIEW)
+    assert provider.requests == []
+    assert len(endpoint.transmissions) == 2
+    assert endpoint.transmissions[0]["entity_id"] == "orion.atc.airport_tower"
+    assert endpoint.transmissions[1]["entity_id"] == "orion.atc.airport_tower"
+
+    final = service.review(LiveGoldenAcousticReview.CLEAR)
+    assert final.state is LiveGoldenState.COMPLETE
+    assert status.run_id is not None
+    assert atc_sessions.bound_session_id(
+        main_session_id="yandex-main-session",
+        run_id=status.run_id,
+    ) is None
+    output = recorder.stop_and_export()
+    with zipfile.ZipFile(output) as archive:
+        summary = json.loads(archive.read("live-golden-summary.json"))
+        events = [
+            json.loads(line)
+            for line in archive.read("events.jsonl").decode().splitlines()
+        ]
+    takeoff, status_record = summary["runs"][0]["cases"]
+    assert takeoff["atc"]["session_created"] is True
+    assert takeoff["atc"]["session_id"] == status_record["atc"]["session_id"]
+    assert status_record["semantic_route"]["contract"] == "atc_status_query"
+    assert status_record["semantic_route"]["qwen_call_count"] == 0
+    assert status_record["qwen"]["call_count"] == 0
+    assert status_record["atc"]["authority_scope"] == "flight_traffic"
+    assert status_record["atc"]["controller_agency"] == "airport_tower"
+    assert status_record["atc"]["procedural_state"] == "takeoff_cleared"
+    assert status_record["atc"]["runtime_revision_before"] == (
+        status_record["atc"]["runtime_revision_after"]
+    )
+    assert status_record["atc"]["atc_truth_unchanged"] is True
+    assert status_record["communication_profile"] == "NOT_APPLICABLE_DIAGNOSTIC"
+    assert status_record["phraseology_entry_id"] is None
+    assert status_record["internal_result"] == "PASS"
+    assert any(
+        event["event"] == "live_golden_atc_status_resolved"
+        and event["atc_session_id"] == takeoff["atc"]["session_id"]
+        and event["qwen_call_count"] == 0
+        and event["atc_truth_unchanged"] is True
         for event in events
     )
 
