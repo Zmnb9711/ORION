@@ -153,6 +153,7 @@ for _router_module in (
     "orion.mission_catalog_api",
     "orion.mission_preparation_api",
     "orion.orion_settings_api",
+    "orion.communication_profile_api",
     "orion.product_capabilities_api",
     "orion.components_api",
 ):

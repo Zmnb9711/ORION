@@ -93,6 +93,8 @@ def test_launcher_entrypoint_has_offline_srs_control_smoke() -> None:
     assert "--integrated-product-smoke" in source
     assert "--credential-store-smoke" in source
     assert "credential_store_ok" in source
+    assert "communication_profiles_ok" in source
+    assert "/v1/communication-profiles" in source
     assert '"ORION-Launcher.exe"' in source
     assert '"ORION-Core.exe"' in source
 

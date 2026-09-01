@@ -43,6 +43,7 @@ Name: "{localappdata}\ORION\runtime"
 Name: "{localappdata}\ORION\runtime\logs"
 Name: "{localappdata}\ORION\runtime\diagnostics"
 Name: "{localappdata}\ORION\runtime\updates"
+Name: "{localappdata}\ORION\communication-profiles"
 
 [InstallDelete]
 ; Upgrade migration: remove only known ORION-managed legacy voice paths.

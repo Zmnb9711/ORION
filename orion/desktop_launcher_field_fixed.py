@@ -7,11 +7,13 @@ from orion.core_process import CoreProcessManager
 from orion.desktop_launcher import _install_tk_exception_boundary
 from orion.desktop_launcher_audio import AudioAwareRuntimeLauncher
 from orion.launcher_cloud_voice_sections import LauncherCloudVoiceSectionsMixin
+from orion.launcher_communication_profiles import LauncherCommunicationProfilesMixin
 from orion.launcher_dropdown_readability import LauncherDropdownReadabilityMixin
 from orion.launcher_field_ui_fix import LauncherFieldUiFixMixin
 
 
 class FieldFixedAudioLauncher(
+    LauncherCommunicationProfilesMixin,
     LauncherCloudVoiceSectionsMixin,
     LauncherDropdownReadabilityMixin,
     LauncherFieldUiFixMixin,

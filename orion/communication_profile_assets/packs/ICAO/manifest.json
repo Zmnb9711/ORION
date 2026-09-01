@@ -1,0 +1,18 @@
+{
+  "content_hash": "0ebe3ea6e3e1e3b4e210f27f43d20f38afd1d73c6321b508043c5888a2a7a3d7",
+  "coverage": [{"domain":"AIRPORT_ATC","status":"CONTENT_NOT_INSTALLED"},{"domain":"GENERAL_RADIO_PROCEDURE","status":"CONTENT_NOT_INSTALLED"},{"domain":"EMERGENCY","status":"CONTENT_NOT_INSTALLED"}],
+  "domains": ["AIRPORT_ATC","GENERAL_RADIO_PROCEDURE","EMERGENCY"],
+  "files": [{"path":"entries.json","sha256":"eb9689f4e89f0b8b88f6fde235f1d5d9329c3056a21e6f451e36f23604ff8394","size_bytes":16}],
+  "language_realizations": [],
+  "pack_id": "icao-bootstrap-metadata",
+  "pack_version": "0.1.0",
+  "profile_id": "ICAO",
+  "published_at": "2026-09-01T00:00:00Z",
+  "publisher": {"display_name":"ORION bootstrap metadata","publisher_id":"orion-bootstrap","signature":{"algorithm":"LOCAL_BOOTSTRAP","key_id":"local-bootstrap-v1","value":""}},
+  "readiness": "RESEARCH_ONLY",
+  "schema_version": "1.0.0",
+  "source_registry_version": "1.0.0",
+  "source_summary": [{"edition":null,"licensing_note":"Licensing restricted; bibliographic metadata only.","locator":"https://www.icao.int/airnavigation","source_id":"icao-source-family","title":"ICAO Doc 4444 / Doc 9432 / Annex 10 Volume II"}],
+  "supported_core_versions": {"maximum_exclusive":"1.0.0","minimum":"0.2.0-alpha"},
+  "verification": "PARTIAL"
+}

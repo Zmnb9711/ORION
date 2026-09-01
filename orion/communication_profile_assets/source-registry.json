@@ -1,0 +1,43 @@
+{
+  "published_at": "2026-09-01T00:00:00Z",
+  "profiles": [
+    {
+      "limitation": "Licensing restricted; production content coverage is incomplete.",
+      "profile_id": "ICAO",
+      "sources": [
+        {"edition": null, "locator": "https://www.icao.int/airnavigation", "note": "Bibliographic registry only; no protected text is bundled.", "publisher": "International Civil Aviation Organization", "source_id": "icao-doc-4444", "title": "ICAO Doc 4444"},
+        {"edition": null, "locator": "https://store.icao.int/", "note": "Bibliographic registry only; no protected text is bundled.", "publisher": "International Civil Aviation Organization", "source_id": "icao-doc-9432", "title": "ICAO Doc 9432"},
+        {"edition": null, "locator": "https://store.icao.int/", "note": "Bibliographic registry only; no protected text is bundled.", "publisher": "International Civil Aviation Organization", "source_id": "icao-annex-10-v2", "title": "ICAO Annex 10 Volume II"}
+      ],
+      "status": "PARTIAL"
+    },
+    {
+      "limitation": null,
+      "profile_id": "FAA_US",
+      "sources": [
+        {"edition": null, "locator": "https://www.faa.gov/air_traffic/publications/atpubs/atc_html/", "note": "Official publication registry; content review is a later task.", "publisher": "Federal Aviation Administration", "source_id": "faa-jo-7110-65", "title": "FAA JO 7110.65"},
+        {"edition": null, "locator": "https://www.faa.gov/air_traffic/publications/atpubs/aim_html/", "note": "Official publication registry; content review is a later task.", "publisher": "Federal Aviation Administration", "source_id": "faa-aim", "title": "FAA Aeronautical Information Manual"},
+        {"edition": null, "locator": "https://www.faa.gov/air_traffic/publications/atpubs/pcg_html/", "note": "Official publication registry; content review is a later task.", "publisher": "Federal Aviation Administration", "source_id": "faa-pcg", "title": "FAA Pilot/Controller Glossary"}
+      ],
+      "status": "READY"
+    },
+    {
+      "limitation": "Domain source coverage is incomplete and not fully proven.",
+      "profile_id": "NATO_MILITARY",
+      "sources": [
+        {"edition": null, "locator": "https://nso.nato.int/", "note": "Bibliographic registry only; additional domain publications remain unresolved.", "publisher": "NATO Standardization Office", "source_id": "nato-app-7", "title": "NATO APP-7"}
+      ],
+      "status": "PARTIAL"
+    },
+    {
+      "limitation": null,
+      "profile_id": "FAP_RUSSIAN_ATC",
+      "sources": [
+        {"edition": null, "locator": "https://publication.pravo.gov.ru/", "note": "Official publication registry; normative entry review is a later task.", "publisher": "Russian Federation official publication portal", "source_id": "fap-414", "title": "ФАП-414"},
+        {"edition": null, "locator": "https://www.caiga.ru/", "note": "Supporting/local-procedure source category where appropriate.", "publisher": "Russian Aeronautical Information Service", "source_id": "russian-aip", "title": "Russian AIP"}
+      ],
+      "status": "READY"
+    }
+  ],
+  "registry_version": "1.0.0"
+}

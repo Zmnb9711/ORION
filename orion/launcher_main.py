@@ -44,6 +44,7 @@ def _integrated_product_smoke(result_path: Path, host: str, port: int) -> int:
         "core_started_by_launcher": False,
         "core_health_ok": False,
         "realtime_status_ok": False,
+        "communication_profiles_ok": False,
         "launcher_remained_operational": False,
         "shutdown_ok": False,
         "orphan_core_process": False,
@@ -95,6 +96,19 @@ def _integrated_product_smoke(result_path: Path, host: str, port: int) -> int:
         result["realtime_status_ok"] = (
             status.get("state") == "stopped" and status.get("provider") is None
         )
+        with urllib.request.urlopen(
+            f"{core.base_url}/v1/communication-profiles",
+            timeout=2.0,
+        ) as response:
+            profiles = json.loads(response.read().decode("utf-8"))
+        profile_rows = profiles.get("profiles") if isinstance(profiles, dict) else None
+        result["communication_profiles_ok"] = (
+            isinstance(profile_rows, list)
+            and [item.get("profile_id") for item in profile_rows]
+            == ["ICAO", "FAA_US", "NATO_MILITARY", "FAP_RUSSIAN_ATC"]
+            and profiles.get("configured_profile_id") is None
+            and profiles.get("registry_status") == "UPDATE SOURCE NOT CONFIGURED"
+        )
         result["launcher_remained_operational"] = True
     except (OSError, RuntimeError, urllib.error.URLError, json.JSONDecodeError) as exc:
         result["error"] = f"{type(exc).__name__}: {exc}"[:500]
@@ -112,6 +126,7 @@ def _integrated_product_smoke(result_path: Path, host: str, port: int) -> int:
                 "core_started_by_launcher",
                 "core_health_ok",
                 "realtime_status_ok",
+                "communication_profiles_ok",
                 "launcher_remained_operational",
                 "shutdown_ok",
                 "credential_store_ok",

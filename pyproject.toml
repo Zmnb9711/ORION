@@ -46,6 +46,9 @@ srs-radio = [
 [tool.setuptools.packages.find]
 include = ["orion*"]
 
+[tool.setuptools.package-data]
+orion = ["communication_profile_assets/**/*.json"]
+
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
