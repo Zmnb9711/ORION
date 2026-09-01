@@ -91,6 +91,9 @@ def test_snapshot_stream_stale_and_recovery_are_deterministic() -> None:
     listener.process_datagram(datagram(False))
     clock.now += 1.1
 
+    assert listener.check_liveness() is True
+    assert listener.status is SrsTxStateListenerStatus.READY
+    clock.now += 3.901
     assert listener.check_liveness() is False
     assert listener.status is SrsTxStateListenerStatus.STALE
     clock.now += 0.1
@@ -100,6 +103,135 @@ def test_snapshot_stream_stale_and_recovery_are_deterministic() -> None:
     assert "srs_tx_state_stale" in events
     assert "srs_tx_state_recovered" in events
     assert statuses[-1] == (SrsTxStateListenerStatus.READY, 0.0)
+
+
+def test_valid_same_state_snapshots_drive_one_bounded_cadence_contract() -> None:
+    clock = Clock()
+    events: list[tuple[str, dict[str, object]]] = []
+    listener = SrsTxStateListener(
+        threading.Event(),
+        lambda _item, _previous: None,
+        lambda _status, _age: None,
+        lambda event, fields: events.append((event, fields)),
+        clock=clock,
+    )
+
+    listener.process_datagram(datagram(False))
+    assert listener.liveness.cadence_sample_count == 0
+    assert listener.liveness.budget_seconds == 5.0
+    clock.now += 0.2
+    listener.process_datagram(datagram(False))
+
+    assert listener.liveness.cadence_sample_count == 1
+    assert listener.liveness.observed_cadence_seconds == pytest.approx(0.2)
+    assert listener.liveness.budget_seconds == 1.0
+    snapshot = next(
+        fields for event, fields in events if event == "srs_tx_state_snapshot"
+    )
+    assert snapshot["listener_epoch"] == 1
+    assert snapshot["liveness_budget_ms"] in {1_000.0, 5_000.0}
+
+
+def test_slow_cadence_budget_tolerates_one_missed_heartbeat_then_fails_bounded() -> (
+    None
+):
+    clock = Clock()
+    listener = SrsTxStateListener(
+        threading.Event(),
+        lambda _item, _previous: None,
+        lambda _status, _age: None,
+        lambda _event, _fields: None,
+        clock=clock,
+    )
+
+    listener.process_datagram(datagram(False))
+    clock.now += 1.6
+    listener.process_datagram(datagram(False))
+    assert listener.liveness.budget_seconds == pytest.approx(4.8)
+
+    clock.now += 3.2
+    assert listener.check_liveness() is True
+    clock.now += 1.601
+    assert listener.check_liveness() is False
+    assert listener.liveness.budget_seconds == 5.0
+    assert listener.latest is None
+
+
+@pytest.mark.parametrize("cadence", [0.2, 1.6])
+def test_long_ptt_over_six_seconds_stays_fresh_with_valid_heartbeats(
+    cadence: float,
+) -> None:
+    clock = Clock()
+    transitions: list[tuple[bool | None, bool]] = []
+    listener = SrsTxStateListener(
+        threading.Event(),
+        lambda item, previous: transitions.append(
+            (previous.is_sending if previous is not None else None, item.is_sending)
+        ),
+        lambda _status, _age: None,
+        lambda _event, _fields: None,
+        clock=clock,
+    )
+
+    listener.process_datagram(datagram(False))
+    clock.now += cadence
+    listener.process_datagram(datagram(False))
+    clock.now += cadence
+    listener.process_datagram(datagram(True))
+    ptt_started = clock.now
+    while clock.now - ptt_started <= 6.0:
+        clock.now += cadence
+        assert listener.check_liveness(clock.now - 0.001) is True
+        listener.process_datagram(datagram(True))
+    clock.now += cadence
+    listener.process_datagram(datagram(False))
+
+    assert listener.status is SrsTxStateListenerStatus.READY
+    assert transitions.count((False, True)) == 1
+    assert transitions.count((True, False)) == 1
+    assert transitions.count((True, True)) >= 3
+
+
+def test_malformed_datagrams_never_extend_cadence_or_freshness() -> None:
+    clock = Clock()
+    listener = SrsTxStateListener(
+        threading.Event(),
+        lambda _item, _previous: None,
+        lambda _status, _age: None,
+        lambda _event, _fields: None,
+        clock=clock,
+    )
+    listener.process_datagram(datagram(False))
+    clock.now += 1.0
+    assert listener.process_datagram(b"not-json") is False
+
+    assert listener.liveness.cadence_sample_count == 0
+    clock.now += 4.001
+    assert listener.check_liveness() is False
+
+
+def test_confirmed_true_with_dead_heartbeat_fails_without_fabricated_false() -> None:
+    clock = Clock()
+    observed: list[bool] = []
+    statuses: list[SrsTxStateListenerStatus] = []
+    listener = SrsTxStateListener(
+        threading.Event(),
+        lambda item, _previous: observed.append(item.is_sending),
+        lambda status, _age: statuses.append(status),
+        lambda _event, _fields: None,
+        clock=clock,
+    )
+    listener.process_datagram(datagram(False))
+    clock.now += 1.6
+    listener.process_datagram(datagram(False))
+    clock.now += 1.6
+    listener.process_datagram(datagram(True))
+    assert listener.liveness.budget_seconds == pytest.approx(4.8)
+
+    clock.now += 4.801
+    assert listener.check_liveness() is False
+    assert statuses[-1] is SrsTxStateListenerStatus.STALE
+    assert observed == [False, False, True]
 
 
 class PortBusySocket:

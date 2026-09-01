@@ -20,6 +20,8 @@ from orion.srs_protocol import (
 )
 from orion.srs_radio_transport import SrsRadioConfig, SrsState
 from orion.srs_tx_state import (
+    SRS_TX_STATE_MAX_LIVENESS_SECONDS,
+    SrsTxStateLiveness,
     SrsTxStateListenerStatus,
     SrsTxStateSnapshot,
 )
@@ -144,6 +146,32 @@ class FakeTxStateListener:
         self._initial_sending = initial_sending
         self.status = SrsTxStateListenerStatus.STOPPED
         self.latest: SrsTxStateSnapshot | None = None
+        self._listener_epoch = 1
+        self._cadence_intervals: list[float] = []
+        self._last_received_at: float | None = None
+
+    @property
+    def liveness(self) -> SrsTxStateLiveness:
+        observed = max(self._cadence_intervals) if self._cadence_intervals else None
+        budget = (
+            SRS_TX_STATE_MAX_LIVENESS_SECONDS
+            if observed is None
+            else min(SRS_TX_STATE_MAX_LIVENESS_SECONDS, max(1.0, 3.0 * observed))
+        )
+        return SrsTxStateLiveness(
+            listener_epoch=self._listener_epoch,
+            cadence_sample_count=len(self._cadence_intervals),
+            observed_cadence_seconds=observed,
+            budget_seconds=budget,
+        )
+
+    @property
+    def liveness_budget_seconds(self) -> float:
+        return self.liveness.budget_seconds
+
+    @property
+    def maximum_liveness_seconds(self) -> float:
+        return SRS_TX_STATE_MAX_LIVENESS_SECONDS
 
     def start(self) -> None:
         self.status = SrsTxStateListenerStatus.READY
@@ -155,11 +183,18 @@ class FakeTxStateListener:
 
     def emit(self, is_sending: bool, sending_on: int = 1) -> None:
         previous = self.latest
+        received_at = self._clock()
+        if self._last_received_at is not None:
+            interval = received_at - self._last_received_at
+            if interval > 0:
+                self._cadence_intervals.append(interval)
+                self._cadence_intervals = self._cadence_intervals[-8:]
+        self._last_received_at = received_at
         snapshot = SrsTxStateSnapshot(
             is_sending=is_sending,
             sending_on=sending_on,
             is_encrypted=0,
-            received_at=self._clock(),
+            received_at=received_at,
             received_timestamp=f"test-{self._clock():.3f}",
         )
         self.latest = snapshot
@@ -169,6 +204,10 @@ class FakeTxStateListener:
 
     def stale(self, age_ms: float = 1_001.0) -> None:
         self.status = SrsTxStateListenerStatus.STALE
+        self._listener_epoch += 1
+        self._cadence_intervals.clear()
+        self._last_received_at = None
+        self.latest = None
         self._on_status(self.status, age_ms)
 
 
@@ -510,6 +549,8 @@ def test_authoritative_packet_candidate_waits_for_matching_7082_before_start(
     listener = endpoint._tx_state_listener
     assert isinstance(listener, FakeTxStateListener)
 
+    clock.now += 0.2
+    listener.emit(False, 1)
     endpoint._on_radio_datagram(human_packet(1))
     endpoint._on_radio_datagram(human_packet(2))
     assert endpoint.input_queue.empty()
@@ -551,6 +592,8 @@ def test_false_only_packet_candidate_is_discarded_without_provider_turn(
     listener = endpoint._tx_state_listener
     assert isinstance(listener, FakeTxStateListener)
 
+    clock.now += 0.2
+    listener.emit(False, 1)
     endpoint._on_radio_datagram(human_packet(1))
     assert endpoint.input_queue.empty()
     clock.now += 1.1
@@ -586,8 +629,12 @@ def test_unconfirmed_packet_candidate_pcm_is_bounded_and_discarded(
     )
     endpoint.connect_radio()
     endpoint.start()
+    listener = endpoint._tx_state_listener
+    assert isinstance(listener, FakeTxStateListener)
+    clock.now += 0.2
+    listener.emit(False, 1)
 
-    for packet_id in range(1, 27):
+    for packet_id in range(1, 127):
         endpoint._on_radio_datagram(human_packet(packet_id))
 
     assert endpoint.input_queue.empty()
@@ -601,8 +648,9 @@ def test_unconfirmed_packet_candidate_pcm_is_bounded_and_discarded(
     ]
     assert len(discarded) == 1
     assert discarded[0]["reason"] == "pcm_buffer_limit"
-    assert discarded[0]["candidate_pcm_bytes"] == 33_280
-    assert discarded[0]["candidate_pcm_limit_bytes"] == 32_000
+    assert discarded[0]["candidate_pcm_bytes"] == 160_000
+    assert discarded[0]["candidate_pcm_limit_bytes"] == 160_000
+    assert discarded[0]["candidate_buffered_duration_ms"] == 5_000.0
     endpoint.stop()
 
 
@@ -953,7 +1001,8 @@ def test_empty_turn_then_false_only_candidate_then_real_turn_is_clean(
         clock.now += 18.0
         endpoint._on_radio_datagram(human_packet(2))
         assert endpoint.input_queue.empty()
-        clock.now += 1.1
+        clock.now += 5.1
+        deadline = time.monotonic() + 1.0
         while endpoint._active_rx_transmission_id is not None:
             assert time.monotonic() < deadline
             await asyncio.sleep(0.001)
@@ -1057,6 +1106,143 @@ def test_authoritative_tx_state_can_recover_while_idle(
     endpoint.stop()
 
 
+def test_2026_09_01_slow_7082_candidate_survives_old_one_second_failure(
+    tmp_path,
+) -> None:  # noqa: ANN001
+    clock = Clock()
+    endpoint, _radio, _status = make_endpoint(
+        tmp_path,
+        clock,
+        provider_input_rate_hz=16_000,
+        authoritative_tx_state=True,
+    )
+    endpoint.connect_radio()
+    endpoint.start()
+    listener = endpoint._tx_state_listener
+    assert isinstance(listener, FakeTxStateListener)
+
+    clock.now += 1.6
+    listener.emit(False, 1)
+    assert listener.liveness.budget_seconds == pytest.approx(4.8)
+    clock.now += 0.5
+    endpoint._on_radio_datagram(human_packet(1))
+    endpoint._on_radio_datagram(human_packet(2))
+    assert endpoint.input_queue.empty()
+
+    clock.now += 1.1
+    time.sleep(0.05)
+    assert endpoint._active_rx_transmission_id == "srs-ptt-000001"
+    assert endpoint.failure() is None
+    listener.emit(True, 1)
+
+    assert endpoint.read_input(0.1) == RealtimeInputTransmissionStarted(
+        "srs-ptt-000001"
+    )
+    assert b"".join(endpoint.read_input(0.1) for _ in range(4)) == bytes(2_560)
+    for _ in range(3):
+        clock.now += 1.6
+        listener.emit(True, 1)
+    clock.now += 1.6
+    listener.emit(False, 1)
+    completed = endpoint.read_input(0.1)
+    assert isinstance(completed, RealtimeInputTransmissionCompleted)
+    assert completed.transmission_id == "srs-ptt-000001"
+    assert endpoint.failure() is None
+
+    events = endpoint.diagnostics.snapshot()
+    candidate = next(
+        event for event in events if event["event"] == "srs_packet_candidate_started"
+    )
+    promoted = next(
+        event for event in events if event["event"] == "srs_packet_candidate_promoted"
+    )
+    assert candidate["confirmation_timeout_ms"] == pytest.approx(4_800.0)
+    assert candidate["candidate_pcm_limit_bytes"] == 160_000
+    assert promoted["correlation_wait_ms"] == pytest.approx(1_100.0)
+    assert sum(event["event"] == "rx_transmission_completed" for event in events) == 1
+    endpoint.stop()
+
+
+def test_reconnect_epoch_bootstrap_forgets_fast_cadence_and_accepts_slow_true(
+    tmp_path,
+) -> None:  # noqa: ANN001
+    clock = Clock()
+    endpoint, _radio, _status = make_endpoint(
+        tmp_path,
+        clock,
+        provider_input_rate_hz=16_000,
+        authoritative_tx_state=True,
+    )
+    endpoint.connect_radio()
+    endpoint.start()
+    listener = endpoint._tx_state_listener
+    assert isinstance(listener, FakeTxStateListener)
+
+    clock.now += 0.2
+    listener.emit(False, 1)
+    assert listener.liveness.budget_seconds == 1.0
+    listener.stale()
+    assert endpoint.failure() is None
+    assert listener.liveness.budget_seconds == 5.0
+
+    clock.now += 1.6
+    listener.emit(False, 1)
+    clock.now += 0.5
+    endpoint._on_radio_datagram(human_packet(1))
+    clock.now += 1.1
+    time.sleep(0.05)
+    assert endpoint._active_rx_transmission_id == "srs-ptt-000001"
+    listener.emit(True, 1)
+    assert endpoint.read_input(0.1) == RealtimeInputTransmissionStarted(
+        "srs-ptt-000001"
+    )
+    clock.now += 1.6
+    listener.emit(False, 1)
+    assert any(
+        isinstance(item, RealtimeInputTransmissionCompleted)
+        for item in tuple(endpoint.input_queue.queue)
+    )
+    assert endpoint.failure() is None
+    endpoint.stop()
+
+
+def test_unconfirmed_candidate_does_not_turn_stale_into_authoritative_failure(
+    tmp_path,
+) -> None:  # noqa: ANN001
+    clock = Clock()
+    endpoint, _radio, _status = make_endpoint(
+        tmp_path,
+        clock,
+        provider_input_rate_hz=16_000,
+        authoritative_tx_state=True,
+    )
+    endpoint.connect_radio()
+    endpoint.start()
+    listener = endpoint._tx_state_listener
+    assert isinstance(listener, FakeTxStateListener)
+
+    endpoint._on_radio_datagram(human_packet(1))
+    listener.stale()
+    assert endpoint.failure() is None
+    clock.now += 5.001
+    time.sleep(0.05)
+
+    assert endpoint._active_rx_transmission_id is None
+    assert endpoint.failure() is None
+    assert not any(
+        isinstance(item, RealtimeInputTransmissionCompleted)
+        for item in tuple(endpoint.input_queue.queue)
+    )
+    discarded = next(
+        event
+        for event in endpoint.diagnostics.snapshot()
+        if event["event"] == "srs_packet_candidate_discarded"
+    )
+    assert discarded["reason"] == "tx_state_not_confirmed"
+    assert discarded["tx_state_confirmed"] is False
+    endpoint.stop()
+
+
 def test_wrong_sending_on_discards_candidate_without_provider_turn(
     tmp_path,
 ) -> None:  # noqa: ANN001
@@ -1071,6 +1257,8 @@ def test_wrong_sending_on_discards_candidate_without_provider_turn(
     endpoint.start()
     listener = endpoint._tx_state_listener
     assert isinstance(listener, FakeTxStateListener)
+    clock.now += 0.2
+    listener.emit(False, 1)
     listener.emit(True, 2)
     endpoint._on_radio_datagram(human_packet(1))
     listener.emit(False, 2)

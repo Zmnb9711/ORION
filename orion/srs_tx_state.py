@@ -6,6 +6,7 @@ import json
 import socket
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -13,7 +14,12 @@ from typing import Callable
 
 SRS_TX_STATE_HOST = "127.0.0.1"
 SRS_TX_STATE_PORT = 7082
+# Historical floor derived from the field-proven ~200 ms EAM heartbeat.
 SRS_TX_STATE_STALE_SECONDS = 1.0
+SRS_TX_STATE_MAX_LIVENESS_SECONDS = 5.0
+SRS_TX_STATE_BOOTSTRAP_LIVENESS_SECONDS = SRS_TX_STATE_MAX_LIVENESS_SECONDS
+SRS_TX_STATE_CADENCE_SAFETY_MULTIPLIER = 3.0
+SRS_TX_STATE_CADENCE_SAMPLE_WINDOW = 8
 SRS_TX_STATE_READY_TIMEOUT_SECONDS = 2.0
 SRS_TX_STATE_EVIDENCE_INTERVAL_SECONDS = 1.0
 SRS_TX_STATE_MAX_DATAGRAM_BYTES = 65_507
@@ -46,6 +52,16 @@ class SrsTxStateSnapshot:
     is_encrypted: int
     received_at: float
     received_timestamp: str
+
+
+@dataclass(frozen=True, slots=True)
+class SrsTxStateLiveness:
+    """Atomic view of the bounded heartbeat-derived liveness contract."""
+
+    listener_epoch: int
+    cadence_sample_count: int
+    observed_cadence_seconds: float | None
+    budget_seconds: float
 
 
 TxStateSnapshotCallback = Callable[
@@ -116,6 +132,10 @@ class SrsTxStateListener:
         host: str = SRS_TX_STATE_HOST,
         port: int = SRS_TX_STATE_PORT,
         stale_seconds: float = SRS_TX_STATE_STALE_SECONDS,
+        max_liveness_seconds: float = SRS_TX_STATE_MAX_LIVENESS_SECONDS,
+        bootstrap_liveness_seconds: float = SRS_TX_STATE_BOOTSTRAP_LIVENESS_SECONDS,
+        cadence_safety_multiplier: float = SRS_TX_STATE_CADENCE_SAFETY_MULTIPLIER,
+        cadence_sample_window: int = SRS_TX_STATE_CADENCE_SAMPLE_WINDOW,
         evidence_interval_seconds: float = SRS_TX_STATE_EVIDENCE_INTERVAL_SECONDS,
         socket_factory: SocketFactory = socket.socket,
         clock: Callable[[], float] = time.monotonic,
@@ -124,7 +144,14 @@ class SrsTxStateListener:
             raise ValueError("SRS TX-state listener must bind to 127.0.0.1")
         if not 1 <= port <= 65_535:
             raise ValueError("SRS TX-state UDP port is invalid")
-        if stale_seconds <= 0 or evidence_interval_seconds <= 0:
+        if (
+            stale_seconds <= 0
+            or max_liveness_seconds < stale_seconds
+            or not stale_seconds <= bootstrap_liveness_seconds <= max_liveness_seconds
+            or cadence_safety_multiplier <= 0
+            or cadence_sample_window <= 0
+            or evidence_interval_seconds <= 0
+        ):
             raise ValueError("SRS TX-state timing bounds must be positive")
         self._session_stop = session_stop
         self._on_snapshot = on_snapshot
@@ -132,7 +159,13 @@ class SrsTxStateListener:
         self._diagnostic = diagnostic
         self._host = host
         self._port = port
-        self._stale_seconds = stale_seconds
+        self._minimum_liveness_seconds = stale_seconds
+        self._maximum_liveness_seconds = max_liveness_seconds
+        self._bootstrap_liveness_seconds = bootstrap_liveness_seconds
+        self._cadence_safety_multiplier = cadence_safety_multiplier
+        self._cadence_intervals: deque[float] = deque(maxlen=cadence_sample_window)
+        self._cadence_last_received_at: float | None = None
+        self._listener_epoch = 0
         self._evidence_interval = evidence_interval_seconds
         self._socket_factory = socket_factory
         self._clock = clock
@@ -158,6 +191,59 @@ class SrsTxStateListener:
         with self._lock:
             return self._latest
 
+    @property
+    def liveness(self) -> SrsTxStateLiveness:
+        with self._lock:
+            return self._liveness_locked()
+
+    @property
+    def liveness_budget_seconds(self) -> float:
+        return self.liveness.budget_seconds
+
+    @property
+    def maximum_liveness_seconds(self) -> float:
+        return self._maximum_liveness_seconds
+
+    def _liveness_locked(self) -> SrsTxStateLiveness:
+        sample_count = len(self._cadence_intervals)
+        observed = max(self._cadence_intervals) if sample_count else None
+        if observed is None:
+            budget = self._bootstrap_liveness_seconds
+        else:
+            budget = min(
+                self._maximum_liveness_seconds,
+                max(
+                    self._minimum_liveness_seconds,
+                    self._cadence_safety_multiplier * observed,
+                ),
+            )
+        return SrsTxStateLiveness(
+            listener_epoch=self._listener_epoch,
+            cadence_sample_count=sample_count,
+            observed_cadence_seconds=observed,
+            budget_seconds=budget,
+        )
+
+    @staticmethod
+    def _liveness_fields(liveness: SrsTxStateLiveness) -> dict[str, object]:
+        return {
+            "listener_epoch": liveness.listener_epoch,
+            "cadence_sample_count": liveness.cadence_sample_count,
+            "observed_heartbeat_interval_ms": (
+                round(liveness.observed_cadence_seconds * 1000, 3)
+                if liveness.observed_cadence_seconds is not None
+                else None
+            ),
+            "liveness_budget_ms": round(liveness.budget_seconds * 1000, 3),
+        }
+
+    def _reset_epoch_locked(self) -> SrsTxStateLiveness:
+        self._listener_epoch += 1
+        self._cadence_intervals.clear()
+        self._cadence_last_received_at = None
+        self._latest = None
+        return self._liveness_locked()
+
     def start(
         self,
         ready_timeout: float = SRS_TX_STATE_READY_TIMEOUT_SECONDS,
@@ -167,6 +253,12 @@ class SrsTxStateListener:
         with self._lock:
             if self._thread is not None:
                 return
+            self._listener_stop.clear()
+            self._first_snapshot.clear()
+            self._last_evidence_at = None
+            self._suppressed_snapshots = 0
+            self._valid_snapshots = 0
+            liveness = self._reset_epoch_locked()
             udp = self._socket_factory(socket.AF_INET, socket.SOCK_DGRAM)
             try:
                 exclusive = getattr(socket, "SO_EXCLUSIVEADDRUSE", None)
@@ -194,6 +286,10 @@ class SrsTxStateListener:
                 daemon=True,
             )
             self._thread.start()
+        self._diagnostic(
+            "srs_tx_state_estimator_reset",
+            {"reason": "listener_start", **self._liveness_fields(liveness)},
+        )
         if self._first_snapshot.wait(ready_timeout):
             return
         self._diagnostic(
@@ -262,8 +358,15 @@ class SrsTxStateListener:
             return False
 
         with self._lock:
+            if self._listener_epoch == 0:
+                self._listener_epoch = 1
             previous = self._latest
             recovered = self._status is SrsTxStateListenerStatus.STALE
+            if self._cadence_last_received_at is not None:
+                interval = now - self._cadence_last_received_at
+                if interval > 0:
+                    self._cadence_intervals.append(interval)
+            self._cadence_last_received_at = now
             self._latest = snapshot
             self._status = SrsTxStateListenerStatus.READY
             self._valid_snapshots += 1
@@ -280,16 +383,26 @@ class SrsTxStateListener:
             else:
                 self._suppressed_snapshots += 1
                 suppressed = -1
+            liveness = self._liveness_locked()
         self._first_snapshot.set()
         if valid_count == 1:
             self._diagnostic(
                 "srs_tx_state_listener_ready",
-                {"host": self._host, "port": self._port, "snapshot_age_ms": 0},
+                {
+                    "host": self._host,
+                    "port": self._port,
+                    "snapshot_age_ms": 0,
+                    **self._liveness_fields(liveness),
+                },
             )
         if recovered:
             self._diagnostic(
                 "srs_tx_state_recovered",
-                {"snapshot_age_ms": 0, "valid_snapshot_count": valid_count},
+                {
+                    "snapshot_age_ms": 0,
+                    "valid_snapshot_count": valid_count,
+                    **self._liveness_fields(liveness),
+                },
             )
         if suppressed >= 0:
             self._diagnostic(
@@ -302,6 +415,7 @@ class SrsTxStateListener:
                     "valid_snapshot_count": valid_count,
                     "suppressed_snapshot_count": suppressed,
                     "transition": transition,
+                    **self._liveness_fields(liveness),
                 },
             )
         self._on_status(SrsTxStateListenerStatus.READY, 0.0)
@@ -315,15 +429,25 @@ class SrsTxStateListener:
             if latest is None:
                 return False
             age = max(0.0, current - latest.received_at)
-            if age < self._stale_seconds:
+            liveness = self._liveness_locked()
+            if age <= liveness.budget_seconds:
                 return True
             if self._status is SrsTxStateListenerStatus.STALE:
                 return False
             self._status = SrsTxStateListenerStatus.STALE
+            reset_liveness = self._reset_epoch_locked()
         age_ms = round(age * 1000, 3)
         self._diagnostic(
             "srs_tx_state_stale",
-            {"snapshot_age_ms": age_ms, "stale_after_ms": self._stale_seconds * 1000},
+            {
+                "snapshot_age_ms": age_ms,
+                "stale_after_ms": round(liveness.budget_seconds * 1000, 3),
+                **self._liveness_fields(liveness),
+            },
+        )
+        self._diagnostic(
+            "srs_tx_state_estimator_reset",
+            {"reason": "stale", **self._liveness_fields(reset_liveness)},
         )
         self._on_status(SrsTxStateListenerStatus.STALE, age_ms)
         return False
@@ -345,6 +469,8 @@ class SrsTxStateListener:
                 with self._lock:
                     self._status = SrsTxStateListenerStatus.STALE
                     latest = self._latest
+                    liveness = self._liveness_locked()
+                    reset_liveness = self._reset_epoch_locked()
                 age_ms = (
                     round(max(0.0, self._clock() - latest.received_at) * 1000, 3)
                     if latest is not None
@@ -352,7 +478,19 @@ class SrsTxStateListener:
                 )
                 self._diagnostic(
                     "srs_tx_state_stale",
-                    {"reason": "listener_socket_error", "snapshot_age_ms": age_ms},
+                    {
+                        "reason": "listener_socket_error",
+                        "snapshot_age_ms": age_ms,
+                        "stale_after_ms": round(liveness.budget_seconds * 1000, 3),
+                        **self._liveness_fields(liveness),
+                    },
+                )
+                self._diagnostic(
+                    "srs_tx_state_estimator_reset",
+                    {
+                        "reason": "listener_socket_error",
+                        **self._liveness_fields(reset_liveness),
+                    },
                 )
                 self._on_status(SrsTxStateListenerStatus.STALE, age_ms)
                 return

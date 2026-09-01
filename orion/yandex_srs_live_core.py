@@ -65,6 +65,7 @@ from orion.srs_transmission import (
     split_tx_pcm,
 )
 from orion.srs_tx_state import (
+    SRS_TX_STATE_MAX_LIVENESS_SECONDS,
     SrsTxStateListener,
     SrsTxStateListenerStatus,
     SrsTxStateSnapshot,
@@ -83,7 +84,6 @@ RESPONSE_MAX_BYTES = YANDEX_INPUT_RATE * 2 * RESPONSE_MAX_SECONDS
 MAX_RESPONSE_STATES = 4
 SHUTDOWN_TIMEOUT_SECONDS = 6.0
 SRS_DECODE_RATE_HZ = 16_000
-SRS_TX_CONFIRM_TIMEOUT_SECONDS = 1.0
 STREAM_UNDERRUN_SILENCE_LIMIT_MS = 120
 STREAM_PCM_READ_BYTES = YANDEX_BLOCK_BYTES * 5
 
@@ -221,7 +221,7 @@ class SrsYandexPcmEndpoint:
         self._input_block_frames = provider_input_rate_hz // 50
         self._input_block_bytes = self._input_block_frames * 2
         self._candidate_pcm_limit_bytes = int(
-            provider_input_rate_hz * 2 * SRS_TX_CONFIRM_TIMEOUT_SECONDS
+            provider_input_rate_hz * 2 * SRS_TX_STATE_MAX_LIVENESS_SECONDS
         )
         self._trailing_silence_blocks = (
             TRAILING_SILENCE_BLOCKS
@@ -280,6 +280,7 @@ class SrsYandexPcmEndpoint:
         self._tx_state_confirmed_transmission_id: str | None = None
         self._tx_state_confirmed_sending_on: int | None = None
         self._tx_state_candidate_started_at: float | None = None
+        self._tx_state_candidate_budget_seconds: float | None = None
         self._tx_state_candidate_promoted = False
         self._tx_state_started_timestamp: str | None = None
         self._last_authoritative_tx_end_at: float | None = None
@@ -379,13 +380,53 @@ class SrsYandexPcmEndpoint:
         if status is not SrsTxStateListenerStatus.STALE:
             return
         with self._lock:
-            active = self._active_rx_transmission_id is not None
-        if active:
+            active_id = self._active_rx_transmission_id
+            confirmed = (
+                active_id is not None
+                and self._tx_state_confirmed_transmission_id == active_id
+            )
+            self._tx_state_latest = None
+            candidate_budget = self._candidate_confirmation_budget_seconds()
+            if active_id is not None and not confirmed:
+                self.diagnostics.record(
+                    "srs_packet_candidate_waiting_for_tx_state_recovery",
+                    physical_transmission_id=active_id,
+                    snapshot_age_ms=snapshot_age_ms,
+                    candidate_confirmation_budget_ms=round(candidate_budget * 1000, 3),
+                    tx_state_confirmed=False,
+                )
+        if confirmed:
             self._set_failure(
                 RuntimeError(
                     "SRS TX-state stream became stale during an active radio turn"
                 )
             )
+
+    def _candidate_confirmation_budget_seconds(self) -> float:
+        listener = self._tx_state_listener
+        current = (
+            listener.liveness_budget_seconds
+            if listener is not None
+            else SRS_TX_STATE_MAX_LIVENESS_SECONDS
+        )
+        started = self._tx_state_candidate_budget_seconds or 0.0
+        return min(SRS_TX_STATE_MAX_LIVENESS_SECONDS, max(current, started))
+
+    def _tx_state_liveness_fields(self) -> dict[str, object]:
+        listener = self._tx_state_listener
+        if listener is None:
+            return {}
+        liveness = listener.liveness
+        return {
+            "listener_epoch": liveness.listener_epoch,
+            "cadence_sample_count": liveness.cadence_sample_count,
+            "observed_heartbeat_interval_ms": (
+                round(liveness.observed_cadence_seconds * 1000, 3)
+                if liveness.observed_cadence_seconds is not None
+                else None
+            ),
+            "liveness_budget_ms": round(liveness.budget_seconds * 1000, 3),
+        }
 
     def _on_tx_state_snapshot(
         self,
@@ -472,6 +513,7 @@ class SrsYandexPcmEndpoint:
             is_encrypted=snapshot.is_encrypted,
             tx_state_confirmed=True,
             snapshot_timestamp=snapshot.received_timestamp,
+            **self._tx_state_liveness_fields(),
         )
         self._promote_packet_candidate(snapshot)
 
@@ -507,9 +549,17 @@ class SrsYandexPcmEndpoint:
             last_packet_id=turn_evidence.last_packet_id,
             accepted_packet_count=turn_evidence.accepted_packet_count,
             candidate_pcm_bytes=len(self.rx_accumulator),
+            candidate_buffered_duration_ms=round(
+                len(self.rx_accumulator) / (self.pcm_format.sample_rate * 2) * 1000,
+                3,
+            ),
             correlation_wait_ms=correlation_wait_ms,
             sending_on=snapshot.sending_on,
             tx_state_confirmed=True,
+            candidate_confirmation_budget_ms=round(
+                self._candidate_confirmation_budget_seconds() * 1000, 3
+            ),
+            **self._tx_state_liveness_fields(),
         )
         self.diagnostics.record(
             "rx_transmission_started",
@@ -540,6 +590,13 @@ class SrsYandexPcmEndpoint:
             reason=reason,
             candidate_pcm_bytes=len(self.rx_accumulator),
             candidate_pcm_limit_bytes=self._candidate_pcm_limit_bytes,
+            candidate_buffered_duration_ms=round(
+                len(self.rx_accumulator) / (self.pcm_format.sample_rate * 2) * 1000,
+                3,
+            ),
+            candidate_confirmation_budget_ms=round(
+                self._candidate_confirmation_budget_seconds() * 1000, 3
+            ),
             accepted_packet_count=(
                 turn_evidence.accepted_packet_count
                 if turn_evidence is not None
@@ -562,12 +619,15 @@ class SrsYandexPcmEndpoint:
                 else None
             ),
             eou_triggered_by_7082=False,
+            tx_state_confirmed=False,
+            **self._tx_state_liveness_fields(),
         )
         self.rx_accumulator.clear()
         self.tracker.discard_active()
         self._active_rx_transmission_id = None
         self._rx_turn_evidence = None
         self._tx_state_candidate_started_at = None
+        self._tx_state_candidate_budget_seconds = None
         self._tx_state_candidate_promoted = False
         self._tx_state_confirmed_transmission_id = None
         self._tx_state_confirmed_sending_on = None
@@ -584,11 +644,17 @@ class SrsYandexPcmEndpoint:
             return
         now = self.clock()
         with self._lock:
-            if self._authoritative_tx_state and (
-                self._tx_state_listener is None
-                or self._tx_state_listener.status
-                is not SrsTxStateListenerStatus.READY
-            ):
+            listener = self._tx_state_listener
+            listener_unhealthy = self._authoritative_tx_state and (
+                listener is None
+                or listener.status is not SrsTxStateListenerStatus.READY
+            )
+            unconfirmed_candidate = (
+                self._active_rx_transmission_id is not None
+                and self._tx_state_confirmed_transmission_id
+                != self._active_rx_transmission_id
+            )
+            if listener_unhealthy and not unconfirmed_candidate:
                 self._set_failure(
                     RuntimeError(
                         "SRS voice arrived without a healthy authoritative TX-state stream"
@@ -646,6 +712,9 @@ class SrsYandexPcmEndpoint:
             if self._active_rx_transmission_id is None:
                 self._active_rx_transmission_id = turn_evidence.transmission_id
                 self._tx_state_candidate_started_at = now
+                self._tx_state_candidate_budget_seconds = (
+                    self._candidate_confirmation_budget_seconds()
+                )
                 self._tx_state_candidate_promoted = False
                 if self._authoritative_tx_state:
                     latest = self._tx_state_latest
@@ -653,12 +722,21 @@ class SrsYandexPcmEndpoint:
                         "srs_packet_candidate_started",
                         physical_transmission_id=self._active_rx_transmission_id,
                         first_packet_id=turn_evidence.first_packet_id,
-                        confirmation_timeout_ms=(
-                            SRS_TX_CONFIRM_TIMEOUT_SECONDS * 1000
+                        confirmation_timeout_ms=round(
+                            self._candidate_confirmation_budget_seconds() * 1000,
+                            3,
                         ),
                         candidate_pcm_limit_bytes=self._candidate_pcm_limit_bytes,
+                        candidate_pcm_horizon_ms=round(
+                            self._candidate_pcm_limit_bytes
+                            / (self.pcm_format.sample_rate * 2)
+                            * 1000,
+                            3,
+                        ),
                         is_sending=(latest.is_sending if latest is not None else None),
                         sending_on=(latest.sending_on if latest is not None else None),
+                        tx_state_confirmed=False,
+                        **self._tx_state_liveness_fields(),
                     )
                 else:
                     if not self._enqueue_input(
@@ -673,14 +751,15 @@ class SrsYandexPcmEndpoint:
                         physical_transmission_id=self._active_rx_transmission_id,
                         boundary_source="packet_quiescence",
                     )
-            self.rx_accumulator.extend(provider_pcm)
             if (
                 self._authoritative_tx_state
                 and not self._tx_state_candidate_promoted
-                and len(self.rx_accumulator) > self._candidate_pcm_limit_bytes
+                and len(self.rx_accumulator) + len(provider_pcm)
+                > self._candidate_pcm_limit_bytes
             ):
                 self._discard_unconfirmed_candidate(reason="pcm_buffer_limit")
                 return
+            self.rx_accumulator.extend(provider_pcm)
             latest = self._tx_state_latest
             if (
                 self._authoritative_tx_state
@@ -807,6 +886,7 @@ class SrsYandexPcmEndpoint:
         self._rx_turn_evidence = None
         self._rx_end_injected_at = self.tracker.last_human_packet_at
         self._tx_state_candidate_started_at = None
+        self._tx_state_candidate_budget_seconds = None
         self._tx_state_candidate_promoted = False
         self._tx_state_confirmed_transmission_id = None
         self._tx_state_confirmed_sending_on = None
@@ -844,7 +924,7 @@ class SrsYandexPcmEndpoint:
                         and self._tx_state_confirmed_transmission_id != active_id
                         and candidate_started is not None
                         and now - candidate_started
-                        >= SRS_TX_CONFIRM_TIMEOUT_SECONDS
+                        >= self._candidate_confirmation_budget_seconds()
                     ):
                         self._discard_unconfirmed_candidate(
                             reason="tx_state_not_confirmed"
