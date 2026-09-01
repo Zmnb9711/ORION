@@ -2,8 +2,15 @@
 
 Status: **AUTHORITATIVE FULL-PRODUCT MASTER CHECKPOINT**
 
-Source repository baseline for this expansion: `dev/adr004-post-389` @
-`c17aa6e0d7a9cbef692842ed9576d8c8ab2ad570`.
+Current repository baseline for this historical checkpoint update:
+
+- branch: `dev/adr004-post-389`;
+- local `HEAD`: `01a499eac7bb81951e86f4aaa64f2419ab718c48`;
+- `origin/dev/adr004-post-389`: `01a499eac7bb81951e86f4aaa64f2419ab718c48`;
+- divergence at update start: `0 ahead / 0 behind`;
+- tracked and staged state at update start: clean;
+- pre-existing generated/untracked artifacts: preserved and outside this
+  documentation-only checkpoint.
 
 This checkpoint preserves the approved full-product intent recovered after loss
 of part of the original development conversation while retaining the
@@ -11,19 +18,33 @@ field-proven voice architecture and current MODEL C direction. It must be
 consulted before future product or architecture changes. Current runtime
 behavior is not, by itself, proof of intended target architecture.
 
+The complete historical reconstruction behind this update inspected 26 ORION
+conversations and 6,602 messages and recovered 70 grouped Master decisions,
+including 56 explicit user-approved decisions. The full approval-provenance
+register is maintained in
+[`orion-master-decision-register-2026-09-01.md`](orion-master-decision-register-2026-09-01.md).
+That register is an inseparable authoritative appendix to this checkpoint.
+
 ### Authority and precedence
 
 Use this order when sources appear to conflict:
 
-1. the latest explicitly approved user decision;
-2. current Git implementation state for what the product actually does now;
-3. this checkpoint for approved product intent and target architecture;
-4. ADRs and detailed design documents for bounded decisions;
-5. historical artifacts for context and recovery evidence.
+1. the latest explicit user decision;
+2. the complete chronological historical decision register;
+3. current Git implementation state;
+4. an approved ADR or this Master checkpoint;
+5. field evidence;
+6. tests;
+7. summaries, project memory and prior audits;
+8. clearly labelled inference.
 
-Implementation status and approved target are different facts. When they
-differ, both must be recorded; the target must not be silently rewritten to
-match incomplete or experimental code. Proposed-only ideas remain proposals.
+Current code proves what exists; it does not necessarily prove what was
+historically intended. Implementation status and approved target are different
+facts. When they differ, both must be recorded; the target must not be silently
+rewritten to match incomplete or experimental code. An assistant proposal is
+not approved unless the user explicitly accepted it or later adoption is
+clearly established. A later summary does not silently override a direct
+historical user decision.
 
 ## Full product identity
 
@@ -60,7 +81,23 @@ The approved target is **MODEL C — hybrid routing**.
 - Protected operational wording is Core-owned and may not be rewritten by Qwen after rendering.
 - TTS and radio transport present/transport the result; they do not own semantics.
 
-The current Live Golden route is not the target universal router. It is a controlled experimental vertical in which Qwen is invoked directly for each case, including pure operational control cases.
+The current Live Golden route is not the target universal router. It is a
+controlled experimental vertical in which Qwen is invoked directly for each
+case, including pure operational control cases.
+
+**Mandatory Qwen for every operational utterance is SUPERSEDED EXPERIMENTAL
+DRIFT.** The canonical policy is:
+
+- known pure operational input → deterministic Core path;
+- free, mixed, unknown, ambiguous or complex input → Qwen/Planner when
+  appropriate.
+
+The pure takeoff MODEL C route is now **FIELD_PROVEN**. A safely recognized
+pure takeoff request bypasses Qwen with zero expected Qwen calls. Operational
+truth remains Core-owned, and the downstream route is
+`OperationalSemanticUnit → Phraseology → SpeechKit StreamSynthesis →
+RadioRouter/SRS`. This result does not prove or authorize direct routing for
+all ATC interactions.
 
 ## 2. Mandatory product requirements preserved
 
@@ -331,7 +368,9 @@ Its current small policy surface must not be interpreted as the final routing co
 | Debrief | Post-flight analysis and recommendations | NOT_YET_IMPLEMENTED | Approved TARGET |
 | Free speech | RU/EN natural interaction and conversation | CURRENT / PARTIALLY_IMPLEMENTED | Qwen paths proven; not unified with all domains |
 | Mixed interaction | FREE + OPERATIONAL decomposition and protected composition | EXPERIMENTAL | Mixed/Live Golden prove bounded behavior, not universal routing |
-| Communication Profiles | Persisted selector and profile-specific presentation | PARTIALLY_IMPLEMENTED | Contracts exist; normal Launcher/runtime wiring incomplete |
+| Communication Profiles | Persisted selector and profile-specific presentation | INFRASTRUCTURE_IMPLEMENTED / CONTENT_MISSING | IDs, local pack store, lifecycle, source registry, persistence and Launcher UI exist; verified normative entries are not installed |
+| Pure takeoff MODEL C | Safely recognized pure request bypasses Qwen | FIELD_PROVEN | Expected Qwen calls `0`; Core truth → OSU → Phraseology → StreamSynthesis → RadioRouter/SRS |
+| RadioEntity voices | Persistent recognizable voice per role/entity | DISCONNECTED / NOT_PRODUCTION_WIRED | Provider feasibility evidence exists; production RadioEntity → VoiceProfile resolver is missing |
 | Qwen | Extension for free/mixed/complex/planning | CURRENT / FIELD_PROVEN in controlled verticals | Must not be a universal mandatory hop |
 | Phraseology | Broad normative profile/domain KB | EXPERIMENTAL | Pilot architecture validated; source packs/wiring incomplete |
 | WorldModel | Provenance-aware facade over authoritative truth | CURRENT | Must not become a duplicate truth store |
@@ -386,27 +425,37 @@ and 400-ms packet quiescence are **SUPERSEDED** as turn-final authority.
 - IA-6 narrow vertical ≠ universal final routing.
 - 20–30 mixed test corpus ≠ product KB size.
 
-## 16. Exactly one approved next implementation task
+## 16. Completed first bounded migration and continuation principle
 
-Exactly one next implementation task is approved:
+**PURE TAKEOFF DETERMINISTIC ROUTE BEFORE QWEN** is complete and
+**FIELD_PROVEN**.
 
-**PURE TAKEOFF DETERMINISTIC ROUTE BEFORE QWEN**
+The implementation reused the bounded RU/EN takeoff recognition and existing
+ATC truth. A safely classified pure request bypasses Qwen; mixed, free,
+unknown, conflicting and ambiguous input remains on the non-deterministic
+route. Field evidence recorded zero Qwen calls and preserved
+`OperationalSemanticUnit → Phraseology → StreamSynthesis → RadioRouter/SRS`.
 
-This is the first bounded migration case into MODEL C: wire one bounded
-pure-takeoff deterministic Core route before Qwen.
+Current safe continuation principle: migrate one bounded operational
+capability at a time under MODEL C:
 
-Constraints:
+```text
+recognition
+  → Core route
+  → existing domain truth/service
+  → OperationalSemanticUnit
+  → profile-aware Phraseology
+  → TTS/radio
+  → deterministic regression and field evidence
+```
 
-- reuse the existing bounded RU/EN takeoff classifier rather than duplicating it;
-- bypass Qwen only when the utterance is safely classified as a pure supported operational request;
-- mixed/free/unknown/conflicting/ambiguous input falls back to the existing Qwen path;
-- route the deterministic result through existing ATC truth → `OperationalSemanticUnit` → Phraseology → streaming TTS;
-- do not change protected wording;
-- do not expand landing/taxi/AAR/AWACS/JTAC in the same task;
-- do not change SpeechKit STT, StreamSynthesis, SRS/7082 or RadioRouter;
-- use the intended mixed-phrase corpus as a negative-routing regression corpus, not as a production KB-size assumption.
+Reuse proven domain services and tests. Do not rewrite an entire historical
+domain at once, recreate a legacy universal parser/router, or broaden a
+single-slice field result to unrelated interactions.
 
-Field latency testing comes only after deterministic implementation/regression succeeds.
+The next implementation family is **ATC**, because the user explicitly
+prioritized continuing ATC before AAR. This documentation checkpoint does not
+select the exact next ATC contract.
 
 ## 17. Performance consequence
 
@@ -414,9 +463,11 @@ Latest field route is approximately:
 
 `STT final → Qwen ~2.75 s → semantic ready → first streaming SRS frame ~0.22 s`.
 
-For a pure supported takeoff contract, removing Qwen from the valid deterministic route could save approximately 2.75 seconds in the current measured case.
-
-This is a **performance estimate**, not field proof. A new field test is required after the deterministic route is implemented.
+For the pure supported takeoff contract, removing Qwen from the valid
+deterministic route was expected to remove approximately 2.75 seconds from the
+previous measured route. The completed no-VPN field run subsequently measured
+approximately `462 ms` from PTT end to first SRS frame, with zero Qwen calls.
+This is field proof only for the bounded pure takeoff route.
 
 ## 18. Approved functional product scope
 
@@ -548,15 +599,40 @@ frequency formatting and radio-procedure presentation. A profile may **not**
 change operational truth, ToolGateway permissions, WorldModel visibility,
 mission state, provider selection, authority or safety policy.
 
-Current state: profile IDs and provider-neutral communication contracts exist,
-and tests protect their semantic isolation. Golden experiments can select a
-profile. The normal persisted Launcher selector and complete runtime wiring are
-**PARTIALLY_IMPLEMENTED / incomplete**.
+Current infrastructure status:
 
-A Phraseology KB version/status/update surface was also historically approved
-for this area and remains a **TARGET**. `Russian Military` was deferred and
-must not be conflated with `FAP_RUSSIAN_ATC`; profile names alone do not define
-normative Phraseology content.
+- Communication Profile IDs: **IMPLEMENTED**;
+- provider-neutral Communication Profile API: **IMPLEMENTED**;
+- local pack store: **IMPLEMENTED**;
+- schema/version/source-registry contracts: **IMPLEMENTED**;
+- candidate/ACTIVE/PREVIOUS_KNOWN_GOOD lifecycle: **IMPLEMENTED**;
+- hash/compatibility/signature trust seam: **IMPLEMENTED**;
+- offline behavior: **IMPLEMENTED**;
+- Launcher profile selection and persistence: **IMPLEMENTED**;
+- Update/Details/Rollback UI: **IMPLEMENTED**;
+- production registry host/trust roots: **NOT CONFIGURED / INCOMPLETE**;
+- verified production normative phraseology content: **MISSING / NOT
+  INSTALLED**;
+- cross-profile operational rendering: **NOT YET PROVEN**.
+
+All bootstrap packs are research-only and contain no active normative entries
+or language realizations, so profile selection currently cannot activate a
+production Phraseology pack. `Russian Military` was deferred and must not be
+conflated with `FAP_RUSSIAN_ATC`; profile names alone do not define normative
+content.
+
+Historical user-facing UI intent is simpler than the internal pack model. The
+main Launcher concept is:
+
+| Selection | Communication Profile | Basis | Purpose | Phraseology KB action |
+|---|---|---|---|---|
+| one active | ICAO | International | civil/international presentation | Update phraseology data |
+| one active | FAA / US | United States | US presentation/procedure | Update phraseology data |
+| one active | NATO / Military | NATO publications | military presentation | Update phraseology data |
+| one active | ФАП / Russian ATC | Russian ATC basis | Russian ATC presentation | Update phraseology data |
+
+Detailed source, verification and technical pack state may be shown under
+Details; it must not replace the simple user-facing profile model.
 
 ## 21. Launcher product requirements
 
@@ -576,8 +652,9 @@ current direction includes:
 
 The mature Launcher/Core lifecycle is **CURRENT**: window close hides to tray,
 while explicit Exit terminates only the exact Launcher-owned Core and preserves
-an external compatible Core. Communication Profile and full runtime Modules
-selection remain incomplete product targets.
+an external compatible Core. Communication Profile selection, persistence and
+pack lifecycle controls are implemented. Full runtime Modules selection and
+enforcement remain incomplete product targets.
 
 ## 22. Installer, upgrade and uninstaller
 
@@ -689,6 +766,8 @@ Corrective routing work must preserve:
 - installed/frozen build identity;
 - bounded field evidence and observability;
 - mature Launcher/Core tray and ownership lifecycle;
+- Communication Profile API, local pack lifecycle and Launcher profile UI;
+- the field-proven pure takeoff MODEL C route;
 - Yandex Realtime availability and response-ID suppression for its existing
   path.
 
@@ -712,7 +791,9 @@ capability into MODEL C.
 
 ### C2 MEDIUM
 
-- The normal persisted Communication Profile UI/runtime path is incomplete.
+- Communication Profile infrastructure and Launcher UI are implemented, but
+  verified normative content and cross-profile operational rendering are
+  missing/unproven.
 - Authorized current/world-news access is not implemented.
 - Full debrief is not implemented.
 - Broad normative profile/domain Phraseology source packs are incomplete.
@@ -727,6 +808,9 @@ build identity, evidence and lifecycle behavior are improvements to preserve.
 
 This checkpoint integrates and reconciles:
 
+- the complete chronological reconstruction of 26 ORION conversations and
+  6,602 inspected messages;
+- the authoritative 70-decision Master Decision Register appendix;
 - the previous Master Architecture Checkpoint;
 - the completed pre-Qwen routing recovery and exhaustive pre-loss approved
   concept inventory;
@@ -757,9 +841,172 @@ The following are not required to implement the approved bounded takeoff route:
 - final service-specific busy-frequency and preemption policy;
 - any future autonomous-aircraft-control boundary change.
 
-None of these blocks the bounded pure-takeoff task.
+None of these invalidates the field-proven bounded pure-takeoff route. They do
+not authorize choosing a new exact ATC contract in this documentation task.
 
-## 31. Authority and update rule
+## 31. Historical roadmap and status
+
+The recovered last approved pre-loss sequence is preserved here so later work
+does not rename, reorder or recreate completed stages:
+
+| Stage | Historical purpose | Current status |
+|---|---|---|
+| IA-0 | Provider-neutral interaction contracts | COMPLETED |
+| IA-1 | Yandex presentation contract probe | COMPLETED / PROBE_PASS |
+| IA-1.1 | Realtime versus SpeechKit hybrid presentation | COMPLETED / FIELD_PROVEN |
+| IA-2 | WorldModel facade | COMPLETED |
+| IA-3 | ToolGateway | COMPLETED |
+| IA-4 | PlannerProvider contract | COMPLETED |
+| IA-5 | Yandex Qwen planner adapter | COMPLETED / PROVIDER_PROVEN |
+| pre-IA-6 | Launcher-owned Core lifecycle correction | COMPLETED |
+| IA-6 | Narrow InteractionRouter vertical | COMPLETED; not universal routing |
+| Stage 6B.1 | Radio contracts and RadioRouter | COMPLETED |
+| Stage 6B.2 | Production SRS adapter | COMPLETED / FIELD_PROVEN |
+| Stage 6B.2 field gate | Official-SRS physical/acoustic validation | FIELD_PROVEN |
+| Pilot Phraseology | Bounded non-normative resolver/corruption probe | EXPERIMENTAL / PROBE_PASS |
+| Golden | Deterministic authority/protected wording proof | COMPLETED / PROBE_PASS |
+| Mixed | FREE + OPERATIONAL composition proof | COMPLETED / PROBE_PASS |
+| Live Golden | Physical end-to-end conversational experiment | EXPERIMENTAL; mandatory-Qwen route SUPERSEDED |
+
+The first MODEL C migration after this roadmap, pure takeoff before Qwen, is
+also complete and field-proven. Current continuation remains bounded ATC
+capability migration; this checkpoint does not select the next ATC contract.
+
+## 32. Field-proven register
+
+`FIELD_PROVEN` is reserved for evidence from the normal or intended physical
+product path, not merely deterministic tests or a synthetic probe.
+
+| Capability | Field-proven boundary |
+|---|---|
+| Qwen voice baseline | Normal realtime voice operation was observed in the installed product, including controlled VPN/no-VPN runs |
+| SRS/Yandex radio chain | Official radio RX → provider → SRS TX proved after canonical RadioInfo correction |
+| Stage 5.1 frequency isolation | `251 → 252 → 251 MHz` routing behavior observed |
+| FlightContext | Real DCS telemetry/context passed through the bounded provider path with provenance |
+| IA-1.1 hybrid presentation | 20/20 SRS transmissions, semantic PASS, 20 WAV artifacts and human `CLEAR` review |
+| Stage 6B.2 SRS adapter | 20/20 adapter-start → SRS-start → tx-completed → adapter-completed sequences with acoustic review |
+| SpeechKit v3 External EOU | Complete PCM, one explicit EOU and native final/cursor barrier observed |
+| Persistent multi-PTT | Sequential physical PTT turns completed within one SpeechKit RPC |
+| UDP 7082 turn ownership | Official SRS `IsSending true→false` proved as authoritative local TX end |
+| Streaming TTS | SpeechKit StreamSynthesis fed one bounded streaming SRS lifecycle without REST fallback |
+| Pure takeoff MODEL C | Zero Qwen calls; Core-owned truth; approximately `462 ms` PTT end → first SRS frame in the no-VPN run |
+
+Pilot Phraseology, Golden/Mixed offline cases, isolated provider protocol
+probes and generated WAVs are valuable evidence but are not independently a
+complete product `FIELD_PROVEN` result.
+
+## 33. DO NOT REBUILD — already exists
+
+Future tasks must extend, connect or migrate the following components. They
+must not create parallel replacements:
+
+- Flight Bridge and Mission Bridge;
+- FlightContext;
+- WorldModel and its provenance contracts;
+- ToolGateway and receipts;
+- PlannerProvider and the Yandex Qwen adapter;
+- InteractionRouter;
+- OperationalSemanticUnit and protected-fragment contracts;
+- airport ATC state machines, controllers and services;
+- AAR services;
+- AWACS briefing/prioritization services;
+- JTAC runtime, assets, status and voice services;
+- Mission Control query, coordination and bounded autonomy services;
+- Aircraft Knowledge API and existing adapters;
+- radio contracts and RadioRouter;
+- production SRS transport/adapter and canonical SRS RadioInfo;
+- SpeechKit v3 External EOU STT;
+- UDP 7082 authoritative turn ownership;
+- persistent multi-PTT SpeechKit sessions;
+- SpeechKit REST TTS and SpeechKit StreamSynthesis;
+- response-ID suppression;
+- Test Evidence recording/export;
+- credential storage and secret boundaries;
+- installed/frozen build identity;
+- Launcher/Core ownership and tray lifecycle;
+- Communication Profile API, local pack store and pack lifecycle;
+- Launcher Communication Profile selection/update/details/rollback UI;
+- Pilot Phraseology, Golden and Mixed probes;
+- pure takeoff MODEL C route.
+
+## 34. ACTUALLY MISSING / PARTIAL / DISCONNECTED / DEFERRED
+
+These terms are not interchangeable:
+
+- **MISSING**: no complete production capability was found;
+- **PARTIAL**: useful implementation exists but does not meet the full target;
+- **DISCONNECTED**: components/contracts exist but are not production-wired;
+- **DEFERRED**: explicitly postponed rather than accidentally lost.
+
+| Capability | Status | Required future work |
+|---|---|---|
+| Verified normative phraseology entries | MISSING | Source/licensing acceptance, verified entries and language realizations |
+| General deterministic recognizer beyond bounded slices | MISSING | Extend MODEL C one contract at a time |
+| Complete Carrier ATC runtime | MISSING / PARTIAL DESIGN | Implement without duplicating airport/domain truth |
+| RadioEntity → persistent VoiceProfile resolver | DISCONNECTED / MISSING RESOLVER | Bind stable entity identity to provider-neutral voice selection |
+| Busy-channel/collision/preemption scheduler | PARTIAL | Unify role priority, wait and emergency interruption policy |
+| Trusted third-party radio identity correlation | PARTIAL | Add provenance-safe correlation before WorldModel promotion |
+| Runtime Modules UI/persistence/enforcement | PARTIAL | Complete module inventory and runtime behavior |
+| Modular aircraft/component installer | PARTIAL | Add installation selection distinct from runtime enablement |
+| Selective uninstall/user-data choices | PARTIAL | Complete explicit credentials/data/evidence policy UX |
+| Debrief | MISSING | Add privacy-aware post-flight analysis product path |
+| Current-information/news connector | MISSING | Add authorized current source with freshness/provenance |
+| Mission-editor assistant | MISSING | Add bounded module later |
+| Broad all-aircraft knowledge adapters | PARTIAL | Expand from generic/F/A-18-first foundation |
+| Native VR status overlay | DEFERRED | Implement only under a later bounded UI decision |
+
+## 35. Durable rejected and superseded knowledge
+
+The full provenance is in the Master Decision Register. At minimum, future
+work must not revive these as unexamined ideas:
+
+- ORION-managed VR tuning/settings — rejected;
+- duplicate manual callsign — rejected;
+- Free Russian/Free English as profile-menu choices — superseded;
+- four hard language modes — superseded;
+- immediate Russian Military fifth profile — deferred;
+- permanent Whisper fallback — superseded;
+- always-on Qwen session — rejected;
+- Qwen inside Core or owning domain truth — rejected;
+- Qwen-owned protected Phraseology — no-go;
+- Hybrid C as sole protection — no-go;
+- critical output through Realtime only — superseded;
+- provider/VAD-owned physical radio turn — superseded;
+- packet-gap EOU — superseded;
+- universal mandatory-Qwen operational route — superseded experimental drift;
+- 20–30 as production KB size — rejected interpretation;
+- test-only GUI/probe as production field proof — rejected;
+- DCS audio ducking as a requirement — rejected/not required;
+- premature full Launcher cleanup before architecture/radio gates — deferred.
+
+## 36. Phraseology packs and RadioEntity status
+
+Pilot Phraseology is an **EXPERIMENTAL PROBE**. The 20–30 figure means
+**TEST_CORPUS_ONLY**. It does not limit the production KB or imply one final
+intent per phrase.
+
+The pack mechanism is implemented, but ICAO, FAA, NATO and FAP production
+rules are not yet verified or installed. Communication Profile may affect
+presentation rules, operational language and phraseology. It may not affect
+truth, permissions, provider selection, mission state or safety authority.
+
+The historical RadioEntity target is a persistent recognizable voice per role
+or entity. Multi-voice provider feasibility and acoustic evidence exist, but
+the current production streaming path remains fixed/default-oriented. A
+production RadioEntity → VoiceProfile resolver is **MISSING**. This is not a
+regression from a previously complete production resolver; the historical
+target was never fully wired.
+
+## 37. Full-product scope preservation
+
+This Master continues to cover the complete product rather than only voice or
+takeoff ATC. Approved targets include Virtual ATC, Carrier ATC, AWACS/GCI,
+AAR, JTAC/FAC, Mission Control, Aircraft Knowledge, cockpit assistance,
+debrief, free conversation, authorized current/world news, all-aircraft and
+helicopter coverage, radio situational awareness, Runtime Modules, modular
+installation, selective uninstall and a future graceful VR overlay.
+
+## 38. Authority and update rule
 
 This file is the authoritative full-product architecture baseline as of
 2026-09-01.
