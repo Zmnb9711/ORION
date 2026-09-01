@@ -63,7 +63,6 @@ def _vertical(
 @pytest.mark.parametrize(
     "utterance,language",
     (
-        ("Добрый день! Разрешите взлёт.", "ru-RU"),
         ("Разрешите взлёт.", "ru-RU"),
         ("Можно взлетать?", "ru-RU"),
         ("Башня, готов к взлёту.", "ru-RU"),
@@ -83,6 +82,25 @@ def test_approved_ru_en_corpus_is_bounded_takeoff_intent(
     assert intent.status is TakeoffIntentStatus.RECOGNIZED
     assert intent.language == language
     assert intent.kind is not None
+
+
+@pytest.mark.parametrize(
+    "utterance",
+    (
+        "Добрый день! Разрешите взлёт.",
+        "Разрешите взлёт и скажите частоту.",
+        "После взлёта какая будет частота?",
+        "Расскажи про взлёт.",
+        "Почему мне не разрешили взлёт?",
+        "Если разрешат взлёт, что делать дальше?",
+        "Какие сегодня новости перед взлётом?",
+        "Как дела перед взлётом?",
+    ),
+)
+def test_mixed_or_discursive_takeoff_cues_are_never_recognized_as_pure(
+    utterance: str,
+) -> None:
+    assert classify_takeoff_intent(utterance).status is not TakeoffIntentStatus.RECOGNIZED
 
 
 def test_permitted_request_uses_existing_atc_and_preserves_protected_slots() -> None:

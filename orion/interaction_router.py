@@ -23,6 +23,11 @@ from pydantic import (
 )
 
 from orion.communication_contracts import CommunicationContext, CommunicationDomain
+from orion.golden_takeoff_vertical import (
+    TakeoffIntentKind,
+    TakeoffIntentStatus,
+    classify_takeoff_intent,
+)
 from orion.interaction_contracts import (
     CapabilityId,
     ContextReference,
@@ -46,6 +51,8 @@ from orion.planner_contracts import (
 POLICY_VERSION = "ia6.router-policy.v1"
 OWNERSHIP_CAPABILITY = CapabilityId("world.ownship.read")
 HEALTH_CAPABILITY = CapabilityId("test.ping")
+TAKEOFF_CLEARANCE_CAPABILITY = CapabilityId("atc.takeoff.clearance.request")
+KNOWN_CONTRACT_POLICY_VERSION = "model-c.known-contract-policy.v1"
 
 PolicyVersion = Annotated[
     str,
@@ -68,6 +75,17 @@ class InteractionRoute(StrEnum):
     UNSUPPORTED = "unsupported"
     DENIED = "denied"
     UNAVAILABLE = "unavailable"
+
+
+class KnownContractRoute(StrEnum):
+    DETERMINISTIC_KNOWN_CONTRACT = "deterministic_known_contract"
+    EXISTING_QWEN_FALLBACK = "existing_qwen_fallback"
+
+
+class KnownContractReasonCode(StrEnum):
+    PURE_TAKEOFF_CLEARANCE_REQUEST = "pure_takeoff_clearance_request"
+    AMBIGUOUS_OR_MIXED_INPUT = "ambiguous_or_mixed_input"
+    NO_KNOWN_CONTRACT_MATCH = "no_known_contract_match"
 
 
 class RouteReasonCode(StrEnum):
@@ -110,6 +128,36 @@ class InteractionRoutingDecision(_RouterModel):
                 raise ValueError("Planner route requires one Core-selected capability")
         elif self.planner_required:
             raise ValueError("Only planner route may require Planner")
+        return self
+
+
+class KnownContractRoutingDecision(_RouterModel):
+    """One bounded pre-Qwen Core decision; it contains no operational truth."""
+
+    interaction_id: UUID
+    recognizer_evaluated: Literal[True] = True
+    route: KnownContractRoute
+    reason_code: KnownContractReasonCode
+    domain: CommunicationDomain
+    requested_capability: CapabilityId | None = None
+    contract: Literal["takeoff_clearance_request"] | None = None
+    language: str = Field(pattern=r"^(?:ru-RU|en-US)$")
+    contract_matched: bool
+    pure: bool
+    qwen_required: bool
+    policy_version: PolicyVersion = KNOWN_CONTRACT_POLICY_VERSION
+
+    @model_validator(mode="after")
+    def validate_known_contract_route(self) -> Self:
+        deterministic = self.route is KnownContractRoute.DETERMINISTIC_KNOWN_CONTRACT
+        if deterministic != self.contract_matched or deterministic != self.pure:
+            raise ValueError("Deterministic route requires one pure matched contract")
+        if deterministic == self.qwen_required:
+            raise ValueError("Deterministic route and Qwen requirement are mutually exclusive")
+        if deterministic != (self.contract is not None):
+            raise ValueError("Only a deterministic known-contract route identifies a contract")
+        if deterministic != (self.requested_capability is not None):
+            raise ValueError("Only a deterministic route selects a Core capability")
         return self
 
 
@@ -186,6 +234,64 @@ class InteractionRouter:
         self._max_replay_entries = max_replay_entries
         self._diagnostics: deque[InteractionRouterDiagnostic] = deque(maxlen=500)
         self._lock = RLock()
+
+    def route_known_contract(
+        self,
+        request: InteractionRequest,
+        communication: CommunicationContext,
+    ) -> KnownContractRoutingDecision:
+        """Evaluate the one approved whole-utterance contract before Qwen."""
+
+        intent = classify_takeoff_intent(request.text)
+        if (
+            intent.status is TakeoffIntentStatus.RECOGNIZED
+            and intent.kind is TakeoffIntentKind.TAKEOFF_CLEARANCE_REQUEST
+        ):
+            return KnownContractRoutingDecision(
+                interaction_id=request.interaction_id,
+                route=KnownContractRoute.DETERMINISTIC_KNOWN_CONTRACT,
+                reason_code=KnownContractReasonCode.PURE_TAKEOFF_CLEARANCE_REQUEST,
+                domain=communication.domain,
+                requested_capability=TAKEOFF_CLEARANCE_CAPABILITY,
+                contract="takeoff_clearance_request",
+                language=intent.language,
+                contract_matched=True,
+                pure=True,
+                qwen_required=False,
+            )
+        return KnownContractRoutingDecision(
+            interaction_id=request.interaction_id,
+            route=KnownContractRoute.EXISTING_QWEN_FALLBACK,
+            reason_code=(
+                KnownContractReasonCode.AMBIGUOUS_OR_MIXED_INPUT
+                if intent.status is TakeoffIntentStatus.AMBIGUOUS
+                else KnownContractReasonCode.NO_KNOWN_CONTRACT_MATCH
+            ),
+            domain=communication.domain,
+            language=intent.language,
+            contract_matched=False,
+            pure=False,
+            qwen_required=True,
+        )
+
+    def route_known_contract_text(
+        self,
+        *,
+        interaction_id: UUID,
+        text: str,
+        communication: CommunicationContext,
+    ) -> KnownContractRoutingDecision:
+        """Construct the provider-neutral request inside the Core boundary."""
+
+        return self.route_known_contract(
+            InteractionRequest(
+                interaction_id=interaction_id,
+                text=text,
+                role_hint="pilot",
+                domain_hint=communication.domain.value,
+            ),
+            communication,
+        )
 
     def route(
         self,

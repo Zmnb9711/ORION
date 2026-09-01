@@ -15,6 +15,7 @@ from orion.launcher_cloud_voice_sections import (
 )
 from orion.live_golden_conversation import (
     LIVE_GOLDEN_CORPUS,
+    PURE_TAKEOFF_FIRST_CORPUS,
     LiveGoldenAcousticReview,
     LiveGoldenConversationService,
     LiveGoldenPttCoordinator,
@@ -194,6 +195,7 @@ def _service(
     gate: threading.Event | None = None,
     tts_output_mode: SpeechKitTtsOutputMode = SpeechKitTtsOutputMode.REST_BUFFERED,
     streaming_speechkit_factory=None,  # noqa: ANN001
+    corpus=LIVE_GOLDEN_CORPUS,  # noqa: ANN001
 ) -> tuple[
     LiveGoldenConversationService,
     _Endpoint,
@@ -218,7 +220,11 @@ def _service(
             streaming_speechkit_factory or live_module.SpeechKitStreamingTtsClient
         ),
     )
-    service = LiveGoldenConversationService(runner=runner, ptt_settle_seconds=0.01)
+    service = LiveGoldenConversationService(
+        runner=runner,
+        ptt_settle_seconds=0.01,
+        corpus=corpus,
+    )
     endpoint = _Endpoint()
     service.attach(
         LiveGoldenRuntimeContext(
@@ -772,6 +778,75 @@ def test_real_transcript_runs_one_qwen_local_protected_composition_and_one_radio
     assert b"memory-only-secret" not in combined
 
 
+def test_pure_takeoff_routes_before_qwen_once_through_existing_atc_phraseology_and_radio(
+    tmp_path,
+    monkeypatch,
+) -> None:  # noqa: ANN001
+    service, endpoint, recorder, provider = _service(
+        tmp_path,
+        monkeypatch,
+        corpus=PURE_TAKEOFF_FIRST_CORPUS,
+    )
+    status = service.start(capture_audio=False)
+    assert status.next_prompt == "Разрешите взлёт."
+
+    for _ in range(2):
+        service.accept_transcript(
+            "Разрешите взлёт.",
+            "takeoff-ptt-1",
+            "takeoff-event-1",
+            "takeoff-item-1",
+            time.monotonic(),
+        )
+    _wait_for(service, LiveGoldenState.AWAITING_REVIEW)
+    assert provider.requests == []
+    assert len(endpoint.transmissions) == 1
+
+    service.stop()
+    output = recorder.stop_and_export()
+    with zipfile.ZipFile(output) as archive:
+        summary = json.loads(archive.read("live-golden-summary.json"))
+        events = [
+            json.loads(line)
+            for line in archive.read("events.jsonl").decode().splitlines()
+        ]
+    record = summary["runs"][0]["cases"][0]
+    assert record["semantic_route"] == {
+        "recognizer_evaluated": True,
+        "contract_matched": True,
+        "pure": True,
+        "route_selected": "deterministic_known_contract",
+        "reason_code": "pure_takeoff_clearance_request",
+        "contract": "takeoff_clearance_request",
+        "qwen_required": False,
+        "qwen_call_count": 0,
+        "policy_version": "model-c.known-contract-policy.v1",
+    }
+    assert record["qwen"]["call_count"] == 0
+    assert record["qwen"]["provider_response_ids"] == []
+    assert record["atc"]["decision"]["status"] == "granted"
+    assert record["semantic_result"] == {
+        "atc_result_count": 1,
+        "osu_count": 1,
+        "phraseology_count": 1,
+        "presentation_response_count": 1,
+    }
+    assert record["phraseology_entry_id"] == "atc-takeoff-clearance-granted"
+    assert record["protected_fragment"] == (
+        "Viper 2-1, полоса 07/25, взлёт разрешён."
+    )
+    assert record["final_composed_text"] == record["protected_fragment"]
+    assert record["composition_order"] == ["PROTECTED"]
+    assert record["internal_result"] == "PASS"
+    assert any(
+        event["event"] == "live_golden_core_semantics_completed"
+        and event["qwen_call_count"] == 0
+        and event["osu_count"] == 1
+        and event["phraseology_count"] == 1
+        for event in events
+    )
+
+
 def test_duplicate_transcript_and_review_gate_cannot_create_two_transmissions(
     tmp_path,
     monkeypatch,
@@ -804,7 +879,7 @@ def test_six_mixed_cases_and_two_controls_run_without_configuration_edits(
     tmp_path,
     monkeypatch,
 ) -> None:  # noqa: ANN001
-    service, endpoint, recorder, _provider = _service(tmp_path, monkeypatch)
+    service, endpoint, recorder, provider = _service(tmp_path, monkeypatch)
     service.start(capture_audio=False)
     for index, case in enumerate(LIVE_GOLDEN_CORPUS, start=1):
         current = service.status()
@@ -822,6 +897,7 @@ def test_six_mixed_cases_and_two_controls_run_without_configuration_edits(
     assert service.status().state is LiveGoldenState.COMPLETE
     assert service.status().completed_cases == service.status().reviewed_cases == 8
     assert len(endpoint.transmissions) == 8
+    assert len(provider.requests) == 7
     assert [item["source_domain"] for item in endpoint.transmissions] == [
         *([CommunicationDomain.ATC] * 7),
         CommunicationDomain.GENERAL,

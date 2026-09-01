@@ -27,6 +27,8 @@ from orion.interaction_contracts import (
 from orion.interaction_router import (
     InteractionRoute,
     InteractionRouter,
+    KnownContractReasonCode,
+    KnownContractRoute,
     RouteReasonCode,
     RouterExecutionStatus,
 )
@@ -278,6 +280,67 @@ def test_direct_health_bypasses_provider_and_unsupported_fails_closed() -> None:
     assert unsupported.error_code is RouteReasonCode.UNSUPPORTED_INTERACTION_CLASS
     assert not provider.requests
 
+
+def test_pure_ru_and_en_takeoff_route_before_qwen_without_provider_calls() -> None:
+    provider = OwnshipProvider()
+    selected = build_router(provider)
+
+    for utterance in (
+        "Разрешите взлёт.",
+        "Можно взлетать?",
+        "Запрашиваю разрешение на взлёт.",
+        "Request takeoff.",
+        "Ready for takeoff.",
+    ):
+        decision = selected.route_known_contract(request(utterance), context())
+        assert decision.route is KnownContractRoute.DETERMINISTIC_KNOWN_CONTRACT
+        assert (
+            decision.reason_code
+            is KnownContractReasonCode.PURE_TAKEOFF_CLEARANCE_REQUEST
+        )
+        assert decision.contract == "takeoff_clearance_request"
+        assert decision.contract_matched is decision.pure is True
+        assert decision.qwen_required is False
+        assert decision.requested_capability == "atc.takeoff.clearance.request"
+
+    assert provider.requests == []
+
+    routes_by_profile = {
+        selected.route_known_contract(
+            request("Разрешите взлёт.", interaction_id=uuid4()),
+            context(profile),
+        ).route
+        for profile in CommunicationProfileId
+    }
+    assert routes_by_profile == {KnownContractRoute.DETERMINISTIC_KNOWN_CONTRACT}
+
+
+def test_mixed_free_unknown_and_ambiguous_inputs_preserve_qwen_fallback() -> None:
+    provider = OwnshipProvider()
+    selected = build_router(provider)
+    inputs = (
+        "Добрый день! Разрешите взлёт.",
+        "Разрешите взлёт и скажите частоту.",
+        "После взлёта какая будет частота?",
+        "Расскажи про взлёт.",
+        "Почему мне не разрешили взлёт?",
+        "Если разрешат взлёт, что делать дальше?",
+        "Какие сегодня новости перед взлётом?",
+        "Как дела?",
+        "unknown text",
+        "Tower, hello, request takeoff and report departure frequency.",
+        "Takeoff.",
+    )
+
+    for utterance in inputs:
+        decision = selected.route_known_contract(request(utterance), context())
+        assert decision.route is KnownContractRoute.EXISTING_QWEN_FALLBACK
+        assert decision.contract is None
+        assert decision.contract_matched is decision.pure is False
+        assert decision.qwen_required is True
+        assert decision.requested_capability is None
+
+    assert provider.requests == []
 
 def test_controlled_slice_uses_qwen_planner_exact_ia3_tool_and_ia2_values() -> None:
     provider = OwnshipProvider()

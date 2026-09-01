@@ -148,11 +148,30 @@ _EN_TAKEOFF = re.compile(r"\b(?:takeoff|take-off|departure)\b")
 _EN_REQUEST = re.compile(r"\b(?:request|requesting|ready|clearance|cleared|may|can)\b")
 _EN_CONFLICT = re.compile(r"\b(?:not|cancel|canceling|cancelling|unable)\b")
 
+# These are the already-approved bounded Golden forms, normalized for case,
+# punctuation and whitespace.  Recognition is deliberately whole-utterance:
+# cue presence still produces AMBIGUOUS below, but can never authorize the
+# production deterministic bypass for a mixed or conversational utterance.
+_PURE_TAKEOFF_FORMS = frozenset(
+    {
+        "разрешите взлет",
+        "можно взлетать",
+        "башня готов к взлету",
+        "готов к взлету разрешите взлет",
+        "запрашиваю разрешение на взлет",
+        "tower request takeoff clearance",
+        "ready for takeoff",
+        "request takeoff",
+        "tower viper 2-1 ready for departure",
+    }
+)
+
 
 def classify_takeoff_intent(text: str) -> TakeoffIntent:
     """Classify only the bounded RU/EN takeoff-clearance request family."""
 
     normalized = unicodedata.normalize("NFKC", text).strip().casefold().replace("ё", "е")
+    canonical = re.sub(r"\s+", " ", re.sub(r"[^\w\s-]", " ", normalized)).strip()
     language = detect_language(normalized)
     if language is DialogueLanguage.RU:
         takeoff = _RU_TAKEOFF.search(normalized) is not None
@@ -165,7 +184,7 @@ def classify_takeoff_intent(text: str) -> TakeoffIntent:
         conflict = _EN_CONFLICT.search(normalized) is not None
         language_id = "en-US"
 
-    if takeoff and request and not conflict:
+    if canonical in _PURE_TAKEOFF_FORMS and takeoff and request and not conflict:
         return TakeoffIntent(
             status=TakeoffIntentStatus.RECOGNIZED,
             language=language_id,

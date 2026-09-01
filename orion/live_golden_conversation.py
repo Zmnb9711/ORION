@@ -2,8 +2,9 @@
 
 The active provider/SRS session remains the sole speech-input and radio owner.
 Yandex Realtime may contribute coordinated transcript segments; a native radio
-STT provider may contribute one finalized physical utterance. Qwen supplies one strict
-FREE/OPERATIONAL decomposition; Core owns ATC, phraseology and composition.
+STT provider may contribute one finalized physical utterance. Core first evaluates
+the bounded known-contract seam; Qwen supplies strict FREE/OPERATIONAL decomposition
+only for fallback input. Core owns ATC, phraseology and composition.
 """
 
 from __future__ import annotations
@@ -29,12 +30,16 @@ from orion.atc_core import AtcSessionIdentity
 from orion.atc_operations import FreshnessClass
 from orion.atc_runtime import AtcCoreFlow
 from orion.communication_contracts import (
+    CommunicationContext,
     CommunicationDomain,
     CommunicationPriority,
     CommunicationProfileId,
 )
 from orion.golden_takeoff_vertical import GoldenTakeoffVertical
+from orion.interaction_router import InteractionRouter, KnownContractRoute
 from orion.mixed_conversation import (
+    MixedConversationDecomposition,
+    MixedDecompositionStatus,
     MixedOperationalIntent,
     MixedProviderStatus,
     build_mixed_composition,
@@ -137,6 +142,19 @@ LIVE_GOLDEN_CORPUS = (
         True,
         False,
         False,
+    ),
+)
+
+PURE_TAKEOFF_FIRST_CORPUS = (
+    next(
+        case
+        for case in LIVE_GOLDEN_CORPUS
+        if case.case_id == "control-pure-operational"
+    ),
+    *(
+        case
+        for case in LIVE_GOLDEN_CORPUS
+        if case.case_id != "control-pure-operational"
     ),
 )
 
@@ -533,6 +551,10 @@ SpeechKitFactory = Callable[[], SpeechKitTtsClient]
 StreamingSpeechKitFactory = Callable[[], SpeechKitStreamingTtsClient]
 
 
+def _route_only_provider() -> PlannerProvider:
+    raise RuntimeError("Route-only InteractionRouter cannot invoke a Planner provider")
+
+
 class LiveGoldenCaseRunner:
     def __init__(
         self,
@@ -542,11 +564,15 @@ class LiveGoldenCaseRunner:
         streaming_speechkit_factory: StreamingSpeechKitFactory = (
             SpeechKitStreamingTtsClient
         ),
+        interaction_router: InteractionRouter | None = None,
         monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         self._provider_factory = provider_factory
         self._speechkit_factory = speechkit_factory
         self._streaming_speechkit_factory = streaming_speechkit_factory
+        self._interaction_router = interaction_router or InteractionRouter(
+            provider_factory=_route_only_provider
+        )
         self._monotonic = monotonic
 
     def run(
@@ -565,39 +591,95 @@ class LiveGoldenCaseRunner:
     ) -> dict[str, object]:
         accepted_at = self._monotonic()
         interaction_id = uuid.uuid4()
-        provider = self._provider_factory(
-            YandexQwenPlannerConfig(
-                folder_id=context.folder_id,
-                api_key=context.api_key,
-            )
-        )
-        qwen_started = self._monotonic()
-        provider_result = request_mixed_decomposition(
-            provider,
-            utterance=transcript,
+        route = self._interaction_router.route_known_contract_text(
             interaction_id=interaction_id,
-            planner_task_id=f"live-golden-{run_id[:8]}-{case.case_id}",
-            deadline=datetime.now(UTC) + timedelta(seconds=PROVIDER_DEADLINE_S),
-            max_attempts=2,
+            text=transcript,
+            communication=CommunicationContext(
+                profile_id=CommunicationProfileId.FAP_RUSSIAN_ATC,
+                domain=CommunicationDomain.ATC,
+            ),
         )
-        qwen_completed = self._monotonic()
-        if cancelled():
-            raise LiveGoldenCaseFailure("cancelled", "Live Golden case was cancelled")
-        if (
-            provider_result.status is not MixedProviderStatus.COMPLETED
-            or provider_result.decomposition is None
-        ):
-            code = provider_result.error.code.value if provider_result.error else "invalid_output"
-            raise LiveGoldenCaseFailure("qwen_decomposition", code)
+        route_selected_at = self._monotonic()
         realtime_test_evidence.record(
-            "live_golden_qwen_completed",
+            "live_golden_semantic_route_selected",
             probe_run_id=run_id,
             probe_case_id=case.case_id,
-            status=provider_result.status.value,
-            elapsed_ms=(qwen_completed - qwen_started) * 1000,
+            recognizer_evaluated=route.recognizer_evaluated,
+            contract_matched=route.contract_matched,
+            pure=route.pure,
+            route_selected=route.route.value,
+            contract=route.contract or "none",
+            qwen_required=route.qwen_required,
+            elapsed_ms=(route_selected_at - accepted_at) * 1000,
         )
 
-        decomposition = provider_result.decomposition
+        provider: PlannerProvider | None = None
+        provider_result = None
+        qwen_started: float | None = None
+        qwen_completed: float | None = None
+        qwen_call_count = 0
+        if route.route is KnownContractRoute.DETERMINISTIC_KNOWN_CONTRACT:
+            decomposition = MixedConversationDecomposition(
+                detected_input_language=route.language,
+                status=MixedDecompositionStatus.CLASSIFIED,
+                free_semantics=(),
+                operational_intents=(
+                    MixedOperationalIntent.TAKEOFF_CLEARANCE_REQUEST,
+                ),
+            )
+            interpretation_completed = route_selected_at
+        else:
+            provider = self._provider_factory(
+                YandexQwenPlannerConfig(
+                    folder_id=context.folder_id,
+                    api_key=context.api_key,
+                )
+            )
+            qwen_started = self._monotonic()
+            provider_result = request_mixed_decomposition(
+                provider,
+                utterance=transcript,
+                interaction_id=interaction_id,
+                planner_task_id=f"live-golden-{run_id[:8]}-{case.case_id}",
+                deadline=datetime.now(UTC) + timedelta(seconds=PROVIDER_DEADLINE_S),
+                max_attempts=2,
+            )
+            qwen_call_count = 1
+            qwen_completed = self._monotonic()
+            if cancelled():
+                raise LiveGoldenCaseFailure(
+                    "cancelled", "Live Golden case was cancelled"
+                )
+            if (
+                provider_result.status is not MixedProviderStatus.COMPLETED
+                or provider_result.decomposition is None
+            ):
+                code = (
+                    provider_result.error.code.value
+                    if provider_result.error
+                    else "invalid_output"
+                )
+                raise LiveGoldenCaseFailure("qwen_decomposition", code)
+            realtime_test_evidence.record(
+                "live_golden_qwen_completed",
+                probe_run_id=run_id,
+                probe_case_id=case.case_id,
+                status=provider_result.status.value,
+                elapsed_ms=(qwen_completed - qwen_started) * 1000,
+            )
+            decomposition = provider_result.decomposition
+            interpretation_completed = qwen_completed
+        realtime_test_evidence.record(
+            "live_golden_semantic_route_executed",
+            probe_run_id=run_id,
+            probe_case_id=case.case_id,
+            route_selected=route.route.value,
+            contract=route.contract or "none",
+            qwen_required=route.qwen_required,
+            qwen_call_count=qwen_call_count,
+        )
+        if cancelled():
+            raise LiveGoldenCaseFailure("cancelled", "Live Golden case was cancelled")
         has_free = bool(decomposition.free_semantics)
         has_operational = decomposition.operational_intents == (
             MixedOperationalIntent.TAKEOFF_CLEARANCE_REQUEST,
@@ -639,7 +721,32 @@ class LiveGoldenCaseRunner:
             probe_run_id=run_id,
             probe_case_id=case.case_id,
             status="protected" if protected else "free_only",
-            elapsed_ms=(atc_completed - qwen_completed) * 1000,
+            elapsed_ms=(atc_completed - interpretation_completed) * 1000,
+        )
+        golden = outcome.golden_result
+        osu_count = int(golden is not None and golden.semantic_unit is not None)
+        phraseology_count = int(golden is not None and golden.fragment is not None)
+        realtime_test_evidence.record(
+            "live_golden_core_semantics_completed",
+            probe_run_id=run_id,
+            probe_case_id=case.case_id,
+            route_selected=route.route.value,
+            qwen_call_count=qwen_call_count,
+            atc_result=(
+                golden.decision.status.value
+                if golden is not None and golden.decision is not None
+                else "not_applicable"
+            ),
+            osu_generated=osu_count == 1,
+            osu_count=osu_count,
+            phraseology_generated=phraseology_count == 1,
+            phraseology_count=phraseology_count,
+            phraseology_entry_id=(
+                golden.resolution.selected_entry_id
+                if golden is not None and golden.resolution is not None
+                else "none"
+            ),
+            elapsed_ms=(atc_completed - route_selected_at) * 1000,
         )
 
         response_id = f"live-golden-{run_id[:8]}-{case.case_id}"
@@ -782,9 +889,8 @@ class LiveGoldenCaseRunner:
             "live_golden_srs_completion_correlated",
             **tx_event_fields,
         )
-        usage = provider_result.usage
+        usage = provider_result.usage if provider_result is not None else None
         protected_fragment = protected[0] if protected else None
-        golden = outcome.golden_result
         protected_slots = (
             {
                 str(item.key): item.value
@@ -795,7 +901,9 @@ class LiveGoldenCaseRunner:
         )
         validations = {
             "real_spoken_input_observed": bool(turn_id and provider_item_id),
-            "qwen_decomposition_completed": True,
+            "semantic_decomposition_completed": True,
+            "qwen_required_matches_call_count": qwen_call_count
+            == (1 if route.qwen_required else 0),
             "canonical_operational_intent": (
                 has_operational == case.expects_operational
             ),
@@ -843,9 +951,26 @@ class LiveGoldenCaseRunner:
                 "provider_event_id": event_id or "NOT OBSERVABLE",
                 "provider_item_id": provider_item_id or "NOT OBSERVABLE",
             },
+            "semantic_route": {
+                "recognizer_evaluated": route.recognizer_evaluated,
+                "contract_matched": route.contract_matched,
+                "pure": route.pure,
+                "route_selected": route.route.value,
+                "reason_code": route.reason_code.value,
+                "contract": route.contract,
+                "qwen_required": route.qwen_required,
+                "qwen_call_count": qwen_call_count,
+                "policy_version": route.policy_version,
+            },
             "qwen": {
-                "provider": getattr(provider, "provider_id", "unknown"),
-                "model": QWEN_MODEL_ID,
+                "required": route.qwen_required,
+                "call_count": qwen_call_count,
+                "provider": (
+                    getattr(provider, "provider_id", "unknown")
+                    if provider is not None
+                    else "NOT CALLED"
+                ),
+                "model": QWEN_MODEL_ID if provider is not None else "NOT CALLED",
                 "provider_response_ids": list(usage.provider_request_ids) if usage else [],
                 "attempts": usage.provider_attempts if usage else None,
                 "decomposition": decomposition.model_dump(mode="json"),
@@ -861,6 +986,14 @@ class LiveGoldenCaseRunner:
                     if golden is not None and golden.decision is not None
                     else None
                 ),
+            },
+            "semantic_result": {
+                "atc_result_count": int(
+                    golden is not None and golden.decision is not None
+                ),
+                "osu_count": osu_count,
+                "phraseology_count": phraseology_count,
+                "presentation_response_count": 1,
             },
             "communication_profile": CommunicationProfileId.FAP_RUSSIAN_ATC.value,
             "phraseology_entry_id": (
@@ -922,11 +1055,20 @@ class LiveGoldenCaseRunner:
                 "speech_end_to_semantic_input": _elapsed_ms(
                     speech_stopped_at, accepted_at
                 ),
+                "semantic_input_to_route_selected": _elapsed_ms(
+                    accepted_at, route_selected_at
+                ),
+                "route_selected_to_qwen_complete": _elapsed_ms(
+                    qwen_started, qwen_completed or route_selected_at
+                ),
                 "semantic_input_to_qwen_complete": _elapsed_ms(
-                    qwen_started, qwen_completed
+                    qwen_started, qwen_completed or route_selected_at
                 ),
                 "qwen_to_atc_phraseology_complete": _elapsed_ms(
                     qwen_completed, atc_completed
+                ),
+                "route_selected_to_atc_phraseology_complete": _elapsed_ms(
+                    route_selected_at, atc_completed
                 ),
                 "composition_to_speechkit_complete": _elapsed_ms(
                     atc_completed, speechkit_completed
@@ -1282,11 +1424,18 @@ class LiveGoldenConversationService:
         *,
         runner: LiveGoldenCaseRunner | None = None,
         ptt_settle_seconds: float = PTT_TRANSCRIPT_SETTLE_S,
+        corpus: tuple[LiveGoldenCase, ...] = LIVE_GOLDEN_CORPUS,
     ) -> None:
+        if not corpus:
+            raise ValueError("Live Golden corpus cannot be empty")
         self._lock = threading.RLock()
         self._context: LiveGoldenRuntimeContext | None = None
         self._runner = runner or LiveGoldenCaseRunner()
-        self._status = LiveGoldenStatus()
+        self._corpus = corpus
+        self._status = LiveGoldenStatus(
+            total_cases=len(corpus),
+            primary_cases=sum(case.primary for case in corpus),
+        )
         self._generation = 0
         self._seen_provider_items: set[str] = set()
         self._ptt_coordinator = LiveGoldenPttCoordinator(
@@ -1361,7 +1510,7 @@ class LiveGoldenConversationService:
             self._seen_provider_items.clear()
             run_id = uuid.uuid4().hex
             context.endpoint.set_provider_output_suppressed(True)
-            first = LIVE_GOLDEN_CORPUS[0]
+            first = self._corpus[0]
             self._status = LiveGoldenStatus(
                 state=LiveGoldenState.WAITING_INPUT,
                 message="Speak the displayed case through the official SRS Client",
@@ -1371,6 +1520,8 @@ class LiveGoldenConversationService:
                 case_id=first.case_id,
                 next_prompt=first.prompt,
                 case_number=1,
+                total_cases=len(self._corpus),
+                primary_cases=sum(case.primary for case in self._corpus),
                 capture_audio=capture_audio,
             )
             self._ptt_coordinator.reset_and_arm()
@@ -1387,7 +1538,7 @@ class LiveGoldenConversationService:
                         "prompt": item.prompt,
                         "primary": item.primary,
                     }
-                    for item in LIVE_GOLDEN_CORPUS
+                    for item in self._corpus
                 ),
                 capture_audio=capture_audio,
             )
@@ -1517,14 +1668,14 @@ class LiveGoldenConversationService:
             if provider_item_id:
                 self._seen_provider_items.add(provider_item_id)
             index = self._status.case_number - 1
-            if index < 0 or index >= len(LIVE_GOLDEN_CORPUS):
+            if index < 0 or index >= len(self._corpus):
                 return False
             context = self._context
             run_id = self._status.run_id
             if context is None or run_id is None:
                 return False
             generation = self._generation
-            case = LIVE_GOLDEN_CORPUS[index]
+            case = self._corpus[index]
             capture_audio = self._status.capture_audio
             self._status = self._status.model_copy(
                 update={
@@ -1639,7 +1790,7 @@ class LiveGoldenConversationService:
             )
             next_index = self._status.case_number
             context = self._context
-            if next_index >= len(LIVE_GOLDEN_CORPUS):
+            if next_index >= len(self._corpus):
                 self._ptt_coordinator.cancel()
                 if context is not None:
                     context.endpoint.set_provider_output_suppressed(False)
@@ -1656,7 +1807,7 @@ class LiveGoldenConversationService:
                     state="complete",
                 )
             else:
-                next_case = LIVE_GOLDEN_CORPUS[next_index]
+                next_case = self._corpus[next_index]
                 self._status = self._status.model_copy(
                     update={
                         "state": LiveGoldenState.WAITING_INPUT,
@@ -1748,4 +1899,6 @@ def _speech_to_tx_start_ms(
     )
 
 
-live_golden_conversation = LiveGoldenConversationService()
+live_golden_conversation = LiveGoldenConversationService(
+    corpus=PURE_TAKEOFF_FIRST_CORPUS
+)

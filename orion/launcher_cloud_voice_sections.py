@@ -714,7 +714,8 @@ class LauncherCloudVoiceSectionsMixin:
             box,
             text=(
                 "Real speech via official SRS Client → selected Yandex radio STT → "
-                "Qwen FREE/OPERATIONAL → controlled Golden ATC → FAP_RUSSIAN_ATC → "
+                "Core pure-contract route / Qwen fallback → controlled Golden ATC → "
+                "FAP_RUSSIAN_ATC → "
                 "SpeechKit → existing RadioRouter/SRS adapter. Start Yandex Voice + SRS "
                 "and Test Session first. DCS is not required."
             ),
