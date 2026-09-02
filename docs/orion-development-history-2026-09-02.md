@@ -612,4 +612,9 @@ graphical roadmap remain deferred.
 The final closure re-check after separating the required architecture preflight
 from the newest Guard status is `AG-20260902-194731-34d60d89-438577b-r1`:
 FULL, `COMPLETE`, `PASS`, with zero conflicts, zero ownership drift and no user
-decision required.
+decision required. The final stable-invalidation check is
+`AG-20260902-194939-32e286b9-0267a75-r1`, also FULL / `COMPLETE` / `PASS`
+with zero conflicts, zero ownership drift and no user decision required; it
+confirms that transient SQLite sidecars cannot make verification invalidate
+itself while the dedicated History signature remains authoritative for Guard
+index changes.

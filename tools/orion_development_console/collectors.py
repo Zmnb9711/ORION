@@ -570,16 +570,20 @@ def _path_snapshot(path: Path, *, max_entries: int = 512) -> dict[str, Any]:
         return {"exists": True, "fingerprint": sha256_file(path), "entry_count": 1}
     entries: list[dict[str, Any]] = []
     try:
-        for index, item in enumerate(sorted(path.iterdir(), key=lambda value: value.name.casefold())):
-            if index >= max_entries:
+        for item in sorted(path.iterdir(), key=lambda value: value.name.casefold()):
+            lowered = item.name.casefold()
+            if lowered.endswith(("-shm", "-wal", ".lock", ".tmp")) or lowered == "__pycache__":
+                continue
+            if len(entries) >= max_entries:
                 break
             stat = item.stat()
+            is_directory = item.is_dir()
             entries.append(
                 {
                     "name": item.name,
-                    "kind": "directory" if item.is_dir() else "file",
-                    "size": stat.st_size if item.is_file() else None,
-                    "mtime_ns": stat.st_mtime_ns,
+                    "kind": "directory" if is_directory else "file",
+                    "size": None if is_directory else stat.st_size,
+                    "mtime_ns": None if is_directory else stat.st_mtime_ns,
                 }
             )
     except OSError as exc:

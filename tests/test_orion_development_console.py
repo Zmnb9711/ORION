@@ -352,6 +352,24 @@ def test_local_missing_roots_are_not_created(tmp_path: Path) -> None:
     assert observation.details["missing_directories_created"] is False
 
 
+def test_local_data_fingerprint_ignores_sqlite_sidecars_and_directory_mtime(
+    tmp_path: Path,
+) -> None:
+    context = _context(tmp_path)
+    runtime = context.local_app_data / "ORION" / "runtime"
+    runtime.mkdir(parents=True)
+    context.guard_root.mkdir(parents=True)
+    (context.guard_root / "index.sqlite3").write_bytes(b"index")
+    (context.guard_root / "reports").mkdir()
+    first = collect_local_data(context)
+    (context.guard_root / "index.sqlite3-shm").write_bytes(b"volatile-one")
+    second = collect_local_data(context)
+    (context.guard_root / "index.sqlite3-shm").write_bytes(b"volatile-two")
+    (context.guard_root / "reports" / "new-report.json").write_text("{}", encoding="utf-8")
+    third = collect_local_data(context)
+    assert first.fingerprint == second.fingerprint == third.fingerprint
+
+
 @pytest.mark.parametrize(
     ("installed_payload", "expected_payload", "expected_state", "comparison"),
     [
