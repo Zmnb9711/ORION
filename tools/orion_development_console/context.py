@@ -10,7 +10,7 @@ from pathlib import Path
 from orion.srs_process_control import SrsProcessRecord, inspect_windows_processes
 
 
-ARCHITECTURE_PREFLIGHT_REPORT_ID = "AG-20260902-195734-840e21f7-c8aa825-r1"
+ARCHITECTURE_PREFLIGHT_REPORT_ID = "AG-20260902-205236-989bb053-f5c4fa9-r1"
 
 GitRunner = Callable[[Path, tuple[str, ...]], str]
 ProcessInspector = Callable[[str], Sequence[SrsProcessRecord]]

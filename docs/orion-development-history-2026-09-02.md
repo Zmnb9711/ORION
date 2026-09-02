@@ -661,3 +661,60 @@ post-implementation report is
 `PASS`, zero conflicts, zero ownership drift and no user decision required.
 Phase 2 changes only development tooling, tests and documentation; production
 ORION runtime, product packaging and installer behavior remain unchanged.
+
+## 22. Development Console Phase 3 maximum-detail live Roadmap
+
+Phase 3 activates the existing Roadmap section as a maximum-detail, vertically
+scrollable development tree. Its implementation was grounded before editing by
+FULL report `AG-20260902-205236-989bb053-f5c4fa9-r1` at starting HEAD
+`f5c4fa95d06b66101519a74c1e3b17b8a58f4816`: history coverage `COMPLETE`, gate
+`PASS`, zero conflicts, zero ownership drift and no user decision required.
+
+The Roadmap is a read-only, non-authoritative projection over the existing
+Architecture Guard SQLite index, Git/history metadata, current durable document
+headings, Guard reports, Phase 2 checkpoints and prompt metadata. It creates no
+second historical index or Guard graph. Stable source-backed node IDs,
+oldest-to-newest ordering, deterministic stage/subsystem grouping, main/test/
+alternative/governance/future branches, proof-gated completion, exact bounded
+provenance, no-silent-loss classification and private immutable `RM-...`
+snapshots support refresh differential, freshness, search, filters, collapse,
+selection preservation and Task Recall without elevating Roadmap state to L0.
+
+The first actual Roadmap self-check represented 2,552 nodes and 4,621 edges:
+31 stages, 74 subsystems, 74 decisions, 1,099 implementations, 371 tests/probes,
+93 field tests, 262 failure/root-cause/fix records, 45 field-proven records, 50
+superseded/rejected/removed/disconnected records, 15 Guard events, one saved
+checkpoint and two explicitly approved future nodes. A second unchanged refresh
+kept stable logical identities and chronology with zero new, changed, missing or
+recovered nodes. Typical build time was 0.97-0.99 seconds; the full private
+snapshot reconciliation/write path took 1.8-3.0 seconds in this environment.
+Search remained interactive, and measured Python memory settled near 19 MiB
+after peak work dominated by snapshot serialization.
+
+The real Tk/ttk UI self-check verified Launcher-family styling, oldest-at-top
+chronology, the current marker and jump, normal scrolling, exact D71 search and
+detail provenance, green/grey proof semantics, distinct cyan test branches,
+collapse from 2,552 to 108 visible nodes, unchanged refresh remaining `CURRENT`,
+and an empty visible differential. Roadmap Task Recall created private prompt
+`PR-20260902-211715-f4c8f83f` through Guard report
+`AG-20260902-211715-b9f3dc81-f5c4fa9-r1`; it was not sent anywhere. The compact
+overview is intentionally a reliable simplified history indicator rather than
+a fragile full minimap, and the detail surface loads provenance only for the
+selected node to keep the large tree usable.
+
+Focused Phase 3 tests passed 35 cases; Phase 2 passed 23, Phase 1 passed 24, and
+all 47 AG-0/1/2/3 regression tests passed. Scoped Ruff, Pyright, compileall,
+whitespace, SQLite integrity and privacy/credential checks passed. The FULL
+post-implementation report is
+`AG-20260902-212254-a7f6207a-f5c4fa9-r1`: history coverage `COMPLETE`, gate
+`PASS`, zero conflicts, zero ownership drift and no user decision required.
+No production runtime, Architecture Guard implementation, Launcher/Core,
+installer or packaging file changed; DCS, SRS, providers and microphone were
+not started.
+
+Final checkpoint candidate `CP-20260902-212012-5b2246d7` is prepared in memory
+and `READY_FOR_USER_SAVE`; it was deliberately not persisted because checkpoint
+save requires explicit user confirmation. The next approved development step is
+`LOW-LATENCY NATURAL INFORMATIONAL PRESENTATION`, preceded by a new FULL
+Architecture Guard preflight using the completed Console and the final saved
+checkpoint as current development context.

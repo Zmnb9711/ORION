@@ -14,6 +14,8 @@ from tools.orion_development_console.memory import AmbiguousTaskRecall, Developm
 from tools.orion_development_console.memory_models import DevelopmentCheckpoint, PromptRecord
 from tools.orion_development_console.models import VerificationReport
 from tools.orion_development_console.presentation import SUBJECT_TITLES, presentation_rows
+from tools.orion_development_console.roadmap import RoadmapService
+from tools.orion_development_console.roadmap_view import RoadmapView
 from tools.orion_development_console.theme import PALETTE, apply_orion_development_theme, status_group
 
 
@@ -39,6 +41,7 @@ class DevelopmentConsoleApp:
         self.root = root
         self.engine = engine
         self.memory = memory or DevelopmentMemoryService(engine.context, engine=engine)
+        self.roadmap_service = RoadmapService(engine.context, memory=self.memory)
         self.report: VerificationReport | None = engine.cached_report()
         self.current_page = "overview"
         self.page_title = tk.StringVar(value="OVERVIEW")
@@ -135,7 +138,7 @@ class DevelopmentConsoleApp:
     def _render_status_strip(self) -> None:
         for child in self.status_strip.winfo_children():
             child.destroy()
-        guard = self.memory.guard_report()
+        guard = self.roadmap_service.latest_guard_report()
         git = self.memory.current_git()
         self._status_cell("ARCHITECTURE GUARD", f"{guard.get('gate', 'UNKNOWN')} · {guard.get('report_id', 'NONE')}")
         self._status_cell("LOCAL ENVIRONMENT", self.report.overall_state.value if self.report else "NOT_CHECKED")
@@ -179,8 +182,13 @@ class DevelopmentConsoleApp:
             self._card(self.content, title, value).pack(fill=X, pady=4)
 
     def _page_roadmap(self) -> None:
-        checkpoint = self.memory.latest_checkpoint()
-        self._card(self.content, "GRAPHICAL LIVE ROADMAP", "PHASE 3 · NOT YET IMPLEMENTED\n\n" f"Current stage: {checkpoint.development_stage if checkpoint else 'NOT RECORDED'}\n" f"Approved next step: {checkpoint.approved_next_step if checkpoint and checkpoint.approved_next_step else 'USER CONFIRMATION REQUIRED'}\n\nPhase 3 will visualize Guard graph, checkpoints, Git, Evidence and proof-state transitions.").pack(fill=X)
+        roadmap = RoadmapView(
+            self.content,
+            self.roadmap_service,
+            show_text=self._show_text,
+            show_prompt=self._show_prompt,
+        )
+        roadmap.pack(fill=BOTH, expand=True)
 
     def _tree(self, columns: tuple[str, ...], headings: tuple[str, ...], height: int = 8) -> ttk.Treeview:
         tree = ttk.Treeview(self.content, columns=columns, show="headings", height=height)

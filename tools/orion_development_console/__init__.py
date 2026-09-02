@@ -15,6 +15,8 @@ from tools.orion_development_console.models import (
     VerificationReport,
     VerificationState,
 )
+from tools.orion_development_console.roadmap import RoadmapService
+from tools.orion_development_console.roadmap_models import RoadmapSnapshot
 
 __all__ = [
     "ComparisonState",
@@ -23,6 +25,8 @@ __all__ = [
     "FactState",
     "PromptRecord",
     "PromptType",
+    "RoadmapService",
+    "RoadmapSnapshot",
     "TruthDomain",
     "VerificationEngine",
     "VerificationObservation",
