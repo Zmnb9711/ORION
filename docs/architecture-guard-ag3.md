@@ -29,6 +29,31 @@ The Guard can retrieve, compare, warn, block and surface reuse. It cannot
 supersede an explicit user decision or choose between legitimate product
 directions.
 
+## Mandatory assistant response status (D73)
+
+Every ChatGPT or Codex response about ORION must start on its first visible
+line with exactly one of the following status forms:
+
+- `ORION ARCHITECTURE GUARD: ON`
+- `ORION ARCHITECTURE GUARD: REQUIRED`
+- `ORION ARCHITECTURE GUARD: OFF`
+
+`ON` means the response or task is grounded in an applicable, actual Guard
+result. Because AG-3 report generation exists, an architecture-changing `ON`
+must include its concrete report ID:
+`ORION ARCHITECTURE GUARD: ON — AG-...`.
+
+`REQUIRED` means the discussion has reached an architecture decision or change.
+The Guard must run before the assistant recommends, approves, or implements
+that architecture.
+
+`OFF` means the Guard was not applied. It is permitted for non-architectural
+ORION explanation, status, or chitchat only; under `OFF`, the assistant must not
+recommend, approve, or assert a new ORION architecture decision.
+
+The line is mandatory for every ORION response. Omission is a process
+violation. This convention is effective immediately.
+
 ## Historical and Previous Best checks
 
 Capability aliases expand task text into AG-2 capability IDs. The Guard then

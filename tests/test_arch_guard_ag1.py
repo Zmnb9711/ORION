@@ -269,7 +269,7 @@ def test_decision_rows_sections_and_exact_lines(tmp_path: Path) -> None:
     config = _config(tmp_path)
     document = config.repository_root / "docs" / "orion-master-decision-register-2026-09-01.md"
     document.parent.mkdir()
-    rows = "\n".join(f"| D{number:02d} | Decision {number} |" for number in range(1, 73))
+    rows = "\n".join(f"| D{number:02d} | Decision {number} |" for number in range(1, 74))
     document.write_text(f"# Register\n\n{rows}\n", encoding="utf-8")
     source = _record(document, SourceType.PROJECT_DOCUMENT, PrivacyClass.PROJECT_GIT)
 
@@ -278,13 +278,15 @@ def test_decision_rows_sections_and_exact_lines(tmp_path: Path) -> None:
     try:
         d71 = index.find_native("D71", item_type="decision_register_row")
         d72 = index.find_native("D72", item_type="decision_register_row")
+        d73 = index.find_native("D73", item_type="decision_register_row")
         status = index.status()
     finally:
         index.close()
 
-    assert len(d71) == len(d72) == 1
+    assert len(d71) == len(d72) == len(d73) == 1
     assert d71[0]["source_pointer"]["line_start"] == 73
-    assert status["items_by_type"]["decision_register_row"] == 72
+    assert d73[0]["source_pointer"]["line_start"] == 75
+    assert status["items_by_type"]["decision_register_row"] == 73
 
 
 def test_release_artifacts_are_bounded_and_addressable(tmp_path: Path) -> None:

@@ -156,7 +156,7 @@ class GraphBuilder:
         return resolved
 
     def _all_required_refs(self) -> list[str]:
-        refs: set[str] = {f"D{number:02d}" for number in range(1, 73)}
+        refs: set[str] = {f"D{number:02d}" for number in range(1, 74)}
         for seed in IMPLEMENTATION_SEEDS:
             refs.update(str(value) for value in seed.get("commits", []))
             refs.update(str(value) for value in seed.get("decisions", []))
@@ -381,7 +381,7 @@ class GraphBuilder:
 
     def _insert_decisions(self) -> dict[str, list[str]]:
         results: dict[str, list[str]] = {}
-        for number in range(1, 73):
+        for number in range(1, 74):
             decision_id = f"D{number:02d}"
             cells, resolved = self._parse_decision(decision_id)
             superseded = [
@@ -803,8 +803,8 @@ class GraphBuilder:
 
     def _validate_graph(self) -> None:
         counts = self._counts()
-        if counts["decisions"] != 72:
-            raise GraphBuildError(f"expected 72 decisions, found {counts['decisions']}")
+        if counts["decisions"] != 73:
+            raise GraphBuildError(f"expected 73 decisions, found {counts['decisions']}")
         hard_nodes = {
             "DECISION": "decisions",
             "IMPLEMENTATION": "implementations",

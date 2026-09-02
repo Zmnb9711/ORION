@@ -420,7 +420,7 @@ class ArchitectureGuard:
             "codex_history": "COMPLETE" if item_counts.get("codex_response_item", 0) else "UNAVAILABLE",
             "git_all": "COMPLETE" if item_counts.get("git_commit", 0) else "UNAVAILABLE",
             "deleted_history_lineage": "COMPLETE" if item_counts.get("git_path_change", 0) else "UNAVAILABLE",
-            "decision_register": "COMPLETE" if item_counts.get("decision_register_row", 0) == 72 else "PARTIAL",
+            "decision_register": "COMPLETE" if item_counts.get("decision_register_row", 0) == 73 else "PARTIAL",
             "master": "COMPLETE" if "master-architecture" in source_paths else "UNAVAILABLE",
             "development_history": "COMPLETE" if "development-history" in source_paths else "UNAVAILABLE",
             "evidence": "COMPLETE" if item_counts.get("evidence_archive", 0) else "UNAVAILABLE",

@@ -101,6 +101,29 @@ proposals remain proposals unless explicitly accepted or clearly adopted.
 | D70 | Future | VR | Native/OpenXR status overlay must degrade gracefully | User/assistant | Deferred | No production overlay | Missing/deferred | DEFERRED | — | Archive | HIGH |
 | D71 | 2026-09-02 | Development process | Previous Best Solution Gate: before architecture implementation search prior approved decisions, implementations, field-proven solutions and reusable mechanisms; a disconnected historical implementation is not automatically missing | User | Explicit | AG-0 source discovery foundation | Current development policy | APPROVED / AG-0 IMPLEMENTED | Current-HEAD-only design | User task, Guard design, Git | VERY_HIGH |
 | D72 | 2026-09-02 | Informational UX | Normal informational responses remain naturally AI-formulated; canned/template phrases are not the normal informational UX, while protected operational wording remains Core-owned | User | Explicit | Architecture Guard hard constraint | Current architecture policy | APPROVED | Canned informational default | User task, Master boundary | VERY_HIGH |
+| D73 | 2026-09-02 | Development process | Every assistant response about ORION must begin with a visible first-line Architecture Guard status; only `ON`, `REQUIRED`, and `OFF` are allowed, with the mandatory semantics and report-ID enforcement defined below | User | Explicit | User-approved working convention | Mandatory ChatGPT/Codex workflow | APPROVED / EFFECTIVE IMMEDIATELY | Unlabelled or falsely labelled ORION responses | User task, AG-3 preflight `AG-20260902-185339-f70f7a7f-8c406fe-r1`, Git | VERY_HIGH |
+
+### D73 — mandatory visible Architecture Guard status
+
+Every assistant response about ORION must begin on its first visible line with
+one of these statuses:
+
+- `ORION ARCHITECTURE GUARD: ON` — the response or task is grounded in an
+  applicable, actual Architecture Guard result. For architecture-changing work,
+  once AG-3 report generation exists, the line must include the concrete report
+  ID as `ORION ARCHITECTURE GUARD: ON — AG-...`.
+- `ORION ARCHITECTURE GUARD: REQUIRED` — the discussion has reached an
+  architecture decision or change. The Guard must run before the assistant may
+  recommend, approve, or implement that architecture.
+- `ORION ARCHITECTURE GUARD: OFF` — the Guard was not applied. This is allowed
+  for non-architectural ORION explanation, status, or chitchat, but the
+  assistant must not recommend, approve, or assert a new ORION architecture
+  decision while the status is `OFF`.
+
+The status line is mandatory even when the answer is brief. Omitting it is a
+process violation. The convention is effective immediately. AG-3 report
+generation exists as of this decision, so the concrete `AG-...` report-ID
+requirement is already operational for architecture-changing `ON` responses.
 
 ## Durable negative register
 

@@ -58,7 +58,7 @@ AG-1 indexes:
 - bounded Evidence ZIP identity, safe manifest metadata, event count, and
   entry names without extracting archives or ingesting audio;
 - bounded release/runtime source metadata;
-- Markdown sections and exact Decision Register rows, including D01-D72.
+- Markdown sections and exact Decision Register rows, including D01-D73.
 
 Stable native identity plus content hash prevents repeated exports and copied
 archives from multiplying facts. `item_sources` retains multiple L0

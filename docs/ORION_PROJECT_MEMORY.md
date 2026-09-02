@@ -1,6 +1,6 @@
 # ORION Project Memory
 
-> Canonical long-term project context. Updated: 2026-08-26.
+> Canonical long-term project context. Updated: 2026-09-02.
 >
 > Purpose: preserve approved product requirements, architectural invariants, milestone history, real-world test evidence, known risks, and the next agreed action across chats and development sessions.
 >
@@ -458,6 +458,14 @@ When starting a new ORION chat or development session:
 4. Record significant new approvals, rejected alternatives, real-world smoke evidence and milestone transitions here.
 5. Keep detailed architecture in dedicated docs/ADRs; this file should remain the cross-session index and narrative memory.
 6. Do not silently overwrite history. When a decision changes, record what superseded it and when.
+7. Apply D73 to every assistant response about ORION: the first visible line
+   must be `ORION ARCHITECTURE GUARD: ON`, `ORION ARCHITECTURE GUARD: REQUIRED`,
+   or `ORION ARCHITECTURE GUARD: OFF`. `ON` requires an applicable actual Guard
+   result and, for architecture-changing work now that AG-3 reports exist, its
+   concrete `AG-...` report ID. `REQUIRED` blocks architecture recommendation,
+   approval, or implementation until the Guard runs. `OFF` is limited to
+   non-architectural explanation/status/chitchat and cannot assert a new ORION
+   architecture decision. Omission is a process violation.
 
 This follows the same durable principle as Architecture Decision Records: preserve not only what was chosen but enough context and rationale for future development sessions to understand why. Dedicated ADR/design documents remain appropriate for single architectural decisions; this Project Memory connects those decisions to product history and current work.
 

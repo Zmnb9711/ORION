@@ -481,7 +481,7 @@ AG-1 adds a private SQLite index at
 AG-0 source identities and fingerprints, preserves source snapshots and
 multiple locations, and creates deterministic addressable items for ChatGPT
 conversation trees, Codex JSONL, Git `--all`, bounded Evidence/release/runtime
-metadata, project-document sections, and Decision Register rows D01-D72.
+metadata, project-document sections, and Decision Register rows D01-D73.
 
 The index is derived and non-authoritative. L0 sources remain read-only; every
 item carries an exact structured L0 pointer. Private text uses only a bounded,
@@ -501,7 +501,7 @@ remain independent of providers and code symbols; aliases and historical terms
 connect renamed or rearchitected behavior without claiming that implementations
 are identical.
 
-All D01-D72 rows are imported exactly from their AG-1 document pointers.
+All D01-D73 rows are imported exactly from their AG-1 document pointers.
 Historically significant implementations and reusable mechanisms retain
 separate runtime, historical and field/probe states, abandonment classification,
 confidence and exact L0 provenance. Ownership assignments explicitly distinguish
@@ -543,3 +543,22 @@ Realtime, the current Qwen formulation, current Core fact binding and their
 different performance boundaries. Because presentation/session ownership has
 more than one legitimate direction, implementation remains stopped pending the
 reported architecture gate.
+
+## 19. Mandatory visible Architecture Guard status decision
+
+The user explicitly approved D73 as a durable ChatGPT/Codex process rule. Every
+assistant response about ORION must begin with a visible first-line Architecture
+Guard status: `ON`, `REQUIRED`, or `OFF`.
+
+`ON` requires an applicable, actual Guard result. For architecture-changing
+work, AG-3 report generation makes the concrete `AG-...` report ID mandatory on
+the status line. `REQUIRED` stops architecture recommendation, approval, or
+implementation until the Guard runs. `OFF` remains valid for non-architectural
+ORION explanation, status, or chitchat, but cannot accompany a recommendation,
+approval, or assertion of a new ORION architecture decision. Omitting the line
+is itself a process violation.
+
+The convention is effective immediately. Its documentation-only preflight ran
+at starting HEAD `8c406fea09658afdee105bd7b72b444d1c66f883` in FULL mode with
+report `AG-20260902-185339-f70f7a7f-8c406fe-r1`, complete history coverage and
+gate `PASS`. This checkpoint changes no production ORION runtime behavior.
