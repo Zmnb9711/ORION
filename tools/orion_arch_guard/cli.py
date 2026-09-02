@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
 from collections import Counter
 from dataclasses import asdict
@@ -21,6 +22,7 @@ from tools.orion_arch_guard.manifest import (
 from tools.orion_arch_guard.models import ChangeStatus, Manifest, SourceChange
 from tools.orion_arch_guard.indexing import index_manifest
 from tools.orion_arch_guard.graph import CapabilityGraph, GraphBuilder
+from tools.orion_arch_guard.guard import ArchitectureGuard, GuardMode, PreflightInput
 from tools.orion_arch_guard.queries import HistoryIndex
 from tools.orion_arch_guard.fingerprints import sha256_file
 from tools.orion_arch_guard.models import SourceType
@@ -76,6 +78,20 @@ def _parser() -> argparse.ArgumentParser:
     explain = subparsers.add_parser("explain")
     explain.add_argument("--implementation", required=True)
     explain.add_argument("--database", type=Path)
+    preflight = subparsers.add_parser("preflight")
+    preflight.add_argument("--mode", choices=[mode.value for mode in GuardMode], required=True)
+    preflight.add_argument("--task", required=True)
+    preflight.add_argument("--description", default="")
+    preflight.add_argument("--proposed-change", default="")
+    preflight.add_argument("--affected-file", action="append", default=[])
+    preflight.add_argument("--capability", action="append", default=[])
+    preflight.add_argument("--constraint", action="append", default=[])
+    preflight.add_argument("--head")
+    preflight.add_argument("--repository", type=Path)
+    preflight.add_argument("--database", type=Path)
+    preflight.add_argument("--reports-dir", type=Path)
+    preflight.add_argument("--json", action="store_true")
+    preflight.add_argument("--no-store", action="store_true")
     return parser
 
 
@@ -323,6 +339,57 @@ def graph_query_command(args: argparse.Namespace) -> int:
         graph.close()
 
 
+def _git_head(repository: Path) -> str:
+    completed = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return completed.stdout.strip()
+
+
+def preflight_command(args: argparse.Namespace) -> int:
+    database = _database_path(args.database)
+    if not database.is_file():
+        print(f"index_missing={database}", file=sys.stderr)
+        return 2
+    repository = (args.repository or Path.cwd()).absolute()
+    try:
+        head = args.head or _git_head(repository)
+        request = PreflightInput(
+            mode=GuardMode(args.mode),
+            task_title=args.task,
+            task_description=args.description,
+            proposed_change=args.proposed_change,
+            affected_files=tuple(args.affected_file),
+            explicit_capabilities=tuple(args.capability),
+            current_head=head,
+            user_constraints=tuple(args.constraint),
+        )
+        guard = ArchitectureGuard(
+            database,
+            reports_dir=args.reports_dir,
+        )
+        try:
+            report = guard.preflight(request, store=not args.no_store)
+        finally:
+            guard.close()
+    except (OSError, subprocess.CalledProcessError, ValueError) as error:
+        print(f"preflight_error={error}", file=sys.stderr)
+        return 2
+    if args.json:
+        print(json.dumps(report.result, ensure_ascii=False, indent=2, sort_keys=True))
+    else:
+        print(report.human_report, end="")
+        if report.human_path is not None:
+            print(f"human_report={report.human_path}")
+        if report.json_path is not None:
+            print(f"machine_report={report.json_path}")
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     if args.command == "discover":
@@ -339,4 +406,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         return graph_build_command(args)
     if args.command in {"capability", "related", "history", "explain"}:
         return graph_query_command(args)
+    if args.command == "preflight":
+        return preflight_command(args)
     raise AssertionError(f"unsupported command: {args.command}")

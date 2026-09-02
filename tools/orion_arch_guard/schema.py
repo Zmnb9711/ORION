@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-INDEX_SCHEMA_VERSION = "2"
+INDEX_SCHEMA_VERSION = "3"
 PARSER_VERSION = "3"
 GUARD_RULESET_VERSION = "1"
 
@@ -222,6 +222,45 @@ _GRAPH_COLUMNS: dict[str, tuple[str, ...]] = {
         "provenance_json TEXT NOT NULL DEFAULT '{}'",
         "metadata_json TEXT NOT NULL DEFAULT '{}'",
     ),
+    "performance_metrics": (
+        "name TEXT NOT NULL DEFAULT ''",
+        "capability_id TEXT",
+        "implementation_id TEXT",
+        "metric_name TEXT NOT NULL DEFAULT ''",
+        "metric_value REAL",
+        "unit TEXT NOT NULL DEFAULT ''",
+        "boundary TEXT NOT NULL DEFAULT ''",
+        "statistic TEXT NOT NULL DEFAULT ''",
+        "sample_count INTEGER",
+        "comparability TEXT NOT NULL DEFAULT 'UNKNOWN'",
+        "evidence_id TEXT",
+        "source_item_id TEXT",
+        "metadata_json TEXT NOT NULL DEFAULT '{}'",
+    ),
+    "guard_runs": (
+        "created_at_utc TEXT NOT NULL DEFAULT ''",
+        "mode_requested TEXT NOT NULL DEFAULT ''",
+        "mode_effective TEXT NOT NULL DEFAULT ''",
+        "task_hash TEXT NOT NULL DEFAULT ''",
+        "head_sha TEXT NOT NULL DEFAULT ''",
+        "ruleset_version TEXT NOT NULL DEFAULT ''",
+        "index_signature TEXT NOT NULL DEFAULT ''",
+        "logical_signature TEXT NOT NULL DEFAULT ''",
+        "gate TEXT NOT NULL DEFAULT ''",
+        "input_json TEXT NOT NULL DEFAULT '{}'",
+        "output_json TEXT NOT NULL DEFAULT '{}'",
+        "human_report_path TEXT",
+        "json_report_path TEXT",
+    ),
+    "guard_conflicts": (
+        "run_id TEXT",
+        "conflict_type TEXT NOT NULL DEFAULT ''",
+        "severity TEXT NOT NULL DEFAULT ''",
+        "description TEXT NOT NULL DEFAULT ''",
+        "decision_ids_json TEXT NOT NULL DEFAULT '[]'",
+        "implementation_ids_json TEXT NOT NULL DEFAULT '[]'",
+        "provenance_json TEXT NOT NULL DEFAULT '{}'",
+    ),
 }
 
 
@@ -257,6 +296,14 @@ def _create_graph_indexes(connection: sqlite3.Connection) -> None:
             ON graph_provenance(source_item_id);
         CREATE INDEX IF NOT EXISTS idx_ownership_role
             ON ownership_assignments(ownership_role);
+        CREATE INDEX IF NOT EXISTS idx_performance_capability
+            ON performance_metrics(capability_id, implementation_id);
+        CREATE INDEX IF NOT EXISTS idx_guard_runs_signature
+            ON guard_runs(logical_signature);
+        CREATE INDEX IF NOT EXISTS idx_guard_runs_gate
+            ON guard_runs(gate);
+        CREATE INDEX IF NOT EXISTS idx_guard_conflicts_run
+            ON guard_conflicts(run_id);
         """
     )
 

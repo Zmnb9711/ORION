@@ -517,3 +517,29 @@ not produce Architecture PASS/BLOCK.
 
 The next stage is `AG-3 — HISTORICAL DECISION CHECK + PREVIOUS BEST SOLUTION
 GATE`.
+
+## 18. Architecture Guard AG-3 operational preflight checkpoint
+
+AG-3 implements the first deterministic Architecture Guard preflight over the
+existing AG-0/AG-1 index and AG-2 capability graph. It adds FULL, STANDARD and
+LIGHT modes with automatic escalation for authority, ownership, session,
+provider, routing and radio/EOU changes.
+
+The preflight performs Historical Decision, Existing Solution, Previous Best,
+hybrid-reuse, ownership-drift, performance-boundary and evidence-reuse checks.
+Its outcomes are `PASS`, `BLOCK`, `USER_DECISION_REQUIRED` and
+`INCOMPLETE_HISTORY`. D71 is mandatory for every resolved task; D72 protects
+natural informational formulation while retaining Core ownership of protected
+operational wording.
+
+Reports are written only to the private local Architecture Guard directory in
+both Markdown and JSON. Exact L0 pointers are retained without copying private
+conversation bodies or audio into Git. Same task, HEAD, index and ruleset yield
+the same logical signature.
+
+The first real FULL preflight covers the pending low-latency natural
+informational formulation task. It surfaces historical persistent Yandex
+Realtime, the current Qwen formulation, current Core fact binding and their
+different performance boundaries. Because presentation/session ownership has
+more than one legitimate direction, implementation remains stopped pending the
+reported architecture gate.
