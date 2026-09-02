@@ -301,6 +301,7 @@ def test_pure_ru_and_en_takeoff_route_before_qwen_without_provider_calls() -> No
         assert decision.contract == "takeoff_clearance_request"
         assert decision.contract_matched is decision.pure is True
         assert decision.qwen_required is False
+        assert decision.qwen_formulation_required is False
         assert decision.requested_capability == "atc.takeoff.clearance.request"
 
     assert provider.requests == []
@@ -331,9 +332,46 @@ def test_pure_ru_and_en_atc_status_route_before_qwen_without_provider_calls() ->
         assert decision.contract == "atc_status_query"
         assert decision.contract_matched is decision.pure is True
         assert decision.qwen_required is False
+        assert decision.qwen_formulation_required is False
         assert decision.requested_capability == "atc.status.current_flight_controller"
 
     assert provider.requests == []
+
+
+def test_pure_ru_and_en_aircraft_identity_route_before_qwen_without_provider_calls() -> None:
+    provider = OwnshipProvider()
+    selected = build_router(provider)
+
+    for utterance in (
+        "В каком самолёте я нахожусь?",
+        "На каком самолете я сейчас нахожусь!",
+        "Какой у меня самолёт?",
+        "What aircraft am I in?",
+        "WHAT AIRCRAFT AM I FLYING!",
+        "Which aircraft am I flying?",
+    ):
+        decision = selected.route_known_contract(request(utterance), context())
+        assert decision.route is KnownContractRoute.DETERMINISTIC_KNOWN_CONTRACT
+        assert (
+            decision.reason_code
+            is KnownContractReasonCode.PURE_AIRCRAFT_IDENTITY_QUERY
+        )
+        assert decision.contract == "aircraft_identity_query"
+        assert decision.contract_matched is decision.pure is True
+        assert decision.qwen_required is False
+        assert decision.qwen_formulation_required is True
+        assert decision.requested_capability == "flight.aircraft_identity"
+
+    assert provider.requests == []
+
+    routes_by_profile = {
+        selected.route_known_contract(
+            request("В каком самолёте я нахожусь?", interaction_id=uuid4()),
+            context(profile),
+        ).route
+        for profile in CommunicationProfileId
+    }
+    assert routes_by_profile == {KnownContractRoute.DETERMINISTIC_KNOWN_CONTRACT}
 
 
 def test_mixed_free_unknown_and_ambiguous_inputs_preserve_qwen_fallback() -> None:
@@ -358,6 +396,15 @@ def test_mixed_free_unknown_and_ambiguous_inputs_preserve_qwen_fallback() -> Non
         "Кто диспетчер?",
         "Какой диспетчер?",
         "Кто управляет?",
+        "Привет, в каком самолёте я нахожусь?",
+        "В каком самолёте я нахожусь и как включить TACAN?",
+        "Он спросил: в каком самолёте я нахожусь?",
+        "Если бы я был в F-16, какой это был бы самолёт?",
+        "Какой самолёт летит справа?",
+        "Что это за самолёт на радаре?",
+        "Что ты знаешь про F/A-18?",
+        "Я в F/A-18 или F-16?",
+        "Какой это самолёт?",
     )
 
     for utterance in inputs:
@@ -366,6 +413,7 @@ def test_mixed_free_unknown_and_ambiguous_inputs_preserve_qwen_fallback() -> Non
         assert decision.contract is None
         assert decision.contract_matched is decision.pure is False
         assert decision.qwen_required is True
+        assert decision.qwen_formulation_required is False
         assert decision.requested_capability is None
 
     assert provider.requests == []

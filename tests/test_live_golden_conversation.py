@@ -8,6 +8,10 @@ from pathlib import Path
 
 import orion.live_golden_conversation as live_module
 
+from orion.aircraft_identity_query import (
+    AircraftIdentityFormulationService,
+    AircraftIdentityQueryService,
+)
 from orion.atc_status_query import PersistentAtcSessionCoordinator
 from orion.communication_contracts import CommunicationDomain
 from orion.launcher_cloud_voice_sections import (
@@ -15,6 +19,8 @@ from orion.launcher_cloud_voice_sections import (
     LauncherCloudVoiceSectionsMixin,
 )
 from orion.live_golden_conversation import (
+    AIRCRAFT_IDENTITY_CASE,
+    AIRCRAFT_IDENTITY_FIELD_CORPUS,
     ATC_STATUS_CASE,
     LIVE_GOLDEN_CORPUS,
     PURE_TAKEOFF_FIRST_CORPUS,
@@ -25,13 +31,17 @@ from orion.live_golden_conversation import (
     LiveGoldenState,
 )
 from orion.mixed_conversation import mixed_decomposition_tool_definition
+from orion.live_telemetry_store import LiveTelemetryStore
+from orion.models import AircraftState, Position, TelemetryEnvelope
 from orion.planner_contracts import (
+    PlannerFinalResponseEvent,
     PlannerToolCallsEvent,
     PlannerToolRequest,
     PlannerUsage,
 )
+from orion.interaction_contracts import PresentationMode, SemanticResponse
 from orion.realtime_test_evidence import RealtimeTestEvidenceRecorder
-from orion.radio_streaming import StreamingPcmEvent
+from orion.radio_streaming import StreamingPcmEvent, StreamingPcmState
 from orion.realtime_audio_transport import (
     FinalizedUserUtterance,
     RealtimeTranscriptSegment,
@@ -43,6 +53,7 @@ from orion.srs_radio_transport import SrsState
 from orion.tool_gateway_contracts import ToolArguments
 from orion.yandex_speechkit_streaming_tts import SpeechKitTtsOutputMode
 from orion.yandex_srs_live_core import YandexSrsStartRequest, YandexSrsStatus
+from orion.world_model import WorldModelFacade
 
 
 class _Run:
@@ -78,15 +89,51 @@ class _Run:
         return None
 
 
+class _FormulationRun:
+    def __init__(self, request, recommendation: str) -> None:  # noqa: ANN001
+        self.request = request
+        self.recommendation = recommendation
+
+    def next_event(self, **_kwargs):  # noqa: ANN003, ANN202
+        return PlannerFinalResponseEvent(
+            event_id="aircraft-formulation-event",
+            response=SemanticResponse(
+                interaction_id=self.request.interaction.interaction_id,
+                presentation_mode=PresentationMode.NATURALIZE,
+                recommendation=self.recommendation,
+            ),
+            usage=PlannerUsage(
+                model_identifier="qwen3.6-35b-a3b",
+                provider_request_ids=("qwen-aircraft-response-1",),
+                provider_attempts=1,
+                provider_latency_ms=9.0,
+            ),
+        )
+
+    def continue_with_tool_results(self, _results) -> None:  # noqa: ANN001
+        raise AssertionError("Aircraft formulation has no tool round")
+
+    def cancel(self) -> None:
+        return None
+
+
 class _Provider:
     provider_id = "fake.qwen"
 
-    def __init__(self, *, gate: threading.Event | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        gate: threading.Event | None = None,
+        aircraft_recommendation: str = "Вы сейчас находитесь в {{aircraft_identity}}.",
+    ) -> None:
         self.gate = gate
+        self.aircraft_recommendation = aircraft_recommendation
         self.requests = []
 
     def start(self, request):  # noqa: ANN001, ANN201
         self.requests.append(request)
+        if any("{{aircraft_identity}}" in item for item in request.core_instructions):
+            return _FormulationRun(request, self.aircraft_recommendation)
         text = request.interaction.text
         pure_conversation = "Как дела" in text
         pure_operational = text.strip() == "Разрешите взлёт."
@@ -114,7 +161,13 @@ class _SpeechKit:
     async def synthesize(self, case, _api_key, **_kwargs):  # noqa: ANN001, ANN202
         assert any(
             marker in case.finalized_text
-            for marker in ("Viper 2-1", "Добрый день", "Диагностический статус ATC")
+            for marker in (
+                "Viper 2-1",
+                "Добрый день",
+                "Диагностический статус ATC",
+                "По данным DCS",
+                "F/A-18C Hornet",
+            )
         )
         return bytes(4_800), case.finalized_text
 
@@ -137,6 +190,35 @@ class _StreamingFailureBeforeTx:
             sample_width_bytes=2,
             chunk_index=0,
             error="bounded fake provider failure",
+        )
+
+
+class _StreamingSuccess:
+    async def stream(
+        self,
+        _text: str,
+        _api_key: str,
+        *,
+        response_id: str,
+        cancelled,
+    ):  # noqa: ANN001, ANN202
+        assert not cancelled()
+        yield StreamingPcmEvent(
+            response_id=response_id,
+            pcm=b"\x01\x00" * 48_000,
+            sample_rate_hz=48_000,
+            channels=1,
+            sample_width_bytes=2,
+            chunk_index=0,
+        )
+        yield StreamingPcmEvent(
+            response_id=response_id,
+            pcm=b"",
+            sample_rate_hz=48_000,
+            channels=1,
+            sample_width_bytes=2,
+            chunk_index=1,
+            end_of_stream=True,
         )
 
 
@@ -183,6 +265,38 @@ class _Endpoint:
             "duration_ms": 100.0,
         }
 
+    def transmit_streaming_audio(
+        self,
+        response_id: str,
+        stream,
+        timeout_s: float,
+        **fields,
+    ) -> dict[str, float | int]:  # noqa: ANN001, ANN003
+        pcm = bytearray()
+        while True:
+            read = stream.read(8_820, timeout_s=timeout_s)
+            pcm.extend(read.data)
+            if read.state is StreamingPcmState.END_OF_STREAM and not read.data:
+                break
+            if read.state in {StreamingPcmState.FAILED, StreamingPcmState.CANCELLED}:
+                raise RuntimeError(read.error or read.state.value)
+        self.transmissions.append(
+            {
+                "response_id": response_id,
+                "pcm": bytes(pcm),
+                "timeout_s": timeout_s,
+                **fields,
+            }
+        )
+        return {
+            "queue_to_first_tx_ms": 2.0,
+            "queue_to_complete_ms": 102.0,
+            "frame_count": 5,
+            "duration_ms": 100.0,
+            "underrun_count": 0,
+            "underrun_silence_inserted_ms": 0.0,
+        }
+
 
 def _wait_for(service: LiveGoldenConversationService, state: LiveGoldenState) -> None:
     deadline = time.monotonic() + 3
@@ -202,6 +316,8 @@ def _service(
     streaming_speechkit_factory=None,  # noqa: ANN001
     corpus=LIVE_GOLDEN_CORPUS,  # noqa: ANN001
     atc_sessions=None,  # noqa: ANN001
+    aircraft_identity_service=None,  # noqa: ANN001
+    aircraft_recommendation: str = "Вы сейчас находитесь в {{aircraft_identity}}.",
 ) -> tuple[
     LiveGoldenConversationService,
     _Endpoint,
@@ -218,13 +334,17 @@ def _service(
     )
     monkeypatch.setattr(live_module, "realtime_test_evidence", recorder)
     monkeypatch.setattr(live_module, "normalize_speechkit_pcm", lambda pcm: pcm)
-    provider = _Provider(gate=gate)
+    provider = _Provider(
+        gate=gate,
+        aircraft_recommendation=aircraft_recommendation,
+    )
     runner = live_module.LiveGoldenCaseRunner(
         provider_factory=lambda _config: provider,
         speechkit_factory=_SpeechKit,
         streaming_speechkit_factory=(
             streaming_speechkit_factory or live_module.SpeechKitStreamingTtsClient
         ),
+        aircraft_identity_service=aircraft_identity_service,
     )
     service = LiveGoldenConversationService(
         runner=runner,
@@ -243,6 +363,166 @@ def _service(
         )
     )
     return service, endpoint, recorder, provider
+
+
+def test_live_dcs_aircraft_identity_field_case_uses_core_truth_and_qwen_wording(
+    tmp_path,
+    monkeypatch,
+) -> None:  # noqa: ANN001
+    observed_at = live_module.datetime.now(live_module.UTC)
+    telemetry = LiveTelemetryStore()
+    telemetry.set(
+        TelemetryEnvelope(
+            sequence=1,
+            state=AircraftState(
+                aircraft_type="FA-18C_hornet",
+                position=Position(latitude=42.1, longitude=41.2, altitude_m=1000),
+                heading_deg=137,
+                true_airspeed_mps=145,
+            ),
+        ),
+        received_at=observed_at,
+    )
+    identity_service = AircraftIdentityFormulationService(
+        query=AircraftIdentityQueryService(
+            WorldModelFacade(telemetry=telemetry, clock=lambda: observed_at)
+        )
+    )
+    service, endpoint, recorder, provider = _service(
+        tmp_path,
+        monkeypatch,
+        corpus=AIRCRAFT_IDENTITY_FIELD_CORPUS,
+        aircraft_identity_service=identity_service,
+        tts_output_mode=SpeechKitTtsOutputMode.STREAMING_V3,
+        streaming_speechkit_factory=_StreamingSuccess,
+    )
+    status = service.start(capture_audio=False)
+    assert status.total_cases == 1
+    assert status.next_prompt == AIRCRAFT_IDENTITY_CASE.prompt
+
+    assert service.accept_transcript(
+        AIRCRAFT_IDENTITY_CASE.prompt,
+        "aircraft-ptt",
+        "aircraft-event",
+        "aircraft-item",
+        time.monotonic(),
+    )
+    _wait_for(service, LiveGoldenState.AWAITING_REVIEW)
+    assert len(provider.requests) == 1
+    assert provider.requests[0].allowed_capabilities == ()
+    assert provider.requests[0].available_tools == ()
+    assert len(endpoint.transmissions) == 1
+    assert endpoint.transmissions[0]["source_domain"] is CommunicationDomain.GENERAL
+    assert endpoint.transmissions[0]["entity_id"] == (
+        "orion.assistant.aircraft_information"
+    )
+
+    final = service.review(LiveGoldenAcousticReview.CLEAR)
+    assert final.state is LiveGoldenState.COMPLETE
+    output = recorder.stop_and_export()
+    with zipfile.ZipFile(output) as archive:
+        summary = json.loads(archive.read("live-golden-summary.json"))
+        events = [
+            json.loads(line)
+            for line in archive.read("events.jsonl").decode().splitlines()
+        ]
+        combined = b"".join(archive.read(name) for name in archive.namelist())
+
+    record = summary["runs"][0]["cases"][0]
+    assert record["semantic_route"] == {
+        "recognizer_evaluated": True,
+        "contract_matched": True,
+        "pure": True,
+        "route_selected": "deterministic_known_contract",
+        "reason_code": "pure_aircraft_identity_query",
+        "contract": "aircraft_identity_query",
+        "qwen_required": False,
+        "qwen_formulation_required": True,
+        "qwen_call_count": 1,
+        "policy_version": "model-c.known-contract-policy.v1",
+    }
+    assert record["qwen"]["semantic_interpretation_required"] is False
+    assert record["qwen"]["natural_language_formulation_required"] is True
+    assert record["qwen"]["call_count"] == 1
+    assert record["qwen"]["fact_authority"] is False
+    assert record["qwen"]["provider"] == "fake.qwen"
+    assert record["qwen"]["provider_response_ids"] == [
+        "qwen-aircraft-response-1"
+    ]
+    assert record["aircraft_identity"]["truth_origin"] == "LIVE_DCS_TRUTH"
+    assert record["aircraft_identity"]["raw_dcs_aircraft_id"] == "FA-18C_hornet"
+    assert record["aircraft_identity"]["display_name"] == "F/A-18C Hornet"
+    assert record["aircraft_identity"]["source"] == "dcs_export"
+    assert record["aircraft_identity"]["authority"] == "authoritative"
+    assert record["aircraft_identity"]["fact_status"] == "known"
+    assert record["aircraft_identity"]["stable_dcs_session_epoch"] == "NOT AVAILABLE"
+    assert record["final_composed_text"] == "Вы сейчас находитесь в F/A-18C Hornet."
+    assert record["communication_profile"] == "NOT_APPLICABLE_INFORMATIONAL"
+    assert record["radio"]["entity_id"] == "orion.assistant.aircraft_information"
+    assert record["speechkit"]["output_mode"] == "speechkit_v3_streaming"
+    assert record["speechkit"]["streaming_requested"] is True
+    assert record["speechkit"]["streaming_rest_fallback"] is False
+    assert record["internal_result"] == "PASS"
+    assert any(
+        event["event"] == "live_golden_aircraft_identity_resolved"
+        and event["fact_origin"] == "LIVE_DCS_TRUTH"
+        and event["aircraft_type"] == "FA-18C_hornet"
+        and event["aircraft_display_name"] == "F/A-18C Hornet"
+        and event["source"] == "dcs_export"
+        and event["authority"] == "authoritative"
+        and event["context_fresh"] is True
+        and event["qwen_call_count"] == 1
+        and event["qwen_fact_authority"] is False
+        and event["formulation_origin"] == "qwen_validated_placeholder"
+        for event in events
+    )
+    assert b"memory-only-secret" not in combined
+
+
+def test_aircraft_identity_qwen_override_fails_before_tts_or_radio(
+    tmp_path,
+    monkeypatch,
+) -> None:  # noqa: ANN001
+    observed_at = live_module.datetime.now(live_module.UTC)
+    telemetry = LiveTelemetryStore()
+    telemetry.set(
+        TelemetryEnvelope(
+            sequence=1,
+            state=AircraftState(
+                aircraft_type="FA-18C_hornet",
+                position=Position(latitude=42.1, longitude=41.2, altitude_m=1000),
+                heading_deg=137,
+                true_airspeed_mps=145,
+            ),
+        ),
+        received_at=observed_at,
+    )
+    identity_service = AircraftIdentityFormulationService(
+        query=AircraftIdentityQueryService(
+            WorldModelFacade(telemetry=telemetry, clock=lambda: observed_at)
+        )
+    )
+    service, endpoint, recorder, provider = _service(
+        tmp_path,
+        monkeypatch,
+        corpus=AIRCRAFT_IDENTITY_FIELD_CORPUS,
+        aircraft_identity_service=identity_service,
+        aircraft_recommendation="Вы сейчас находитесь в F-16C Viper.",
+    )
+    service.start(capture_audio=False)
+    assert service.accept_transcript(
+        AIRCRAFT_IDENTITY_CASE.prompt,
+        "aircraft-ptt",
+        "aircraft-event",
+        "aircraft-item",
+        time.monotonic(),
+    )
+    _wait_for(service, LiveGoldenState.FAIL)
+
+    assert len(provider.requests) == 1
+    assert endpoint.transmissions == []
+    assert service.status().message == "Live Golden failed closed at qwen_formulation"
+    recorder.stop_and_export()
 
 
 def test_streaming_failure_before_radio_falls_back_once_to_buffered_rest(

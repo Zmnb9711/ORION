@@ -23,6 +23,12 @@ from pydantic import (
 )
 
 from orion.communication_contracts import CommunicationContext, CommunicationDomain
+from orion.aircraft_identity_query import (
+    AIRCRAFT_IDENTITY_CAPABILITY,
+    AIRCRAFT_IDENTITY_CONTRACT,
+    AircraftIdentityIntentStatus,
+    classify_aircraft_identity_query,
+)
 from orion.atc_status_query import (
     ATC_STATUS_CAPABILITY,
     AtcStatusIntentStatus,
@@ -90,6 +96,7 @@ class KnownContractRoute(StrEnum):
 class KnownContractReasonCode(StrEnum):
     PURE_TAKEOFF_CLEARANCE_REQUEST = "pure_takeoff_clearance_request"
     PURE_ATC_STATUS_QUERY = "pure_atc_status_query"
+    PURE_AIRCRAFT_IDENTITY_QUERY = "pure_aircraft_identity_query"
     AMBIGUOUS_OR_MIXED_INPUT = "ambiguous_or_mixed_input"
     NO_KNOWN_CONTRACT_MATCH = "no_known_contract_match"
 
@@ -146,11 +153,16 @@ class KnownContractRoutingDecision(_RouterModel):
     reason_code: KnownContractReasonCode
     domain: CommunicationDomain
     requested_capability: CapabilityId | None = None
-    contract: Literal["takeoff_clearance_request", "atc_status_query"] | None = None
+    contract: Literal[
+        "takeoff_clearance_request",
+        "atc_status_query",
+        "aircraft_identity_query",
+    ] | None = None
     language: str = Field(pattern=r"^(?:ru-RU|en-US)$")
     contract_matched: bool
     pure: bool
     qwen_required: bool
+    qwen_formulation_required: bool = False
     policy_version: PolicyVersion = KNOWN_CONTRACT_POLICY_VERSION
 
     @model_validator(mode="after")
@@ -164,6 +176,12 @@ class KnownContractRoutingDecision(_RouterModel):
             raise ValueError("Only a deterministic known-contract route identifies a contract")
         if deterministic != (self.requested_capability is not None):
             raise ValueError("Only a deterministic route selects a Core capability")
+        if self.qwen_formulation_required != (
+            self.contract == AIRCRAFT_IDENTITY_CONTRACT
+        ):
+            raise ValueError(
+                "Only aircraft identity requires bounded Qwen formulation"
+            )
         return self
 
 
@@ -278,6 +296,21 @@ class InteractionRouter:
                 contract_matched=True,
                 pure=True,
                 qwen_required=False,
+            )
+        aircraft_intent = classify_aircraft_identity_query(request.text)
+        if aircraft_intent.status is AircraftIdentityIntentStatus.RECOGNIZED:
+            return KnownContractRoutingDecision(
+                interaction_id=request.interaction_id,
+                route=KnownContractRoute.DETERMINISTIC_KNOWN_CONTRACT,
+                reason_code=KnownContractReasonCode.PURE_AIRCRAFT_IDENTITY_QUERY,
+                domain=communication.domain,
+                requested_capability=AIRCRAFT_IDENTITY_CAPABILITY,
+                contract=AIRCRAFT_IDENTITY_CONTRACT,
+                language=aircraft_intent.language,
+                contract_matched=True,
+                pure=True,
+                qwen_required=False,
+                qwen_formulation_required=True,
             )
         return KnownContractRoutingDecision(
             interaction_id=request.interaction_id,

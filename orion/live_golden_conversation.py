@@ -23,6 +23,13 @@ from typing import Callable, Protocol
 
 from pydantic import BaseModel, ConfigDict
 
+from orion.aircraft_identity_query import (
+    AIRCRAFT_IDENTITY_CONTRACT,
+    AircraftIdentityFormulationError,
+    AircraftIdentityFormulationService,
+    AircraftIdentityQueryStatus,
+    AircraftIdentitySemanticOutcome,
+)
 from orion.atc_status_query import (
     ATC_STATUS_CONTRACT,
     AtcStatusSemanticOutcome,
@@ -168,6 +175,17 @@ ATC_STATUS_CASE = LiveGoldenCase(
     False,
     ATC_STATUS_CONTRACT,
 )
+
+AIRCRAFT_IDENTITY_CASE = LiveGoldenCase(
+    "live-dcs-aircraft-identity",
+    "В каком самолёте я нахожусь?",
+    False,
+    False,
+    False,
+    AIRCRAFT_IDENTITY_CONTRACT,
+)
+
+AIRCRAFT_IDENTITY_FIELD_CORPUS = (AIRCRAFT_IDENTITY_CASE,)
 
 PERSISTENT_ATC_STATUS_FIRST_CORPUS = (
     PURE_TAKEOFF_FIRST_CORPUS[0],
@@ -581,6 +599,7 @@ class LiveGoldenCaseRunner:
             SpeechKitStreamingTtsClient
         ),
         interaction_router: InteractionRouter | None = None,
+        aircraft_identity_service: AircraftIdentityFormulationService | None = None,
         monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         self._provider_factory = provider_factory
@@ -588,6 +607,9 @@ class LiveGoldenCaseRunner:
         self._streaming_speechkit_factory = streaming_speechkit_factory
         self._interaction_router = interaction_router or InteractionRouter(
             provider_factory=_route_only_provider
+        )
+        self._aircraft_identity_service = (
+            aircraft_identity_service or AircraftIdentityFormulationService()
         )
         self._monotonic = monotonic
 
@@ -625,10 +647,37 @@ class LiveGoldenCaseRunner:
             contract_matched=route.contract_matched,
             pure=route.pure,
             route_selected=route.route.value,
+            reason_code=route.reason_code.value,
             contract=route.contract or "none",
             qwen_required=route.qwen_required,
+            qwen_formulation_required=route.qwen_formulation_required,
+            interaction_id=str(interaction_id),
             elapsed_ms=(route_selected_at - accepted_at) * 1000,
         )
+
+        if route.contract == AIRCRAFT_IDENTITY_CONTRACT:
+            if case.expected_contract != AIRCRAFT_IDENTITY_CONTRACT:
+                raise LiveGoldenCaseFailure(
+                    "semantic_gate",
+                    "Aircraft identity contract did not match the selected field case",
+                )
+            return self._run_aircraft_identity_case(
+                context=context,
+                run_id=run_id,
+                case=case,
+                transcript=transcript,
+                turn_id=turn_id,
+                event_id=event_id,
+                provider_item_id=provider_item_id,
+                speech_stopped_at=speech_stopped_at,
+                cancelled=cancelled,
+                capture_audio=capture_audio,
+                interaction_id=interaction_id,
+                language=route.language,
+                accepted_at=accepted_at,
+                route_selected_at=route_selected_at,
+                route=route,
+            )
 
         if route.contract == ATC_STATUS_CONTRACT:
             if case.expected_contract != ATC_STATUS_CONTRACT:
@@ -1169,6 +1218,378 @@ class LiveGoldenCaseRunner:
                         radio_submitted,
                         float(tx.get("queue_to_first_tx_ms", 0.0)),
                     )
+                ),
+                "speech_end_to_srs_tx_complete": _elapsed_ms(
+                    speech_stopped_at, radio_completed
+                ),
+            },
+            "validation_assertions": validations,
+            "internal_result": "PASS" if all(validations.values()) else "FAIL",
+            "acoustic_review": "NOT OBSERVABLE",
+        }
+
+    def _run_aircraft_identity_case(
+        self,
+        *,
+        context: LiveGoldenRuntimeContext,
+        run_id: str,
+        case: LiveGoldenCase,
+        transcript: str,
+        turn_id: str | None,
+        event_id: str,
+        provider_item_id: str,
+        speech_stopped_at: float | None,
+        cancelled: Callable[[], bool],
+        capture_audio: bool,
+        interaction_id: uuid.UUID,
+        language: str,
+        accepted_at: float,
+        route_selected_at: float,
+        route: KnownContractRoutingDecision,
+    ) -> dict[str, object]:
+        """Bind live Core truth into a validated Qwen wording shell."""
+
+        provider = self._provider_factory(
+            YandexQwenPlannerConfig(
+                folder_id=context.folder_id,
+                api_key=context.api_key,
+            )
+        )
+        try:
+            outcome: AircraftIdentitySemanticOutcome = (
+                self._aircraft_identity_service.execute(
+                    provider=provider,
+                    interaction_id=interaction_id,
+                    utterance=transcript,
+                    language=language,
+                    deadline=datetime.now(UTC)
+                    + timedelta(seconds=PROVIDER_DEADLINE_S),
+                )
+            )
+        except AircraftIdentityFormulationError as exc:
+            raise LiveGoldenCaseFailure(
+                "qwen_formulation",
+                "Qwen aircraft wording did not preserve Core fact authority",
+            ) from exc
+        semantic_ready_at = self._monotonic()
+        result = outcome.result
+        live_truth = result.status is AircraftIdentityQueryStatus.AVAILABLE
+        realtime_test_evidence.record(
+            "live_golden_semantic_route_executed",
+            probe_run_id=run_id,
+            probe_case_id=case.case_id,
+            route_selected=route.route.value,
+            contract=route.contract,
+            qwen_required=False,
+            qwen_formulation_required=True,
+            qwen_call_count=outcome.qwen_call_count,
+            interaction_id=str(interaction_id),
+        )
+        realtime_test_evidence.record(
+            "live_golden_aircraft_identity_resolved",
+            probe_run_id=run_id,
+            probe_case_id=case.case_id,
+            interaction_id=str(interaction_id),
+            semantic_meaning=result.semantic_meaning,
+            semantic_response_id=str(outcome.semantic_response.response_id),
+            radio_entity_id=outcome.radio_entity_id,
+            qwen_call_count=outcome.qwen_call_count,
+            qwen_fact_authority=outcome.qwen_fact_authority,
+            formulation_origin=outcome.formulation_origin,
+            status=result.status.value,
+            fact_origin="LIVE_DCS_TRUTH" if live_truth else "LIVE_DCS_UNAVAILABLE",
+            aircraft_type=result.raw_aircraft_id,
+            aircraft_display_name=result.display_name,
+            source=result.source.value,
+            authority=result.authority.value,
+            observed_at=(
+                result.observed_at.isoformat(timespec="milliseconds")
+                if result.observed_at is not None
+                else None
+            ),
+            age_seconds=result.age_seconds,
+            context_fresh=result.fact_status.value == "known",
+            context_generation=result.generation,
+            reason=result.unavailable_reason,
+        )
+        if cancelled():
+            raise LiveGoldenCaseFailure("cancelled", "Live Golden case was cancelled")
+
+        response_id = f"live-golden-{run_id[:8]}-{case.case_id}"
+        priority = CommunicationPriority.ROUTINE
+        streaming_requested = (
+            context.tts_output_mode is SpeechKitTtsOutputMode.STREAMING_V3
+        )
+        streaming_used = False
+        streaming_fallback = False
+        streaming_metrics: dict[str, float | int | bool] = {}
+        pcm44 = b""
+        pcm_bytes = 0
+        pcm_sha256 = ""
+        if streaming_requested:
+            try:
+                stream_outcome = asyncio.run(
+                    self._stream_to_radio(
+                        context=context,
+                        run_id=run_id,
+                        case=case,
+                        response_id=response_id,
+                        final_text=outcome.final_text,
+                        source_domain=CommunicationDomain.GENERAL,
+                        priority=priority,
+                        entity_id=outcome.radio_entity_id,
+                        cancelled=cancelled,
+                        capture_audio=capture_audio,
+                        semantic_ready_at=semantic_ready_at,
+                    )
+                )
+            except _StreamingBeforeTxFailure as exc:
+                streaming_fallback = True
+                realtime_test_evidence.record(
+                    "speechkit_stream_tts_rest_fallback",
+                    probe_run_id=run_id,
+                    probe_case_id=case.case_id,
+                    response_id=response_id,
+                    reason=str(exc),
+                )
+            else:
+                streaming_used = True
+                tx = stream_outcome.tx
+                snapshot = stream_outcome.snapshot
+                pcm44 = snapshot.captured_pcm or b""
+                pcm_bytes = snapshot.total_pcm_bytes
+                pcm_sha256 = snapshot.pcm_sha256
+                speechkit_completed = stream_outcome.provider_completed_at
+                radio_submitted = stream_outcome.radio_submitted_at
+                radio_completed = stream_outcome.radio_completed_at
+                streaming_metrics = {
+                    "first_provider_audio_latency_ms": stream_outcome.first_audio_latency_ms,
+                    "provider_complete_latency_ms": stream_outcome.provider_complete_latency_ms,
+                    "first_srs_tx_frame_latency_ms": (
+                        stream_outcome.first_srs_tx_frame_latency_ms
+                    ),
+                    "prebuffer_target_ms": STREAM_PREBUFFER_MS,
+                    "max_buffered_bytes": snapshot.max_buffered_bytes,
+                    "underrun_count": int(tx.get("underrun_count", 0)),
+                    "underrun_silence_inserted_ms": float(
+                        tx.get("underrun_silence_inserted_ms", 0.0)
+                    ),
+                }
+
+        if not streaming_used:
+            pcm48 = asyncio.run(
+                self._synthesize(
+                    context=context,
+                    run_id=run_id,
+                    case=case,
+                    response_id=response_id,
+                    final_text=outcome.final_text,
+                )
+            )
+            speechkit_completed = self._monotonic()
+            pcm44 = normalize_speechkit_pcm(pcm48)
+            if not pcm44 or len(pcm44) % 2:
+                raise LiveGoldenCaseFailure("speechkit", "SpeechKit produced invalid PCM")
+            if cancelled():
+                raise LiveGoldenCaseFailure(
+                    "cancelled_before_radio",
+                    "Live Golden case was cancelled before radio admission",
+                )
+            pcm_bytes = len(pcm44)
+            pcm_sha256 = hashlib.sha256(pcm44).hexdigest()
+            radio_submitted = self._monotonic()
+            realtime_test_evidence.record(
+                "live_golden_radio_admission_requested",
+                probe_run_id=run_id,
+                probe_case_id=case.case_id,
+                response_id=response_id,
+                pcm_bytes=pcm_bytes,
+            )
+            tx = context.endpoint.transmit_finalized_audio(
+                response_id,
+                pcm44,
+                TX_TIMEOUT_S,
+                source_domain=CommunicationDomain.GENERAL,
+                priority=priority,
+                entity_id=outcome.radio_entity_id,
+            )
+            radio_completed = self._monotonic()
+
+        artifact = None
+        if capture_audio:
+            if not pcm44:
+                raise LiveGoldenCaseFailure(
+                    "speechkit_stream_capture",
+                    "Streaming response audio capture was unavailable",
+                )
+            artifact = realtime_test_evidence.record_live_golden_audio(
+                run_id=run_id,
+                case_id=case.case_id,
+                response_id=response_id,
+                pcm44=pcm44,
+            )
+        radio_runtime = context.endpoint.srs_adapter_runtime()
+        realtime_test_evidence.record(
+            "live_golden_srs_completion_correlated",
+            probe_run_id=run_id,
+            probe_case_id=case.case_id,
+            response_id=response_id,
+            frames=int(tx.get("frame_count", 0)),
+            duration_ms=float(tx.get("duration_ms", 0.0)),
+            queue_to_first_tx_ms=float(tx.get("queue_to_first_tx_ms", 0.0)),
+            queue_to_complete_ms=float(tx.get("queue_to_complete_ms", 0.0)),
+            status="completed",
+        )
+        validations = {
+            "real_spoken_input_observed": bool(turn_id and provider_item_id),
+            "semantic_decomposition_not_required": True,
+            "qwen_formulation_used": outcome.qwen_call_count == 1,
+            "qwen_fact_authority_absent": not outcome.qwen_fact_authority,
+            "semantic_response_present": bool(outcome.semantic_response),
+            "live_dcs_truth_available": live_truth,
+            "fixture_identity_not_used": True,
+            "qwen_identity_not_invented": (
+                not live_truth
+                or (
+                    result.display_name is not None
+                    and result.display_name in outcome.final_text
+                )
+            ),
+            "core_fact_preserved_in_final_wording": (
+                not live_truth or outcome.final_text.count(result.display_name or "") == 1
+            ),
+            "speechkit_synthesized": pcm_bytes > 0,
+            "radio_router_completed": True,
+            "srs_adapter_completed": int(tx.get("frame_count", 0)) > 0,
+            "audibility_not_inferred_from_tx": True,
+        }
+        return {
+            "case_id": case.case_id,
+            "primary": case.primary,
+            "expected_prompt": case.prompt,
+            "input": {
+                "source": "real_human_speech_via_official_srs_client",
+                "final_transcript": transcript,
+                "turn_id": turn_id or "NOT OBSERVABLE",
+                "provider_event_id": event_id or "NOT OBSERVABLE",
+                "provider_item_id": provider_item_id or "NOT OBSERVABLE",
+            },
+            "semantic_route": {
+                "recognizer_evaluated": route.recognizer_evaluated,
+                "contract_matched": route.contract_matched,
+                "pure": route.pure,
+                "route_selected": route.route.value,
+                "reason_code": route.reason_code.value,
+                "contract": route.contract,
+                "qwen_required": False,
+                "qwen_formulation_required": True,
+                "qwen_call_count": outcome.qwen_call_count,
+                "policy_version": route.policy_version,
+            },
+            "qwen": {
+                "semantic_interpretation_required": False,
+                "natural_language_formulation_required": True,
+                "call_count": outcome.qwen_call_count,
+                "fact_authority": outcome.qwen_fact_authority,
+                "provider": provider.provider_id,
+                "provider_response_ids": list(outcome.qwen_response_ids),
+                "latency_ms": outcome.qwen_latency_ms,
+                "formulation_origin": outcome.formulation_origin,
+            },
+            "aircraft_identity": {
+                "semantic_meaning": result.semantic_meaning,
+                "status": result.status.value,
+                "truth_origin": "LIVE_DCS_TRUTH" if live_truth else "LIVE_DCS_UNAVAILABLE",
+                "raw_dcs_aircraft_id": result.raw_aircraft_id,
+                "display_name": result.display_name,
+                "fact_status": result.fact_status.value,
+                "source": result.source.value,
+                "authority": result.authority.value,
+                "observed_at": (
+                    result.observed_at.isoformat()
+                    if result.observed_at is not None
+                    else None
+                ),
+                "age_seconds": result.age_seconds,
+                "world_model_generation": result.generation,
+                "unavailable_reason": result.unavailable_reason,
+                "stable_dcs_session_epoch": "NOT AVAILABLE",
+            },
+            "semantic_result": {
+                "semantic_response": outcome.semantic_response.model_dump(mode="json"),
+                "presentation_response_count": 1,
+            },
+            "communication_profile": "NOT_APPLICABLE_INFORMATIONAL",
+            "phraseology_entry_id": None,
+            "protected_slots": {
+                "flight.current_aircraft_identity": result.display_name
+            }
+            if result.display_name
+            else {},
+            "free_response": None,
+            "protected_fragment": None,
+            "final_composed_text": outcome.final_text,
+            "final_composed_text_sha256": hashlib.sha256(
+                outcome.final_text.encode("utf-8")
+            ).hexdigest(),
+            "composition_order": [
+                "CORE_AUTHORITATIVE_FACT",
+                "QWEN_VALIDATED_NATURAL_FORMULATION",
+                "CORE_FACT_BINDING",
+            ],
+            "speechkit": {
+                "correlation_id": response_id,
+                "provider_request_id": "NOT OBSERVABLE",
+                "voice": SPEECHKIT_VOICE,
+                "role": SPEECHKIT_ROLE,
+                "output_mode": (
+                    SpeechKitTtsOutputMode.STREAMING_V3.value
+                    if streaming_used
+                    else SpeechKitTtsOutputMode.REST_BUFFERED.value
+                ),
+                "streaming_requested": streaming_requested,
+                "streaming_rest_fallback": streaming_fallback,
+                "input_is_local_final_composition": True,
+                "pcm_input_rate_hz": 48_000,
+                "pcm_radio_rate_hz": 44_100,
+                "pcm_bytes": pcm_bytes,
+                "pcm_sha256": pcm_sha256,
+                **streaming_metrics,
+            },
+            "audio_artifact": artifact or "NOT CAPTURED",
+            "radio": {
+                "correlation_id": response_id,
+                "entity_id": outcome.radio_entity_id,
+                "radio_router_admitted": True,
+                "srs_adapter_tx_started": True,
+                "srs_tx_completed": True,
+                "srs_adapter_tx_completed": True,
+                "target_frequency_hz": radio_runtime.frequency_hz,
+                "modulation": radio_runtime.modulation,
+                "radio_registered": radio_runtime.radio_registered,
+                "udp_registered": radio_runtime.udp_registered,
+                **tx,
+            },
+            "latency_ms": {
+                "speech_end_to_semantic_input": _elapsed_ms(
+                    speech_stopped_at, accepted_at
+                ),
+                "semantic_input_to_route_selected": _elapsed_ms(
+                    accepted_at, route_selected_at
+                ),
+                "route_selected_to_aircraft_identity_complete": _elapsed_ms(
+                    route_selected_at, semantic_ready_at
+                ),
+                "identity_to_speechkit_complete": _elapsed_ms(
+                    semantic_ready_at, speechkit_completed
+                ),
+                "speechkit_to_srs_tx_start": round(
+                    float(tx.get("queue_to_first_tx_ms", 0.0)), 3
+                ),
+                "speech_end_to_srs_tx_start": _speech_to_tx_start_ms(
+                    speech_stopped_at,
+                    radio_submitted,
+                    float(tx.get("queue_to_first_tx_ms", 0.0)),
                 ),
                 "speech_end_to_srs_tx_complete": _elapsed_ms(
                     speech_stopped_at, radio_completed
@@ -2278,5 +2699,5 @@ def _speech_to_tx_start_ms(
 
 
 live_golden_conversation = LiveGoldenConversationService(
-    corpus=PERSISTENT_ATC_STATUS_FIRST_CORPUS
+    corpus=AIRCRAFT_IDENTITY_FIELD_CORPUS
 )

@@ -419,3 +419,33 @@ Recommended first contract:
 Recommended subsequent progression:
 
 `live DCS identity/context → live-bound persistent ATC session → TAKEOFF_ROLL/AIRBORNE → Tower→Departure → broader ATC lifecycle`
+
+## 14. Aircraft identity implementation checkpoint and Stage 6A ownership correction
+
+The bounded `AIRCRAFT_IDENTITY_QUERY` implementation preserves the field-proven
+Stage 6A / 6A.1 ownership split established by `f5c5d474` and stabilized by
+`5896c4d9`:
+
+- live DCS telemetry reaches `WorldModelFacade` through the existing telemetry path;
+- Core accepts only `KNOWN`, `DCS_EXPORT`, `AUTHORITATIVE` aircraft identity;
+- Core and World Model exclusively own the raw identity, normalization,
+  freshness, provenance, and unavailable state;
+- Qwen performs one informational natural-language formulation step, but receives
+  no tool capability and has no fact authority;
+- Qwen may return only a bounded sentence shell containing one Core substitution
+  marker; Core rejects added aircraft identifiers, extra numeric facts, provider
+  facts, guesses, defaults, or the wrong availability state;
+- Core substitutes its exact aircraft display identity only after validation and
+  preserves the typed source fact in the final semantic response;
+- stale, disconnected, no-player, invalid, non-DCS, or non-authoritative identity
+  fails closed without fixture or previous-session fallback.
+
+This informational contract therefore does **not** use `Qwen = 0` as its success
+criterion. Its criterion is `Core fact authority + Qwen natural formulation +
+Core exact-fact binding`. The existing zero-Qwen behavior remains unchanged for
+pure protected takeoff and the existing ATC status contract. Phraseology/OSU,
+ToolGateway permissions, ATC session state, RadioRouter, SpeechKit and SRS
+ownership boundaries are unchanged.
+
+The implementation is not field-proven until a separate live-DCS, physical-SRS
+test confirms that the spoken aircraft identity exactly matches fresh Core truth.
