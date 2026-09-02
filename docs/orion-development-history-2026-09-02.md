@@ -492,3 +492,28 @@ capability, Previous Best, and PASS/BLOCK behavior remain deferred.
 AG-1 is limited to exact source identity, chronology, parent/child and
 neighbor/range retrieval. The next stage is `AG-2 — CAPABILITY TAXONOMY +
 DECISION/IMPLEMENTATION/MECHANISM GRAPH`.
+
+## 17. Architecture Guard AG-2 capability graph
+
+AG-2 extends the private AG-1 SQLite database with a deterministic taxonomy and
+typed decision/implementation/mechanism/evidence graph. Stable capability IDs
+remain independent of providers and code symbols; aliases and historical terms
+connect renamed or rearchitected behavior without claiming that implementations
+are identical.
+
+All D01-D72 rows are imported exactly from their AG-1 document pointers.
+Historically significant implementations and reusable mechanisms retain
+separate runtime, historical and field/probe states, abandonment classification,
+confidence and exact L0 provenance. Ownership assignments explicitly distinguish
+Core fact authority, natural informational wording, protected operational
+wording, tool permission, STT/TTS, radio/PTT/EOU and persistent state.
+
+Mandatory graph proofs cover Stage 6A versus current aircraft information,
+UDP7082/PTT/EOU evolution, language and Communication Profiles, Whisper removal
+and SpeechKit STT, Pilot Phraseology `TEST_CORPUS_ONLY`, protected OSU wording,
+and pure-takeoff/persistent-ATC/status-query evolution. These are retrieval
+facts only: AG-2 does not select Qwen or Yandex Realtime as better, and it does
+not produce Architecture PASS/BLOCK.
+
+The next stage is `AG-3 — HISTORICAL DECISION CHECK + PREVIOUS BEST SOLUTION
+GATE`.

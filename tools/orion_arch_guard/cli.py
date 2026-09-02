@@ -20,6 +20,7 @@ from tools.orion_arch_guard.manifest import (
 )
 from tools.orion_arch_guard.models import ChangeStatus, Manifest, SourceChange
 from tools.orion_arch_guard.indexing import index_manifest
+from tools.orion_arch_guard.graph import CapabilityGraph, GraphBuilder
 from tools.orion_arch_guard.queries import HistoryIndex
 from tools.orion_arch_guard.fingerprints import sha256_file
 from tools.orion_arch_guard.models import SourceType
@@ -60,6 +61,21 @@ def _parser() -> argparse.ArgumentParser:
     lookup.add_argument("--neighbors", action="store_true")
     lookup.add_argument("--range-before", type=int, default=0)
     lookup.add_argument("--range-after", type=int, default=0)
+    graph_build = subparsers.add_parser("graph-build")
+    graph_build.add_argument("--database", type=Path)
+    graph_build.add_argument("--force", action="store_true")
+    capability = subparsers.add_parser("capability")
+    capability.add_argument("capability")
+    capability.add_argument("--database", type=Path)
+    related = subparsers.add_parser("related")
+    related.add_argument("--capability", required=True)
+    related.add_argument("--database", type=Path)
+    history = subparsers.add_parser("history")
+    history.add_argument("--capability", required=True)
+    history.add_argument("--database", type=Path)
+    explain = subparsers.add_parser("explain")
+    explain.add_argument("--implementation", required=True)
+    explain.add_argument("--database", type=Path)
     return parser
 
 
@@ -272,6 +288,41 @@ def lookup_command(args: argparse.Namespace) -> int:
         index.close()
 
 
+def graph_build_command(args: argparse.Namespace) -> int:
+    database = _database_path(args.database)
+    if not database.is_file():
+        print(f"index_missing={database}", file=sys.stderr)
+        return 2
+    builder = GraphBuilder(database)
+    try:
+        result = builder.build(force=args.force)
+        print("graph_result=" + json.dumps(result.to_dict(), sort_keys=True))
+    finally:
+        builder.close()
+    return 0
+
+
+def graph_query_command(args: argparse.Namespace) -> int:
+    database = _database_path(args.database)
+    if not database.is_file():
+        print(f"index_missing={database}", file=sys.stderr)
+        return 2
+    graph = CapabilityGraph(database)
+    try:
+        if args.command == "capability":
+            result = graph.capability(args.capability)
+        elif args.command == "related":
+            result = graph.related(args.capability)
+        elif args.command == "history":
+            result = graph.history(args.capability)
+        else:
+            result = graph.explain_implementation(args.implementation)
+        print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+        return 0 if result else 1
+    finally:
+        graph.close()
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     if args.command == "discover":
@@ -284,4 +335,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return status_command(args)
     if args.command == "lookup":
         return lookup_command(args)
+    if args.command == "graph-build":
+        return graph_build_command(args)
+    if args.command in {"capability", "related", "history", "explain"}:
+        return graph_query_command(args)
     raise AssertionError(f"unsupported command: {args.command}")
