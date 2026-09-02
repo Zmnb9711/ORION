@@ -562,3 +562,49 @@ The convention is effective immediately. Its documentation-only preflight ran
 at starting HEAD `8c406fea09658afdee105bd7b72b444d1c66f883` in FULL mode with
 report `AG-20260902-185339-f70f7a7f-8c406fe-r1`, complete history coverage and
 gate `PASS`. This checkpoint changes no production ORION runtime behavior.
+
+## 20. Development Console Phase 1 local environment verification
+
+The user approved the bounded Development Console architecture through FULL
+preflight `AG-20260902-191448-5aaeb475-1d4e0cb-r1`. Phase 1 implements a
+separate development application under `tools/orion_development_console/`; it
+is not imported by `orion/**`, is not a Launcher mode, and is absent from the
+product installer and frozen runtime.
+
+The vertical adds typed historical/development/machine truth domains,
+`VerificationObservation`, independent installed/configured/running/ready
+facts, bounded read-only collectors, fingerprint invalidation and aging, a
+private `OV-...` report store, and a permanent Tk/ttk panel for Git, History,
+Logs, Evidence, Installed ORION, Local ORION Data, DCS Integration and SRS.
+The visible `ПРОВЕРИТЬ ВСЁ` action does not fetch, launch ORION/DCS/SRS, open
+audio, call providers, repair files, install updates or elevate. Cached Git
+upstream is explicitly labelled as a local tracking ref rather than a live
+remote result.
+
+The first real local verification produced
+`OV-20260902-193603-1d4e0cb-2d21d8b7`. It verified branch
+`dev/adr004-post-389` at `1d4e0cbc299c8e2dd3db041bec10099b6172f68c`,
+73 decisions, 42 ChatGPT conversations, 14 Codex sessions, 347 bounded logs
+and 73 Evidence archives. Installed ORION `0.2.0-alpha` Core/Launcher build
+`27e94bdbf843a3f1895db2756eed49e42fe07989` was independently recovered from
+`C:\Program Files\ORION` and correctly reported `DIFFERENT` from repository
+HEAD while matching the latest known local release. DCS integration payload
+matched the expected hash. SRS installation/configuration and passive running
+state were observed, while SRS version and all live DCS/SRS/provider/audio
+readiness remained explicitly `UNKNOWN` or `NOT_CHECKED` rather than inferred.
+
+Deterministic Phase 1 tests cover Git/cached-upstream state, Guard/D73/index,
+log and Evidence deltas, installed-build comparison, missing roots without
+creation, DCS configured-versus-ready separation, SRS passive state/access
+denial, staleness, forbidden side effects, report privacy and UI mapping. The
+focused suite passed 22 tests; all 47 AG-0/1/2/3 regression tests also passed.
+Ruff, focused Pyright, compileall, whitespace and credential-pattern checks
+passed. Repository-wide Pyright continues to expose its pre-existing baseline
+outside this Phase 1 scope and was not suppressed or modified.
+
+The FULL post-implementation Guard report is
+`AG-20260902-194514-16892632-1d4e0cb-r1`: history coverage `COMPLETE`, gate
+`PASS`, no conflict, no ownership drift and no user decision required. The next
+approved Console scope is Phase 2: visible Full/Task Recall, immutable
+checkpoint history and previewable prompt generation; direct sending and the
+graphical roadmap remain deferred.
