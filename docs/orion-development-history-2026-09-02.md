@@ -718,3 +718,39 @@ save requires explicit user confirmation. The next approved development step is
 `LOW-LATENCY NATURAL INFORMATIONAL PRESENTATION`, preceded by a new FULL
 Architecture Guard preflight using the completed Console and the final saved
 checkpoint as current development context.
+
+## 23. Architecture Guard ruleset 2 negated-constraint intent fix
+
+The first FULL preflight for the dev-only Development Console Windows entry
+point produced false-positive report
+`AG-20260902-213455-67e26cbd-c493563-r1`. Although the task prohibited SRS and
+production-radio changes, ruleset 1 flattened every task field and constraint
+into one normalized string. It therefore combined `SRS` from `do not start ...
+SRS` with the unrelated word `rebuild` from `without frozen-executable rebuild
+churn`, activated `rebuild_srs`, and incorrectly emitted both
+`RADIO_TRANSPORT_CHANGED` and `DUPLICATE_FIELD_PROVEN_RADIO_STACK`.
+
+The Guard-only correction was approved through FULL report
+`AG-20260902-213733-536e3415-c493563-r1`, with `COMPLETE` history, gate `PASS`,
+zero conflicts and zero ownership drift. Ruleset 2 now classifies bounded task
+clauses as `PROPOSED_CHANGE`, `REQUIRED_PRESERVATION`, `OUT_OF_SCOPE`,
+`PROHIBITED_ACTION`, `OBSERVATION_ONLY` or `CONTEXT_ONLY`. All capability
+mentions remain visible as constraints/context, but only positive proposed
+change clauses feed mutation scenarios, ownership drift and duplicate-work
+rules. A separate positive radio-transport proposal still wins over a negated
+SRS clause and remains blocked.
+
+The exact Windows-entry semantics were rerun without weakening their safety
+constraints as `AG-20260902-214733-67e26cbd-c493563-r2`. The result was FULL /
+`COMPLETE` / `PASS`, zero conflicts and zero ownership drift; SRS was retained
+as `PROHIBITED_ACTION` with `proposed_change=false`. A real-history positive
+control for a new SRS transport remained `BLOCK` with the original duplicate
+field-proven-radio-stack conflict and radio-transport ownership drift.
+
+Focused regressions cover the original failure, the positive SRS control, a
+mixed positive-radio/negated-SRS proposal, and corresponding Whisper,
+SpeechKit, Phraseology, UDP7082 and Qwen negations. This task changes only the
+Architecture Guard, its focused tests and Guard/development documentation. The
+Development Console, production ORION, Launcher, SRS, RadioRouter, DCS,
+providers, installer and packaging remain unchanged. The Windows launcher is
+deliberately not implemented in this bugfix task.

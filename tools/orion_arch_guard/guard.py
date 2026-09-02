@@ -35,6 +35,15 @@ class ArchitectureGate(StrEnum):
     INCOMPLETE_HISTORY = "INCOMPLETE_HISTORY"
 
 
+class CapabilityIntent(StrEnum):
+    PROPOSED_CHANGE = "PROPOSED_CHANGE"
+    REQUIRED_PRESERVATION = "REQUIRED_PRESERVATION"
+    OUT_OF_SCOPE = "OUT_OF_SCOPE"
+    PROHIBITED_ACTION = "PROHIBITED_ACTION"
+    OBSERVATION_ONLY = "OBSERVATION_ONLY"
+    CONTEXT_ONLY = "CONTEXT_ONLY"
+
+
 @dataclass(frozen=True, slots=True)
 class PreflightInput:
     mode: GuardMode
@@ -60,9 +69,36 @@ class _CapabilityMatch:
     capability_id: str
     confidence: float
     matched_terms: set[str] = field(default_factory=set)
+    intents: set[CapabilityIntent] = field(default_factory=set)
+
+
+@dataclass(frozen=True, slots=True)
+class _IntentClause:
+    source: str
+    text: str
+    intent: CapabilityIntent
 
 
 _HEX_HEAD = re.compile(r"[0-9a-fA-F]{7,40}\Z")
+_CLAUSE_BOUNDARY = re.compile(
+    r"[.!?;]+|\b(?:but|however|whereas|while)\b|(?=\bwithout\b)",
+    flags=re.IGNORECASE,
+)
+_MUTATION_TERM = re.compile(
+    r"(?:^|_)(?:add|build|change|correct|create|enable|fix|freeze|implement|"
+    r"introduce|limit|migrate|modify|move|new|provide|rebuild|remove|replace|"
+    r"restore|rewrite|start|switch|update|wire)(?:_|$)"
+)
+_NO_MUTATION = re.compile(
+    r"(?:^|_)no_(?:[a-z0-9а-яё]+_){0,5}(?:add|build|change|changes|modify|new|"
+    r"rebuild|remove|replace|rewrite|start)(?:_|$)"
+)
+_INTENT_TERM_CAPABILITIES: dict[str, tuple[str, ...]] = {
+    "qwen": ("QWEN_PLANNER", "QWEN_REALTIME"),
+    "radio_transport": ("RADIO_ROUTER", "SRS"),
+    "speechkit": ("SPEECHKIT_STT", "SPEECHKIT_TTS"),
+    "whisper": ("STT",),
+}
 
 
 def _json(value: Any) -> str:
@@ -106,17 +142,21 @@ class ArchitectureGuard:
 
     def preflight(self, request: PreflightInput, *, store: bool = True) -> StoredReport:
         safe_request = self._sanitize_request(request)
+        intent_clauses = self._intent_clauses(safe_request)
         combined = self._combined_text(safe_request)
-        scenarios = self._detect_scenarios(combined)
-        capabilities, candidates = self._expand_capabilities(safe_request, scenarios)
+        proposed = self._proposed_change_text(intent_clauses)
+        scenarios = self._detect_scenarios(proposed)
+        capabilities, candidates = self._expand_capabilities(
+            safe_request, scenarios, intent_clauses
+        )
         history = self._history(capabilities)
         coverage = self._history_coverage(history)
-        ownership_drift = self._ownership_drift(scenarios, combined)
+        ownership_drift = self._ownership_drift(scenarios, proposed)
         effective_mode, escalation = self._effective_mode(
-            safe_request.mode, capabilities, ownership_drift, combined
+            safe_request.mode, capabilities, ownership_drift, proposed
         )
-        conflicts = self._conflicts(scenarios, combined, capabilities)
-        previous_best = self._previous_best(scenarios, history, combined)
+        conflicts = self._conflicts(scenarios, proposed, capabilities)
+        previous_best = self._previous_best(scenarios, history, proposed)
         performance = self._performance(capabilities, scenarios)
         evidence_reuse = self._evidence_reuse(scenarios, history, conflicts)
 
@@ -144,6 +184,7 @@ class ArchitectureGuard:
             "head_sha": safe_request.current_head,
             "ruleset_version": AG3_RULESET_VERSION,
             "index_signature": index_signature,
+            "task_intent": self._intent_summary(intent_clauses, proposed),
             "affected_capabilities": capabilities,
             "candidate_capabilities": candidates,
             "history_coverage": coverage,
@@ -223,6 +264,117 @@ class ArchitectureGuard:
         )
 
     @staticmethod
+    def _classify_clause(text: str, *, context_only: bool = False) -> CapabilityIntent:
+        if context_only:
+            return CapabilityIntent.CONTEXT_ONLY
+        if any(
+            marker in text
+            for marker in (
+                "out_of_scope",
+                "outside_scope",
+                "outside_the_scope",
+                "not_in_scope",
+                "scope_excludes",
+            )
+        ):
+            return CapabilityIntent.OUT_OF_SCOPE
+        if any(
+            marker in text
+            for marker in (
+                "preserve",
+                "keep_unchanged",
+                "remain_unchanged",
+                "remains_unchanged",
+                "must_remain",
+                "existing_capability_to_remain",
+                "no_changes",
+            )
+        ) or re.search(r"(?:^|_)no_(?:[a-z0-9а-яё]+_){0,4}changes?(?:_|$)", text):
+            return CapabilityIntent.REQUIRED_PRESERVATION
+        if any(
+            marker in text
+            for marker in (
+                "do_not",
+                "does_not",
+                "must_not",
+                "never",
+                "without",
+                "prohibited",
+                "forbidden",
+            )
+        ) or _NO_MUTATION.search(text):
+            return CapabilityIntent.PROHIBITED_ACTION
+        if _MUTATION_TERM.search(text):
+            return CapabilityIntent.PROPOSED_CHANGE
+        if any(
+            marker in text
+            for marker in (
+                "observation_only",
+                "read_only",
+                "inspect",
+                "observe",
+                "report",
+                "verify",
+                "audit",
+            )
+        ):
+            return CapabilityIntent.OBSERVATION_ONLY
+        return CapabilityIntent.CONTEXT_ONLY
+
+    @classmethod
+    def _intent_clauses(cls, request: PreflightInput) -> list[_IntentClause]:
+        values = (
+            ("task_title", request.task_title, False),
+            ("task_description", request.task_description, False),
+            ("proposed_change", request.proposed_change, False),
+            *(("affected_file", value, True) for value in request.affected_files),
+            *(("user_constraint", value, False) for value in request.user_constraints),
+        )
+        clauses: list[_IntentClause] = []
+        for source, value, context_only in values:
+            for raw_clause in _CLAUSE_BOUNDARY.split(value):
+                text = normalize_alias(raw_clause)
+                if not text:
+                    continue
+                clauses.append(
+                    _IntentClause(
+                        source=source,
+                        text=text,
+                        intent=cls._classify_clause(text, context_only=context_only),
+                    )
+                )
+        return clauses
+
+    @staticmethod
+    def _proposed_change_text(clauses: Sequence[_IntentClause]) -> str:
+        return "_".join(
+            clause.text
+            for clause in clauses
+            if clause.intent is CapabilityIntent.PROPOSED_CHANGE
+        )
+
+    @staticmethod
+    def _intent_summary(
+        clauses: Sequence[_IntentClause], proposed_text: str
+    ) -> dict[str, Any]:
+        counts = {
+            intent.value: sum(clause.intent is intent for clause in clauses)
+            for intent in CapabilityIntent
+        }
+        return {
+            "clauses": [
+                {
+                    "source": clause.source,
+                    "intent": clause.intent.value,
+                    "normalized_text": clause.text[:500],
+                }
+                for clause in clauses
+            ],
+            "intent_counts": counts,
+            "proposed_change_text": proposed_text[:4000],
+        }
+
+    @staticmethod
     def _detect_scenarios(text: str) -> set[str]:
         def has(*terms: str) -> bool:
             return all(normalize_alias(term) in text for term in terms)
@@ -264,49 +416,91 @@ class ArchitectureGuard:
             "authoritative" in text or "authority" in text or "launcher" in text
         ):
             scenarios.add("manual_callsign")
-        if "srs" in text and (
+        srs_transport_change = "srs" in text and (
             "rebuild" in text
             or "new_srs_transport" in text
             or ("build" in text and "transport" in text)
-        ):
+            or ("replace" in text and "transport" in text)
+        )
+        radio_transport_change = "radio_transport" in text and any(
+            term in text for term in ("build", "change", "new", "rebuild", "replace")
+        )
+        if srs_transport_change or radio_transport_change:
             scenarios.add("rebuild_srs")
         return scenarios
 
     def _expand_capabilities(
-        self, request: PreflightInput, scenarios: set[str]
+        self,
+        request: PreflightInput,
+        scenarios: set[str],
+        clauses: Sequence[_IntentClause],
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         matches: dict[str, _CapabilityMatch] = {}
 
-        def add(capability_id: str, confidence: float, term: str) -> None:
+        def add(
+            capability_id: str,
+            confidence: float,
+            term: str,
+            intent: CapabilityIntent,
+        ) -> None:
             current = matches.get(capability_id)
             if current is None:
                 current = _CapabilityMatch(capability_id, confidence)
                 matches[capability_id] = current
             current.confidence = max(current.confidence, confidence)
             current.matched_terms.add(term)
+            current.intents.add(intent)
 
         for value in request.explicit_capabilities:
             capability_id = self.graph.resolve_capability(value)
             if capability_id is not None:
-                add(capability_id, 1.0, f"explicit:{value}")
+                add(
+                    capability_id,
+                    1.0,
+                    f"explicit:{value}",
+                    CapabilityIntent.PROPOSED_CHANGE,
+                )
 
-        padded = f"_{self._combined_text(request)}_"
-        for row in self.connection.execute(
+        alias_rows = self.connection.execute(
             "SELECT capability_id, alias, alias_type FROM capability_aliases ORDER BY alias_key"
-        ):
-            alias_key = normalize_alias(str(row[1]))
-            if len(alias_key) < 4:
-                continue
-            if f"_{alias_key}_" in padded:
-                confidence = 0.95 if str(row[2]) == "STABLE_ID" else 0.88
-                add(str(row[0]), confidence, str(row[1]))
+        ).fetchall()
+        for clause in clauses:
+            padded = f"_{clause.text}_"
+            for row in alias_rows:
+                alias_key = normalize_alias(str(row[1]))
+                alias_type = str(row[2])
+                if len(alias_key) < 3 and alias_type != "STABLE_ID":
+                    continue
+                if f"_{alias_key}_" in padded:
+                    confidence = 0.95 if alias_type == "STABLE_ID" else 0.88
+                    add(str(row[0]), confidence, str(row[1]), clause.intent)
+            for term, capability_ids in _INTENT_TERM_CAPABILITIES.items():
+                if f"_{term}_" not in padded:
+                    continue
+                for capability_id in capability_ids:
+                    add(
+                        capability_id,
+                        0.88,
+                        f"intent-term:{term}",
+                        clause.intent,
+                    )
 
         for scenario in scenarios:
             for capability_id in RULE_CAPABILITIES[scenario]:
-                add(capability_id, 0.85, f"policy:{scenario}")
+                add(
+                    capability_id,
+                    0.85,
+                    f"policy:{scenario}",
+                    CapabilityIntent.PROPOSED_CHANGE,
+                )
 
         if matches:
-            add("ARCHITECTURE_GOVERNANCE", 1.0, "mandatory:D71")
+            add(
+                "ARCHITECTURE_GOVERNANCE",
+                1.0,
+                "mandatory:D71",
+                CapabilityIntent.CONTEXT_ONLY,
+            )
 
         ordered = sorted(matches.values(), key=lambda item: (-item.confidence, item.capability_id))
         affected = [
@@ -314,6 +508,8 @@ class ArchitectureGuard:
                 "capability_id": item.capability_id,
                 "confidence": round(item.confidence, 2),
                 "matched_terms": sorted(item.matched_terms),
+                "intents": sorted(intent.value for intent in item.intents),
+                "proposed_change": CapabilityIntent.PROPOSED_CHANGE in item.intents,
             }
             for item in ordered
         ]
@@ -952,6 +1148,13 @@ def render_human_report(result: dict[str, Any]) -> str:
         "## Affected capabilities",
         "",
         _ids(result["affected_capabilities"], "capability_id"),
+        "",
+        "## Task intent",
+        "",
+        "Clause counts: " + _json(result["task_intent"]["intent_counts"]),
+        "",
+        "Proposed-change clauses: "
+        + (result["task_intent"]["proposed_change_text"] or "NONE"),
         "",
         "## History coverage",
         "",

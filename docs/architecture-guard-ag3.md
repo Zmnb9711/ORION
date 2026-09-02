@@ -70,6 +70,31 @@ Guard to surface combinations such as historical persistent Realtime natural
 presentation plus current Core fact validation/binding without silently
 approving that architecture.
 
+## Task intent and negated constraints
+
+Ruleset 2 classifies each bounded task clause before scenario and ownership
+rules run. The supported intent categories are:
+
+- `PROPOSED_CHANGE`: positively adds, modifies, replaces or removes behavior;
+- `REQUIRED_PRESERVATION`: requires an existing owner or mechanism to remain;
+- `OUT_OF_SCOPE`: explicitly excludes a capability from the change;
+- `PROHIBITED_ACTION`: forbids starting, modifying, rebuilding or replacing it;
+- `OBSERVATION_ONLY`: permits bounded read, inspect, verify or report behavior;
+- `CONTEXT_ONLY`: mentions surrounding architecture without changing it.
+
+Capability mentions from every category remain visible in
+`affected_capabilities` together with their classified intents. Only positive
+`PROPOSED_CHANGE` clauses feed mutation scenarios, ownership-drift rules and
+duplicate-field-proven-work rules. This prevents an instruction such as
+`Do not modify SRS` from becoming a proposed SRS transport, while retaining the
+constraint and its historical context.
+
+Negation does not hide a separate positive proposal. For example,
+`Replace radio transport, but do not change SRS` still identifies a radio
+transport change and retains the existing field-proven RadioRouter/SRS/UDP7082
+protection. Classification is deterministic clause/alias matching; it does not
+use an LLM.
+
 ## Ownership drift
 
 The first ruleset detects fact-authority, STT, presentation, protected wording,
@@ -111,13 +136,20 @@ performance, evidence reuse, conflicts, gate and exact provenance pointers.
 The logical signature excludes timestamp and report path, so identical
 task/HEAD/index/rules produce the same logical result.
 
-## Regression rules in ruleset 1
+## Regression rules
 
 Ruleset 1 covers the required Yandex/Qwen differential, UDP7082 versus packet
 gap, superseded hard language modes, explicitly removed Whisper fallback,
 protected Phraseology ownership, the rejected 20–30 production-KB
 interpretation, manual callsign authority and duplicate SRS transport work.
 It also includes a positive bounded-test case and incomplete-history fail-safe.
+
+Ruleset 2 preserves those controls and adds exact negation/out-of-scope
+regressions. Windows-launcher safety constraints, `Do not add Whisper`,
+`Do not replace SpeechKit`, `Preserve Core-owned phraseology`, `Do not modify
+UDP7082` and `Do not change Qwen` no longer imply mutation. Positive and mixed
+controls continue to block a new or replacement radio transport and all other
+protected regressions.
 
 ## Privacy and limitations
 

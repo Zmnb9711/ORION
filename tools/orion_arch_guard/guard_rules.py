@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-AG3_RULESET_VERSION = "1"
+AG3_RULESET_VERSION = "2"
 
 # The values below were recovered from exact field-evidence archives and their
 # historical differential.  Boundaries remain explicit because the historical

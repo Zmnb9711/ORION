@@ -12,9 +12,11 @@ from tools.orion_arch_guard.cli import main
 from tools.orion_arch_guard.guard import (
     ArchitectureGate,
     ArchitectureGuard,
+    CapabilityIntent,
     GuardMode,
     PreflightInput,
 )
+from tools.orion_arch_guard.guard_rules import AG3_RULESET_VERSION
 
 HEAD = "a" * 40
 NOW = datetime(2026, 9, 2, 12, 34, 56, tzinfo=timezone.utc)
@@ -27,6 +29,7 @@ def _request(
     description: str = "",
     proposed: str = "",
     capabilities: tuple[str, ...] = (),
+    constraints: tuple[str, ...] = (),
 ) -> PreflightInput:
     return PreflightInput(
         mode=mode,
@@ -35,6 +38,7 @@ def _request(
         proposed_change=proposed,
         explicit_capabilities=capabilities,
         current_head=HEAD,
+        user_constraints=constraints,
     )
 
 
@@ -84,6 +88,135 @@ def test_standard_escalates_to_full_for_radio_ownership_change(tmp_path: Path) -
         report.result, "ownership_drift"
     )
     assert report.result["gate"] == ArchitectureGate.BLOCK.value
+
+
+def test_windows_launcher_negated_srs_constraints_do_not_change_radio_transport(
+    tmp_path: Path,
+) -> None:
+    report, _database = _run(
+        tmp_path,
+        _request(
+            "ORION Development Console Windows launch entry point",
+            description=(
+                "Provide a normal no-terminal Windows launch entry for the completed "
+                "dev-only Development Console, reusing its existing Tk UI and approved "
+                "ORION icon while preserving repository-current behavior and all "
+                "production lifecycle boundaries."
+            ),
+            proposed=(
+                "Evaluate and implement the smallest history-compatible Windows entry "
+                "mechanism, likely a repository-resolving pythonw wrapper plus "
+                "deterministic shortcut creation support, only if the Guard confirms it. "
+                "Do not freeze or package production ORION, do not duplicate the Console, "
+                "and do not start Core, Launcher, DCS, SRS, providers, or microphone."
+            ),
+            constraints=(
+                "Run from any working directory with a useful visible failure when "
+                "repository or development runtime is missing.",
+                "Normal launch must show one GUI window, use branding/orion.ico, and "
+                "require no terminal.",
+                "Prefer repository-current execution without frozen-executable rebuild "
+                "churn.",
+                "Any real shortcut mutation must be explicitly reported and remain easy "
+                "to remove or recreate.",
+                "Preserve all unrelated untracked/generated artifacts and the pending "
+                "unsaved checkpoint.",
+            ),
+        ),
+    )
+    result = report.result
+    assert "RADIO_TRANSPORT_CHANGED" not in _types(result, "ownership_drift")
+    assert "DUPLICATE_FIELD_PROVEN_RADIO_STACK" not in _types(result, "conflicts")
+    assert result["gate"] == ArchitectureGate.PASS.value
+    srs = next(
+        item for item in result["affected_capabilities"] if item["capability_id"] == "SRS"
+    )
+    assert CapabilityIntent.PROHIBITED_ACTION.value in srs["intents"]
+    assert srs["proposed_change"] is False
+
+
+@pytest.mark.parametrize(
+    ("title", "capability", "intent"),
+    (
+        ("Do not add Whisper.", "STT", CapabilityIntent.PROHIBITED_ACTION),
+        (
+            "Do not replace SpeechKit.",
+            "SPEECHKIT_STT",
+            CapabilityIntent.PROHIBITED_ACTION,
+        ),
+        (
+            "Preserve Core-owned phraseology.",
+            "PHRASEOLOGY",
+            CapabilityIntent.REQUIRED_PRESERVATION,
+        ),
+        ("Do not modify UDP7082.", "UDP7082", CapabilityIntent.PROHIBITED_ACTION),
+        ("Do not change Qwen.", "QWEN_PLANNER", CapabilityIntent.PROHIBITED_ACTION),
+    ),
+)
+def test_negated_capability_mentions_are_constraints_not_mutations(
+    tmp_path: Path,
+    title: str,
+    capability: str,
+    intent: CapabilityIntent,
+) -> None:
+    report, _database = _run(tmp_path, _request(title))
+    result = report.result
+    assert result["ownership_drift"] == []
+    assert result["conflicts"] == []
+    assert result["gate"] == ArchitectureGate.PASS.value
+    match = next(
+        item
+        for item in result["affected_capabilities"]
+        if item["capability_id"] == capability
+    )
+    assert intent.value in match["intents"]
+    assert match["proposed_change"] is False
+
+
+def test_task_intent_model_distinguishes_all_required_categories(tmp_path: Path) -> None:
+    report, _database = _run(
+        tmp_path,
+        _request(
+            "Create a Development Console launcher entry.",
+            description="Preserve existing RadioRouter ownership. Core is context only.",
+            proposed="Inspect Qwen in read-only mode.",
+            constraints=(
+                "SRS is out of scope.",
+                "Do not modify UDP7082.",
+            ),
+        ),
+    )
+    counts = report.result["task_intent"]["intent_counts"]
+    assert all(counts[intent.value] >= 1 for intent in CapabilityIntent)
+    assert report.result["gate"] == ArchitectureGate.PASS.value
+
+
+def test_positive_srs_transport_change_remains_blocked(tmp_path: Path) -> None:
+    report, _database = _run(
+        tmp_path,
+        _request("Build a new SRS transport for the next ATC feature."),
+    )
+    result = report.result
+    assert "RADIO_TRANSPORT_CHANGED" in _types(result, "ownership_drift")
+    assert "DUPLICATE_FIELD_PROVEN_RADIO_STACK" in _types(result, "conflicts")
+    assert result["gate"] == ArchitectureGate.BLOCK.value
+    srs = next(
+        item for item in result["affected_capabilities"] if item["capability_id"] == "SRS"
+    )
+    assert srs["proposed_change"] is True
+
+
+def test_positive_radio_transport_change_is_not_hidden_by_negated_srs_clause(
+    tmp_path: Path,
+) -> None:
+    report, _database = _run(
+        tmp_path,
+        _request("Replace radio transport, but do not change SRS."),
+    )
+    result = report.result
+    assert "RADIO_TRANSPORT_CHANGED" in _types(result, "ownership_drift")
+    assert "DUPLICATE_FIELD_PROVEN_RADIO_STACK" in _types(result, "conflicts")
+    assert result["gate"] == ArchitectureGate.BLOCK.value
 
 
 def test_yandex_qwen_previous_best_requires_user_decision(tmp_path: Path) -> None:
@@ -218,7 +351,11 @@ def test_report_is_deterministic_machine_readable_private_and_persisted(
     assert "DO_NOT_PERSIST" not in encoded
     assert "[REDACTED_CREDENTIAL]" in encoded
     parsed = json.loads(encoded)
-    assert parsed["report_id"] == "AG-20260902-123456-" + parsed["report_id"].split("-")[3] + "-aaaaaaa-r1"
+    assert parsed["report_id"] == (
+        "AG-20260902-123456-"
+        + parsed["report_id"].split("-")[3]
+        + f"-aaaaaaa-r{AG3_RULESET_VERSION}"
+    )
     assert parsed["primary_evidence"]
     connection = sqlite3.connect(database)
     try:
@@ -253,5 +390,5 @@ def test_preflight_cli_returns_machine_json(tmp_path: Path, capsys) -> None:  # 
     )
     output = json.loads(capsys.readouterr().out)
     assert output["gate"] == ArchitectureGate.PASS.value
-    assert output["ruleset_version"] == "1"
+    assert output["ruleset_version"] == AG3_RULESET_VERSION
     assert output["primary_evidence"]
