@@ -234,6 +234,32 @@ def test_guard_index_and_d73_are_verified_read_only(tmp_path: Path) -> None:
     assert before == after
 
 
+def test_required_preflight_and_latest_guard_are_distinct(tmp_path: Path) -> None:
+    context = _context(tmp_path)
+    _guard_fixture(context)
+    latest_id = "AG-20260902-210000-latest"
+    latest = context.guard_root / "reports" / f"{latest_id}.json"
+    latest.write_text(
+        json.dumps(
+            {
+                "report_id": latest_id,
+                "gate": "PASS",
+                "generated_at_utc": (NOW + timedelta(hours=1)).isoformat(),
+                "index_signature": "INDEX-LATEST",
+                "logical_signature": "LOGICAL-LATEST",
+                "decisions": {"CURRENT": [{"decision_id": "D73"}]},
+            }
+        ),
+        encoding="utf-8",
+    )
+    latest.touch()
+    observation = collect_history(context)
+    assert observation.details["required_report_id"] == context.architecture_report_id
+    assert observation.details["required_report_gate"] == "PASS"
+    assert observation.details["last_guard_report_id"] == latest_id
+    assert observation.details["index_signature"] == "INDEX-LATEST"
+
+
 def test_guard_fingerprint_change_invalidates_verified_state(tmp_path: Path) -> None:
     context = _context(tmp_path)
     _guard_fixture(context)

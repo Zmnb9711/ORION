@@ -191,10 +191,13 @@ def collect_history(context: VerificationContext) -> VerificationObservation:
     report_root = context.guard_root / "reports"
     required_report_path = report_root / f"{context.architecture_report_id}.json"
     try:
-        report_path = required_report_path if required_report_path.is_file() else _latest_report_file(report_root)
-        report_payload: dict[str, Any] = {}
-        if report_path is not None:
-            report_payload = json.loads(report_path.read_text(encoding="utf-8"))
+        latest_report_path = _latest_report_file(report_root)
+        required_payload: dict[str, Any] = {}
+        latest_payload: dict[str, Any] = {}
+        if required_report_path.is_file():
+            required_payload = json.loads(required_report_path.read_text(encoding="utf-8"))
+        if latest_report_path is not None:
+            latest_payload = json.loads(latest_report_path.read_text(encoding="utf-8"))
 
         reasons: list[str] = []
         index_details: dict[str, Any] = {}
@@ -249,28 +252,29 @@ def collect_history(context: VerificationContext) -> VerificationObservation:
         if manifest_fingerprint is None:
             reasons.append("ag0_manifest_missing")
         required_found = required_report_path.is_file()
-        report_gate = str(report_payload.get("gate") or "UNKNOWN")
-        report_decisions = report_payload.get("decisions") or {}
+        required_gate = str(required_payload.get("gate") or "UNKNOWN")
+        report_decisions = required_payload.get("decisions") or {}
         report_d73 = any(
             isinstance(item, dict) and item.get("decision_id") == "D73"
             for item in report_decisions.get("CURRENT", [])
         )
-        if not required_found or report_gate != "PASS" or not report_d73:
+        if not required_found or required_gate != "PASS" or not report_d73:
             reasons.append("required_ag3_report_not_verified")
         details = {
             "guard_operational": index_path.is_file() and required_found,
             "required_report_id": context.architecture_report_id,
             "required_report_found": required_found,
-            "last_guard_report_id": report_payload.get("report_id"),
-            "last_guard_gate": report_gate,
-            "last_historical_verification": report_payload.get("generated_at_utc"),
+            "required_report_gate": required_gate,
+            "last_guard_report_id": latest_payload.get("report_id"),
+            "last_guard_gate": str(latest_payload.get("gate") or "UNKNOWN"),
+            "last_historical_verification": latest_payload.get("generated_at_utc"),
             "ag0_manifest_found": manifest_path.is_file(),
             "ag0_manifest_fingerprint": manifest_fingerprint,
             "ag1_index_found": index_path.is_file(),
             "ag2_graph_verified": bool(index_details.get("graph_verified")),
             "ag3_ruleset_version": AG3_RULESET_VERSION,
-            "index_signature": report_payload.get("index_signature"),
-            "logical_signature": report_payload.get("logical_signature"),
+            "index_signature": latest_payload.get("index_signature"),
+            "logical_signature": latest_payload.get("logical_signature"),
             "d73_visible_in_report": report_d73,
             **index_details,
             "partial_reasons": reasons,

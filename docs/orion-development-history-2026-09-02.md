@@ -608,3 +608,8 @@ The FULL post-implementation Guard report is
 approved Console scope is Phase 2: visible Full/Task Recall, immutable
 checkpoint history and previewable prompt generation; direct sending and the
 graphical roadmap remain deferred.
+
+The final closure re-check after separating the required architecture preflight
+from the newest Guard status is `AG-20260902-194731-34d60d89-438577b-r1`:
+FULL, `COMPLETE`, `PASS`, with zero conflicts, zero ownership drift and no user
+decision required.
