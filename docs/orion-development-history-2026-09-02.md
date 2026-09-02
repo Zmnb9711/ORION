@@ -618,3 +618,46 @@ with zero conflicts, zero ownership drift and no user decision required; it
 confirms that transient SQLite sidecars cannot make verification invalidate
 itself while the dedicated History signature remains authoritative for Guard
 index changes.
+
+## 21. Development Console Phase 2 development memory and visible prompts
+
+Phase 2 adds a private, local development-memory layer to the separate
+Development Console. The approved architecture was grounded before
+implementation by FULL report `AG-20260902-195734-840e21f7-c8aa825-r1` at
+starting HEAD `c8aa8253520e22fe0e514bad041b1f4bcfabd15a`; its history coverage
+was `COMPLETE`, its gate was `PASS`, and it required no user decision.
+
+Typed, create-once `DevelopmentCheckpoint` and `PromptRecord` documents now
+live only under `%LOCALAPPDATA%\ORION\development\console`. They carry bounded
+source references and fingerprints, while a rebuildable index is explicitly
+non-authoritative. Checkpoint history can compare two records semantically and
+surface stage, decision, proof, known-problem, next-step and Git transitions
+without treating a changed HEAD alone as a meaningful development change.
+
+The Console now visibly generates complete `FULL_RECALL`, `TASK_RECALL`,
+`CONTINUE` and `CHECKPOINT_RECOVERY` prompts. Task Recall runs an actual
+Architecture Guard check and embeds its concrete report identity. Prompt text
+is previewed in full, copied or exported only by explicit user action, and
+retained in private prompt history; direct external sending remains disabled.
+The Launcher-family UI adds Overview, History, Guard, Evidence, System and
+Future Roadmap views while preserving the Phase 1 verification truth domains.
+The roadmap remains deliberately informational: the graphical live roadmap is
+the Phase 3 boundary.
+
+The real self-check retained checkpoint `CP-20260902-202904-12498c06`, prompt
+records including `PR-20260902-203609-631300b5`, Task Recall Guard report
+`AG-20260902-203609-574d1867-c8aa825-r1`, and verification report
+`OV-20260902-203950-c8aa825-19eac74a`. It reopened the private checkpoint in
+the UI, exercised semantic history comparison and visible recall/continuation
+prompts, and confirmed that direct send is unavailable. No product ORION, DCS,
+SRS, microphone, audio or provider process was launched, and no network access
+was performed.
+
+The Phase 2 focused suite passed 23 tests and the Phase 1 regression suite
+passed 24 tests; all 47 AG-0/1/2/3 regression tests also passed. Scoped Ruff,
+Pyright, compileall, whitespace and privacy/credential checks passed. The FULL
+post-implementation report is
+`AG-20260902-204116-b0698a28-c8aa825-r1`: history coverage `COMPLETE`, gate
+`PASS`, zero conflicts, zero ownership drift and no user decision required.
+Phase 2 changes only development tooling, tests and documentation; production
+ORION runtime, product packaging and installer behavior remain unchanged.

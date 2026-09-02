@@ -10,7 +10,7 @@ from tools.orion_development_console.ui import run_ui
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="ORION Development Console Phase 1")
+    parser = argparse.ArgumentParser(description="ORION Development Console Phase 2")
     parser.add_argument("command", choices=("verify", "ui"), nargs="?", default="ui")
     parser.add_argument("--repository", type=Path, default=Path.cwd())
     parser.add_argument("--json", action="store_true")
