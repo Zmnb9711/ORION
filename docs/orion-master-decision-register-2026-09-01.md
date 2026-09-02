@@ -6,7 +6,9 @@ This register is an inseparable part of
 `docs/orion-master-architecture-checkpoint-2026-09-01.md`. It records the 70
 grouped decisions recovered from 26 ORION conversations and 6,602 inspected
 messages, then cross-checked against Git, ADRs, current code, tests and field
-evidence.
+evidence. Stable decisions made after that reconstruction continue from D71;
+the historical D01-D70 identifiers and reconstruction counts are never
+renumbered.
 
 Counts preserved from the complete historical reconstruction:
 
@@ -97,6 +99,8 @@ proposals remain proposals unless explicitly accepted or clearly adopted.
 | D68 | 2026-09-01 | MODEL C | Safely recognized pure operational request bypasses Qwen | User/recovery | Explicit | `6f6f2f1` | Pure takeoff route | FIELD_PROVEN | Mandatory-Qwen experiment | Git, field evidence | VERY_HIGH |
 | D69 | 2026-09-01 | Profile UI | Four-profile selection, persistence, details/update/rollback | User | Explicit historical intent | `01a499e` | Current Launcher and API | IMPLEMENTED INFRASTRUCTURE | Old free-language menu | Git, code | VERY_HIGH |
 | D70 | Future | VR | Native/OpenXR status overlay must degrade gracefully | User/assistant | Deferred | No production overlay | Missing/deferred | DEFERRED | — | Archive | HIGH |
+| D71 | 2026-09-02 | Development process | Previous Best Solution Gate: before architecture implementation search prior approved decisions, implementations, field-proven solutions and reusable mechanisms; a disconnected historical implementation is not automatically missing | User | Explicit | AG-0 source discovery foundation | Current development policy | APPROVED / AG-0 IMPLEMENTED | Current-HEAD-only design | User task, Guard design, Git | VERY_HIGH |
+| D72 | 2026-09-02 | Informational UX | Normal informational responses remain naturally AI-formulated; canned/template phrases are not the normal informational UX, while protected operational wording remains Core-owned | User | Explicit | Architecture Guard hard constraint | Current architecture policy | APPROVED | Canned informational default | User task, Master boundary | VERY_HIGH |
 
 ## Durable negative register
 

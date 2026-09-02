@@ -449,3 +449,27 @@ ownership boundaries are unchanged.
 
 The implementation is not field-proven until a separate live-DCS, physical-SRS
 test confirms that the spoken aircraft identity exactly matches fresh Core truth.
+
+## 15. Architecture Guard AG-0 source-discovery foundation
+
+The user approved the Previous Best Solution Gate as durable decision D71.
+Before an architecture implementation, ORION development must search prior
+approved decisions, historical and current implementations, field-proven
+solutions and reusable mechanisms. The preferred progression is `RECONNECT →
+ADAPT → EXTEND → REFACTOR → REPLACE`; absence from current HEAD alone does not
+prove that a capability is historically missing.
+
+The companion informational-UX constraint is recorded as D72: ordinary
+informational answers should remain naturally AI-formulated. Canned/template
+phrases are not the normal informational UX. This does not alter the existing
+Core-owned protected operational phraseology boundary.
+
+AG-0 adds repository-local development tooling under
+`tools/orion_arch_guard/`. It discovers and fingerprints configurable L0/L1/L2
+navigation sources and writes a private JSON manifest below the user's local
+ORION development-data directory. Primary ChatGPT/Codex archives, Evidence,
+runtime logs and release trees remain read-only and outside Git.
+
+AG-0 deliberately does not implement SQLite/FTS, semantic retrieval,
+capability/decision ingestion, Previous Best comparisons or Architecture Gate
+rules. Those begin with AG-1 and later stages.
