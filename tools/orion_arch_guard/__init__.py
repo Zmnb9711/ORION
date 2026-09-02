@@ -1,4 +1,4 @@
-"""ORION Architecture Guard AG-0 source discovery."""
+"""ORION Architecture Guard source discovery and derived history index."""
 
 from tools.orion_arch_guard.models import (
     ChangeStatus,
@@ -19,3 +19,4 @@ __all__ = [
 ]
 
 AG0_VERSION = "1"
+AG1_VERSION = "1"

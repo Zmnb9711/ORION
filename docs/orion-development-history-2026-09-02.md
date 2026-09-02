@@ -473,3 +473,22 @@ runtime logs and release trees remain read-only and outside Git.
 AG-0 deliberately does not implement SQLite/FTS, semantic retrieval,
 capability/decision ingestion, Previous Best comparisons or Architecture Gate
 rules. Those begin with AG-1 and later stages.
+
+## 16. Architecture Guard AG-1 structured history index
+
+AG-1 adds a private SQLite index at
+`%LOCALAPPDATA%\ORION\development\architecture-guard\index.sqlite3`. It reuses
+AG-0 source identities and fingerprints, preserves source snapshots and
+multiple locations, and creates deterministic addressable items for ChatGPT
+conversation trees, Codex JSONL, Git `--all`, bounded Evidence/release/runtime
+metadata, project-document sections, and Decision Register rows D01-D72.
+
+The index is derived and non-authoritative. L0 sources remain read-only; every
+item carries an exact structured L0 pointer. Private text uses only a bounded,
+redacted preview plus a content hash. Full bodies, raw logs, Authorization
+headers, credentials, and audio are not stored. FTS5 and all semantic/vector,
+capability, Previous Best, and PASS/BLOCK behavior remain deferred.
+
+AG-1 is limited to exact source identity, chronology, parent/child and
+neighbor/range retrieval. The next stage is `AG-2 — CAPABILITY TAXONOMY +
+DECISION/IMPLEMENTATION/MECHANISM GRAPH`.

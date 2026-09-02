@@ -1,6 +1,7 @@
 {
   "repository_root": "C:\\path\\to\\ORION",
   "output_path": "C:\\Users\\you\\AppData\\Local\\ORION\\development\\architecture-guard\\source-manifest.json",
+  "index_path": "C:\\Users\\you\\AppData\\Local\\ORION\\development\\architecture-guard\\index.sqlite3",
   "chatgpt_archive_roots": [
     "C:\\Users\\you\\Downloads"
   ],

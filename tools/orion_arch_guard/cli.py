@@ -4,6 +4,7 @@ import argparse
 import json
 import sys
 from collections import Counter
+from dataclasses import asdict
 from pathlib import Path
 from typing import Sequence
 
@@ -18,12 +19,16 @@ from tools.orion_arch_guard.manifest import (
     write_manifest,
 )
 from tools.orion_arch_guard.models import ChangeStatus, Manifest, SourceChange
+from tools.orion_arch_guard.indexing import index_manifest
+from tools.orion_arch_guard.queries import HistoryIndex
+from tools.orion_arch_guard.fingerprints import sha256_file
+from tools.orion_arch_guard.models import SourceType
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m tools.orion_arch_guard",
-        description="ORION Architecture Guard AG-0 source discovery",
+        description="ORION Architecture Guard source discovery and derived index",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
     for name in ("discover", "verify"):
@@ -38,22 +43,41 @@ def _parser() -> argparse.ArgumentParser:
             help="Override configured ChatGPT archive roots; repeatable",
         )
     subparsers.choices["verify"].add_argument("--manifest", type=Path)
+    index = subparsers.add_parser("index")
+    index.add_argument("--config", type=Path)
+    index.add_argument("--repository", type=Path)
+    index.add_argument("--manifest", type=Path)
+    index.add_argument("--database", type=Path)
+    status = subparsers.add_parser("status")
+    status.add_argument("--database", type=Path)
+    lookup = subparsers.add_parser("lookup")
+    lookup.add_argument("--database", type=Path)
+    selector = lookup.add_mutually_exclusive_group(required=True)
+    selector.add_argument("--item")
+    selector.add_argument("--source")
+    selector.add_argument("--native")
+    lookup.add_argument("--item-type")
+    lookup.add_argument("--neighbors", action="store_true")
+    lookup.add_argument("--range-before", type=int, default=0)
+    lookup.add_argument("--range-after", type=int, default=0)
     return parser
 
 
 def _load_config(args: argparse.Namespace, previous: Manifest | None = None) -> SourceConfig:
-    repository = args.repository.absolute() if args.repository else None
-    if args.config:
-        config = SourceConfig.from_json(args.config, repository)
+    repository_arg = getattr(args, "repository", None)
+    repository = repository_arg.absolute() if repository_arg else None
+    config_arg = getattr(args, "config", None)
+    if config_arg:
+        config = SourceConfig.from_json(config_arg, repository)
     elif previous is not None:
         config = SourceConfig.from_mapping(previous.discovery_config)
     else:
         config = SourceConfig.defaults(repository)
     return config.with_overrides(
         repository_root=repository,
-        output_path=args.output,
+        output_path=getattr(args, "output", None),
         chatgpt_archive_roots=(
-            tuple(args.chatgpt_root) if args.chatgpt_root else None
+            tuple(args.chatgpt_root) if getattr(args, "chatgpt_root", None) else None
         ),
     )
 
@@ -145,10 +169,119 @@ def verify_command(args: argparse.Namespace) -> int:
     return 1 if differences else 0
 
 
+_MUTABLE_INDEX_TYPES = {
+    SourceType.CODEX_ROLLOUT,
+    SourceType.CODEX_HISTORY_ROOT,
+    SourceType.RUNTIME_ARTIFACT,
+    SourceType.RUNTIME_ROOT,
+    SourceType.GIT_REPOSITORY,
+    SourceType.CHATGPT_ARCHIVE_ROOT,
+    SourceType.EVIDENCE_ROOT,
+    SourceType.RELEASE_ROOT,
+}
+
+
+def index_command(args: argparse.Namespace) -> int:
+    defaults = SourceConfig.defaults(args.repository)
+    initial_config = (
+        SourceConfig.from_json(args.config, args.repository)
+        if args.config
+        else defaults
+    )
+    manifest_path = args.manifest or initial_config.output_path
+    if not manifest_path.is_file():
+        print(f"manifest_missing={manifest_path}", file=sys.stderr)
+        return 2
+    stored = read_manifest(manifest_path)
+    config = _load_config(args, stored)
+    current_sources = discover_all(config)
+    changes = compare_sources(stored.sources, current_sources)
+    _print_changes(changes, verbose=True)
+    critical = [
+        change
+        for change in changes
+        if change.status is not ChangeStatus.UNCHANGED
+        and change.source_type not in _MUTABLE_INDEX_TYPES
+    ]
+    if critical:
+        print(
+            "index_blocked=immutable_or_architecture_critical_source_changed; "
+            "run discover and review the differential first",
+            file=sys.stderr,
+        )
+        return 3
+    effective = Manifest(
+        schema_version=stored.schema_version,
+        tool_version=stored.tool_version,
+        generated_at_utc=stored.generated_at_utc,
+        repository_root=stored.repository_root,
+        discovery_config=stored.discovery_config,
+        previous_manifest_sha256=stored.previous_manifest_sha256,
+        sources=current_sources,
+    )
+    database = (args.database or config.resolved_index_path).absolute()
+    result = index_manifest(
+        effective,
+        database,
+        manifest_sha256=sha256_file(manifest_path),
+    )
+    print("index_result=" + json.dumps(asdict(result), sort_keys=True))
+    return 1 if result.sources_failed else 0
+
+
+def _database_path(value: Path | None) -> Path:
+    return (value or SourceConfig.defaults().resolved_index_path).absolute()
+
+
+def status_command(args: argparse.Namespace) -> int:
+    database = _database_path(args.database)
+    if not database.is_file():
+        print(f"index_missing={database}", file=sys.stderr)
+        return 2
+    index = HistoryIndex(database)
+    try:
+        print(json.dumps(index.status(), ensure_ascii=False, indent=2, sort_keys=True))
+    finally:
+        index.close()
+    return 0
+
+
+def lookup_command(args: argparse.Namespace) -> int:
+    database = _database_path(args.database)
+    if not database.is_file():
+        print(f"index_missing={database}", file=sys.stderr)
+        return 2
+    index = HistoryIndex(database)
+    try:
+        if args.item:
+            if args.neighbors:
+                result: object = index.neighbors(args.item)
+            elif args.range_before or args.range_after:
+                result = index.thread_range(
+                    args.item, before=args.range_before, after=args.range_after
+                )
+            else:
+                result = index.get_item(args.item)
+        elif args.source:
+            result = index.get_source(args.source)
+        else:
+            result = index.find_native(args.native, item_type=args.item_type)
+        print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+        return 0 if result else 1
+    finally:
+        index.close()
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     if args.command == "discover":
         return discover_command(args)
     if args.command == "verify":
         return verify_command(args)
+    if args.command == "index":
+        return index_command(args)
+    if args.command == "status":
+        return status_command(args)
+    if args.command == "lookup":
+        return lookup_command(args)
     raise AssertionError(f"unsupported command: {args.command}")

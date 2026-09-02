@@ -36,6 +36,7 @@ class SourceConfig:
     evidence_roots: tuple[Path, ...]
     runtime_log_roots: tuple[Path, ...]
     release_roots: tuple[Path, ...]
+    index_path: Path | None = None
 
     @classmethod
     def defaults(cls, repository_root: Path | None = None) -> SourceConfig:
@@ -50,6 +51,7 @@ class SourceConfig:
         return cls(
             repository_root=repo,
             output_path=guard_root / "source-manifest.json",
+            index_path=guard_root / "index.sqlite3",
             chatgpt_archive_roots=(user_home / "Downloads",),
             codex_history_roots=(codex_home / "sessions",),
             evidence_roots=(orion_runtime / "test-evidence",),
@@ -83,9 +85,13 @@ class SourceConfig:
             str(payload.get("repository_root", current.repository_root))
         ).expanduser().absolute()
         output = Path(str(payload.get("output_path", current.output_path))).expanduser()
+        index_path = Path(
+            str(payload.get("index_path", current.resolved_index_path))
+        ).expanduser()
         return cls(
             repository_root=repository,
             output_path=output.absolute(),
+            index_path=index_path.absolute(),
             chatgpt_archive_roots=paths(
                 "chatgpt_archive_roots", current.chatgpt_archive_roots
             ),
@@ -104,6 +110,7 @@ class SourceConfig:
         *,
         repository_root: Path | None = None,
         output_path: Path | None = None,
+        index_path: Path | None = None,
         chatgpt_archive_roots: tuple[Path, ...] | None = None,
     ) -> SourceConfig:
         return replace(
@@ -116,6 +123,9 @@ class SourceConfig:
             output_path=(
                 output_path.absolute() if output_path is not None else self.output_path
             ),
+            index_path=(
+                index_path.absolute() if index_path is not None else self.index_path
+            ),
             chatgpt_archive_roots=(
                 _unique_paths(chatgpt_archive_roots)
                 if chatgpt_archive_roots is not None
@@ -127,9 +137,14 @@ class SourceConfig:
         return {
             "repository_root": str(self.repository_root),
             "output_path": str(self.output_path),
+            "index_path": str(self.resolved_index_path),
             "chatgpt_archive_roots": [str(path) for path in self.chatgpt_archive_roots],
             "codex_history_roots": [str(path) for path in self.codex_history_roots],
             "evidence_roots": [str(path) for path in self.evidence_roots],
             "runtime_log_roots": [str(path) for path in self.runtime_log_roots],
             "release_roots": [str(path) for path in self.release_roots],
         }
+
+    @property
+    def resolved_index_path(self) -> Path:
+        return self.index_path or self.output_path.with_name("index.sqlite3")
