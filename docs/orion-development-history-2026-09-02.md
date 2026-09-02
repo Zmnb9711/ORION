@@ -754,3 +754,45 @@ Architecture Guard, its focused tests and Guard/development documentation. The
 Development Console, production ORION, Launcher, SRS, RadioRouter, DCS,
 providers, installer and packaging remain unchanged. The Windows launcher is
 deliberately not implemented in this bugfix task.
+
+## 24. Development Console Windows launch entry
+
+The bounded implementation was approved by FULL preflight
+`AG-20260902-214845-6986cd50-e8e13e6-r2` at starting HEAD
+`e8e13e6c7de8479f562761661824aed91aad60b9`: history coverage `COMPLETE`, gate
+`PASS`, zero conflicts, zero ownership drift and no user decision required.
+
+The existing Development Console now has a normal repository-current Windows
+entry without a frozen executable or packaging framework. The Desktop shortcut
+`C:\Users\Алексей\Desktop\ORION Development Console.lnk` targets the existing
+checkout `.venv\Scripts\pythonw.exe`, passes the absolute dev-only
+`windows_entry.py` and checkout root, uses `branding/orion.ico`, and opens no
+terminal. A deterministic checked-in PowerShell creator validates every path
+before using native Windows shortcut COM; focused tests create only temporary
+shortcuts and never alter the actual Desktop.
+
+The Python entry resolves and validates the checkout independently of current
+working directory, validates the supported project venv, adds only that
+checkout to the import path, and calls the existing Console `run_ui` seam. A
+missing/incomplete repository, missing runtime, or launch exception produces a
+visible native error and never clones, installs, repairs, elevates or selects a
+global fallback interpreter. No single-instance framework was introduced.
+
+The real shortcut self-check first exposed `No module named 'tools'` in the
+required visible error dialog, proving failure visibility. The entry-root
+resolution was corrected, its regression was added, and the same shortcut then
+opened one GUI titled `ORION Development Console` with the ORION icon and
+existing Launcher-family design. OVERVIEW, HISTORY, GUARD, EVIDENCE, SYSTEM,
+ROADMAP and all required actions were visibly present. The final checkpoint
+remained user-controlled and was not saved.
+
+Before/after process evidence retained the same pre-existing SRS client/server
+PIDs and added only the repository `pythonw` Console bootstrap plus its
+base-runtime child. No production Launcher, Core, DCS, SRS, provider,
+microphone or audio worker was started by the Console. Production `orion/**`,
+installer and packaging are unchanged. FULL post-implementation report
+`AG-20260902-220225-8f54461a-e8e13e6-r2` is `COMPLETE` / `PASS`, with zero
+conflicts, zero ownership drift and no user decision required. Focused Windows
+entry tests passed 8 cases; Phase 1 passed 24, Phase 2 passed 23, Phase 3 passed
+36, and all 56 Guard regressions passed. Scoped Ruff, Pyright, compileall,
+PowerShell syntax, whitespace, privacy and scope checks passed.
