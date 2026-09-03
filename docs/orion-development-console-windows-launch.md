@@ -51,6 +51,46 @@ There is no new single-instance framework. Repeated double-clicks may create
 more than one Console window, matching the existing Console's lack of a
 single-instance contract.
 
+## Explorer Git context bugfix
+
+The Windows entry always propagated the authoritative checkout root correctly,
+but the first real `ПРОВЕРИТЬ ВСЁ` run exposed a separate executable-resolution
+boundary. A terminal/self-check inherited Codex's bundled Git on `PATH`, while
+Explorer inherited the normal user and machine environment, where `git.exe`
+was not on `PATH`. The Git collector therefore raised `FileNotFoundError`
+before it could inspect the valid checkout. This produced
+`OV-20260903-152930-unknown-6a7c9972`, Git `UNKNOWN`, and an overall `ERROR`.
+
+The Console now resolves an already-installed Git deterministically: current
+`PATH`, then the standard Program Files Git locations, then the newest bundled
+Git under GitHub Desktop. It does not install, repair, copy or mutate Git or
+`PATH`. All Git operations continue to use the single explicit repository root
+carried by `VerificationContext`.
+
+The same bugfix removes the stale Overview dependency on the last immutable
+Phase 2 checkpoint. Current Development Position and checkpoint preview are now
+derived from the current Roadmap node and its `APPROVED_NEXT_STEP` node. The
+last saved checkpoint is still displayed and remains authoritative as a saved
+record, but it no longer misrepresents current derived position. The preview
+uses known Git, Guard, Roadmap, verification and Development History facts;
+only the existing explicit `SAVE CHECKPOINT` confirmation can persist it.
+
+Real shortcut verification after the fix produced
+`OV-20260903-153244-bfb3a96-feaf3738` on branch
+`dev/adr004-post-389` at
+`bfb3a96a7091de1358377f443fab53ae63c6da1e`. Git was `CHANGED`, reflecting the
+intended uncommitted bugfix, rather than `UNKNOWN`; the overall local state was
+therefore `CHANGED`, not repository-context `ERROR`. The visible Development
+Position was `Full Development Console checkpoint · READY FOR USER SAVE`, and
+the approved next step was `Low-latency natural informational presentation`.
+Candidate `CP-20260903-153314-6a0bd921` was inspected in `CHECKPOINT PREVIEW ·
+NOT SAVED` and cancelled. The only saved checkpoint remains
+`CP-20260902-202904-12498c06`.
+
+FULL post-implementation report
+`AG-20260903-153713-14d044d4-bfb3a96-r2` is `COMPLETE` / `PASS`, with zero
+conflicts, zero ownership drift and no user decision required.
+
 ## Actual development-computer entry
 
 The validated entry created for this checkout is:

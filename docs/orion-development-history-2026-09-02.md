@@ -796,3 +796,55 @@ conflicts, zero ownership drift and no user decision required. Focused Windows
 entry tests passed 8 cases; Phase 1 passed 24, Phase 2 passed 23, Phase 3 passed
 36, and all 56 Guard regressions passed. Scoped Ruff, Pyright, compileall,
 PowerShell syntax, whitespace, privacy and scope checks passed.
+
+## 25. Development Console Windows-launch verification context bugfix
+
+The narrow bugfix was grounded by FULL preflight
+`AG-20260903-152146-a4d1c659-bfb3a96-r2` at starting HEAD
+`bfb3a96a7091de1358377f443fab53ae63c6da1e`: history coverage `COMPLETE`, gate
+`PASS`, zero conflicts, zero ownership drift and no user decision required.
+
+The actual Desktop shortcut and Explorer environment reproduced the failure as
+`OV-20260903-152930-unknown-6a7c9972`. Its Git observation failed with
+`FileNotFoundError: [WinError 2]` before repository inspection, leaving
+`repository_head=null`, Git `UNKNOWN`, and overall `ERROR`. The explicit
+repository argument was intact through the shortcut, `windows_entry.py`,
+`run_ui`, `VerificationContext` and `VerificationEngine`. Direct tests had
+passed only because the Codex terminal process inherited a bundled Git on its
+private `PATH`; the normal Explorer user/machine environment did not contain
+Git, although GitHub Desktop carried a usable embedded installation.
+
+The dev-only Console now resolves an existing Git deterministically from
+`PATH`, standard Program Files Git, or the newest GitHub Desktop embedded Git.
+It performs no installation, repair or environment mutation. The repository
+root remains the one authoritative explicit root for every Git call.
+
+The stale Overview had a different cause: it rendered development stage and
+approved next step only from immutable checkpoint
+`CP-20260902-202904-12498c06`, which correctly records Phase 2 but was never
+intended to be rewritten. Overview and checkpoint preview now derive current
+semantic position from the existing Roadmap snapshot model. They resolve
+`planned:full-development-console-checkpoint` as `READY_FOR_USER_SAVE` and
+`planned:low-latency-natural-informational-presentation` as the
+`APPROVED_NEXT_STEP`. The preview no longer asks the user to retype known
+technical state; persistence still requires the explicit existing Save action.
+
+The post-fix real shortcut run produced
+`OV-20260903-153244-bfb3a96-feaf3738` for `dev/adr004-post-389` at
+`bfb3a96a7091de1358377f443fab53ae63c6da1e`. Git was `CHANGED` because the
+bugfix was intentionally uncommitted during proof, not `UNKNOWN`; the local
+state was `CHANGED`, not `ERROR`. Overview showed `Full Development Console
+checkpoint · READY FOR USER SAVE` and approved next step `Low-latency natural
+informational presentation`. Candidate `CP-20260903-153314-6a0bd921` was
+visibly inspected in `CHECKPOINT PREVIEW · NOT SAVED` and cancelled. No new
+checkpoint was persisted.
+
+This task changes only Development Console tooling, tests and documentation.
+Production `orion/**`, Architecture Guard implementation, Launcher/Core,
+installer and packaging are unchanged. The Console verification performed no
+network access and launched no product process. DCS, SRS, providers and
+microphone were not started.
+
+FULL post-implementation report
+`AG-20260903-153713-14d044d4-bfb3a96-r2` is `COMPLETE` / `PASS`, with zero
+conflicts, zero ownership drift and no user decision required.

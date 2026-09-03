@@ -18,7 +18,7 @@ from tools.orion_development_console.collectors import (
     collect_logs_and_evidence,
     collect_srs,
 )
-from tools.orion_development_console.context import VerificationContext
+from tools.orion_development_console.context import VerificationContext, resolve_git_executable
 from tools.orion_development_console.engine import (
     VerificationEngine,
     age_observation,
@@ -37,6 +37,26 @@ from tools.orion_development_console.store import VerificationReportStore
 
 NOW = datetime(2026, 9, 2, 20, 0, tzinfo=UTC)
 HEAD = "1d4e0cbc299c8e2dd3db041bec10099b6172f68c"
+
+
+def test_git_resolution_uses_latest_github_desktop_when_explorer_path_has_no_git(
+    tmp_path: Path,
+) -> None:
+    older = tmp_path / "GitHubDesktop" / "app-3.9.0" / "resources" / "app" / "git" / "cmd" / "git.exe"
+    newer = tmp_path / "GitHubDesktop" / "app-3.10.0" / "resources" / "app" / "git" / "cmd" / "git.exe"
+    older.parent.mkdir(parents=True)
+    newer.parent.mkdir(parents=True)
+    older.write_bytes(b"git")
+    newer.write_bytes(b"git")
+
+    resolved = resolve_git_executable({"PATH": "", "LOCALAPPDATA": str(tmp_path)})
+
+    assert resolved == newer.resolve()
+
+
+def test_git_resolution_fails_visibly_without_supported_installation(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError, match="Git executable is unavailable"):
+        resolve_git_executable({"PATH": "", "LOCALAPPDATA": str(tmp_path)})
 
 
 class FakeGit:

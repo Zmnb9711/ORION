@@ -152,16 +152,18 @@ class DevelopmentConsoleApp:
 
     def _page_overview(self) -> None:
         checkpoint = self.memory.latest_checkpoint()
+        position = self.roadmap_service.development_position()
         prompt = self.memory.latest_prompt()
         git = self.memory.current_git()
         evidence = self.report.observation("evidence") if self.report else None
-        stage = checkpoint.development_stage if checkpoint else "NOT RECORDED"
-        next_step = checkpoint.approved_next_step if checkpoint and checkpoint.approved_next_step else "USER CONFIRMATION REQUIRED"
+        stage = position.checkpoint_stage
+        next_step = position.approved_next_step or "USER CONFIRMATION REQUIRED"
         hero = ttk.Frame(self.content, style="CardAlt.TFrame", padding=22)
         hero.pack(fill=X)
         ttk.Label(hero, text="DEVELOPMENT POSITION", style="CardAltTitle.TLabel").pack(anchor="w")
-        ttk.Label(hero, text=stage, style="Hero.TLabel").pack(anchor="w", pady=(8, 3))
+        ttk.Label(hero, text=stage.upper(), style="Hero.TLabel").pack(anchor="w", pady=(8, 3))
         ttk.Label(hero, text=f"Approved next step: {next_step}", style="HeroMuted.TLabel", wraplength=780, justify="left").pack(anchor="w")
+        ttk.Label(hero, text=f"Derived Roadmap position · {position.current_node_id}", style="HeroMuted.TLabel", wraplength=780, justify="left").pack(anchor="w", pady=(3, 0))
         actions = ttk.Frame(hero, style="CardAlt.TFrame")
         actions.pack(fill=X, pady=(18, 0))
         for caption, command, primary in (
@@ -309,14 +311,8 @@ class DevelopmentConsoleApp:
             messagebox.showwarning("Cannot continue", str(error), parent=self.root)
 
     def _checkpoint_preview_flow(self) -> None:
-        stage = simpledialog.askstring("Current Development Stage", "Enter the explicitly confirmed development stage:", parent=self.root)
-        if stage is None:
-            return
-        next_step = simpledialog.askstring("Approved Next Step", "Enter the explicitly approved next step. Leave empty only to record that no next step is approved:", parent=self.root)
-        if next_step is None:
-            return
         try:
-            candidate = self.memory.build_checkpoint_candidate(development_stage=stage, approved_next_step=next_step or None, known_problems=["Direct ChatGPT/Codex send has no approved Console integration contract"], risks=[] if next_step else ["Approved Next Step is not recorded; Continue remains blocked"])
+            candidate = self.roadmap_service.checkpoint_candidate()
         except ValueError as error:
             messagebox.showwarning("Checkpoint input required", str(error), parent=self.root)
             return

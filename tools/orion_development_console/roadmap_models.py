@@ -167,6 +167,21 @@ class RoadmapSnapshot(BaseModel):
             raise ValueError(f"roadmap fingerprint mismatch: {self.snapshot_id}")
 
 
+class DevelopmentPosition(BaseModel):
+    development_stage: str
+    development_status: str
+    approved_next_step: str | None = None
+    current_node_id: str
+    approved_next_node_id: str | None = None
+    derived_from_snapshot_id: str
+    provenance: list[ProvenancePointer] = Field(default_factory=list)
+
+    @property
+    def checkpoint_stage(self) -> str:
+        status = self.development_status.replace("_", " ")
+        return f"{self.development_stage} · {status}"
+
+
 class MissingNode(BaseModel):
     node_id: str
     classification: str

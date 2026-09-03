@@ -339,9 +339,31 @@ def test_expand_collapse_hides_stage_children_only(tmp_path: Path) -> None:
 
 
 def test_phase3_completion_moves_current_to_checkpoint(tmp_path: Path) -> None:
-    snapshot = _service(tmp_path, phase3_complete=True).build_snapshot()
+    service = _service(tmp_path, phase3_complete=True)
+    snapshot = service.build_snapshot()
     assert snapshot.current_node_id == "planned:full-development-console-checkpoint"
     assert sum(node.node_type is NodeType.PLANNED for node in snapshot.nodes) == 2
+
+    position = service.development_position(snapshot)
+    assert position.checkpoint_stage == "Full Development Console checkpoint · READY FOR USER SAVE"
+    assert position.approved_next_step == "Low-latency natural informational presentation"
+    assert position.current_node_id == "planned:full-development-console-checkpoint"
+
+
+def test_checkpoint_candidate_uses_current_roadmap_not_stale_saved_checkpoint(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path, phase3_complete=True)
+    snapshot = service.build_snapshot()
+
+    candidate = service.checkpoint_candidate(snapshot)
+
+    assert candidate.development_stage == "Full Development Console checkpoint · READY FOR USER SAVE"
+    assert candidate.approved_next_step == "Low-latency natural informational presentation"
+    saved = service.memory.latest_checkpoint()
+    assert saved is not None
+    assert candidate.development_stage != saved.development_stage
+    assert len(service.memory.checkpoints.list_records()) == 1
 
 
 def test_freshness_current_stale_refresh_current(tmp_path: Path) -> None:

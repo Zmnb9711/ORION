@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import re
+import shutil
 import subprocess
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -16,9 +18,44 @@ GitRunner = Callable[[Path, tuple[str, ...]], str]
 ProcessInspector = Callable[[str], Sequence[SrsProcessRecord]]
 
 
+def _version_key(path: Path) -> tuple[int, ...]:
+    return tuple(int(part) for part in re.findall(r"\d+", path.parents[4].name))
+
+
+def resolve_git_executable(environment: Mapping[str, str] | None = None) -> Path:
+    """Resolve an existing Git without repairing or mutating the host environment."""
+
+    values = dict(os.environ if environment is None else environment)
+    on_path = shutil.which("git", path=values.get("PATH", ""))
+    if on_path:
+        return Path(on_path).resolve()
+
+    candidates: list[Path] = []
+    for key in ("ProgramFiles", "ProgramFiles(x86)"):
+        root = values.get(key)
+        if root:
+            candidates.append(Path(root) / "Git" / "cmd" / "git.exe")
+
+    local_app_data = values.get("LOCALAPPDATA")
+    if local_app_data:
+        desktop_root = Path(local_app_data) / "GitHubDesktop"
+        desktop_candidates = sorted(
+            desktop_root.glob("app-*/resources/app/git/cmd/git.exe"),
+            key=_version_key,
+            reverse=True,
+        )
+        candidates.extend(desktop_candidates)
+
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate.resolve()
+    raise FileNotFoundError("Git executable is unavailable in PATH or supported Windows installations")
+
+
 def run_git(repository: Path, arguments: tuple[str, ...]) -> str:
+    executable = resolve_git_executable()
     result = subprocess.run(
-        ["git", *arguments],
+        [str(executable), *arguments],
         cwd=repository,
         check=False,
         capture_output=True,

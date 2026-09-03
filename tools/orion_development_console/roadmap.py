@@ -15,9 +15,10 @@ from tools.orion_arch_guard.fingerprints import canonical_sha256
 from tools.orion_arch_guard.privacy import bounded_preview
 from tools.orion_development_console.context import VerificationContext
 from tools.orion_development_console.memory import DevelopmentMemoryService
-from tools.orion_development_console.memory_models import PromptRecord
+from tools.orion_development_console.memory_models import DevelopmentCheckpoint, PromptRecord
 from tools.orion_development_console.roadmap_models import (
     BranchType,
+    DevelopmentPosition,
     MissingNode,
     NodeType,
     ProofBadge,
@@ -257,6 +258,51 @@ class RoadmapService:
         if persist:
             self.snapshots.save_create_once(snapshot)
         return snapshot, differential
+
+    def development_position(
+        self, snapshot: RoadmapSnapshot | None = None
+    ) -> DevelopmentPosition:
+        current_snapshot = snapshot or self.build_snapshot()
+        current = next(
+            node
+            for node in current_snapshot.nodes
+            if node.node_id == current_snapshot.current_node_id
+        )
+        approved_next = next(
+            (
+                node
+                for node in current_snapshot.nodes
+                if node.status == "APPROVED_NEXT_STEP"
+            ),
+            None,
+        )
+        provenance = [*current.provenance]
+        if approved_next:
+            provenance.extend(approved_next.provenance)
+        return DevelopmentPosition(
+            development_stage=current.title,
+            development_status=current.status,
+            approved_next_step=approved_next.title if approved_next else None,
+            current_node_id=current.node_id,
+            approved_next_node_id=approved_next.node_id if approved_next else None,
+            derived_from_snapshot_id=current_snapshot.snapshot_id,
+            provenance=provenance,
+        )
+
+    def checkpoint_candidate(
+        self, snapshot: RoadmapSnapshot | None = None
+    ) -> DevelopmentCheckpoint:
+        position = self.development_position(snapshot)
+        return self.memory.build_checkpoint_candidate(
+            development_stage=position.checkpoint_stage,
+            approved_next_step=position.approved_next_step,
+            known_problems=[
+                "Direct ChatGPT/Codex send has no approved Console integration contract"
+            ],
+            risks=[]
+            if position.approved_next_step
+            else ["Approved Next Step is not recorded; Continue remains blocked"],
+        )
 
     def build_snapshot(self) -> RoadmapSnapshot:
         started = time.perf_counter()
