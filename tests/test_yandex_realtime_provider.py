@@ -23,6 +23,8 @@ from orion.yandex_realtime_provider import (
     sanitize_yandex_error,
     yandex_authorization_headers,
     yandex_session_update,
+    yandex_text_request_events,
+    yandex_text_session_update,
 )
 
 
@@ -72,6 +74,40 @@ def test_yandex_transport_boundary_mode_keeps_provider_supported_server_vad() ->
         "type": "server_vad",
         "threshold": YANDEX_VAD_THRESHOLD,
         "silence_duration_ms": YANDEX_VAD_SILENCE_MS,
+    }
+
+
+def test_text_only_session_and_request_reuse_realtime_protocol_without_audio() -> None:
+    update = yandex_text_session_update(instructions="Bounded text only")
+    assert update == {
+        "type": "session.update",
+        "session": {
+            "instructions": "Bounded text only",
+            "output_modalities": ["text"],
+        },
+    }
+    assert "audio" not in update["session"]
+
+    item, create = yandex_text_request_events(
+        input_text='{"semantic_meaning":"flight.current_aircraft_identity"}',
+        instructions="Use {{aircraft_identity}} once",
+        item_event_id="item-1",
+        response_event_id="response-1",
+    )
+    assert item["type"] == "conversation.item.create"
+    assert item["item"]["content"] == [
+        {
+            "type": "input_text",
+            "text": '{"semantic_meaning":"flight.current_aircraft_identity"}',
+        }
+    ]
+    assert create == {
+        "type": "response.create",
+        "event_id": "response-1",
+        "response": {
+            "instructions": "Use {{aircraft_identity}} once",
+            "output_modalities": ["text"],
+        },
     }
 
 

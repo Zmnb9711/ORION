@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 import unicodedata
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
@@ -12,7 +13,15 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from orion.aircraft_knowledge import aircraft_knowledge
+from orion.aircraft_identity_presentation import (
+    AVAILABLE_AIRCRAFT_MARKER,
+    UNAVAILABLE_AIRCRAFT_MARKER,
+    AircraftIdentityShellValidationError,
+    aircraft_identity_marker,
+    bind_aircraft_identity_shell,
+    validate_aircraft_identity_shell,
+    validate_and_bind_aircraft_identity_shell,
+)
 from orion.flight_context import aircraft_display_name
 from orion.interaction_contracts import (
     CapabilityId,
@@ -41,14 +50,18 @@ from orion.world_model_contracts import (
     WorldFactStatus,
     WorldGeneration,
 )
+from orion.yandex_realtime_informational_presenter import (
+    RealtimeInformationalRequest,
+    YandexRealtimeInformationalPresenter,
+)
 
 
 AIRCRAFT_IDENTITY_CAPABILITY = CapabilityId("flight.aircraft_identity")
 AIRCRAFT_IDENTITY_CONTRACT = "aircraft_identity_query"
 AIRCRAFT_IDENTITY_SEMANTIC_MEANING = "flight.current_aircraft_identity"
 AIRCRAFT_IDENTITY_RADIO_ENTITY = "orion.assistant.aircraft_information"
-_AVAILABLE_MARKER = "{{aircraft_identity}}"
-_UNAVAILABLE_MARKER = "{{aircraft_unavailable}}"
+_AVAILABLE_MARKER = AVAILABLE_AIRCRAFT_MARKER
+_UNAVAILABLE_MARKER = UNAVAILABLE_AIRCRAFT_MARKER
 
 
 class AircraftIdentityIntentStatus(StrEnum):
@@ -88,6 +101,10 @@ class AircraftIdentityQueryResult(BaseModel):
     unavailable_reason: str | None = Field(default=None, max_length=120)
 
 
+class AircraftIdentityResolver(Protocol):
+    def resolve(self) -> AircraftIdentityQueryResult: ...
+
+
 class AircraftIdentitySemanticOutcome(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -104,7 +121,29 @@ class AircraftIdentitySemanticOutcome(BaseModel):
     )
 
 
-class AircraftIdentityFormulationError(RuntimeError):
+class AircraftIdentityRealtimeCandidateOutcome(BaseModel):
+    """Non-default benchmark result; it is not selected by production routing."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    result: AircraftIdentityQueryResult
+    semantic_response: SemanticResponse
+    final_text: str = Field(min_length=1, max_length=4000)
+    radio_entity_id: str = AIRCRAFT_IDENTITY_RADIO_ENTITY
+    provider_response_id: str
+    provider_fact_authority: Literal[False] = False
+    first_token_latency_ms: float = Field(ge=0)
+    formulation_latency_ms: float = Field(ge=0)
+    validation_latency_ms: float = Field(ge=0)
+    binding_latency_ms: float = Field(ge=0)
+    total_latency_ms: float = Field(ge=0)
+    session_reused: bool
+    formulation_origin: Literal["yandex_realtime_validated_placeholder"] = (
+        "yandex_realtime_validated_placeholder"
+    )
+
+
+class AircraftIdentityFormulationError(AircraftIdentityShellValidationError):
     """Qwen did not preserve the bounded Core fact/presentation contract."""
 
 
@@ -332,11 +371,6 @@ def _validate_formulation_draft(
     *,
     language: str,
 ) -> str:
-    marker = (
-        _AVAILABLE_MARKER
-        if result.status is AircraftIdentityQueryStatus.AVAILABLE
-        else _UNAVAILABLE_MARKER
-    )
     if (
         draft.capability is not None
         or draft.presentation_mode is not PresentationMode.NATURALIZE
@@ -351,68 +385,14 @@ def _validate_formulation_draft(
         raise AircraftIdentityFormulationError(
             "Qwen formulation exceeded the no-fact-authority response shape"
         )
-    text = " ".join(draft.recommendation.split())
-    if not text or len(text) > 300 or text.count(marker) != 1:
-        raise AircraftIdentityFormulationError(
-            "Qwen formulation did not preserve exactly one Core substitution marker"
+    try:
+        return validate_and_bind_aircraft_identity_shell(
+            draft.recommendation,
+            result,
+            language=language,
         )
-    other_marker = (
-        _UNAVAILABLE_MARKER
-        if marker == _AVAILABLE_MARKER
-        else _AVAILABLE_MARKER
-    )
-    if other_marker in text or "{{" in text.replace(marker, ""):
-        raise AircraftIdentityFormulationError(
-            "Qwen formulation introduced an unsupported substitution marker"
-        )
-    shell = text.replace(marker, "")
-    lowered = shell.casefold()
-    has_cyrillic = bool(re.search(r"[А-Яа-яЁё]", shell))
-    if (language == "ru-RU" and not has_cyrillic) or (
-        language == "en-US" and has_cyrillic
-    ):
-        raise AircraftIdentityFormulationError(
-            "Qwen formulation did not follow the input language"
-        )
-    if re.search(r"[\d/_+]", shell):
-        raise AircraftIdentityFormulationError(
-            "Qwen formulation introduced an aircraft-like identifier outside Core marker"
-        )
-    forbidden = {
-        item.casefold()
-        for profile in aircraft_knowledge.list_profiles()
-        for item in {profile.aircraft_id, profile.display_name, *profile.aliases}
-        if len(item.strip()) >= 3
-    }
-    if any(item in lowered for item in forbidden):
-        raise AircraftIdentityFormulationError(
-            "Qwen formulation introduced an aircraft identity outside Core marker"
-        )
-    if result.raw_aircraft_id and result.raw_aircraft_id.casefold() in lowered:
-        raise AircraftIdentityFormulationError(
-            "Qwen formulation copied the raw DCS identity outside Core marker"
-        )
-    if result.display_name and result.display_name.casefold() in lowered:
-        raise AircraftIdentityFormulationError(
-            "Qwen formulation copied the display identity outside Core marker"
-        )
-    replacement = (
-        result.display_name
-        if result.status is AircraftIdentityQueryStatus.AVAILABLE
-        else (
-            "данные о текущем самолёте из DCS недоступны"
-            if language == "ru-RU"
-            else "current aircraft identity from DCS is unavailable"
-        )
-    )
-    if not replacement:
-        raise AircraftIdentityFormulationError("Core aircraft substitution is unavailable")
-    final_text = text.replace(marker, replacement)
-    if result.display_name and final_text.count(result.display_name) != 1:
-        raise AircraftIdentityFormulationError(
-            "Final wording did not preserve the exact Core aircraft display identity"
-        )
-    return final_text
+    except AircraftIdentityShellValidationError as exc:
+        raise AircraftIdentityFormulationError(str(exc)) from exc
 
 
 class AircraftIdentityFormulationService:
@@ -421,7 +401,7 @@ class AircraftIdentityFormulationService:
     def __init__(
         self,
         *,
-        query: AircraftIdentityQueryService | None = None,
+        query: AircraftIdentityResolver | None = None,
         planner: PlannerTaskRunner = planner_runner,
     ) -> None:
         self._query = query or AircraftIdentityQueryService()
@@ -488,6 +468,101 @@ class AircraftIdentityFormulationService:
             final_text=final_text,
             qwen_response_ids=(usage.provider_request_ids if usage else ()),
             qwen_latency_ms=execution.task.total_latency_ms,
+        )
+
+
+class AircraftIdentityRealtimeCandidateService:
+    """Benchmark-only Realtime wording path over the unchanged Core truth gate."""
+
+    def __init__(self, *, query: AircraftIdentityResolver | None = None) -> None:
+        self._query = query or AircraftIdentityQueryService()
+
+    async def execute(
+        self,
+        *,
+        presenter: YandexRealtimeInformationalPresenter,
+        interaction_id: UUID,
+        language: Literal["ru-RU", "en-US"],
+    ) -> AircraftIdentityRealtimeCandidateOutcome:
+        total_started = time.perf_counter()
+        result = self._query.resolve()
+        core_response = _core_semantic_response(result, interaction_id=interaction_id)
+        request = RealtimeInformationalRequest(
+            request_id=interaction_id.hex,
+            semantic_meaning=result.semantic_meaning,
+            language=language,
+            required_marker=aircraft_identity_marker(result),
+            fact_status=result.status.value,
+            fact_source=result.source.value,
+            fact_authority=result.authority.value,
+            fact_generation=result.generation,
+            freshness_status=result.fact_status.value,
+        )
+        presentation = await presenter.formulate(request)
+        validation_started = time.perf_counter()
+        try:
+            validated_shell = validate_aircraft_identity_shell(
+                presentation.output_text,
+                result,
+                language=language,
+            )
+        except AircraftIdentityShellValidationError as exc:
+            presenter.record_event(
+                "formulation_failed",
+                correlation_id=request.request_id,
+                provider=presenter.provider_id,
+                error_type="validation_failed",
+            )
+            raise AircraftIdentityFormulationError(str(exc)) from exc
+        validation_finished = time.perf_counter()
+        validation_latency_ms = (validation_finished - validation_started) * 1000
+        presenter.record_event(
+            "formulation_validation_completed",
+            correlation_id=request.request_id,
+            provider=presenter.provider_id,
+            status="pass",
+            latency_ms=round(validation_latency_ms, 3),
+            provider_fact_authority=False,
+        )
+        binding_started = time.perf_counter()
+        final_text = bind_aircraft_identity_shell(
+            validated_shell,
+            result,
+            language=language,
+        )
+        binding_finished = time.perf_counter()
+        binding_latency_ms = (binding_finished - binding_started) * 1000
+        presenter.record_event(
+            "core_fact_binding_completed",
+            correlation_id=request.request_id,
+            provider=presenter.provider_id,
+            status="pass",
+            latency_ms=round(binding_latency_ms, 3),
+            fact_source=result.source.value,
+            fact_authority=result.authority.value,
+            fact_generation=str(result.generation or "unknown"),
+            provider_fact_authority=False,
+        )
+        final_response = SemanticResponse(
+            interaction_id=interaction_id,
+            capability=AIRCRAFT_IDENTITY_CAPABILITY,
+            presentation_mode=PresentationMode.VERBATIM,
+            authoritative_facts=core_response.authoritative_facts,
+            derived_results=core_response.derived_results,
+            unavailable_inputs=core_response.unavailable_inputs,
+            verbatim_text=final_text,
+        )
+        return AircraftIdentityRealtimeCandidateOutcome(
+            result=result,
+            semantic_response=final_response,
+            final_text=final_text,
+            provider_response_id=presentation.provider_response_id,
+            first_token_latency_ms=presentation.first_token_latency_ms,
+            formulation_latency_ms=presentation.complete_latency_ms,
+            validation_latency_ms=validation_latency_ms,
+            binding_latency_ms=binding_latency_ms,
+            total_latency_ms=(binding_finished - total_started) * 1000,
+            session_reused=presentation.session_reused,
         )
 
 

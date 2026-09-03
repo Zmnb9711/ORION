@@ -83,6 +83,59 @@ def yandex_session_update(
     }
 
 
+def yandex_text_session_update(*, instructions: str) -> dict[str, object]:
+    """Configure a dedicated Realtime session for text-only formulation."""
+
+    normalized = instructions.strip()
+    if not normalized or len(normalized) > 4_000:
+        raise ValueError("Yandex text-session instructions are missing or too large")
+    return {
+        "type": "session.update",
+        "session": {
+            "instructions": normalized,
+            "output_modalities": ["text"],
+        },
+    }
+
+
+def yandex_text_request_events(
+    *,
+    input_text: str,
+    instructions: str,
+    item_event_id: str,
+    response_event_id: str,
+) -> tuple[dict[str, object], dict[str, object]]:
+    """Build the existing Realtime item/create pair for one bounded text turn."""
+
+    normalized_input = input_text.strip()
+    normalized_instructions = instructions.strip()
+    if not normalized_input or len(normalized_input) > 4_000:
+        raise ValueError("Yandex text formulation input is missing or too large")
+    if not normalized_instructions or len(normalized_instructions) > 4_000:
+        raise ValueError("Yandex text formulation instructions are missing or too large")
+    if not item_event_id.strip() or not response_event_id.strip():
+        raise ValueError("Yandex text formulation event IDs are required")
+    item = {
+        "type": "conversation.item.create",
+        "event_id": item_event_id,
+        "item": {
+            "type": "message",
+            "object": "realtime.item",
+            "role": "user",
+            "content": [{"type": "input_text", "text": normalized_input}],
+        },
+    }
+    create = {
+        "type": "response.create",
+        "event_id": response_event_id,
+        "response": {
+            "instructions": normalized_instructions,
+            "output_modalities": ["text"],
+        },
+    }
+    return item, create
+
+
 def encode_yandex_input_audio(pcm: bytes) -> dict[str, object]:
     return {
         "type": "input_audio_buffer.append",

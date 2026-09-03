@@ -848,3 +848,66 @@ microphone were not started.
 FULL post-implementation report
 `AG-20260903-153713-14d044d4-bfb3a96-r2` is `COMPLETE` / `PASS`, with zero
 conflicts, zero ownership drift and no user decision required.
+
+## 26. Low-latency informational presentation Phase 1 candidate
+
+FULL preflight `AG-20260903-155714-3884e2bb-2055af6-r2` recovered the
+field-proven Stage 6A persistent Yandex Realtime mechanism and approved only a
+non-default benchmark candidate. The normal aircraft identity route remains
+Core authoritative fact → Qwen natural formulation → Core validation/binding;
+no production selector or protected operational path was changed.
+
+The aircraft identity linguistic-shell validation is now provider-neutral.
+The existing Qwen path and the candidate both require exactly one Core marker,
+the requested language, bounded single-claim wording, no aircraft identifier
+outside the marker and no unsupported factual addition. Core performs the
+exact authoritative substitution only after complete-shell validation.
+
+`YandexRealtimeInformationalPresenter` is a separate explicit text-only warm
+session candidate. It reuses the canonical Yandex Realtime URL, authorization,
+session and item/response event helpers, has no microphone, PCM, VAD, output
+audio, STT, TTS or radio ownership, and is not wired into production routing.
+Its state machine exposes READY/BUSY/reconnect behavior, queue bound one,
+request/response identity correlation, generation invalidation, bounded
+timeout, cancellation and late-event rejection. Safe scalar diagnostics omit
+credentials, full prompts and hidden provider output.
+
+The private A/B harness uses identical synthetic Core facts for RU/EN F/A-18C,
+F-5E and unavailable-state cases. Per the subsequent user scope correction,
+the field-proven Qwen values (~17.234 s F/A-18C and ~14.516 s F-5E) are the
+primary baseline; only five minimal current Qwen smoke attempts were retained
+as secondary context, and no large Qwen sample matrix was run.
+
+Private benchmark `IPB-20260903-164033` is
+`REALTIME_CANDIDATE_INCOMPLETE`. Ten initial Realtime WebSocket connection
+attempts plus bounded diagnostics established no session: DNS resolved, but
+TCP 443 connection to the configured Yandex endpoint failed. Consequently no
+Realtime formulation request, text event, validator sample or warm-session
+latency exists. The requested n≥20 reliability matrix was deliberately not
+fabricated or expanded while connectivity was unavailable. This result is not
+evidence that current Yandex text event semantics failed; the protocol was not
+reached.
+
+All 61 focused tests and the 369-test relevant regression set passed. They
+cover validator compatibility, marker/fact/language failures, terminal text
+assembly, correlation, duplicate/out-of-order/late events, timeout/cancel,
+reconnect, READY/busy gates and an in-memory Core fact → candidate → validation
+→ exact binding integration proof. The next step is to rerun only the Realtime
+benchmark after endpoint connectivity is restored; no selector or physical
+field candidate is permitted until the required correctness, reliability and
+latency gates are complete.
+
+The full repository run completed with 1,934 passing tests and three unchanged
+Setup Wizard failures. Those old tests assume that the current Windows account
+has no real `Saved Games\DCS` profile, while the unchanged production discovery
+code correctly found and auto-selected the profile present on this workstation.
+Neither Setup Wizard source nor its tests are in this change, so that
+environment-dependent baseline inconsistency was recorded rather than hidden
+or repaired outside the approved Phase 1 scope.
+
+FULL post-implementation Guard
+`AG-20260903-164119-7e4a69e7-2055af6-r2` is `COMPLETE / PASS`, with no
+conflicts, no ownership drift, no duplicate-work risk and no user decision
+required. Its console print encountered the known local CP1251 rendering
+limitation after the complete Markdown/JSON reports had already been saved;
+the stored reports were read and verified directly.
