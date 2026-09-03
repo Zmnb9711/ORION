@@ -54,7 +54,25 @@ class DevelopmentCheckpoint(BaseModel):
     content_fingerprint: str
 
     def fingerprint_payload(self) -> dict[str, Any]:
-        return self.model_dump(mode="json", exclude={"content_fingerprint"})
+        exclude = {"content_fingerprint"}
+        if self.schema_version == 1:
+            # Schema-1 checkpoints are immutable historical records.  Their
+            # fingerprint predates the optional canonical-context fields.
+            exclude.update(
+                {
+                    "canonical_strategy",
+                    "canonical_baseline_sha",
+                    "d74_status",
+                    "canonical_status",
+                    "golden_components",
+                    "historical_reconnect_items",
+                    "recovered_ideas",
+                    "retirement_candidates",
+                    "canonical_input_signature",
+                    "realtime_candidate",
+                }
+            )
+        return self.model_dump(mode="json", exclude=exclude)
 
     def expected_fingerprint(self) -> str:
         return canonical_sha256(self.fingerprint_payload()).casefold()

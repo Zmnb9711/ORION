@@ -142,3 +142,22 @@ def test_guard_uses_complete_task_semantics_for_retirement_conflicts(tmp_path) -
     assert _ids(restore.result["canonical_context"]["retirement_conflicts"]) == {"RC05"}
     assert restore.result["canonical_context"]["work_classification"] == "RETIREMENT_CONFLICT"
     assert negated.result["canonical_context"]["retirement_conflicts"] == []
+
+
+def test_guard_resolves_awacs_voice_interaction_without_explicit_capability(tmp_path) -> None:  # noqa: ANN001
+    report, _database = _run(
+        tmp_path,
+        _request("Task Recall: AWACS voice interaction"),
+    )
+
+    capabilities = {
+        item["capability_id"] for item in report.result["affected_capabilities"]
+    }
+    assert "AWACS_GCI" in capabilities
+    assert "U04" in _ids(
+        report.result["canonical_context"]["recovered_unimplemented_ideas"]
+    )
+    assert (
+        report.result["canonical_context"]["work_classification"]
+        == "RECOVERED_IDEA_IMPLEMENTATION"
+    )

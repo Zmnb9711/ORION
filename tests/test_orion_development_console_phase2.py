@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from tools.orion_arch_guard.fingerprints import canonical_sha256
 from tools.orion_development_console.comparison import compare_checkpoints, render_comparison
 from tools.orion_development_console.context import VerificationContext
 from tools.orion_development_console.memory import AmbiguousTaskRecall, DevelopmentMemoryService
@@ -159,6 +160,41 @@ def test_checkpoint_fingerprint_validation_detects_tampering(tmp_path: Path) -> 
     path.write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(ValueError, match="fingerprint"):
         store.load("CP-1")
+
+
+def test_schema_one_checkpoint_remains_readable_after_canonical_fields_are_added(
+    tmp_path: Path,
+) -> None:
+    store = CheckpointStore(tmp_path)
+    record = _checkpoint("CP-LEGACY")
+    payload = record.model_dump(mode="json")
+    payload["schema_version"] = 1
+    for field in (
+        "canonical_strategy",
+        "canonical_baseline_sha",
+        "d74_status",
+        "canonical_status",
+        "golden_components",
+        "historical_reconnect_items",
+        "recovered_ideas",
+        "retirement_candidates",
+        "canonical_input_signature",
+        "realtime_candidate",
+    ):
+        payload.pop(field)
+    payload["content_fingerprint"] = canonical_sha256(
+        {key: value for key, value in payload.items() if key != "content_fingerprint"}
+    ).casefold()
+    store.root.mkdir(parents=True)
+    store._record_path("CP-LEGACY").write_text(  # noqa: SLF001
+        json.dumps(payload), encoding="utf-8"
+    )
+
+    loaded = store.load("CP-LEGACY")
+
+    assert loaded.schema_version == 1
+    assert loaded.canonical_status == "NOT_RECORDED"
+    assert loaded.golden_components == []
 
 
 def test_checkpoint_preview_candidate_is_not_saved(tmp_path: Path) -> None:

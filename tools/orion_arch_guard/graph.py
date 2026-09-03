@@ -1273,8 +1273,17 @@ class CapabilityGraph:
             classification = "RETIREMENT_CONFLICT"
         elif grouped[CanonicalKind.HISTORICAL_RECONNECT.value]:
             classification = WorkClassification.HISTORICAL_ADAPTATION.value
-        elif grouped[CanonicalKind.RECOVERED_IDEA.value] and not grouped[CanonicalKind.GOLDEN_COMPONENT.value]:
-            classification = WorkClassification.RECOVERED_IDEA_IMPLEMENTATION.value
+        elif grouped[CanonicalKind.RECOVERED_IDEA.value]:
+            domain_current = [
+                record
+                for record in grouped[CanonicalKind.GOLDEN_COMPONENT.value]
+                if record["record_id"] != "GC18"
+            ]
+            classification = (
+                WorkClassification.PARTIAL_IMPLEMENTATION_COMPLETION.value
+                if domain_current
+                else WorkClassification.RECOVERED_IDEA_IMPLEMENTATION.value
+            )
         elif grouped[CanonicalKind.GOLDEN_COMPONENT.value]:
             classification = WorkClassification.CURRENT_EXTENSION.value
         else:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-AG2_SEED_VERSION = "2"
+AG2_SEED_VERSION = "3"
 
 FAMILY_CAPABILITIES: dict[str, tuple[str, ...]] = {
     "DCS_WORLD_STATE": (
@@ -174,6 +174,10 @@ CAPABILITY_DETAILS: dict[str, dict[str, Any]] = {
     "VIRTUAL_ATC": {
         "aliases": ["ATC", "Core ATC", "virtual controller"],
         "historical_terms": ["MODEL C ATC"],
+    },
+    "AWACS_GCI": {
+        "aliases": ["AWACS", "GCI", "AWACS voice interaction"],
+        "historical_terms": ["AWACS/GCI conversational route"],
     },
     "TAKEOFF": {
         "aliases": ["takeoff clearance", "pure takeoff", "departure clearance"],
