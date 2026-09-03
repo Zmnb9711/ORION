@@ -1,13 +1,21 @@
 from __future__ import annotations
 
+import asyncio
 import json
 
+from orion.yandex_realtime_informational_presenter import (
+    RealtimeInformationalResult,
+    YandexRealtimeTextConfig,
+)
 from tools.informational_presentation_benchmark import (
     BENCHMARK_CASES,
     BenchmarkSample,
+    DiagnosticRejection,
+    InformationalPresentationBenchmark,
     build_report,
     failure_distribution,
     promotion_gates,
+    sanitize_diagnostic_formulation,
     summarize_samples,
     write_private_report,
 )
@@ -106,3 +114,97 @@ def test_validation_rejection_is_not_misclassified_as_realtime_protocol_failure(
     assert decision == "BENCHMARK_NO_GO"
     assert gates["failure_timeout_rate"]["result"] == "FAIL"
     assert gates["realtime_protocol_execution"]["result"] == "PASS"
+
+
+def test_diagnostic_sanitizer_is_bounded_and_redacts_credential_shapes() -> None:
+    secret = "synthetic-secret-value"
+    text = (
+        "Самолёт {{aircraft_identity}}. "
+        f"Authorization: Bearer-token api_key={secret} "
+        + ("длинный " * 100)
+    )
+    sanitized = sanitize_diagnostic_formulation(text, secrets=(secret,))
+    assert len(sanitized) == 400
+    assert secret not in sanitized
+    assert "authorization" not in sanitized.casefold()
+    assert "api_key" not in sanitized.casefold()
+    assert "{{aircraft_identity}}" in sanitized
+
+
+class _RejectedShellPresenter:
+    provider_id = "yandex.realtime.text"
+
+    async def formulate(self, request):  # noqa: ANN001, ANN201
+        return RealtimeInformationalResult(
+            request_id=request.request_id,
+            provider_response_id="response-safe",
+            output_text=(
+                "Текущий самолёт — {{aircraft_identity}}, топливо доступно."
+            ),
+            first_token_latency_ms=10,
+            complete_latency_ms=20,
+            session_reused=True,
+        )
+
+    def record_event(self, event: str, **metadata: object) -> None:
+        del event, metadata
+
+
+def test_opt_in_diagnostic_captures_only_rejected_synthetic_shell() -> None:
+    benchmark = object.__new__(InformationalPresentationBenchmark)
+    benchmark._realtime_config = YandexRealtimeTextConfig(
+        api_key="synthetic-secret-value",
+        folder_id="synthetic-folder",
+    )
+    benchmark._diagnostic_capture_limit = 2
+    benchmark.diagnostic_rejections = []
+    sample = asyncio.run(
+        benchmark._realtime_diagnostic_sample(  # noqa: SLF001
+            _RejectedShellPresenter(),  # type: ignore[arg-type]
+            BENCHMARK_CASES[0],
+            1,
+            cold=False,
+            connect_latency_ms=None,
+        )
+    )
+    assert sample.provider_output_status == "completed"
+    assert sample.validator_status == "fail"
+    assert sample.downstream_reached is False
+    assert sample.error_code == "unsupported_extra_claim"
+    assert len(benchmark.diagnostic_rejections) == 1
+    capture = benchmark.diagnostic_rejections[0]
+    assert capture.marker_positions == (18,)
+    assert capture.correlation_id
+    assert capture.sanitized_output == (
+        "Текущий самолёт — {{aircraft_identity}}, топливо доступно."
+    )
+
+
+def test_private_report_includes_opt_in_bounded_rejection_capture(tmp_path) -> None:  # noqa: ANN001
+    capture = DiagnosticRejection(
+        case_id="ru-fa18",
+        language="ru-RU",
+        sample_index=1,
+        cold=False,
+        validation_error_code="unsupported_extra_claim",
+        marker_positions=(18,),
+        sanitized_output="Текущий самолёт — {{aircraft_identity}}, топливо доступно.",
+        correlation_id="safe-correlation",
+        first_token_latency_ms=10,
+        complete_formulation_ms=20,
+        total_latency_ms=21,
+    )
+    report = build_report(
+        [_sample("yandex_realtime_text", "ru-fa18", 1, 100)],
+        warm_samples=20,
+        session_ids={"safe-session-id"},
+        diagnostic_rejections=(capture,),
+        diagnostic_capture_enabled=True,
+        selected_case_ids=("ru-fa18",),
+    )
+    json_path, _ = write_private_report(report, tmp_path)
+    encoded = json_path.read_text(encoding="utf-8")
+    assert report["diagnostic"]["capture_enabled"] is True
+    assert len(report["diagnostic"]["rejected_formulations"]) == 1
+    assert "safe-correlation" in encoded
+    assert "authorization" not in encoded.casefold()

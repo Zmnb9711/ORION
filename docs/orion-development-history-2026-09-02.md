@@ -966,3 +966,40 @@ unavailable success. Five available-fact responses were still rejected as
 Per the task stop rule no further provider tuning was attempted. The honest
 result remains `BENCHMARK_NO_GO`; C1 is not complete, the candidate is not
 promoted, and C3 integration is not authorized.
+
+## 28. C1 remaining `unsupported_extra_claim` forensic
+
+Task Recall `PR-20260903-202530-80ba6c7d` and FULL preflight
+`AG-20260903-202547-781208b7-5bd29cc-r2` approved only a private, opt-in
+rejected-shell diagnostic over the existing presenter, validator and Core
+binding path. The diagnostic stores one bounded synthetic provider shell,
+language/case, validation code, marker positions, correlation identity and
+timing under the existing private development directory. It excludes
+credentials, headers, prompts, conversation history and audio and is never
+enabled in production.
+
+Targeted report `IPB-20260903-203014` used 62 Realtime calls and zero Qwen
+calls across only RU and EN F/A-18C. It captured six
+`unsupported_extra_claim` rejections: four RU identity clauses using safe
+participial, identifier-label and combined comma/colon grammar, and two EN
+forms stating that the flight was operating or being conducted with the Core
+marker. Every form contained exactly one marker and no aircraft identity,
+numeric value, operational datum or second assertion outside it. They were
+therefore classified `SAFE_NATURAL_VARIATION`; no genuine unsupported claim
+or ambiguous form was observed. The evidence-backed correction was
+`VALIDATOR_ONLY`: the existing bounded identity vocabulary was extended for
+only those exact grammatical families, with unsafe near-neighbour claims
+remaining rejected.
+
+The single final full Realtime-only report is `IPB-20260903-203229`. Protocol,
+latency and accepted-output safety still passed: zero substantive protocol
+failures, zero timeouts, 72/72 accepted primary samples valid, zero invalid
+downstream, 342.461 ms warm complete median and 492.878 ms p90. Reliability
+did not pass: eight primary failures out of 80 produced 10%, comprising seven
+RU F/A-18C and one EN F/A-18C `unsupported_extra_claim`; RU unavailable also
+had ten rejections out of 20. Diagnostic capture was deliberately off for the
+normal full benchmark, so the exact new rejected shells are not observable.
+The mandatory stop rule therefore applies: no additional provider calls or
+validator loosening, no promotion, and no C3 integration. The remaining state
+requires an architectural/provider decision rather than another blind
+adaptation.

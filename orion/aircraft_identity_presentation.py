@@ -81,9 +81,12 @@ def _safe_identity_label_colon(shell: str, *, language: str) -> bool:
     if language == "ru-RU":
         allowed = {
             "в",
+            "выполняющего",
             "выполняемого",
             "данные",
             "данный",
+            "для",
+            "задействованного",
             "идентификационные",
             "текущая",
             "текущий",
@@ -92,11 +95,14 @@ def _safe_identity_label_colon(shell: str, *, language: str) -> bool:
             "идентифицировано",
             "идентификация",
             "идентификатор",
+            "идентификатором",
             "воздушного",
             "воздушное",
             "судна",
             "судно",
             "на",
+            "обозначено",
+            "осуществляющего",
             "момент",
             "полёт",
             "полета",
@@ -116,6 +122,7 @@ def _safe_identity_label_colon(shell: str, *, language: str) -> bool:
                 "идентификация",
                 "идентифицировано",
                 "идентификатор",
+                "идентификатором",
             }
         )
     allowed = {"the", "current", "aircraft", "identity"}
@@ -139,10 +146,12 @@ def _safe_ru_parenthetical_identity_clause(shell: str) -> bool:
         "идентификация",
         "идентифицировано",
         "идентификатор",
+        "идентификатором",
         "идентифицируется",
         "имеет",
         "как",
         "на",
+        "обозначено",
         "осуществляющее",
         "полета",
         "полет",
@@ -166,7 +175,9 @@ def _safe_ru_parenthetical_identity_clause(shell: str) -> bool:
             "идентификация",
             "идентифицировано",
             "идентификатор",
+            "идентификатором",
             "идентификационные",
+            "идентифицируется",
         }
     )
 
@@ -177,6 +188,8 @@ def _safe_en_with_identity_clause(shell: str) -> bool:
     allowed = {
         "aircraft",
         "associated",
+        "being",
+        "conducted",
         "current",
         "currently",
         "flight",
@@ -187,7 +200,10 @@ def _safe_en_with_identity_clause(shell: str) -> bool:
         "the",
         "with",
     }
-    return bool(words) and words <= allowed and "aircraft" in words
+    identity_clause = "aircraft" in words or (
+        "flight" in words and bool(words & {"conducted", "operates", "operating"})
+    )
+    return bool(words) and words <= allowed and "with" in words and identity_clause
 
 
 def _unsupported_second_claim(shell: str, *, language: str) -> bool:
@@ -209,6 +225,7 @@ def _unsupported_second_claim(shell: str, *, language: str) -> bool:
             "," in body
             and not body.startswith("к сожалению,")
             and not _safe_ru_parenthetical_identity_clause(shell)
+            and not _safe_identity_label_colon(shell, language=language)
         ):
             return True
         connectors = r"\b(?:и|но|зато|также|прич[её]м|потому|котор(?:ый|ая|ое|ые))\b"

@@ -102,9 +102,34 @@ def test_unavailable_fact_binds_only_core_unavailable_wording() -> None:
             "{{aircraft_identity}}.",
             "ru-RU",
         ),
+        (
+            "Воздушное судно, выполняющее текущий полёт, идентифицируется как "
+            "{{aircraft_identity}}.",
+            "ru-RU",
+        ),
+        (
+            "Идентификационные данные воздушного судна, задействованного в "
+            "текущем полёте: {{aircraft_identity}}.",
+            "ru-RU",
+        ),
+        (
+            "Воздушное судно, осуществляющее текущий полёт, обозначено "
+            "идентификатором {{aircraft_identity}}.",
+            "ru-RU",
+        ),
+        (
+            "Идентификатор воздушного судна для текущего полёта: "
+            "{{aircraft_identity}}.",
+            "ru-RU",
+        ),
         ("Current aircraft identity: {{aircraft_identity}}.", "en-US"),
         (
             "The current flight operates with the aircraft {{aircraft_identity}}.",
+            "en-US",
+        ),
+        ("The flight is operating with {{aircraft_identity}}.", "en-US"),
+        (
+            "The flight is being conducted with {{aircraft_identity}}.",
             "en-US",
         ),
         (
@@ -180,6 +205,32 @@ def test_english_with_clause_cannot_smuggle_an_additional_claim() -> None:
             _Fact(),
             language="en-US",
         )
+    assert (
+        caught.value.code
+        is AircraftIdentityShellValidationErrorCode.UNSUPPORTED_EXTRA_CLAIM
+    )
+
+
+@pytest.mark.parametrize(
+    ("text", "language"),
+    (
+        (
+            "Идентификатор воздушного судна для текущего полёта: "
+            "{{aircraft_identity}}, топливо доступно.",
+            "ru-RU",
+        ),
+        (
+            "The flight is operating with {{aircraft_identity}} and fuel is available.",
+            "en-US",
+        ),
+    ),
+)
+def test_new_safe_grammar_does_not_admit_nearby_extra_claims(
+    text: str,
+    language: str,
+) -> None:
+    with pytest.raises(AircraftIdentityShellValidationError) as caught:
+        validate_aircraft_identity_shell(text, _Fact(), language=language)
     assert (
         caught.value.code
         is AircraftIdentityShellValidationErrorCode.UNSUPPORTED_EXTRA_CLAIM

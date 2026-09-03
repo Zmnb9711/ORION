@@ -7,6 +7,7 @@ import asyncio
 import json
 import math
 import os
+import re
 import statistics
 import time
 from dataclasses import asdict, dataclass
@@ -22,7 +23,12 @@ from orion.aircraft_identity_query import (
     AircraftIdentityQueryStatus,
     AircraftIdentityRealtimeCandidateService,
 )
-from orion.aircraft_identity_presentation import AircraftIdentityShellValidationError
+from orion.aircraft_identity_presentation import (
+    AircraftIdentityShellValidationError,
+    aircraft_identity_marker,
+    bind_aircraft_identity_shell,
+    validate_aircraft_identity_shell,
+)
 from orion.world_model_contracts import (
     WorldFactAuthority,
     WorldFactSource,
@@ -36,6 +42,7 @@ from orion.yandex_qwen_planner import (
 )
 from orion.yandex_realtime_informational_presenter import (
     InformationalPresenterError,
+    RealtimeInformationalRequest,
     YandexRealtimeInformationalPresenter,
     YandexRealtimeTextConfig,
 )
@@ -117,6 +124,44 @@ class BenchmarkSample:
     total_latency_ms: float
     bound_final_text: str | None
     error_code: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class DiagnosticRejection:
+    case_id: str
+    language: str
+    sample_index: int
+    cold: bool
+    validation_error_code: str
+    marker_positions: tuple[int, ...]
+    sanitized_output: str
+    correlation_id: str
+    first_token_latency_ms: float
+    complete_formulation_ms: float
+    total_latency_ms: float
+
+
+_DIAGNOSTIC_OUTPUT_LIMIT = 400
+
+
+def sanitize_diagnostic_formulation(
+    value: str,
+    *,
+    secrets: tuple[str, ...] = (),
+) -> str:
+    """Keep one bounded synthetic shell while removing credential-shaped text."""
+
+    sanitized = " ".join(value.split())
+    for secret in secrets:
+        if len(secret) >= 8:
+            sanitized = sanitized.replace(secret, "[REDACTED]")
+    sanitized = re.sub(
+        r"(?i)\b(?:authorization|api[-_ ]?key)\b\s*[:=]\s*\S+",
+        "[REDACTED]",
+        sanitized,
+    )
+    sanitized = re.sub(r"(?i)\bbearer\s+\S+", "[REDACTED]", sanitized)
+    return sanitized[:_DIAGNOSTIC_OUTPUT_LIMIT]
 
 
 class _StaticQuery:
@@ -375,10 +420,15 @@ class InformationalPresentationBenchmark:
         *,
         qwen_config: YandexQwenPlannerConfig,
         realtime_config: YandexRealtimeTextConfig,
+        capture_rejected_shells: bool = False,
+        diagnostic_capture_limit: int = 20,
     ) -> None:
         self._qwen_config = qwen_config
         self._realtime_config = realtime_config
+        self._capture_rejected_shells = capture_rejected_shells
+        self._diagnostic_capture_limit = diagnostic_capture_limit
         self.session_ids: set[str] = set()
+        self.diagnostic_rejections: list[DiagnosticRejection] = []
 
     async def _qwen_sample(
         self,
@@ -467,6 +517,14 @@ class InformationalPresentationBenchmark:
         cold: bool,
         connect_latency_ms: float | None,
     ) -> BenchmarkSample:
+        if self._capture_rejected_shells:
+            return await self._realtime_diagnostic_sample(
+                presenter,
+                case,
+                sample_index,
+                cold=cold,
+                connect_latency_ms=connect_latency_ms,
+            )
         started = time.perf_counter()
         try:
             service = AircraftIdentityRealtimeCandidateService(query=_StaticQuery(case.result()))
@@ -529,14 +587,155 @@ class InformationalPresentationBenchmark:
                 error_code=code,
             )
 
+    async def _realtime_diagnostic_sample(
+        self,
+        presenter: YandexRealtimeInformationalPresenter,
+        case: BenchmarkCase,
+        sample_index: int,
+        *,
+        cold: bool,
+        connect_latency_ms: float | None,
+    ) -> BenchmarkSample:
+        """Run the normal bounded contracts while retaining rejected synthetic shells."""
+
+        started = time.perf_counter()
+        interaction_id = uuid4()
+        correlation_id = interaction_id.hex
+        result = case.result()
+        request = RealtimeInformationalRequest(
+            request_id=correlation_id,
+            semantic_meaning=result.semantic_meaning,
+            language=case.language,
+            required_marker=aircraft_identity_marker(result),
+            fact_status=result.status.value,
+            fact_source=result.source.value,
+            fact_authority=result.authority.value,
+            fact_generation=result.generation,
+            freshness_status=result.fact_status.value,
+        )
+        try:
+            presentation = await presenter.formulate(request)
+            validation_started = time.perf_counter()
+            try:
+                validated_shell = validate_aircraft_identity_shell(
+                    presentation.output_text,
+                    result,
+                    language=case.language,
+                )
+            except AircraftIdentityShellValidationError as exc:
+                code = exc.code.value if exc.code else "validation_failed"
+                presenter.record_event(
+                    "formulation_failed",
+                    correlation_id=correlation_id,
+                    provider=presenter.provider_id,
+                    error_type="validation_failed",
+                )
+                sanitized = sanitize_diagnostic_formulation(
+                    presentation.output_text,
+                    secrets=(self._realtime_config.api_key,),
+                )
+                marker = aircraft_identity_marker(result)
+                if len(self.diagnostic_rejections) < self._diagnostic_capture_limit:
+                    self.diagnostic_rejections.append(
+                        DiagnosticRejection(
+                            case_id=case.case_id,
+                            language=case.language,
+                            sample_index=sample_index,
+                            cold=cold,
+                            validation_error_code=code,
+                            marker_positions=tuple(
+                                match.start() for match in re.finditer(re.escape(marker), sanitized)
+                            ),
+                            sanitized_output=sanitized,
+                            correlation_id=correlation_id,
+                            first_token_latency_ms=presentation.first_token_latency_ms,
+                            complete_formulation_ms=presentation.complete_latency_ms,
+                            total_latency_ms=(time.perf_counter() - started) * 1000,
+                        )
+                    )
+                return BenchmarkSample(
+                    backend="yandex_realtime_text",
+                    case_id=case.case_id,
+                    sample_index=sample_index,
+                    cold=cold,
+                    success=False,
+                    provider_output_status="completed",
+                    validator_status="fail",
+                    identity_preserved=False,
+                    unsupported_claim_result="not_accepted",
+                    downstream_reached=False,
+                    session_reused=presentation.session_reused,
+                    connect_latency_ms=connect_latency_ms,
+                    first_token_latency_ms=presentation.first_token_latency_ms,
+                    complete_formulation_ms=presentation.complete_latency_ms,
+                    validation_latency_ms=(time.perf_counter() - validation_started) * 1000,
+                    binding_latency_ms=None,
+                    total_latency_ms=(time.perf_counter() - started) * 1000,
+                    bound_final_text=None,
+                    error_code=code,
+                )
+            validation_finished = time.perf_counter()
+            binding_started = time.perf_counter()
+            final_text = bind_aircraft_identity_shell(
+                validated_shell,
+                result,
+                language=case.language,
+            )
+            binding_finished = time.perf_counter()
+            preserved = _identity_preserved(case, final_text)
+            return BenchmarkSample(
+                backend="yandex_realtime_text",
+                case_id=case.case_id,
+                sample_index=sample_index,
+                cold=cold,
+                success=preserved,
+                provider_output_status="completed",
+                validator_status="pass" if preserved else "fail",
+                identity_preserved=preserved,
+                unsupported_claim_result="pass" if preserved else "fail",
+                downstream_reached=preserved,
+                session_reused=presentation.session_reused,
+                connect_latency_ms=connect_latency_ms,
+                first_token_latency_ms=presentation.first_token_latency_ms,
+                complete_formulation_ms=presentation.complete_latency_ms,
+                validation_latency_ms=(validation_finished - validation_started) * 1000,
+                binding_latency_ms=(binding_finished - binding_started) * 1000,
+                total_latency_ms=(time.perf_counter() - started) * 1000,
+                bound_final_text=final_text if preserved else None,
+                error_code=None if preserved else "identity_mismatch",
+            )
+        except InformationalPresenterError as exc:
+            return BenchmarkSample(
+                backend="yandex_realtime_text",
+                case_id=case.case_id,
+                sample_index=sample_index,
+                cold=cold,
+                success=False,
+                provider_output_status="failed",
+                validator_status="not_run",
+                identity_preserved=False,
+                unsupported_claim_result="not_run",
+                downstream_reached=False,
+                session_reused=None,
+                connect_latency_ms=connect_latency_ms,
+                first_token_latency_ms=None,
+                complete_formulation_ms=None,
+                validation_latency_ms=None,
+                binding_latency_ms=None,
+                total_latency_ms=(time.perf_counter() - started) * 1000,
+                bound_final_text=None,
+                error_code=exc.code.value,
+            )
+
     async def run(
         self,
         *,
         warm_samples: int,
         qwen_samples: int,
+        cases: tuple[BenchmarkCase, ...] = BENCHMARK_CASES,
     ) -> list[BenchmarkSample]:
         samples: list[BenchmarkSample] = []
-        for case in BENCHMARK_CASES:
+        for case in cases:
             cold_presenter = YandexRealtimeInformationalPresenter(self._realtime_config)
             connect_started = time.perf_counter()
             try:
@@ -631,7 +830,7 @@ class InformationalPresentationBenchmark:
             finally:
                 await warm_presenter.close()
 
-        for case in BENCHMARK_CASES:
+        for case in cases:
             for index in range(1, qwen_samples + 1):
                 samples.append(await self._qwen_sample(case, index))
         return samples
@@ -642,6 +841,9 @@ def build_report(
     *,
     warm_samples: int,
     session_ids: set[str],
+    diagnostic_rejections: tuple[DiagnosticRejection, ...] = (),
+    diagnostic_capture_enabled: bool = False,
+    selected_case_ids: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     gates, decision = promotion_gates(samples, required_warm_samples=warm_samples)
     return {
@@ -665,6 +867,28 @@ def build_report(
             },
         },
         "target_warm_samples_per_primary_combination": warm_samples,
+        "selected_case_ids": list(selected_case_ids),
+        "execution_note": (
+            "Private synthetic rejected-shell diagnostic; no physical systems."
+            if diagnostic_capture_enabled
+            else "Isolated provider benchmark; no physical systems."
+        ),
+        "provider_call_counts": {
+            "qwen": sum(item.backend == "qwen" for item in samples),
+            "yandex_realtime_text": sum(
+                item.backend == "yandex_realtime_text" for item in samples
+            ),
+        },
+        "diagnostic": {
+            "capture_enabled": diagnostic_capture_enabled,
+            "privacy_boundary": (
+                "bounded synthetic provider shell only; credentials, headers, prompts, "
+                "conversation history and audio excluded"
+            ),
+            "rejected_formulations": [
+                asdict(item) for item in diagnostic_rejections
+            ],
+        },
         "samples": [asdict(item) for item in samples],
         "summaries": summarize_samples(samples),
         "failure_distribution": failure_distribution(samples),
@@ -731,6 +955,10 @@ def _human_summary(report: dict[str, Any]) -> str:
             "```",
             "",
             "Sensitive request material, full prompts and hidden model output are not recorded.",
+            (
+                "Bounded synthetic rejected-shell captures: "
+                f"{len(report.get('diagnostic', {}).get('rejected_formulations', []))}."
+            ),
         ]
     )
     return "\n".join(lines) + "\n"
@@ -773,15 +1001,26 @@ async def _run(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
     benchmark = InformationalPresentationBenchmark(
         qwen_config=qwen_config,
         realtime_config=realtime_config,
+        capture_rejected_shells=args.diagnostic_rejected_shells,
+        diagnostic_capture_limit=args.diagnostic_capture_limit,
+    )
+    selected_cases = tuple(
+        case
+        for case in BENCHMARK_CASES
+        if not args.case or case.case_id in set(args.case)
     )
     samples = await benchmark.run(
         warm_samples=args.warm_samples,
         qwen_samples=0 if args.skip_qwen else args.qwen_samples,
+        cases=selected_cases,
     )
     report = build_report(
         samples,
         warm_samples=args.warm_samples,
         session_ids=benchmark.session_ids,
+        diagnostic_rejections=tuple(benchmark.diagnostic_rejections),
+        diagnostic_capture_enabled=args.diagnostic_rejected_shells,
+        selected_case_ids=tuple(case.case_id for case in selected_cases),
     )
     json_path, markdown_path = write_private_report(report, args.output_dir)
     return json_path, markdown_path, report
@@ -796,10 +1035,22 @@ def main() -> int:
     parser.add_argument("--warm-samples", type=int, default=20)
     parser.add_argument("--qwen-samples", type=int, default=20)
     parser.add_argument("--skip-qwen", action="store_true")
+    parser.add_argument(
+        "--case",
+        action="append",
+        choices=tuple(case.case_id for case in BENCHMARK_CASES),
+        help="Run only the selected synthetic case; repeatable.",
+    )
+    parser.add_argument("--diagnostic-rejected-shells", action="store_true")
+    parser.add_argument("--diagnostic-capture-limit", type=int, default=20)
     parser.add_argument("--request-timeout", type=float, default=8.0)
     args = parser.parse_args()
     if not 1 <= args.warm_samples <= 100 or not 0 <= args.qwen_samples <= 100:
         parser.error("warm samples must be 1..100 and Qwen samples must be 0..100")
+    if not 1 <= args.diagnostic_capture_limit <= 100:
+        parser.error("diagnostic capture limit must be 1..100")
+    if args.diagnostic_rejected_shells and not args.skip_qwen:
+        parser.error("rejected-shell diagnostics require --skip-qwen")
     json_path, markdown_path, report = asyncio.run(_run(args))
     provider_calls = len(report["samples"])
     print(f"credential_present=true provider_calls={provider_calls}")
