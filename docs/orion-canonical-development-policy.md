@@ -136,14 +136,14 @@ reclassified; they are not all immediate priorities.
 
 ## Canonical roadmap
 
-- C0 historical source recovery — complete;
-- C1 Architecture Guard foundation — complete;
-- C2 capability graph and Previous Best gate — complete;
-- C3 **CANONICAL ORION BASELINE ESTABLISHED** — current;
-- C4 **REALTIME INFORMATIONAL PRESENTER RELIABILITY CORRECTION** — next;
-- C5 isolated Realtime benchmark and promotion decision;
-- C6 bounded presenter selector, conditional on PASS;
-- C7 controlled DCS/SRS field test, conditional on preceding gates.
+- C0 **CANONICAL ORION BASELINE ESTABLISHED** — current/preserve baseline;
+- C1 **REALTIME INFORMATIONAL PRESENTER RELIABILITY CORRECTION** — next;
+- C2 Realtime isolated rebenchmark;
+- C3 bounded non-default presentation integration, conditional on PASS;
+- C4 controlled informational DCS/SRS field proof, conditional on preceding gates;
+- C5 remove only proven redundant informational wiring;
+- C6 extend MODEL C one bounded domain at a time;
+- C7 restore user-valued capabilities incrementally.
 
 The canonicalization and product-expansion tracks remain distinct.
 

@@ -7,7 +7,7 @@ current HEAD, queries Current Best, Historical Best, and Recovered Unimplemented
 Ideas, and follows D71: RECONNECT → ADAPT → EXTEND → REFACTOR → REPLACE. The
 machine-readable records live in the existing private Guard SQLite graph; the
 bounded human register is `docs/orion-canonical-development-policy.md`.
-Current stage is C3, **CANONICAL ORION BASELINE ESTABLISHED**. C4, **REALTIME
+Current stage is C0, **CANONICAL ORION BASELINE ESTABLISHED**. C1, **REALTIME
 INFORMATIONAL PRESENTER RELIABILITY CORRECTION**, is next. No automatic
 checkpoint save or direct ChatGPT/Codex send is authorized.
 

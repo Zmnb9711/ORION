@@ -5,7 +5,7 @@ from enum import StrEnum
 from typing import Any
 
 
-CANONICAL_SEED_VERSION = "1"
+CANONICAL_SEED_VERSION = "2"
 
 
 class CanonicalKind(StrEnum):
@@ -330,14 +330,14 @@ USER_VALUED_FORGOTTEN_IDEAS: tuple[CanonicalRecord, ...] = tuple(
 
 
 _STAGES: tuple[tuple[str, str, str], ...] = (
-    ("C0", "Historical source recovery", "COMPLETE"),
-    ("C1", "Architecture Guard foundation", "COMPLETE"),
-    ("C2", "Capability graph and Previous Best gate", "COMPLETE"),
-    ("C3", "CANONICAL ORION BASELINE ESTABLISHED", "CURRENT"),
-    ("C4", "REALTIME INFORMATIONAL PRESENTER RELIABILITY CORRECTION", "APPROVED_NEXT_STEP"),
-    ("C5", "Isolated Realtime benchmark and promotion decision", "PLANNED"),
-    ("C6", "Bounded presenter selector", "CONDITIONAL"),
-    ("C7", "Controlled DCS/SRS field test", "CONDITIONAL"),
+    ("C0", "CANONICAL ORION BASELINE ESTABLISHED", "CURRENT"),
+    ("C1", "REALTIME INFORMATIONAL PRESENTER RELIABILITY CORRECTION", "APPROVED_NEXT_STEP"),
+    ("C2", "REALTIME INFORMATIONAL PRESENTER ISOLATED REBENCHMARK", "PLANNED"),
+    ("C3", "BOUNDED NON-DEFAULT PRESENTATION INTEGRATION", "CONDITIONAL"),
+    ("C4", "CONTROLLED INFORMATIONAL DCS/SRS FIELD PROOF", "CONDITIONAL"),
+    ("C5", "REMOVE ONLY PROVEN REDUNDANT INFORMATIONAL WIRING", "CONDITIONAL"),
+    ("C6", "EXTEND MODEL C ONE BOUNDED DOMAIN AT A TIME", "PLANNED"),
+    ("C7", "RESTORE USER-VALUED CAPABILITIES INCREMENTALLY", "PLANNED"),
 )
 
 CANONICAL_ROADMAP_STAGES: tuple[CanonicalRecord, ...] = tuple(
@@ -346,13 +346,13 @@ CANONICAL_ROADMAP_STAGES: tuple[CanonicalRecord, ...] = tuple(
         kind=CanonicalKind.ROADMAP_STAGE,
         title=title,
         status=status,
-        capabilities=("ARCHITECTURE_GOVERNANCE", "NATURAL_INFORMATIONAL_PRESENTATION") if stage_id >= "C4" else ("ARCHITECTURE_GOVERNANCE",),
-        classification="CURRENT_REUSE" if status == "COMPLETE" else "FIELD_PROOF_REQUIRED" if stage_id == "C7" else "HISTORICAL_ADAPTATION" if stage_id in {"C4", "C5"} else "CURRENT_EXTENSION",
-        summary="Canonicalization track" if stage_id <= "C3" else "Product reliability and controlled promotion track",
+        capabilities=("ARCHITECTURE_GOVERNANCE", "NATURAL_INFORMATIONAL_PRESENTATION") if stage_id in {"C1", "C2", "C3", "C4", "C5"} else ("ARCHITECTURE_GOVERNANCE",),
+        classification="CURRENT_REUSE" if status == "CURRENT" else "FIELD_PROOF_REQUIRED" if stage_id == "C4" else "HISTORICAL_ADAPTATION" if stage_id in {"C1", "C2"} else "CURRENT_EXTENSION",
+        summary="Canonicalization track; recovered product-expansion ideas remain separate typed records.",
         recommended_action="PRESERVE_ORDER",
         priority="NEXT" if status == "APPROVED_NEXT_STEP" else "ORDERED",
         source_refs=("D74",),
-        metadata={"track": "CANONICALIZATION" if stage_id <= "C3" else "PRODUCT_EXPANSION"},
+        metadata={"track": "CANONICALIZATION"},
     )
     for stage_id, title, status in _STAGES
 )

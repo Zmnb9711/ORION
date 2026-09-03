@@ -524,12 +524,12 @@ class RoadmapService:
                     status=status,
                     proof_badges=badges,
                     completed=completed,
-                    current=record_id == "C3",
+                    current=status == "CURRENT",
                     capabilities=capabilities,
                     decision_ids=["D74"],
                     evidence_ids=evidence,
                     guard_report_ids=[guard_report_id],
-                    parent_ids=["canonical:C3"] if record_id == "C4" else [],
+                    parent_ids=["canonical:C0"] if record_id == "C1" else [],
                     provenance=[
                         ProvenancePointer(
                             category="GUARD",

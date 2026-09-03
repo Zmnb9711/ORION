@@ -241,7 +241,7 @@ def test_real_fixture_build_is_maximum_detail_and_oldest_first(tmp_path: Path) -
     snapshot = _service(tmp_path).build_snapshot()
     assert snapshot.state is RoadmapState.CURRENT
     assert snapshot.nodes[0].node_id == "project:orion"
-    assert any(node.node_id == "canonical:C4" for node in snapshot.nodes)
+    assert any(node.node_id == "canonical:C1" for node in snapshot.nodes)
     assert snapshot.statistics.nodes >= 25
     assert snapshot.statistics.edges >= 10
     assert snapshot.content_fingerprint == snapshot.expected_fingerprint()
@@ -367,13 +367,13 @@ def test_expand_collapse_hides_stage_children_only(tmp_path: Path) -> None:
 def test_phase3_completion_moves_current_to_checkpoint(tmp_path: Path) -> None:
     service = _service(tmp_path, phase3_complete=True)
     snapshot = service.build_snapshot()
-    assert snapshot.current_node_id == "canonical:C3"
+    assert snapshot.current_node_id == "canonical:C0"
     assert sum(node.node_type is NodeType.PLANNED for node in snapshot.nodes) >= 4
 
     position = service.development_position(snapshot)
     assert position.checkpoint_stage == "CANONICAL ORION BASELINE ESTABLISHED · CURRENT"
     assert position.approved_next_step == "REALTIME INFORMATIONAL PRESENTER RELIABILITY CORRECTION"
-    assert position.current_node_id == "canonical:C3"
+    assert position.current_node_id == "canonical:C0"
 
 
 def test_checkpoint_candidate_uses_current_roadmap_not_stale_saved_checkpoint(
@@ -410,9 +410,9 @@ def test_canonical_roadmap_preserves_visual_classes_and_current_position(tmp_pat
     assert len(retirement) == 8
     assert all(node.completed for node in golden)
     assert all(not node.completed and node.branch_type is BranchType.RECOVERED_FUTURE for node in ideas)
-    assert snapshot.current_node_id == "canonical:C3"
+    assert snapshot.current_node_id == "canonical:C0"
     position = service.development_position(snapshot)
-    assert position.approved_next_node_id == "canonical:C4"
+    assert position.approved_next_node_id == "canonical:C1"
 
 
 def test_canonical_search_filters_and_summary_are_machine_retrievable(tmp_path: Path) -> None:
