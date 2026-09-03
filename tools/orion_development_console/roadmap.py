@@ -205,6 +205,28 @@ class RoadmapService:
     def latest_guard_report(self) -> dict[str, Any]:
         return self._latest_guard()
 
+    def canonical_summary(self) -> dict[str, Any]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT record_kind, COUNT(*) AS count FROM canonical_records GROUP BY record_kind"
+            ).fetchall()
+            records = [dict(row) for row in connection.execute(
+                "SELECT record_id, record_kind, title, status, classification, priority, "
+                "user_valued, summary FROM canonical_records ORDER BY record_kind, record_id"
+            )]
+            signature = connection.execute(
+                "SELECT value FROM graph_metadata WHERE key='CANONICAL_INPUT_SIGNATURE'"
+            ).fetchone()
+        counts = {str(row["record_kind"]): int(row["count"]) for row in rows}
+        return {
+            "strategy": "STRATEGY_A_CURRENT_RECONNECT",
+            "current_position": "CANONICAL ORION BASELINE ESTABLISHED",
+            "next_step": "REALTIME INFORMATIONAL PRESENTER RELIABILITY CORRECTION",
+            "counts": counts,
+            "records": records,
+            "input_signature": str(signature[0]) if signature else "MISSING",
+        }
+
     def dependency_fingerprint(self) -> tuple[str, dict[str, str | None]]:
         git = self.memory.current_git()
         guard = self._latest_guard()
@@ -321,10 +343,10 @@ class RoadmapService:
             edges.extend(graph_edges)
             guard_nodes = self._guard_nodes(connection)
             nodes.extend(guard_nodes)
+            nodes.extend(self._canonical_nodes(connection, str(guard.get("report_id") or "UNKNOWN")))
         nodes.extend(self._live_document_nodes())
         checkpoint_nodes = self._checkpoint_nodes()
         nodes.extend(checkpoint_nodes)
-        nodes.extend(self._phase_and_future_nodes(nodes, str(guard.get("report_id") or "UNKNOWN")))
         nodes = self._deduplicate_nodes(nodes)
         stage_nodes, stage_edges = self._stage_nodes(nodes)
         nodes.extend(stage_nodes)
@@ -448,6 +470,89 @@ class RoadmapService:
                         )
                     ],
                     metadata=metadata if isinstance(metadata, dict) else {},
+                )
+            )
+        return nodes
+
+    def _canonical_nodes(
+        self, connection: sqlite3.Connection, guard_report_id: str
+    ) -> list[RoadmapNode]:
+        nodes: list[RoadmapNode] = []
+        rows = connection.execute(
+            "SELECT * FROM canonical_records ORDER BY record_kind, record_id"
+        ).fetchall()
+        for index, row in enumerate(rows):
+            kind = str(row["record_kind"])
+            status = str(row["status"])
+            metadata = _json(row["metadata_json"], {})
+            capabilities = list(_json(row["capabilities_json"], []))
+            evidence = list(_json(row["evidence_refs_json"], []))
+            if kind in {"RECOVERED_IDEA", "USER_VALUED_FORGOTTEN_IDEA"}:
+                node_type = NodeType.RECOVERED_IDEA
+                branch = BranchType.RECOVERED_FUTURE
+                badges = [ProofBadge.RECOVERED]
+                completed = False
+            elif kind == "HISTORICAL_RECONNECT_ITEM":
+                node_type = NodeType.HISTORICAL_RECONNECT
+                branch = BranchType.HISTORICAL_ALTERNATIVE
+                badges = [ProofBadge.PROBE_PROVEN]
+                completed = False
+            elif kind == "RETIREMENT_CANDIDATE":
+                node_type = NodeType.RETIREMENT
+                branch = BranchType.HISTORICAL_ALTERNATIVE
+                badges = [ProofBadge.SUPERSEDED]
+                completed = True
+            elif kind == "CANONICAL_ROADMAP_STAGE":
+                node_type = NodeType.MILESTONE if status in {"COMPLETE", "CURRENT"} else NodeType.PLANNED
+                branch = BranchType.GOVERNANCE if status in {"COMPLETE", "CURRENT"} else BranchType.FUTURE
+                badges = [ProofBadge.AUTOMATED_PROVEN] if status in {"COMPLETE", "CURRENT"} else []
+                completed = status in {"COMPLETE", "CURRENT"}
+            else:
+                node_type = NodeType.CANONICAL
+                branch = BranchType.MAIN if kind == "GOLDEN_COMPONENT" else BranchType.GOVERNANCE
+                badges = [ProofBadge.AUTOMATED_PROVEN] if kind == "GOLDEN_COMPONENT" else [ProofBadge.IMPLEMENTED]
+                completed = True
+            record_id = str(row["record_id"])
+            nodes.append(
+                RoadmapNode(
+                    node_id=f"canonical:{record_id}",
+                    node_type=node_type,
+                    title=str(row["title"]),
+                    description=str(row["summary"]),
+                    occurred_at=f"2026-09-03T{index // 60:02d}:{index % 60:02d}:00+00:00",
+                    branch_type=branch,
+                    status=status,
+                    proof_badges=badges,
+                    completed=completed,
+                    current=record_id == "C3",
+                    capabilities=capabilities,
+                    decision_ids=["D74"],
+                    evidence_ids=evidence,
+                    guard_report_ids=[guard_report_id],
+                    parent_ids=["canonical:C3"] if record_id == "C4" else [],
+                    provenance=[
+                        ProvenancePointer(
+                            category="GUARD",
+                            source_item_id="D74",
+                            pointer={
+                                "record_id": record_id,
+                                "record_kind": kind,
+                                "input_signature": row["input_signature"],
+                            },
+                            confidence="VERY_HIGH",
+                        )
+                    ],
+                    metadata={
+                        "canonical_kind": kind,
+                        "classification": row["classification"],
+                        "priority": row["priority"],
+                        "user_decision_required": bool(row["user_decision_required"]),
+                        "user_valued": bool(row["user_valued"]),
+                        "proof_level": row["proof_level"],
+                        "recommended_action": row["recommended_action"],
+                        "source_refs": _json(row["source_refs_json"], []),
+                        **metadata,
+                    },
                 )
             )
         return nodes
@@ -976,6 +1081,12 @@ class RoadmapService:
                 include = bool(node.decision_ids) or node.node_type in {NodeType.DECISION, NodeType.REJECTION, NodeType.SUPERSESSION}
             elif name == "CHECKPOINTS":
                 include = node.node_type is NodeType.CHECKPOINT
+            elif name == "HISTORICAL RECONNECT":
+                include = node.node_type is NodeType.HISTORICAL_RECONNECT
+            elif name == "RECOVERED IDEAS":
+                include = node.metadata.get("canonical_kind") == "RECOVERED_IDEA"
+            elif name == "CANONICAL":
+                include = node.node_type in {NodeType.CANONICAL, NodeType.HISTORICAL_RECONNECT, NodeType.RECOVERED_IDEA, NodeType.RETIREMENT}
             else:
                 include = True
             if include:
@@ -1099,6 +1210,10 @@ def _node_sort_key(node: RoadmapNode) -> tuple[str, int, str]:
         NodeType.DISCONNECTION: 18,
         NodeType.GUARD_EVENT: 19,
         NodeType.PLANNED: 20,
+        NodeType.CANONICAL: 21,
+        NodeType.HISTORICAL_RECONNECT: 22,
+        NodeType.RECOVERED_IDEA: 23,
+        NodeType.RETIREMENT: 24,
     }
     return node.occurred_at, order[node.node_type], node.node_id
 

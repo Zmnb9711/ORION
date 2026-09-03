@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-AG2_SEED_VERSION = "1"
+AG2_SEED_VERSION = "2"
 
 FAMILY_CAPABILITIES: dict[str, tuple[str, ...]] = {
     "DCS_WORLD_STATE": (
@@ -299,6 +299,7 @@ DECISION_CAPABILITY_OVERRIDES: dict[str, tuple[str, ...]] = {
     "D71": ("ARCHITECTURE_GOVERNANCE",),
     "D72": ("NATURAL_INFORMATIONAL_PRESENTATION", "PROTECTED_OPERATIONAL_COMMUNICATION"),
     "D73": ("ARCHITECTURE_GOVERNANCE",),
+    "D74": ("ARCHITECTURE_GOVERNANCE", "PRODUCT_SCOPE"),
 }
 
 EVIDENCE_SEEDS: tuple[dict[str, Any], ...] = (

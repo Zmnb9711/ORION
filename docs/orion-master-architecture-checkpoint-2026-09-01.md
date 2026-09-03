@@ -1,5 +1,20 @@
 # ORION Full-Product Master Architecture Checkpoint — 2026-09-01
 
+## 2026-09-03 canonical development baseline
+
+D74 establishes `STRATEGY_A_CURRENT_RECONNECT`: current lineage is the
+canonical baseline, historically superior mechanisms are reconnected/adapted,
+stronger current mechanisms are preserved, and approved unfinished ideas stay
+visible. The required layers are CURRENT BEST, HISTORICAL BEST, and RECOVERED
+UNIMPLEMENTED IDEA. The durable register is
+`docs/orion-canonical-development-policy.md`.
+
+Current position: **CANONICAL ORION BASELINE ESTABLISHED**. Next exact step:
+**REALTIME INFORMATIONAL PRESENTER RELIABILITY CORRECTION**, followed only on
+PASS by an isolated benchmark, bounded selector, and controlled DCS/SRS field
+test. Persistent Realtime remains `KEEP / NON_DEFAULT / BENCHMARK_NO_GO` under
+`IPB-20260903-171624`; it is not a production default.
+
 Status: **AUTHORITATIVE FULL-PRODUCT MASTER CHECKPOINT**
 
 Current repository baseline for this historical checkpoint update:

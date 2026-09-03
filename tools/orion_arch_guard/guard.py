@@ -159,6 +159,10 @@ class ArchitectureGuard:
         previous_best = self._previous_best(scenarios, history, proposed)
         performance = self._performance(capabilities, scenarios)
         evidence_reuse = self._evidence_reuse(scenarios, history, conflicts)
+        canonical_context = self.graph.canonical_context(
+            [str(item["capability_id"]) for item in capabilities],
+            query=combined,
+        )
 
         if coverage["architecture_critical_missing"]:
             gate = ArchitectureGate.INCOMPLETE_HISTORY
@@ -196,6 +200,7 @@ class ArchitectureGuard:
             "ownership_drift": ownership_drift,
             "performance": performance,
             "evidence_reuse": evidence_reuse,
+            "canonical_context": canonical_context,
             "conflicts": conflicts,
             "requires_user_decision": gate is ArchitectureGate.USER_DECISION_REQUIRED,
             "gate": gate.value,
@@ -616,7 +621,7 @@ class ArchitectureGuard:
             "codex_history": "COMPLETE" if item_counts.get("codex_response_item", 0) else "UNAVAILABLE",
             "git_all": "COMPLETE" if item_counts.get("git_commit", 0) else "UNAVAILABLE",
             "deleted_history_lineage": "COMPLETE" if item_counts.get("git_path_change", 0) else "UNAVAILABLE",
-            "decision_register": "COMPLETE" if item_counts.get("decision_register_row", 0) == 73 else "PARTIAL",
+            "decision_register": "COMPLETE" if item_counts.get("decision_register_row", 0) == 74 else "PARTIAL",
             "master": "COMPLETE" if "master-architecture" in source_paths else "UNAVAILABLE",
             "development_history": "COMPLETE" if "development-history" in source_paths else "UNAVAILABLE",
             "evidence": "COMPLETE" if item_counts.get("evidence_archive", 0) else "UNAVAILABLE",
@@ -1176,6 +1181,17 @@ def render_human_report(result: dict[str, Any]) -> str:
         "## Previous implementations",
         "",
         ", ".join(previous["previous_implementations_found"]) or "NONE",
+        "",
+        "## Canonical context",
+        "",
+        f"Strategy: {_ids(result['canonical_context']['strategy'], 'record_id')}  ",
+        f"Current Best: {_ids(result['canonical_context']['current_best'], 'record_id')}  ",
+        f"Historical Best: {_ids(result['canonical_context']['historical_best'], 'record_id')}  ",
+        f"Recovered unimplemented ideas: {_ids(result['canonical_context']['recovered_unimplemented_ideas'], 'record_id')}  ",
+        f"DO NOT REINVENT: {_ids(result['canonical_context']['do_not_reinvent'], 'record_id')}  ",
+        f"Retirement conflicts: {_ids(result['canonical_context']['retirement_conflicts'], 'record_id')}  ",
+        f"Work classification: `{result['canonical_context']['work_classification']}`; "
+        f"actually missing: `{result['canonical_context']['actually_missing']}`.",
         "",
         "## Field-proven previous implementations",
         "",

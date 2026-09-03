@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-INDEX_SCHEMA_VERSION = "3"
+INDEX_SCHEMA_VERSION = "4"
 PARSER_VERSION = "3"
 GUARD_RULESET_VERSION = "1"
 
@@ -114,6 +114,31 @@ CREATE TABLE IF NOT EXISTS performance_metrics (metric_id TEXT PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS relationships (relationship_id TEXT PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS guard_runs (run_id TEXT PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS guard_conflicts (conflict_id TEXT PRIMARY KEY);
+CREATE TABLE IF NOT EXISTS canonical_records (
+    record_id TEXT PRIMARY KEY,
+    record_kind TEXT NOT NULL,
+    title TEXT NOT NULL,
+    status TEXT NOT NULL,
+    classification TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    proof_level TEXT NOT NULL,
+    recommended_action TEXT NOT NULL,
+    priority TEXT NOT NULL,
+    user_decision_required INTEGER NOT NULL,
+    user_valued INTEGER NOT NULL,
+    capabilities_json TEXT NOT NULL,
+    source_refs_json TEXT NOT NULL,
+    evidence_refs_json TEXT NOT NULL,
+    metadata_json TEXT NOT NULL,
+    input_signature TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS canonical_record_capabilities (
+    record_id TEXT NOT NULL,
+    capability_id TEXT NOT NULL,
+    PRIMARY KEY (record_id, capability_id),
+    FOREIGN KEY (record_id) REFERENCES canonical_records(record_id) ON DELETE CASCADE,
+    FOREIGN KEY (capability_id) REFERENCES capabilities(capability_id)
+);
 
 CREATE TABLE IF NOT EXISTS capability_aliases (
     alias_key TEXT PRIMARY KEY,
@@ -304,6 +329,12 @@ def _create_graph_indexes(connection: sqlite3.Connection) -> None:
             ON guard_runs(gate);
         CREATE INDEX IF NOT EXISTS idx_guard_conflicts_run
             ON guard_conflicts(run_id);
+        CREATE INDEX IF NOT EXISTS idx_canonical_records_kind
+            ON canonical_records(record_kind, status);
+        CREATE INDEX IF NOT EXISTS idx_canonical_records_classification
+            ON canonical_records(classification);
+        CREATE INDEX IF NOT EXISTS idx_canonical_capabilities_capability
+            ON canonical_record_capabilities(capability_id, record_id);
         """
     )
 

@@ -118,6 +118,7 @@ def _decision_row(decision_id: str) -> str:
         "D71": "Development process",
         "D72": "Informational UX",
         "D73": "Development process",
+        "D74": "Development process",
     }.get(decision_id, "Product")
     return (
         f"| {decision_id} | 2026-01-01 | {area} | Exact decision {decision_id} | "
@@ -128,14 +129,14 @@ def _decision_row(decision_id: str) -> str:
 def _fixture_database(tmp_path: Path) -> Path:
     database = tmp_path / "private" / "index.sqlite3"
     document = tmp_path / "decision-register.md"
-    lines = [_decision_row(f"D{number:02d}") for number in range(1, 74)]
+    lines = [_decision_row(f"D{number:02d}") for number in range(1, 75)]
     document.write_text("\n".join(lines) + "\n", encoding="utf-8")
     connection = connect_index(database)
     migrate(connection)
     _insert_source(connection, "fixture-doc", document)
     _insert_source(connection, "fixture-git", tmp_path / "repo")
     _insert_source(connection, "fixture-evidence", tmp_path / "evidence")
-    for ordinal, decision_id in enumerate(f"D{number:02d}" for number in range(1, 74)):
+    for ordinal, decision_id in enumerate(f"D{number:02d}" for number in range(1, 75)):
         _insert_item(
             connection,
             item_id=f"document:decision:{decision_id}",
@@ -258,8 +259,8 @@ def test_all_decisions_and_supersession_rejection_edges_have_provenance(tmp_path
     finally:
         connection.close()
 
-    assert result.decisions == 73
-    assert decision_ids == {f"D{number:02d}" for number in range(1, 74)}
+    assert result.decisions == 74
+    assert decision_ids == {f"D{number:02d}" for number in range(1, 75)}
     assert supersession >= 7
     assert rejection >= 3
     assert orphan_hard == 0

@@ -10,6 +10,12 @@ from pathlib import Path
 from typing import Any, Iterable, Sequence
 
 from tools.orion_arch_guard.fingerprints import canonical_sha256
+from tools.orion_arch_guard.canonical_seed import (
+    ALL_CANONICAL_RECORDS,
+    CANONICAL_SEED_VERSION,
+    CanonicalKind,
+    WorkClassification,
+)
 from tools.orion_arch_guard.graph_seed import (
     AG2_SEED_VERSION,
     AREA_CAPABILITIES,
@@ -28,6 +34,8 @@ from tools.orion_arch_guard.schema import connect_index, migrate
 _DECISION_ID = re.compile(r"D\d{2}")
 _COMMIT = re.compile(r"[0-9a-fA-F]{7,40}")
 _GRAPH_TABLES = (
+    "canonical_record_capabilities",
+    "canonical_records",
     "relationships",
     "graph_provenance",
     "ownership_assignments",
@@ -66,6 +74,7 @@ class GraphBuildResult:
     relationships: int
     ownership_assignments: int
     provenance_links: int
+    canonical_records: int
     input_signature: str
 
     def to_dict(self) -> dict[str, Any]:
@@ -156,7 +165,7 @@ class GraphBuilder:
         return resolved
 
     def _all_required_refs(self) -> list[str]:
-        refs: set[str] = {f"D{number:02d}" for number in range(1, 74)}
+        refs: set[str] = {f"D{number:02d}" for number in range(1, 75)}
         for seed in IMPLEMENTATION_SEEDS:
             refs.update(str(value) for value in seed.get("commits", []))
             refs.update(str(value) for value in seed.get("decisions", []))
@@ -178,6 +187,7 @@ class GraphBuilder:
         return canonical_sha256(
             {
                 "ag2_seed_version": AG2_SEED_VERSION,
+                "canonical_seed_version": CANONICAL_SEED_VERSION,
                 "seed_payload": {
                     "families": FAMILY_CAPABILITIES,
                     "details": CAPABILITY_DETAILS,
@@ -189,6 +199,7 @@ class GraphBuilder:
                     "evidence": EVIDENCE_SEEDS,
                     "relationships": EXTRA_RELATIONSHIPS,
                     "ownership": OWNERSHIP_SEEDS,
+                    "canonical": [record.to_dict() for record in ALL_CANONICAL_RECORDS],
                 },
                 "resolved_sources": resolved,
             }
@@ -206,6 +217,7 @@ class GraphBuilder:
                 "relationships",
                 "ownership_assignments",
                 "graph_provenance",
+                "canonical_records",
             )
         }
 
@@ -225,6 +237,7 @@ class GraphBuilder:
             relationships=counts["relationships"],
             ownership_assignments=counts["ownership_assignments"],
             provenance_links=counts["graph_provenance"],
+            canonical_records=counts["canonical_records"],
             input_signature=signature,
         )
 
@@ -250,6 +263,7 @@ class GraphBuilder:
             self._insert_automatic_relationships(decisions)
             self._insert_extra_relationships()
             self._insert_ownership()
+            self._insert_canonical_records(signature)
             self._validate_graph()
             self.connection.execute(
                 "INSERT OR REPLACE INTO graph_metadata(key, value) VALUES ('AG2_SEED_VERSION', ?)",
@@ -257,6 +271,14 @@ class GraphBuilder:
             )
             self.connection.execute(
                 "INSERT OR REPLACE INTO graph_metadata(key, value) VALUES ('AG2_INPUT_SIGNATURE', ?)",
+                (signature,),
+            )
+            self.connection.execute(
+                "INSERT OR REPLACE INTO graph_metadata(key, value) VALUES ('CANONICAL_SEED_VERSION', ?)",
+                (CANONICAL_SEED_VERSION,),
+            )
+            self.connection.execute(
+                "INSERT OR REPLACE INTO graph_metadata(key, value) VALUES ('CANONICAL_INPUT_SIGNATURE', ?)",
                 (signature,),
             )
             self.connection.commit()
@@ -290,10 +312,23 @@ class GraphBuilder:
         implementation_ids = {str(seed["id"]) for seed in IMPLEMENTATION_SEEDS}
         mechanism_ids = {str(seed["id"]) for seed in MECHANISM_SEEDS}
         evidence_ids = {str(seed["id"]) for seed in EVIDENCE_SEEDS}
+        canonical_ids = {record.record_id for record in ALL_CANONICAL_RECORDS}
         if len(implementation_ids) != len(IMPLEMENTATION_SEEDS):
             raise GraphBuildError("implementation IDs must be unique")
         if len(mechanism_ids) != len(MECHANISM_SEEDS):
             raise GraphBuildError("mechanism IDs must be unique")
+        if len(canonical_ids) != len(ALL_CANONICAL_RECORDS):
+            raise GraphBuildError("canonical record IDs must be unique")
+        unknown_canonical = {
+            capability
+            for record in ALL_CANONICAL_RECORDS
+            for capability in record.capabilities
+            if capability not in capabilities
+        }
+        if unknown_canonical:
+            raise GraphBuildError(
+                f"unknown capability IDs in canonical seed: {sorted(unknown_canonical)}"
+            )
         for seed in IMPLEMENTATION_SEEDS:
             unknown = set(str(value) for value in seed.get("mechanisms", [])) - mechanism_ids
             if unknown:
@@ -381,7 +416,7 @@ class GraphBuilder:
 
     def _insert_decisions(self) -> dict[str, list[str]]:
         results: dict[str, list[str]] = {}
-        for number in range(1, 74):
+        for number in range(1, 75):
             decision_id = f"D{number:02d}"
             cells, resolved = self._parse_decision(decision_id)
             superseded = [
@@ -801,10 +836,71 @@ class GraphBuilder:
             }
         )
 
+    def _insert_canonical_records(self, input_signature: str) -> None:
+        decision = self.resolve_ref("D74")
+        for record in ALL_CANONICAL_RECORDS:
+            value = record.to_dict()
+            self.connection.execute(
+                """
+                INSERT INTO canonical_records(
+                    record_id, record_kind, title, status, classification,
+                    summary, proof_level, recommended_action, priority,
+                    user_decision_required, user_valued, capabilities_json,
+                    source_refs_json, evidence_refs_json, metadata_json,
+                    input_signature
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    record.record_id,
+                    record.kind.value,
+                    record.title,
+                    record.status,
+                    record.classification,
+                    record.summary,
+                    record.proof_level,
+                    record.recommended_action,
+                    record.priority,
+                    int(record.user_decision_required),
+                    int(record.user_valued),
+                    _json(record.capabilities),
+                    _json(record.source_refs),
+                    _json(record.evidence_refs),
+                    _json(record.metadata),
+                    input_signature,
+                ),
+            )
+            for capability in record.capabilities:
+                self.connection.execute(
+                    "INSERT INTO canonical_record_capabilities(record_id, capability_id) VALUES (?, ?)",
+                    (record.record_id, capability),
+                )
+                self._insert_relationship(
+                    "CANONICAL_RECORD",
+                    record.record_id,
+                    "GOVERNS" if record.kind is CanonicalKind.DO_NOT_REINVENT else "APPLIES_TO",
+                    "CAPABILITY",
+                    capability,
+                    [decision],
+                    confidence="VERY_HIGH",
+                    metadata={"canonical_kind": record.kind.value},
+                )
+            self._insert_provenance(
+                node_type="CANONICAL_RECORD",
+                node_id=record.record_id,
+                sources=[decision],
+                provenance_kind="D74_CANONICALIZATION",
+                confidence="VERY_HIGH",
+            )
+
     def _validate_graph(self) -> None:
         counts = self._counts()
-        if counts["decisions"] != 73:
-            raise GraphBuildError(f"expected 73 decisions, found {counts['decisions']}")
+        if counts["decisions"] != 74:
+            raise GraphBuildError(f"expected 74 decisions, found {counts['decisions']}")
+        if counts["canonical_records"] != len(ALL_CANONICAL_RECORDS):
+            raise GraphBuildError(
+                f"expected {len(ALL_CANONICAL_RECORDS)} canonical records, "
+                f"found {counts['canonical_records']}"
+            )
         hard_nodes = {
             "DECISION": "decisions",
             "IMPLEMENTATION": "implementations",
@@ -1075,6 +1171,7 @@ class CapabilityGraph:
                 "relationships",
                 "ownership_assignments",
                 "graph_provenance",
+                "canonical_records",
             )
         }
         return {
@@ -1083,9 +1180,130 @@ class CapabilityGraph:
             "seed_version": self.connection.execute(
                 "SELECT value FROM graph_metadata WHERE key = 'AG2_SEED_VERSION'"
             ).fetchone()[0],
+            "canonical_seed_version": self.connection.execute(
+                "SELECT value FROM graph_metadata WHERE key = 'CANONICAL_SEED_VERSION'"
+            ).fetchone()[0],
             "previous_best_engine": False,
             "architecture_gate_engine": False,
             "semantic_vector_retrieval": False,
+        }
+
+    def canonical_records(
+        self,
+        *,
+        capabilities: Sequence[str] = (),
+        kinds: Sequence[str] = (),
+        query: str = "",
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        parameters: list[str] = []
+        if capabilities:
+            placeholders = ",".join("?" for _ in capabilities)
+            clauses.append(
+                "record_id IN (SELECT record_id FROM canonical_record_capabilities "
+                f"WHERE capability_id IN ({placeholders}))"
+            )
+            parameters.extend(capabilities)
+        if kinds:
+            placeholders = ",".join("?" for _ in kinds)
+            clauses.append(f"record_kind IN ({placeholders})")
+            parameters.extend(kinds)
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        rows = [
+            self._decoded(row)
+            for row in self.connection.execute(
+                f"SELECT * FROM canonical_records{where} ORDER BY record_kind, record_id",
+                tuple(parameters),
+            )
+        ]
+        terms = [normalize_alias(term) for term in query.split() if normalize_alias(term)]
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            row["user_decision_required"] = bool(row["user_decision_required"])
+            row["user_valued"] = bool(row["user_valued"])
+            row["provenance"] = self._provenance("CANONICAL_RECORD", str(row["record_id"]))
+            payload = normalize_alias(_json(row))
+            if not terms or all(term in payload for term in terms):
+                result.append(row)
+        return result
+
+    def canonical_context(
+        self, capabilities: Sequence[str] = (), *, query: str = ""
+    ) -> dict[str, Any]:
+        records = self.canonical_records(capabilities=capabilities)
+        grouped: dict[str, list[dict[str, Any]]] = {
+            kind.value: [] for kind in CanonicalKind
+        }
+        for record in records:
+            grouped[str(record["record_kind"])].append(record)
+        normalized_query = normalize_alias(query)
+        requested_retirement = []
+        mutation = any(
+            marker in normalized_query
+            for marker in ("restore", "add", "use", "build", "replace", "вернуть", "добавить", "восстановить")
+        )
+        explicitly_negated = any(
+            marker in normalized_query
+            for marker in (
+                "do_not_restore",
+                "must_not_restore",
+                "without_restoring",
+                "не_восстанавливать",
+                "не_возвращать",
+            )
+        )
+        mutation = mutation and not explicitly_negated
+        if mutation:
+            retirement_terms = {
+                "RC01": ("packet_gap", "пакет"),
+                "RC02": ("fixed_timeout", "фиксирован"),
+                "RC03": ("provider_vad", "vad"),
+                "RC04": ("hard_language", "four_language", "четыр"),
+                "RC05": ("whisper",),
+                "RC06": ("sapi",),
+                "RC07": ("mandatory_qwen", "qwen_operational"),
+                "RC08": ("20_30", "pilot_corpus"),
+            }
+            requested_retirement = [
+                record
+                for record in grouped[CanonicalKind.RETIREMENT.value]
+                if any(term in normalized_query for term in retirement_terms.get(str(record["record_id"]), ()))
+            ]
+        if requested_retirement:
+            classification = "RETIREMENT_CONFLICT"
+        elif grouped[CanonicalKind.HISTORICAL_RECONNECT.value]:
+            classification = WorkClassification.HISTORICAL_ADAPTATION.value
+        elif grouped[CanonicalKind.RECOVERED_IDEA.value] and not grouped[CanonicalKind.GOLDEN_COMPONENT.value]:
+            classification = WorkClassification.RECOVERED_IDEA_IMPLEMENTATION.value
+        elif grouped[CanonicalKind.GOLDEN_COMPONENT.value]:
+            classification = WorkClassification.CURRENT_EXTENSION.value
+        else:
+            classification = WorkClassification.TRUE_GREENFIELD.value
+        signature = self.connection.execute(
+            "SELECT value FROM graph_metadata WHERE key = 'CANONICAL_INPUT_SIGNATURE'"
+        ).fetchone()
+        return {
+            "strategy": grouped[CanonicalKind.STRATEGY.value],
+            "current_best": grouped[CanonicalKind.GOLDEN_COMPONENT.value],
+            "historical_best": grouped[CanonicalKind.HISTORICAL_RECONNECT.value],
+            "recovered_unimplemented_ideas": grouped[CanonicalKind.RECOVERED_IDEA.value],
+            "user_valued_forgotten_ideas": grouped[CanonicalKind.USER_VALUED_IDEA.value],
+            "do_not_reinvent": grouped[CanonicalKind.DO_NOT_REINVENT.value],
+            "retirement_candidates": grouped[CanonicalKind.RETIREMENT.value],
+            "retirement_conflicts": requested_retirement,
+            "roadmap_stages": grouped[CanonicalKind.ROADMAP_STAGE.value],
+            "work_classification": classification,
+            "actually_missing": classification == WorkClassification.TRUE_GREENFIELD.value,
+            "search_order": [
+                "CURRENT_BEST",
+                "HISTORICAL_IMPLEMENTATION",
+                "HISTORICAL_MECHANISM",
+                "DISCONNECTED",
+                "PROBE",
+                "RECOVERED_UNIMPLEMENTED_IDEA",
+                "TRUE_GREENFIELD",
+            ],
+            "input_signature": str(signature[0]) if signature else "MISSING",
         }
 
     def _select_nodes(

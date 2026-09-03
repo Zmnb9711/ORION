@@ -1,5 +1,18 @@
 # ORION Development History — 2026-09-02
 
+## 2026-09-03 — canonical audit persistence
+
+- D74 records the user-approved `STRATEGY_A_CURRENT_RECONNECT` baseline.
+- The existing Guard SQLite/graph gains typed Golden Component, Historical
+  Reconnect, DO NOT REINVENT, Retirement, Recovered Idea, user-value, and C0–C7
+  roadmap records with capability links and an input signature.
+- Development Console exposes compact canonical context, capability-filtered
+  Recall context, and distinct not-implemented recovered-idea Roadmap nodes.
+- Persistent Realtime remains `KEEP / NON_DEFAULT / BENCHMARK_NO_GO` from
+  `IPB-20260903-171624`; no benchmark rerun or production promotion occurred.
+- Production runtime, DCS/SRS, providers, microphone, packaging, release, and
+  installed ORION were not changed by this governance checkpoint.
+
 Status: **DAILY DEVELOPMENT / FIELD-EVIDENCE CHECKPOINT**
 
 This document records the ORION work completed during the 2026-09-01/02 development session. It is a historical checkpoint, not a replacement for the authoritative Master Architecture Checkpoint or Master Decision Register.

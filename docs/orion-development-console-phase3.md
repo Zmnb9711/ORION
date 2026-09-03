@@ -1,5 +1,16 @@
 # ORION Development Console Phase 3
 
+## Canonical Roadmap integration
+
+The derived Roadmap shows current Golden Components, historical reconnect
+candidates, retirement history, U01–U20 recovered ideas, ten protected
+user-value markers, and C0–C7 stages. Recovered ideas use a distinct purple
+not-implemented class; test/experimental lineage remains cyan/blue, completed
+proof green, and planned work gray. Current position is `CANONICAL ORION
+BASELINE ESTABLISHED`; next is `REALTIME INFORMATIONAL PRESENTER RELIABILITY
+CORRECTION`. Filters cover canonical context, historical reconnect, and
+recovered ideas. Refresh remains derived/idempotent with no automatic save.
+
 ## Purpose and boundary
 
 Phase 3 activates the existing Development Console `ROADMAP` section as a

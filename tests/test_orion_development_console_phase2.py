@@ -76,7 +76,7 @@ def _guard() -> dict[str, object]:
         "history_coverage": {"overall": "COMPLETE", "architecture_critical_missing": []},
         "affected_capabilities": [{"capability_id": "ARCHITECTURE_GOVERNANCE"}],
         "decisions": {
-            "CURRENT": [{"decision_id": "D71"}, {"decision_id": "D73"}],
+            "CURRENT": [{"decision_id": "D71"}, {"decision_id": "D73"}, {"decision_id": "D74"}],
             "SUPERSEDED": [{"decision_id": "D30"}],
             "REJECTED": [{"decision_id": "D15"}],
         },
@@ -92,6 +92,19 @@ def _guard() -> dict[str, object]:
         "evidence_reuse": {"evidence_remains_valid": True},
         "conflicts": [],
         "requires_user_decision": False,
+        "canonical_context": {
+            "strategy": [{"record_id": "STRATEGY_A_CURRENT_RECONNECT"}],
+            "current_best": [{"record_id": "GC01"}, {"record_id": "GC18"}],
+            "historical_best": [{"record_id": "HR01"}],
+            "recovered_unimplemented_ideas": [{"record_id": "U04"}, {"record_id": "U17"}],
+            "user_valued_forgotten_ideas": [{"record_id": "UV02"}],
+            "do_not_reinvent": [{"record_id": "DNR11"}],
+            "retirement_candidates": [{"record_id": "RC05"}],
+            "retirement_conflicts": [],
+            "work_classification": "CURRENT_EXTENSION",
+            "actually_missing": False,
+            "input_signature": "CANONICAL-FIXTURE",
+        },
     }
 
 
@@ -250,6 +263,8 @@ def test_full_recall_is_bounded_and_contains_provenance(tmp_path: Path) -> None:
     assert GUARD_ID in record.content
     assert "D71" in record.content
     assert "DO NOT REBUILD" in record.content
+    assert "STRATEGY_A_CURRENT_RECONNECT" in record.content
+    assert "IPB-20260903-171624" in record.content
     assert "full private L0 body sentinel" not in record.content
     assert service.prompts.latest() == record
 
@@ -267,6 +282,25 @@ def test_task_recall_uses_guard_capabilities(tmp_path: Path) -> None:
     record = _service(tmp_path, task_guard).generate_task_recall("Tower to Departure")
     assert record.capabilities == ["ATC_HANDOFF", "DEPARTURE", "TOWER"]
     assert "AG-2/AG-3" in record.content
+    assert "Canonical work classification" in record.content
+
+
+def test_checkpoint_candidate_contains_canonical_state_without_saving(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    candidate = service.build_checkpoint_candidate(
+        development_stage="CANONICAL ORION BASELINE ESTABLISHED",
+        approved_next_step="REALTIME INFORMATIONAL PRESENTER RELIABILITY CORRECTION",
+    )
+    assert candidate.canonical_strategy == "STRATEGY_A_CURRENT_RECONNECT"
+    assert candidate.canonical_status == "READY_FOR_USER_SAVE"
+    assert candidate.canonical_baseline_sha == HEAD
+    assert candidate.d74_status == "CURRENT"
+    assert candidate.golden_components == ["GC01", "GC18"]
+    assert candidate.historical_reconnect_items == ["HR01"]
+    assert candidate.recovered_ideas == ["U04", "U17"]
+    assert candidate.canonical_input_signature == "CANONICAL-FIXTURE"
+    assert candidate.realtime_candidate == "BENCHMARK_NO_GO / KEEP / NON_DEFAULT"
+    assert service.checkpoints.list_records() == []
 
 
 @pytest.mark.parametrize(

@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from tools.orion_arch_guard.fingerprints import canonical_sha256
+from tools.orion_arch_guard.canonical_seed import ALL_CANONICAL_RECORDS
 from tools.orion_development_console.context import VerificationContext
 from tools.orion_development_console.memory import DevelopmentMemoryService
 from tools.orion_development_console.memory_models import DevelopmentCheckpoint, PromptRecord, PromptType
@@ -106,7 +107,9 @@ def _database(path: Path) -> None:
         CREATE TABLE capabilities(capability_id TEXT PRIMARY KEY, family TEXT, name TEXT, description TEXT, aliases_json TEXT, historical_terms_json TEXT, code_symbols_json TEXT, providers_json TEXT, related_domains_json TEXT, metadata_json TEXT);
         CREATE TABLE relationships(relationship_id TEXT PRIMARY KEY, source_node_type TEXT, source_node_id TEXT, relationship_type TEXT, target_node_type TEXT, target_node_id TEXT, confidence TEXT, provenance_json TEXT, metadata_json TEXT);
         CREATE TABLE guard_runs(run_id TEXT PRIMARY KEY, created_at_utc TEXT, mode_requested TEXT, mode_effective TEXT, task_hash TEXT, head_sha TEXT, ruleset_version TEXT, index_signature TEXT, logical_signature TEXT, gate TEXT, input_json TEXT, output_json TEXT, human_report_path TEXT, json_report_path TEXT);
+        CREATE TABLE canonical_records(record_id TEXT PRIMARY KEY, record_kind TEXT, title TEXT, status TEXT, classification TEXT, summary TEXT, proof_level TEXT, recommended_action TEXT, priority TEXT, user_decision_required INTEGER, user_valued INTEGER, capabilities_json TEXT, source_refs_json TEXT, evidence_refs_json TEXT, metadata_json TEXT, input_signature TEXT);
         INSERT INTO graph_metadata VALUES('AG2_INPUT_SIGNATURE','GRAPH-FIXTURE');
+        INSERT INTO graph_metadata VALUES('CANONICAL_INPUT_SIGNATURE','CANONICAL-FIXTURE');
         INSERT INTO source_snapshots VALUES('SOURCE-SNAPSHOT','MANIFEST-FIXTURE','2026-09-02T00:00:00+00:00');
         """
     )
@@ -155,6 +158,29 @@ def _database(path: Path) -> None:
         "INSERT INTO guard_runs VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         ("AG-FIXTURE", "2026-09-02T12:00:00+00:00", "FULL", "FULL", "task", "a" * 40, "1", "index", "logical", "PASS", '{"task_title":"Phase 3"}', "{}", None, "AG-FIXTURE.json"),
     )
+    for record in ALL_CANONICAL_RECORDS:
+        value = record.to_dict()
+        connection.execute(
+            "INSERT INTO canonical_records VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                record.record_id,
+                record.kind.value,
+                record.title,
+                record.status,
+                record.classification,
+                record.summary,
+                record.proof_level,
+                record.recommended_action,
+                record.priority,
+                int(record.user_decision_required),
+                int(record.user_valued),
+                json.dumps(value["capabilities"]),
+                json.dumps(value["source_refs"]),
+                json.dumps(value["evidence_refs"]),
+                json.dumps(record.metadata),
+                "CANONICAL-FIXTURE",
+            ),
+        )
     connection.commit()
     connection.close()
 
@@ -215,7 +241,7 @@ def test_real_fixture_build_is_maximum_detail_and_oldest_first(tmp_path: Path) -
     snapshot = _service(tmp_path).build_snapshot()
     assert snapshot.state is RoadmapState.CURRENT
     assert snapshot.nodes[0].node_id == "project:orion"
-    assert snapshot.nodes[-1].node_id == "planned:low-latency-natural-informational-presentation"
+    assert any(node.node_id == "canonical:C4" for node in snapshot.nodes)
     assert snapshot.statistics.nodes >= 25
     assert snapshot.statistics.edges >= 10
     assert snapshot.content_fingerprint == snapshot.expected_fingerprint()
@@ -341,13 +367,13 @@ def test_expand_collapse_hides_stage_children_only(tmp_path: Path) -> None:
 def test_phase3_completion_moves_current_to_checkpoint(tmp_path: Path) -> None:
     service = _service(tmp_path, phase3_complete=True)
     snapshot = service.build_snapshot()
-    assert snapshot.current_node_id == "planned:full-development-console-checkpoint"
-    assert sum(node.node_type is NodeType.PLANNED for node in snapshot.nodes) == 2
+    assert snapshot.current_node_id == "canonical:C3"
+    assert sum(node.node_type is NodeType.PLANNED for node in snapshot.nodes) >= 4
 
     position = service.development_position(snapshot)
-    assert position.checkpoint_stage == "Full Development Console checkpoint · READY FOR USER SAVE"
-    assert position.approved_next_step == "Low-latency natural informational presentation"
-    assert position.current_node_id == "planned:full-development-console-checkpoint"
+    assert position.checkpoint_stage == "CANONICAL ORION BASELINE ESTABLISHED · CURRENT"
+    assert position.approved_next_step == "REALTIME INFORMATIONAL PRESENTER RELIABILITY CORRECTION"
+    assert position.current_node_id == "canonical:C3"
 
 
 def test_checkpoint_candidate_uses_current_roadmap_not_stale_saved_checkpoint(
@@ -358,12 +384,45 @@ def test_checkpoint_candidate_uses_current_roadmap_not_stale_saved_checkpoint(
 
     candidate = service.checkpoint_candidate(snapshot)
 
-    assert candidate.development_stage == "Full Development Console checkpoint · READY FOR USER SAVE"
-    assert candidate.approved_next_step == "Low-latency natural informational presentation"
+    assert candidate.development_stage == "CANONICAL ORION BASELINE ESTABLISHED · CURRENT"
+    assert candidate.approved_next_step == "REALTIME INFORMATIONAL PRESENTER RELIABILITY CORRECTION"
     saved = service.memory.latest_checkpoint()
     assert saved is not None
     assert candidate.development_stage != saved.development_stage
     assert len(service.memory.checkpoints.list_records()) == 1
+
+
+def test_canonical_roadmap_preserves_visual_classes_and_current_position(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    snapshot = service.build_snapshot()
+    golden = [node for node in snapshot.nodes if node.metadata.get("canonical_kind") == "GOLDEN_COMPONENT"]
+    reconnect = [node for node in snapshot.nodes if node.node_type is NodeType.HISTORICAL_RECONNECT]
+    ideas = [node for node in snapshot.nodes if node.metadata.get("canonical_kind") == "RECOVERED_IDEA"]
+    retirement = [node for node in snapshot.nodes if node.node_type is NodeType.RETIREMENT]
+
+    assert len(golden) == 18
+    assert len(reconnect) == 2
+    assert len(ideas) == 20
+    assert len(retirement) == 8
+    assert all(node.completed for node in golden)
+    assert all(not node.completed and node.branch_type is BranchType.RECOVERED_FUTURE for node in ideas)
+    assert snapshot.current_node_id == "canonical:C3"
+    position = service.development_position(snapshot)
+    assert position.approved_next_node_id == "canonical:C4"
+
+
+def test_canonical_search_filters_and_summary_are_machine_retrievable(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    snapshot = service.build_snapshot()
+    assert any(node.node_id == "canonical:U04" for node in service.search(snapshot, "U04 AWACS"))
+    assert any(node.node_id == "canonical:U06" for node in service.search(snapshot, "U06 JTAC"))
+    assert any(node.node_id == "canonical:U17" for node in service.search(snapshot, "U17 Debrief"))
+    assert len(service.filtered_nodes(snapshot, "RECOVERED IDEAS")) == 20
+    assert len(service.filtered_nodes(snapshot, "HISTORICAL RECONNECT")) == 2
+    summary = service.canonical_summary()
+    assert summary["strategy"] == "STRATEGY_A_CURRENT_RECONNECT"
+    assert summary["counts"]["RECOVERED_IDEA"] == 20
+    assert summary["input_signature"] == "CANONICAL-FIXTURE"
 
 
 def test_freshness_current_stale_refresh_current(tmp_path: Path) -> None:

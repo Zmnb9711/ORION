@@ -28,6 +28,9 @@ FILTERS = (
     "SUPERSEDED / REJECTED",
     "DECISIONS",
     "CHECKPOINTS",
+    "HISTORICAL RECONNECT",
+    "RECOVERED IDEAS",
+    "CANONICAL",
 )
 
 BRANCH_X = {
@@ -36,6 +39,7 @@ BRANCH_X = {
     BranchType.HISTORICAL_ALTERNATIVE: 590,
     BranchType.GOVERNANCE: 790,
     BranchType.FUTURE: 990,
+    BranchType.RECOVERED_FUTURE: 990,
 }
 
 
@@ -157,6 +161,7 @@ class RoadmapView(ttk.Frame):
             "GREEN · required proof completed\n"
             "GREY · unfinished / planned\n"
             "CYAN/BLUE LINE · test / experimental lineage\n"
+            "PURPLE · recovered idea, not implemented\n"
             "Badges preserve FIELD_PROVEN, AUTOMATED_PROVEN, FAILED, SUPERSEDED and other proof states."
         )
         ttk.Label(detail, text=legend, style="CardText.TLabel", justify="left", wraplength=330).pack(fill=X, padx=12, pady=(0, 12))
@@ -232,6 +237,8 @@ class RoadmapView(ttk.Frame):
         width = 330
         fill = "#17372a" if node.completed else "#1b232c"
         outline = PALETTE["green"] if node.completed else PALETTE["unknown"]
+        if node.node_type is NodeType.RECOVERED_IDEA:
+            fill, outline = "#2d2340", "#a98bea"
         if node.current:
             outline = PALETTE["cyan"]
         rectangle = self.canvas.create_rectangle(

@@ -1,5 +1,16 @@
 # ORION Project Memory
 
+## Canonical development memory — D74
+
+Canonical strategy is `STRATEGY_A_CURRENT_RECONNECT`. Development begins from
+current HEAD, queries Current Best, Historical Best, and Recovered Unimplemented
+Ideas, and follows D71: RECONNECT → ADAPT → EXTEND → REFACTOR → REPLACE. The
+machine-readable records live in the existing private Guard SQLite graph; the
+bounded human register is `docs/orion-canonical-development-policy.md`.
+Current stage is C3, **CANONICAL ORION BASELINE ESTABLISHED**. C4, **REALTIME
+INFORMATIONAL PRESENTER RELIABILITY CORRECTION**, is next. No automatic
+checkpoint save or direct ChatGPT/Codex send is authorized.
+
 > Canonical long-term project context. Updated: 2026-09-02.
 >
 > Purpose: preserve approved product requirements, architectural invariants, milestone history, real-world test evidence, known risks, and the next agreed action across chats and development sessions.

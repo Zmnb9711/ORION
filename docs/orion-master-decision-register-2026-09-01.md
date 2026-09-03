@@ -102,6 +102,30 @@ proposals remain proposals unless explicitly accepted or clearly adopted.
 | D71 | 2026-09-02 | Development process | Previous Best Solution Gate: before architecture implementation search prior approved decisions, implementations, field-proven solutions and reusable mechanisms; a disconnected historical implementation is not automatically missing | User | Explicit | AG-0 source discovery foundation | Current development policy | APPROVED / AG-0 IMPLEMENTED | Current-HEAD-only design | User task, Guard design, Git | VERY_HIGH |
 | D72 | 2026-09-02 | Informational UX | Normal informational responses remain naturally AI-formulated; canned/template phrases are not the normal informational UX, while protected operational wording remains Core-owned | User | Explicit | Architecture Guard hard constraint | Current architecture policy | APPROVED | Canned informational default | User task, Master boundary | VERY_HIGH |
 | D73 | 2026-09-02 | Development process | Every assistant response about ORION must begin with a visible first-line Architecture Guard status; only `ON`, `REQUIRED`, and `OFF` are allowed, with the mandatory semantics and report-ID enforcement defined below | User | Explicit | User-approved working convention | Mandatory ChatGPT/Codex workflow | APPROVED / EFFECTIVE IMMEDIATELY | Unlabelled or falsely labelled ORION responses | User task, AG-3 preflight `AG-20260902-185339-f70f7a7f-8c406fe-r1`, Git | VERY_HIGH |
+| D74 | 2026-09-03 | Development process | Canonical ORION development baseline and historical reuse policy: continue from current lineage, reconnect/adapt proven historical mechanisms, preserve stronger current mechanisms, and retain approved unfinished ideas | User | Explicit | Complete historical reconstruction and forensic audit | Canonical Guard/Development Console policy | APPROVED / CURRENT | Wholesale historical rollback; current-HEAD-only greenfield design | User approval, forensic audit `AG-20260903-173329-291b1626-f64d842-r2`, D71, Git | VERY_HIGH |
+
+### D74 — canonical ORION development baseline and historical reuse policy
+
+The current development lineage remains the canonical baseline. ORION does not
+roll back wholesale to a historical build merely because one historical
+mechanism is superior in one capability. Development combines the current
+baseline with reconnection or adaptation of proven historical mechanisms,
+preservation of genuinely superior current mechanisms, and explicit retention
+of approved or user-valued unfinished ideas.
+
+Before significant implementation or replacement, Architecture Guard must keep
+three layers distinct: **CURRENT BEST**, **HISTORICAL BEST**, and **RECOVERED
+UNIMPLEMENTED IDEA**. Apply D71 in this order: **RECONNECT → ADAPT → EXTEND →
+REFACTOR → REPLACE**. A disconnected historical mechanism is not actually
+missing. A user-approved unfinished idea does not disappear because current
+HEAD has no implementation. Field-proven current mechanisms remain protected
+unless a bounded differential proves a replacement superior.
+
+D74 does not claim that every historical solution is superior, that every old
+feature is an immediate priority, that current HEAD is perfect, that Realtime
+is production-ready, or that any single historical commit is Canonical ORION.
+The approved strategy is `STRATEGY_A_CURRENT_RECONNECT`; one historical
+baseline is insufficient.
 
 ### D73 — mandatory visible Architecture Guard status
 

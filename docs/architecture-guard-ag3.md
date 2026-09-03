@@ -1,5 +1,14 @@
 # ORION Architecture Guard AG-3
 
+## D74 canonical context extension
+
+AG-3 reports include capability-filtered `canonical_context` without changing
+AG-0/1/2/3 ownership. Current Best, Historical Best, Recovered Unimplemented
+Ideas, DO NOT REINVENT rules, retirement conflicts, and canonical stages remain
+distinct. Records reuse the AG-1 SQLite index and AG-2 capability graph.
+`TRUE_GREENFIELD` appears only after all ordered layers are empty; retirement
+conflicts require semantic restoration intent, not a keyword alone.
+
 AG-3 turns the private AG-0/AG-1 source index and AG-2 capability graph into a
 deterministic architecture preflight. It is development tooling; it does not
 change ORION runtime behavior and does not use an LLM or paid provider.

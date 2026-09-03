@@ -174,7 +174,10 @@ class DevelopmentConsoleApp:
         ):
             ttk.Button(actions, text=caption, style="Primary.TButton" if primary else "Secondary.TButton", command=command).pack(side=LEFT, padx=(0, 8))
         ttk.Button(actions, text="TASK RECALL", style="Secondary.TButton", command=self._task_recall).pack(side=LEFT)
+        ttk.Button(actions, text="CANONICAL CONTEXT", style="Secondary.TButton", command=self._canonical_context).pack(side=LEFT, padx=(8, 0))
+        canonical = self.roadmap_service.canonical_summary()
         for title, value in (
+            ("CANONICAL ORION", f"{canonical['strategy']} · {canonical['current_position']} · next: {canonical['next_step']} · records {sum(canonical['counts'].values())}"),
             ("GIT", f"{git.get('branch')} @ {git.get('head')}"),
             ("LOCAL VERIFICATION", f"{self.report.verification_id if self.report else 'NONE'} · {self.report.overall_state.value if self.report else 'NOT_CHECKED'}"),
             ("LATEST CHECKPOINT", checkpoint.checkpoint_id if checkpoint else "NONE"),
@@ -182,6 +185,12 @@ class DevelopmentConsoleApp:
             ("RECENT EVIDENCE", f"{(evidence.details.get('evidence_zip_count') if evidence else 0)} records · latest {(evidence.details.get('latest_evidence_timestamp') if evidence else 'UNKNOWN')}"),
         ):
             self._card(self.content, title, value).pack(fill=X, pady=4)
+
+    def _canonical_context(self) -> None:
+        self._show_text(
+            "Canonical ORION development context",
+            json.dumps(self.roadmap_service.canonical_summary(), ensure_ascii=False, indent=2),
+        )
 
     def _page_roadmap(self) -> None:
         roadmap = RoadmapView(

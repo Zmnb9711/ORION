@@ -16,7 +16,7 @@ class PromptType(StrEnum):
 
 
 class DevelopmentCheckpoint(BaseModel):
-    schema_version: int = 1
+    schema_version: int = 2
     checkpoint_id: str
     created_at: str
     branch: str
@@ -40,6 +40,16 @@ class DevelopmentCheckpoint(BaseModel):
     recent_evidence: list[dict[str, Any]] = Field(default_factory=list)
     known_problems: list[str] = Field(default_factory=list)
     risks: list[str] = Field(default_factory=list)
+    canonical_strategy: str | None = None
+    canonical_baseline_sha: str | None = None
+    d74_status: str = "NOT_RECORDED"
+    canonical_status: str = "NOT_RECORDED"
+    golden_components: list[str] = Field(default_factory=list)
+    historical_reconnect_items: list[str] = Field(default_factory=list)
+    recovered_ideas: list[str] = Field(default_factory=list)
+    retirement_candidates: list[str] = Field(default_factory=list)
+    canonical_input_signature: str | None = None
+    realtime_candidate: str = "NOT_RECORDED"
     provenance: list[str] = Field(default_factory=list)
     content_fingerprint: str
 

@@ -100,7 +100,18 @@ class DevelopmentMemoryService:
         self.now = now
 
     def guard_report(self, report_id: str | None = None) -> dict[str, Any]:
-        return load_guard_report(self.context, report_id or self.context.architecture_report_id)
+        if report_id is not None:
+            return load_guard_report(self.context, report_id)
+        reports = sorted(
+            (self.context.guard_root / "reports").glob("AG-*.json"),
+            key=lambda path: path.stat().st_mtime_ns,
+            reverse=True,
+        )
+        if reports:
+            value = json.loads(reports[0].read_text(encoding="utf-8"))
+            if isinstance(value, dict) and value.get("report_id"):
+                return value
+        return load_guard_report(self.context, self.context.architecture_report_id)
 
     def current_git(self) -> dict[str, Any]:
         return dict(collect_git(self.context).details)
@@ -157,6 +168,7 @@ class DevelopmentMemoryService:
         implementation_map = implementations if isinstance(implementations, Mapping) else {}
         previous_best = guard.get("previous_best")
         previous_best_map = previous_best if isinstance(previous_best, Mapping) else {}
+        canonical = _mapping(guard.get("canonical_context"))
         records = guard.get("implementation_records")
         implementation_records = records if isinstance(records, list) else []
         automated_or_probe = {
@@ -209,6 +221,24 @@ class DevelopmentMemoryService:
             recent_evidence=self._recent_evidence(),
             known_problems=sorted(set(known_problems)),
             risks=sorted(set(risks)),
+            canonical_strategy=(
+                str(canonical["strategy"][0].get("record_id"))
+                if canonical.get("strategy")
+                else None
+            ),
+            canonical_baseline_sha=str(git.get("head") or "UNKNOWN"),
+            d74_status=(
+                "CURRENT"
+                if "D74" in _decision_ids(guard, "CURRENT")
+                else "NOT_RECORDED"
+            ),
+            canonical_status="READY_FOR_USER_SAVE",
+            golden_components=_ids(canonical.get("current_best"), "record_id"),
+            historical_reconnect_items=_ids(canonical.get("historical_best"), "record_id"),
+            recovered_ideas=_ids(canonical.get("recovered_unimplemented_ideas"), "record_id"),
+            retirement_candidates=_ids(canonical.get("retirement_candidates"), "record_id"),
+            canonical_input_signature=str(canonical.get("input_signature") or "MISSING"),
+            realtime_candidate="BENCHMARK_NO_GO / KEEP / NON_DEFAULT",
             provenance=[
                 f"guard:{guard.get('report_id')}",
                 f"git:{git.get('head')}",
@@ -265,6 +295,7 @@ class DevelopmentMemoryService:
         verification = self.engine.cached_report()
         history = _mapping(guard.get("history_coverage"))
         previous_best = _mapping(guard.get("previous_best"))
+        canonical = _mapping(guard.get("canonical_context"))
         stage = checkpoint.development_stage if checkpoint else "NOT RECORDED"
         next_step = checkpoint.approved_next_step if checkpoint and checkpoint.approved_next_step else "NOT RECORDED — USER CONFIRMATION REQUIRED"
         content = f"""ORION ARCHITECTURE GUARD: ON — {guard.get('report_id')}
@@ -288,6 +319,18 @@ Rejected: {', '.join(_decision_ids(guard, 'REJECTED')) or 'NONE'}
 ## Previous implementations and Previous Best
 Previous implementations: {', '.join(str(item) for item in previous_best.get('previous_implementations_found', [])) or 'NONE'}
 Previous Best mechanisms: {', '.join(str(item) for item in previous_best.get('previous_best_mechanisms', [])) or 'NONE'}
+
+## Canonical development context
+Strategy: {', '.join(_ids(canonical.get('strategy'), 'record_id')) or 'NONE'}
+Canonical baseline: {git.get('head')}
+Golden Components: {', '.join(_ids(canonical.get('current_best'), 'record_id')) or 'NONE'}
+Historical reconnect: {', '.join(_ids(canonical.get('historical_best'), 'record_id')) or 'NONE'}
+Recovered ideas: {', '.join(_ids(canonical.get('recovered_unimplemented_ideas'), 'record_id')) or 'NONE'}
+User-valued forgotten ideas: {', '.join(_ids(canonical.get('user_valued_forgotten_ideas'), 'record_id')) or 'NONE'}
+Retirement candidates: {', '.join(_ids(canonical.get('retirement_candidates'), 'record_id')) or 'NONE'}
+Realtime candidate: KEEP / NON_DEFAULT / BENCHMARK_NO_GO · IPB-20260903-171624
+Current canonical stage: CANONICAL ORION BASELINE ESTABLISHED
+Next exact step: REALTIME INFORMATIONAL PRESENTER RELIABILITY CORRECTION
 
 ## DO NOT REBUILD
 Phase 1 verification; Architecture Guard; authoritative Master/Decision history; applicable field-proven mechanisms.
@@ -353,6 +396,7 @@ Guard {guard.get('report_id')}; Git {git.get('head')}; Master Decision Register;
         previous_best = _mapping(guard.get("previous_best"))
         implementations = _mapping(guard.get("implementations"))
         evidence_reuse = _mapping(guard.get("evidence_reuse"))
+        canonical = _mapping(guard.get("canonical_context"))
         content = f"""ORION ARCHITECTURE GUARD: ON — {guard.get('report_id')}
 
 # ORION TASK RECALL
@@ -370,6 +414,14 @@ Previous implementations: {', '.join(str(item) for item in previous_best.get('pr
 Previous Best mechanisms: {', '.join(str(item) for item in previous_best.get('previous_best_mechanisms', [])) or 'NONE'}
 Evidence reusable: {evidence_reuse.get('evidence_remains_valid', False)}
 Conflicts: {len(guard.get('conflicts') or [])}
+
+Canonical work classification: {canonical.get('work_classification', 'UNKNOWN')}
+Current Best: {', '.join(_ids(canonical.get('current_best'), 'record_id')) or 'NONE'}
+Historical Best: {', '.join(_ids(canonical.get('historical_best'), 'record_id')) or 'NONE'}
+Recovered unimplemented ideas: {', '.join(_ids(canonical.get('recovered_unimplemented_ideas'), 'record_id')) or 'NONE'}
+DO NOT REINVENT: {', '.join(_ids(canonical.get('do_not_reinvent'), 'record_id')) or 'NONE'}
+Retirement conflicts: {', '.join(_ids(canonical.get('retirement_conflicts'), 'record_id')) or 'NONE'}
+Actually missing: {canonical.get('actually_missing', 'UNKNOWN')}
 
 Recover the task from these capability-linked records and exact Guard provenance. Do not rebuild protected or field-proven mechanisms. Do not infer unrelated history from keyword similarity alone.
 """
@@ -400,6 +452,11 @@ Previous Best: {', '.join(checkpoint.previous_best_mechanisms) or 'NONE'}
 DO NOT REBUILD: {'; '.join(checkpoint.do_not_rebuild)}
 DO NOT REINVENT: {'; '.join(checkpoint.do_not_reinvent)}
 Known problems/risks: {'; '.join(checkpoint.known_problems + checkpoint.risks) or 'NONE'}
+Canonical strategy: {checkpoint.canonical_strategy or 'NOT RECORDED'}
+Canonical status: {checkpoint.canonical_status}
+Golden Components: {', '.join(checkpoint.golden_components) or 'NONE'}
+Historical reconnect: {', '.join(checkpoint.historical_reconnect_items) or 'NONE'}
+Recovered ideas: {', '.join(checkpoint.recovered_ideas) or 'NONE'}
 
 This checkpoint is historical truth only. Re-verify current Git, Guard and machine state before implementation.
 """

@@ -1,5 +1,14 @@
 # ORION Development Console — Phase 2
 
+## Canonical Recall and checkpoint candidates
+
+FULL RECALL carries bounded D74 strategy, Golden Components, historical
+reconnect candidates, recovered ideas, retirement state, current canonical
+stage, and next step. TASK RECALL includes capability-linked canonical records
+and its work classification. Checkpoint candidates include the canonical input
+signature and register IDs with `READY_FOR_USER_SAVE`; preview does not save,
+and explicit user confirmation remains mandatory.
+
 Phase 2 adds private, bounded development memory to the separate Development
 Console. It does not add a Launcher mode, start the ORION product runtime, or
 change any file under `orion/**`.

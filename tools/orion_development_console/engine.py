@@ -149,7 +149,10 @@ class VerificationEngine:
             verification_id=verification_id,
             generated_at=generated_at.isoformat(),
             repository_head=repository_head,
-            architecture_guard_report_id=self.context.architecture_report_id,
+            architecture_guard_report_id=str(
+                history.details.get("last_guard_report_id")
+                or self.context.architecture_report_id
+            ),
             architecture_guard_gate=str(history.details.get("last_guard_gate") or "UNKNOWN"),
             observations=observations,
             actions_not_performed=list(_ACTIONS_NOT_PERFORMED),
