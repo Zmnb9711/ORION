@@ -324,6 +324,19 @@ def test_in_memory_candidate_preserves_core_fact_and_one_final_response() -> Non
     asyncio.run(_in_memory_candidate_preserves_core_fact_and_one_final_response())
 
 
+def test_request_requires_a_natural_language_shell_for_unavailable_fact() -> None:
+    request = _request().model_copy(
+        update={
+            "required_marker": "{{aircraft_unavailable}}",
+            "fact_status": "unavailable",
+        }
+    )
+    instructions = request.response_instructions()
+    assert "ordinary Cyrillic Russian words around the marker" in instructions
+    assert "marker alone is not a sentence" in instructions
+    assert "authoritative aircraft information is unavailable" in instructions
+
+
 async def _invalid_candidate_stops_before_downstream_seam() -> None:
     presenter = _FakePresenter(
         "Вы в {{aircraft_identity}} и топливо заканчивается."

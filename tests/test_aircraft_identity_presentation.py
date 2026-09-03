@@ -6,6 +6,7 @@ import pytest
 
 from orion.aircraft_identity_presentation import (
     AircraftIdentityShellValidationError,
+    AircraftIdentityShellValidationErrorCode,
     bind_aircraft_identity_shell,
     validate_aircraft_identity_shell,
     validate_and_bind_aircraft_identity_shell,
@@ -59,3 +60,127 @@ def test_unavailable_fact_binds_only_core_unavailable_wording() -> None:
         fact,
         language="ru-RU",
     ) == "К сожалению, данные о текущем самолёте из DCS недоступны."
+
+
+@pytest.mark.parametrize(
+    ("text", "language"),
+    (
+        ("Текущая идентификация воздушного судна: {{aircraft_identity}}.", "ru-RU"),
+        ("Текущий идентификатор самолёта: {{aircraft_identity}}.", "ru-RU"),
+        (
+            "Идентификационные данные воздушного судна в текущем полёте: "
+            "{{aircraft_identity}}.",
+            "ru-RU",
+        ),
+        (
+            "Воздушное судно, задействованное в текущем полёте, имеет "
+            "идентификатор {{aircraft_identity}}.",
+            "ru-RU",
+        ),
+        (
+            "Идентификация воздушного судна, задействованного в текущем рейсе, — "
+            "{{aircraft_identity}}.",
+            "ru-RU",
+        ),
+        (
+            "Воздушное судно, выполняющее текущий полёт, имеет идентификатор "
+            "{{aircraft_identity}}.",
+            "ru-RU",
+        ),
+        (
+            "Воздушное судно, участвующее в текущем полёте, идентифицировано как "
+            "{{aircraft_identity}}.",
+            "ru-RU",
+        ),
+        (
+            "Идентификатор воздушного судна в рамках выполняемого полёта: "
+            "{{aircraft_identity}}.",
+            "ru-RU",
+        ),
+        (
+            "Идентификационные данные воздушного судна на текущий момент: "
+            "{{aircraft_identity}}.",
+            "ru-RU",
+        ),
+        ("Current aircraft identity: {{aircraft_identity}}.", "en-US"),
+        (
+            "The current flight operates with the aircraft {{aircraft_identity}}.",
+            "en-US",
+        ),
+        (
+            "The aircraft identity currently associated with the flight is "
+            "{{aircraft_identity}}.",
+            "en-US",
+        ),
+    ),
+)
+def test_safe_natural_identity_label_colon_is_not_a_second_claim(
+    text: str,
+    language: str,
+) -> None:
+    assert validate_aircraft_identity_shell(text, _Fact(), language=language) == text
+
+
+@pytest.mark.parametrize(
+    ("text", "code"),
+    (
+        ("", AircraftIdentityShellValidationErrorCode.EMPTY_OUTPUT),
+        ("Самолёт неизвестен.", AircraftIdentityShellValidationErrorCode.MISSING_MARKER),
+        (
+            "{{aircraft_identity}} и {{aircraft_identity}}.",
+            AircraftIdentityShellValidationErrorCode.DUPLICATE_MARKER,
+        ),
+        (
+            "Вы в {{aircraft_unavailable}}.",
+            AircraftIdentityShellValidationErrorCode.FOREIGN_MARKER,
+        ),
+        (
+            "{{aircraft_identity}}",
+            AircraftIdentityShellValidationErrorCode.WRONG_LANGUAGE,
+        ),
+        (
+            "Вы в {{aircraft_identity}} и летите курсом 137.",
+            AircraftIdentityShellValidationErrorCode.IDENTIFIER_PUNCTUATION,
+        ),
+        (
+            "Вы в FA-18C_hornet, то есть в {{aircraft_identity}}.",
+            AircraftIdentityShellValidationErrorCode.RAW_IDENTITY_OUTSIDE_MARKER,
+        ),
+        (
+            "Вы в F/A-18C Hornet, то есть в {{aircraft_identity}}.",
+            AircraftIdentityShellValidationErrorCode.DISPLAY_IDENTITY_OUTSIDE_MARKER,
+        ),
+        (
+            "Вы в Hornet, то есть в {{aircraft_identity}}.",
+            AircraftIdentityShellValidationErrorCode.CANONICAL_IDENTITY_OUTSIDE_MARKER,
+        ),
+        (
+            "Состояние исправно: {{aircraft_identity}}.",
+            AircraftIdentityShellValidationErrorCode.UNSUPPORTED_EXTRA_CLAIM,
+        ),
+        (
+            "Вы в {{aircraft_identity}}, всё исправно.",
+            AircraftIdentityShellValidationErrorCode.UNSUPPORTED_EXTRA_CLAIM,
+        ),
+    ),
+)
+def test_observed_and_safety_rejections_have_bounded_diagnostic_codes(
+    text: str,
+    code: AircraftIdentityShellValidationErrorCode,
+) -> None:
+    with pytest.raises(AircraftIdentityShellValidationError) as caught:
+        validate_aircraft_identity_shell(text, _Fact(), language="ru-RU")
+    assert caught.value.code is code
+
+
+def test_english_with_clause_cannot_smuggle_an_additional_claim() -> None:
+    with pytest.raises(AircraftIdentityShellValidationError) as caught:
+        validate_aircraft_identity_shell(
+            "The aircraft is {{aircraft_identity}} with systems normal.",
+            _Fact(),
+            language="en-US",
+        )
+    assert (
+        caught.value.code
+        is AircraftIdentityShellValidationErrorCode.UNSUPPORTED_EXTRA_CLAIM
+    )

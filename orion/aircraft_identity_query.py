@@ -513,7 +513,7 @@ class AircraftIdentityRealtimeCandidateService:
                 provider=presenter.provider_id,
                 error_type="validation_failed",
             )
-            raise AircraftIdentityFormulationError(str(exc)) from exc
+            raise AircraftIdentityFormulationError(str(exc), code=exc.code) from exc
         validation_finished = time.perf_counter()
         validation_latency_ms = (validation_finished - validation_started) * 1000
         presenter.record_event(

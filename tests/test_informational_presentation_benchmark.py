@@ -6,6 +6,7 @@ from tools.informational_presentation_benchmark import (
     BENCHMARK_CASES,
     BenchmarkSample,
     build_report,
+    failure_distribution,
     promotion_gates,
     summarize_samples,
     write_private_report,
@@ -76,3 +77,32 @@ def test_summary_and_private_artifacts_are_bounded_and_credential_free(tmp_path)
     assert "api_key" not in encoded.casefold()
     assert "authorization" not in encoded.casefold()
     assert "provider reasoning" not in encoded.casefold()
+
+
+def test_failure_distribution_preserves_safe_scalar_reason_without_provider_text() -> None:
+    failed = _sample("yandex_realtime_text", "ru-fa18", 1, 100)
+    failed.success = False
+    failed.validator_status = "fail"
+    failed.downstream_reached = False
+    failed.bound_final_text = None
+    failed.error_code = "unsupported_extra_claim"
+    assert failure_distribution([failed]) == {
+        "yandex_realtime_text:ru-fa18:warm:unsupported_extra_claim": 1
+    }
+
+
+def test_validation_rejection_is_not_misclassified_as_realtime_protocol_failure() -> None:
+    samples: list[BenchmarkSample] = []
+    for case in BENCHMARK_CASES[:4]:
+        for index in range(1, 21):
+            sample = _sample("yandex_realtime_text", case.case_id, index, 100)
+            if case.case_id == "ru-fa18" and index <= 5:
+                sample.success = False
+                sample.validator_status = "fail"
+                sample.downstream_reached = False
+                sample.error_code = "unsupported_extra_claim"
+            samples.append(sample)
+    gates, decision = promotion_gates(samples, required_warm_samples=20)
+    assert decision == "BENCHMARK_NO_GO"
+    assert gates["failure_timeout_rate"]["result"] == "FAIL"
+    assert gates["realtime_protocol_execution"]["result"] == "PASS"

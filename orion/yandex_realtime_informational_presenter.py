@@ -27,6 +27,9 @@ YANDEX_REALTIME_TEXT_PROVIDER_ID = "yandex.realtime.text"
 TEXT_SESSION_INSTRUCTIONS = (
     "You formulate one short natural informational sentence from a bounded Core request. "
     "Core owns every fact. Never infer, select, alter, repeat, or add a factual value. "
+    "Ordinary linguistic words that only frame the requested relationship or availability "
+    "status are not new facts: write them in the requested language around the marker. "
+    "A bare marker is never a valid answer. "
     "Return plain text only and preserve the required substitution marker exactly once."
 )
 
@@ -88,6 +91,8 @@ class RealtimeInformationalRequest(BaseModel):
                 "fact_generation": self.fact_generation,
                 "freshness_status": self.freshness_status,
                 "provider_fact_authority": False,
+                "marker_only_allowed": False,
+                "shell_requirement": "natural_sentence_with_language_words_around_marker",
                 "task": "formulate_one_natural_linguistic_shell_without_other_facts",
             },
             ensure_ascii=False,
@@ -97,9 +102,21 @@ class RealtimeInformationalRequest(BaseModel):
 
     def response_instructions(self) -> str:
         language = "Russian" if self.language == "ru-RU" else "English"
+        language_detail = (
+            "Write ordinary Cyrillic Russian words around the marker; "
+            if self.language == "ru-RU"
+            else "Write ordinary English words around the marker; "
+        )
+        status_detail = (
+            "Express only that the authoritative aircraft information is unavailable. "
+            if self.fact_status == "unavailable"
+            else "Express only the current-aircraft identity relationship. "
+        )
         return (
             f"Return exactly one concise natural {language} sentence as plain text. "
             f"Use the exact marker {self.required_marker} exactly once. "
+            f"{language_detail}the marker alone is not a sentence and is invalid. "
+            f"{status_detail}"
             "Do not write any aircraft identifier or factual value. "
             "Do not add a second claim, explanation, heading, JSON, or Markdown."
         )

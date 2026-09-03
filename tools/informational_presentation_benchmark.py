@@ -22,6 +22,7 @@ from orion.aircraft_identity_query import (
     AircraftIdentityQueryStatus,
     AircraftIdentityRealtimeCandidateService,
 )
+from orion.aircraft_identity_presentation import AircraftIdentityShellValidationError
 from orion.world_model_contracts import (
     WorldFactAuthority,
     WorldFactSource,
@@ -203,6 +204,23 @@ def summarize_samples(samples: list[BenchmarkSample]) -> dict[str, dict[str, obj
     return summaries
 
 
+def failure_distribution(samples: list[BenchmarkSample]) -> dict[str, int]:
+    failures: dict[str, int] = {}
+    for item in samples:
+        if item.success:
+            continue
+        key = ":".join(
+            (
+                item.backend,
+                item.case_id,
+                "cold" if item.cold else "warm",
+                item.error_code or "unclassified",
+            )
+        )
+        failures[key] = failures.get(key, 0) + 1
+    return dict(sorted(failures.items()))
+
+
 def promotion_gates(
     samples: list[BenchmarkSample],
     *,
@@ -219,12 +237,22 @@ def promotion_gates(
         for item in samples
         if item.backend == "yandex_realtime_text"
     )
+    protocol_error_codes = {
+        "cancelled",
+        "provider_error",
+        "protocol_error",
+        "request_timeout",
+        "session_busy",
+        "session_unavailable",
+    }
     substantive_failures = [
         item
         for item in primary
         if not item.success
-        and item.provider_output_status != "connect_failed"
-        and item.error_code not in {"session_unavailable"}
+        and (
+            item.provider_output_status == "connect_failed"
+            or item.error_code in protocol_error_codes
+        )
     ]
     complete_values = [
         item.complete_formulation_ms
@@ -470,7 +498,15 @@ class InformationalPresentationBenchmark:
                 error_code=None if preserved else "identity_mismatch",
             )
         except Exception as exc:
-            code = exc.code.value if isinstance(exc, InformationalPresenterError) else type(exc).__name__
+            if isinstance(exc, InformationalPresenterError):
+                code = exc.code.value
+                validator_status = "not_run"
+            elif isinstance(exc, AircraftIdentityShellValidationError) and exc.code:
+                code = exc.code.value
+                validator_status = "fail"
+            else:
+                code = type(exc).__name__
+                validator_status = "fail"
             return BenchmarkSample(
                 backend="yandex_realtime_text",
                 case_id=case.case_id,
@@ -478,7 +514,7 @@ class InformationalPresentationBenchmark:
                 cold=cold,
                 success=False,
                 provider_output_status="failed",
-                validator_status="fail",
+                validator_status=validator_status,
                 identity_preserved=False,
                 unsupported_claim_result="not_accepted",
                 downstream_reached=False,
@@ -631,6 +667,7 @@ def build_report(
         "target_warm_samples_per_primary_combination": warm_samples,
         "samples": [asdict(item) for item in samples],
         "summaries": summarize_samples(samples),
+        "failure_distribution": failure_distribution(samples),
         "promotion_gates": gates,
         "benchmark_decision": decision,
         "realtime_candidate_decision": decision.replace(

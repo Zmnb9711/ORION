@@ -924,3 +924,45 @@ conflicts, no ownership drift, no duplicate-work risk and no user decision
 required. Its console print encountered the known local CP1251 rendering
 limitation after the complete Markdown/JSON reports had already been saved;
 the stored reports were read and verified directly.
+
+## 27. C1 Realtime informational presenter reliability correction
+
+Task Recall `PR-20260903-194528-1b77a0e9` and FULL preflight
+`AG-20260903-194541-b88797f9-97ef03f-r2` classified the correction as an HR01
+historical adaptation under D71/D74. History was `COMPLETE`, the gate was
+`PASS`, and no duplicate stack, ownership drift, conflict or user decision was
+identified. The production selector remained Qwen throughout.
+
+The retained `IPB-20260903-171624` samples prove that all 24 failures in the
+80-sample primary warm matrix occurred after a completed Realtime response and
+inside the provider-neutral shell validator; there were no timeout, session,
+correlation or protocol errors. That report deliberately did not retain raw
+provider text or a structured validation reason, so its 24 individual
+subcategories are not retrospectively observable. A bounded same-request
+differential recovered the active failure forms without recording credentials,
+prompts or provider reasoning. It showed two validator false positives: a
+single identity-label colon and bounded RU parenthetical/EN `with` grammar were
+mistaken for a second factual claim. The separate unavailable failure was a
+genuinely invalid bare marker caused by over-constrained session instructions.
+
+The existing validator now emits bounded structured error codes and accepts
+only observed natural identity grammar whose complete non-marker vocabulary is
+restricted to the aircraft-identity relationship. Generic colon/comma text,
+operational values, another claim, wrong language, missing/duplicate/foreign
+markers, identifiers and aircraft identity outside the marker still fail
+closed. Session/request instructions now explicitly require ordinary words in
+the requested language around the marker. This recovered natural unavailable
+wording without converting normal information into a fixed template. Core
+still performs the exact authoritative substitution only after validation, and
+invalid downstream remains zero.
+
+The final private Realtime-only benchmark is `IPB-20260903-200148`. All current
+protocol and latency gates passed: zero protocol/timeouts, 75/75 accepted
+samples valid, zero invalid downstream, 343.990 ms warm complete median,
+671.357 ms warm complete p90, demonstrated warm-session reuse, and 20/20 RU
+unavailable success. Five available-fact responses were still rejected as
+`unsupported_extra_claim` (three RU F/A-18C, two EN F/A-18C), yielding
+`5/80 = 6.25%`, one response above the required at-most-five-percent gate.
+Per the task stop rule no further provider tuning was attempted. The honest
+result remains `BENCHMARK_NO_GO`; C1 is not complete, the candidate is not
+promoted, and C3 integration is not authorized.
