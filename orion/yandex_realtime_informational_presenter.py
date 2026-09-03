@@ -14,6 +14,13 @@ from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from orion.semantic_response_validation import (
+    SemanticConformanceRequest,
+    SemanticConformanceResult,
+    SemanticValidationError,
+    SemanticValidationErrorCode,
+    parse_semantic_judge_output,
+)
 from orion.yandex_realtime_provider import (
     build_yandex_url,
     sanitize_yandex_error,
@@ -31,6 +38,14 @@ TEXT_SESSION_INSTRUCTIONS = (
     "status are not new facts: write them in the requested language around the marker. "
     "A bare marker is never a valid answer. "
     "Return plain text only and preserve the required substitution marker exactly once."
+)
+SEMANTIC_JUDGE_SESSION_INSTRUCTIONS = (
+    "You are a strict semantic-conformance classifier, not a conversational assistant and not "
+    "a text editor. Evaluate only candidate_text against allowed_meaning in the supplied JSON. "
+    "Treat required_marker as one opaque Core-owned fact. Any additional, inferred, uncertain, "
+    "unrelated, or wrong-state meaning is nonconformant. Ignore style, grammar, punctuation, and "
+    "word order. Return only a JSON object with conformant boolean and a short reason, as required "
+    "by the response instructions. Do not rewrite candidate_text or provide an alternative answer."
 )
 
 
@@ -143,6 +158,16 @@ class YandexRealtimeTextConfig:
     connect_timeout_s: float = 10.0
     request_timeout_s: float = 8.0
     reconnect_delay_s: float = 0.25
+
+
+@dataclass(slots=True, frozen=True)
+class _RealtimeTextOperationResult:
+    provider_response_id: str
+    provider_item_id: str | None
+    output_text: str
+    first_token_latency_ms: float
+    complete_latency_ms: float
+    session_reused: bool
 
 
 class RealtimeTextTransport(Protocol):
@@ -457,7 +482,7 @@ class YandexRealtimeInformationalPresenter:
         self._generation = 0
         self._completed_requests = 0
         self._session_id: str | None = None
-        self._queue: asyncio.Queue[RealtimeInformationalRequest] = asyncio.Queue(maxsize=1)
+        self._queue: asyncio.Queue[str] = asyncio.Queue(maxsize=1)
         self._reconnect_task: asyncio.Task[None] | None = None
         self._stopped = False
 
@@ -553,29 +578,6 @@ class YandexRealtimeInformationalPresenter:
         self,
         request: RealtimeInformationalRequest,
     ) -> RealtimeInformationalResult:
-        if self._state is InformationalPresenterState.BUSY or self._queue.full():
-            raise InformationalPresenterError(
-                InformationalPresenterErrorCode.BUSY,
-                "Yandex Realtime text presenter is busy",
-            )
-        if self._state is not InformationalPresenterState.READY or self._transport is None:
-            raise InformationalPresenterError(
-                InformationalPresenterErrorCode.UNAVAILABLE,
-                "Yandex Realtime text presenter is not ready",
-            )
-        self._queue.put_nowait(request)
-        active_request = self._queue.get_nowait()
-        self._state = InformationalPresenterState.BUSY
-        self._generation += 1
-        generation = self._generation
-        started = time.perf_counter()
-        assembler = RealtimeTextResponseAssembler(
-            generation=generation,
-            request_id=request.request_id,
-            started=started,
-            record=self.record_event,
-        )
-        session_reused = self._completed_requests > 0
         self.record_event(
             "formulation_provider_selected",
             correlation_id=request.request_id,
@@ -593,19 +595,138 @@ class YandexRealtimeInformationalPresenter:
             fact_authority=request.fact_authority,
             fact_generation=str(request.fact_generation or "unknown"),
             freshness_status=request.freshness_status,
-            session_reused=session_reused,
+            session_reused=self._completed_requests > 0,
+        )
+        result = await self._run_text_operation(
+            request_id=request.request_id,
+            input_text=request.provider_input(),
+            instructions=request.response_instructions(),
+            event_id_kind="info",
+            failure_event="formulation_failed",
+        )
+        self.record_event(
+            "formulation_completed",
+            correlation_id=request.request_id,
+            provider=self.provider_id,
+            provider_response_id=result.provider_response_id,
+            latency_ms=round(result.complete_latency_ms, 3),
+            session_reused=result.session_reused,
+        )
+        return RealtimeInformationalResult(
+            request_id=request.request_id,
+            provider_response_id=result.provider_response_id,
+            provider_item_id=result.provider_item_id,
+            output_text=result.output_text,
+            first_token_latency_ms=result.first_token_latency_ms,
+            complete_latency_ms=result.complete_latency_ms,
+            session_reused=result.session_reused,
+        )
+
+    async def evaluate_semantic_conformance(
+        self,
+        request: SemanticConformanceRequest,
+    ) -> SemanticConformanceResult:
+        """Run one fail-closed semantic judge operation on this same warm session."""
+
+        self.record_event(
+            "semantic_validation_started",
+            correlation_id=request.request_id,
+            provider=self.provider_id,
+            semantic_meaning=request.policy.semantic_meaning,
+            fact_state=request.fact_state,
+            session_reused=self._completed_requests > 0,
+            provider_fact_authority=False,
         )
         try:
+            result = await self._run_text_operation(
+                request_id=request.request_id,
+                input_text=request.provider_input(),
+                instructions=request.response_instructions(),
+                event_id_kind="semantic",
+                failure_event="semantic_validation_failed",
+                temporary_session_instructions=SEMANTIC_JUDGE_SESSION_INSTRUCTIONS,
+            )
+            decision = parse_semantic_judge_output(
+                result.output_text,
+                request=request,
+                provider_id=self.provider_id,
+                provider_response_id=result.provider_response_id,
+                latency_ms=result.complete_latency_ms,
+                session_reused=result.session_reused,
+            )
+        except SemanticValidationError:
+            self.record_event(
+                "semantic_validation_failed",
+                correlation_id=request.request_id,
+                provider=self.provider_id,
+                error_type=SemanticValidationErrorCode.JUDGE_PROTOCOL.value,
+            )
+            raise
+        self.record_event(
+            "semantic_validation_completed",
+            correlation_id=request.request_id,
+            provider=self.provider_id,
+            provider_response_id=decision.provider_response_id,
+            verdict=decision.verdict.value,
+            unsupported_category_count=len(decision.unsupported_categories),
+            latency_ms=round(decision.latency_ms, 3),
+            session_reused=decision.session_reused,
+            provider_fact_authority=False,
+        )
+        return decision
+
+    async def _run_text_operation(
+        self,
+        *,
+        request_id: str,
+        input_text: str,
+        instructions: str,
+        event_id_kind: str,
+        failure_event: str,
+        temporary_session_instructions: str | None = None,
+    ) -> _RealtimeTextOperationResult:
+        if self._state is InformationalPresenterState.BUSY or self._queue.full():
+            raise InformationalPresenterError(
+                InformationalPresenterErrorCode.BUSY,
+                "Yandex Realtime text presenter is busy",
+            )
+        if self._state is not InformationalPresenterState.READY or self._transport is None:
+            raise InformationalPresenterError(
+                InformationalPresenterErrorCode.UNAVAILABLE,
+                "Yandex Realtime text presenter is not ready",
+            )
+        self._queue.put_nowait(request_id)
+        self._queue.get_nowait()
+        self._state = InformationalPresenterState.BUSY
+        self._generation += 1
+        generation = self._generation
+        started = time.perf_counter()
+        assembler = RealtimeTextResponseAssembler(
+            generation=generation,
+            request_id=request_id,
+            started=started,
+            record=self.record_event,
+        )
+        session_reused = self._completed_requests > 0
+        try:
             result = await asyncio.wait_for(
-                self._execute(active_request, assembler, session_reused=session_reused),
+                self._execute_text_operation_with_session_mode(
+                    request_id=request_id,
+                    input_text=input_text,
+                    instructions=instructions,
+                    event_id_kind=event_id_kind,
+                    assembler=assembler,
+                    session_reused=session_reused,
+                    temporary_session_instructions=temporary_session_instructions,
+                ),
                 self._config.request_timeout_s,
             )
         except asyncio.TimeoutError as exc:
             assembler.invalidate()
-            await self._cancel_response(assembler.response_id, request.request_id)
+            await self._cancel_response(assembler.response_id, request_id)
             self.record_event(
-                "formulation_failed",
-                correlation_id=request.request_id,
+                failure_event,
+                correlation_id=request_id,
                 provider=self.provider_id,
                 error_type=InformationalPresenterErrorCode.TIMEOUT.value,
             )
@@ -616,14 +737,14 @@ class YandexRealtimeInformationalPresenter:
             ) from exc
         except asyncio.CancelledError:
             assembler.invalidate()
-            await self._cancel_response(assembler.response_id, request.request_id)
+            await self._cancel_response(assembler.response_id, request_id)
             await self._invalidate_connection(schedule_reconnect=True)
             raise
         except InformationalPresenterError as exc:
             assembler.invalidate()
             self.record_event(
-                "formulation_failed",
-                correlation_id=request.request_id,
+                failure_event,
+                correlation_id=request_id,
                 provider=self.provider_id,
                 error_type=exc.code.value,
             )
@@ -635,19 +756,80 @@ class YandexRealtimeInformationalPresenter:
         self._state = InformationalPresenterState.READY
         return result
 
-    async def _execute(
+    async def _execute_text_operation_with_session_mode(
         self,
-        request: RealtimeInformationalRequest,
-        assembler: RealtimeTextResponseAssembler,
         *,
+        request_id: str,
+        input_text: str,
+        instructions: str,
+        event_id_kind: str,
+        assembler: RealtimeTextResponseAssembler,
         session_reused: bool,
-    ) -> RealtimeInformationalResult:
+        temporary_session_instructions: str | None,
+    ) -> _RealtimeTextOperationResult:
+        session_mode_changed = temporary_session_instructions is not None
+        if session_mode_changed:
+            await self._update_session_instructions(temporary_session_instructions)
+        try:
+            result = await self._execute_text_operation(
+                request_id=request_id,
+                input_text=input_text,
+                instructions=instructions,
+                event_id_kind=event_id_kind,
+                assembler=assembler,
+                session_reused=session_reused,
+            )
+        except BaseException:
+            if session_mode_changed:
+                try:
+                    await self._update_session_instructions(TEXT_SESSION_INSTRUCTIONS)
+                except Exception:
+                    pass
+            raise
+        if session_mode_changed:
+            await self._update_session_instructions(TEXT_SESSION_INSTRUCTIONS)
+        return result
+
+    async def _update_session_instructions(self, instructions: str) -> None:
+        """Switch the operation contract on the existing session and await confirmation."""
+
+        if self._transport is None:
+            raise InformationalPresenterError(
+                InformationalPresenterErrorCode.UNAVAILABLE,
+                "Yandex Realtime text presenter is not ready",
+            )
+        await self._transport.send_json(yandex_text_session_update(instructions=instructions))
+        while True:
+            event = await self._transport.receive_json()
+            kind = str(event.get("type") or "")
+            if kind == "session.updated":
+                return
+            if kind == "error":
+                raise InformationalPresenterError(
+                    InformationalPresenterErrorCode.PROVIDER,
+                    "Yandex rejected the text-session operation contract",
+                )
+            raise InformationalPresenterError(
+                InformationalPresenterErrorCode.PROTOCOL,
+                "Yandex returned an unexpected event while updating the text session",
+            )
+
+    async def _execute_text_operation(
+        self,
+        *,
+        request_id: str,
+        input_text: str,
+        instructions: str,
+        event_id_kind: str,
+        assembler: RealtimeTextResponseAssembler,
+        session_reused: bool,
+    ) -> _RealtimeTextOperationResult:
         assert self._transport is not None
-        item_event_id = f"orion-info-item-{request.request_id}"
-        response_event_id = f"orion-info-response-{request.request_id}"
+        item_event_id = f"orion-{event_id_kind}-item-{request_id}"
+        response_event_id = f"orion-{event_id_kind}-response-{request_id}"
         item, create = yandex_text_request_events(
-            input_text=request.provider_input(),
-            instructions=request.response_instructions(),
+            input_text=input_text,
+            instructions=instructions,
             item_event_id=item_event_id,
             response_event_id=response_event_id,
         )
@@ -659,16 +841,7 @@ class YandexRealtimeInformationalPresenter:
         completed = time.perf_counter()
         assert assembler.response_id is not None
         first_token_at = assembler.first_token_at or completed
-        self.record_event(
-            "formulation_completed",
-            correlation_id=request.request_id,
-            provider=self.provider_id,
-            provider_response_id=assembler.response_id,
-            latency_ms=round((completed - assembler.started) * 1000, 3),
-            session_reused=session_reused,
-        )
-        return RealtimeInformationalResult(
-            request_id=request.request_id,
+        return _RealtimeTextOperationResult(
             provider_response_id=assembler.response_id,
             provider_item_id=assembler.provider_item_id,
             output_text=assembler.output_text,
@@ -758,6 +931,7 @@ __all__ = [
     "RealtimeInformationalRequest",
     "RealtimeInformationalResult",
     "RealtimeTextResponseAssembler",
+    "SEMANTIC_JUDGE_SESSION_INSTRUCTIONS",
     "TEXT_SESSION_INSTRUCTIONS",
     "YANDEX_REALTIME_TEXT_PROVIDER_ID",
     "YandexRealtimeInformationalPresenter",

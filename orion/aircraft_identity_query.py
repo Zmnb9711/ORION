@@ -19,6 +19,7 @@ from orion.aircraft_identity_presentation import (
     AircraftIdentityShellValidationError,
     aircraft_identity_marker,
     bind_aircraft_identity_shell,
+    validate_aircraft_identity_structure,
     validate_aircraft_identity_shell,
     validate_and_bind_aircraft_identity_shell,
 )
@@ -41,6 +42,15 @@ from orion.planner import (
     planner_runner,
 )
 from orion.planner_contracts import PlannerExecutionPolicy, ProviderRetryPolicy
+from orion.semantic_response_validation import (
+    SemanticClaimCategory,
+    SemanticConformanceJudge,
+    SemanticConformanceVerdict,
+    SemanticValidationError,
+    SemanticValidationErrorCode,
+    SemanticValidationPolicy,
+    semantic_request_from_response,
+)
 from orion.world_model import world_model
 from orion.world_model_contracts import (
     OwnshipSnapshot,
@@ -60,6 +70,19 @@ AIRCRAFT_IDENTITY_CAPABILITY = CapabilityId("flight.aircraft_identity")
 AIRCRAFT_IDENTITY_CONTRACT = "aircraft_identity_query"
 AIRCRAFT_IDENTITY_SEMANTIC_MEANING = "flight.current_aircraft_identity"
 AIRCRAFT_IDENTITY_RADIO_ENTITY = "orion.assistant.aircraft_information"
+AIRCRAFT_IDENTITY_SEMANTIC_POLICY = SemanticValidationPolicy(
+    policy_id="flight.current_aircraft_identity.single_fact.v1",
+    semantic_meaning=AIRCRAFT_IDENTITY_SEMANTIC_MEANING,
+    allowed_known_meaning=(
+        "The response states only that the user's current aircraft identity is the "
+        "single opaque Core marker."
+    ),
+    allowed_unavailable_meaning=(
+        "The response states only that authoritative current-aircraft identity "
+        "information is unavailable."
+    ),
+    prohibited_categories=tuple(SemanticClaimCategory),
+)
 _AVAILABLE_MARKER = AVAILABLE_AIRCRAFT_MARKER
 _UNAVAILABLE_MARKER = UNAVAILABLE_AIRCRAFT_MARKER
 
@@ -138,6 +161,10 @@ class AircraftIdentityRealtimeCandidateOutcome(BaseModel):
     binding_latency_ms: float = Field(ge=0)
     total_latency_ms: float = Field(ge=0)
     session_reused: bool
+    validation_model: Literal["grammar_reference", "semantic_conformance"] = (
+        "grammar_reference"
+    )
+    semantic_judge_response_id: str | None = None
     formulation_origin: Literal["yandex_realtime_validated_placeholder"] = (
         "yandex_realtime_validated_placeholder"
     )
@@ -483,6 +510,7 @@ class AircraftIdentityRealtimeCandidateService:
         presenter: YandexRealtimeInformationalPresenter,
         interaction_id: UUID,
         language: Literal["ru-RU", "en-US"],
+        semantic_validator: SemanticConformanceJudge | None = None,
     ) -> AircraftIdentityRealtimeCandidateOutcome:
         total_started = time.perf_counter()
         result = self._query.resolve()
@@ -500,20 +528,62 @@ class AircraftIdentityRealtimeCandidateService:
         )
         presentation = await presenter.formulate(request)
         validation_started = time.perf_counter()
-        try:
-            validated_shell = validate_aircraft_identity_shell(
+        semantic_judge_response_id: str | None = None
+        if semantic_validator is None:
+            try:
+                validated_shell = validate_aircraft_identity_shell(
+                    presentation.output_text,
+                    result,
+                    language=language,
+                )
+            except AircraftIdentityShellValidationError as exc:
+                presenter.record_event(
+                    "formulation_failed",
+                    correlation_id=request.request_id,
+                    provider=presenter.provider_id,
+                    error_type="validation_failed",
+                )
+                raise AircraftIdentityFormulationError(str(exc), code=exc.code) from exc
+            validation_model: Literal["grammar_reference", "semantic_conformance"] = (
+                "grammar_reference"
+            )
+        else:
+            validated_shell = validate_aircraft_identity_structure(
                 presentation.output_text,
                 result,
                 language=language,
             )
-        except AircraftIdentityShellValidationError as exc:
-            presenter.record_event(
-                "formulation_failed",
-                correlation_id=request.request_id,
-                provider=presenter.provider_id,
-                error_type="validation_failed",
+            semantic_request = semantic_request_from_response(
+                core_response,
+                policy=AIRCRAFT_IDENTITY_SEMANTIC_POLICY,
+                language=language,
+                fact_state=(
+                    "known"
+                    if result.status is AircraftIdentityQueryStatus.AVAILABLE
+                    else "unavailable"
+                ),
+                required_marker=aircraft_identity_marker(result),
+                candidate_text=validated_shell,
             )
-            raise AircraftIdentityFormulationError(str(exc), code=exc.code) from exc
+            decision = await semantic_validator.evaluate_semantic_conformance(
+                semantic_request
+            )
+            semantic_judge_response_id = decision.provider_response_id
+            if decision.verdict is not SemanticConformanceVerdict.CONFORMANT:
+                presenter.record_event(
+                    "formulation_failed",
+                    correlation_id=request.request_id,
+                    provider=presenter.provider_id,
+                    error_type=SemanticValidationErrorCode.JUDGE_REJECTED.value,
+                    unsupported_category_count=len(decision.unsupported_categories),
+                )
+                raise SemanticValidationError(
+                    SemanticValidationErrorCode.JUDGE_REJECTED,
+                    "Natural informational response exceeded Core semantic meaning",
+                    unsupported_categories=decision.unsupported_categories,
+                    latency_ms=decision.latency_ms,
+                )
+            validation_model = "semantic_conformance"
         validation_finished = time.perf_counter()
         validation_latency_ms = (validation_finished - validation_started) * 1000
         presenter.record_event(
@@ -563,6 +633,8 @@ class AircraftIdentityRealtimeCandidateService:
             binding_latency_ms=binding_latency_ms,
             total_latency_ms=(binding_finished - total_started) * 1000,
             session_reused=presentation.session_reused,
+            validation_model=validation_model,
+            semantic_judge_response_id=semantic_judge_response_id,
         )
 
 

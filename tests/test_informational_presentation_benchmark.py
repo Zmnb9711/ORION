@@ -12,10 +12,12 @@ from tools.informational_presentation_benchmark import (
     BenchmarkSample,
     DiagnosticRejection,
     InformationalPresentationBenchmark,
+    SemanticAdversarialSample,
     build_report,
     failure_distribution,
     promotion_gates,
     sanitize_diagnostic_formulation,
+    semantic_promotion_gates,
     summarize_samples,
     write_private_report,
 )
@@ -114,6 +116,55 @@ def test_validation_rejection_is_not_misclassified_as_realtime_protocol_failure(
     assert decision == "BENCHMARK_NO_GO"
     assert gates["failure_timeout_rate"]["result"] == "FAIL"
     assert gates["realtime_protocol_execution"]["result"] == "PASS"
+
+
+def test_semantic_promotion_requires_safe_adversarial_and_total_latency() -> None:
+    samples: list[BenchmarkSample] = []
+    for case in BENCHMARK_CASES[:4]:
+        for index in range(1, 21):
+            sample = _sample("yandex_realtime_semantic", case.case_id, index, 600)
+            sample.validation_latency_ms = 100
+            sample.total_latency_ms = 700
+            sample.session_reused = True
+            samples.append(sample)
+    adversarial = tuple(
+        SemanticAdversarialSample(
+            case_id=f"adversarial-{index}",
+            expected_category="unrelated_fact",
+            rejected=True,
+            downstream_reached=False,
+            latency_ms=100,
+            error_code="semantic_judge_rejected",
+        )
+        for index in range(13)
+    )
+    gates, decision, failure_space = semantic_promotion_gates(
+        samples,
+        adversarial,
+        required_warm_samples=20,
+    )
+    assert decision == "NUMERICAL_GO_ONLY"
+    assert failure_space == "OPEN_ENDED"
+    assert gates["unsafe_acceptance"]["result"] == "PASS"
+    assert gates["invalid_downstream"]["result"] == "PASS"
+    assert gates["warm_total_median"]["result"] == "PASS"
+
+    unsafe = list(adversarial)
+    unsafe[0] = SemanticAdversarialSample(
+        case_id="unsafe",
+        expected_category="fuel",
+        rejected=False,
+        downstream_reached=True,
+        latency_ms=100,
+        error_code=None,
+    )
+    unsafe_gates, unsafe_decision, _ = semantic_promotion_gates(
+        samples,
+        tuple(unsafe),
+        required_warm_samples=20,
+    )
+    assert unsafe_decision == "NO_GO"
+    assert unsafe_gates["unsafe_acceptance"]["result"] == "FAIL"
 
 
 def test_diagnostic_sanitizer_is_bounded_and_redacts_credential_shapes() -> None:

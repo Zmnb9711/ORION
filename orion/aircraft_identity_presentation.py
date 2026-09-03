@@ -246,13 +246,13 @@ def _unsupported_second_claim(shell: str, *, language: str) -> bool:
     return bool(re.search(connectors, body) or re.search(operational, body))
 
 
-def validate_aircraft_identity_shell(
+def validate_aircraft_identity_structure(
     provider_text: str,
     result: AircraftIdentityFactView,
     *,
     language: str,
 ) -> str:
-    """Validate one complete provider shell without substituting the Core fact."""
+    """Validate only bounded Core binding structure, not natural-language grammar."""
 
     if language not in {"ru-RU", "en-US"}:
         raise AircraftIdentityShellValidationError(
@@ -331,6 +331,24 @@ def validate_aircraft_identity_shell(
             "Formulation introduced an identifier-like value outside the Core marker",
             code=AircraftIdentityShellValidationErrorCode.IDENTIFIER_PUNCTUATION,
         )
+    return text
+
+
+def validate_aircraft_identity_shell(
+    provider_text: str,
+    result: AircraftIdentityFactView,
+    *,
+    language: str,
+) -> str:
+    """Validate one complete provider shell without substituting the Core fact."""
+
+    text = validate_aircraft_identity_structure(
+        provider_text,
+        result,
+        language=language,
+    )
+    marker = aircraft_identity_marker(result)
+    shell = text.replace(marker, "")
     if _unsupported_second_claim(shell, language=language):
         raise AircraftIdentityShellValidationError(
             "Formulation introduced an unsupported additional factual claim",
@@ -402,6 +420,7 @@ __all__ = [
     "UNAVAILABLE_AIRCRAFT_MARKER",
     "aircraft_identity_marker",
     "bind_aircraft_identity_shell",
+    "validate_aircraft_identity_structure",
     "validate_aircraft_identity_shell",
     "validate_and_bind_aircraft_identity_shell",
 ]

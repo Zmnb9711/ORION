@@ -29,6 +29,7 @@ from orion.aircraft_identity_presentation import (
     bind_aircraft_identity_shell,
     validate_aircraft_identity_shell,
 )
+from orion.semantic_response_validation import SemanticValidationError
 from orion.world_model_contracts import (
     WorldFactAuthority,
     WorldFactSource,
@@ -43,13 +44,14 @@ from orion.yandex_qwen_planner import (
 from orion.yandex_realtime_informational_presenter import (
     InformationalPresenterError,
     RealtimeInformationalRequest,
+    RealtimeInformationalResult,
     YandexRealtimeInformationalPresenter,
     YandexRealtimeTextConfig,
 )
 from orion.yandex_realtime_provider import YANDEX_MODEL, YANDEX_REALTIME_ENDPOINT
 
 
-Backend = Literal["qwen", "yandex_realtime_text"]
+Backend = Literal["qwen", "yandex_realtime_text", "yandex_realtime_semantic"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,6 +104,87 @@ BENCHMARK_CASES = (
     BenchmarkCase("ru-unavailable", "ru-RU", None, None),
 )
 
+SEMANTIC_ADVERSARIAL_CASES: tuple[tuple[str, str, str, str], ...] = (
+    (
+        "second-aircraft",
+        "second_entity_identity",
+        "Вы в {{aircraft_identity}}, второй самолёт относится к типу МиГ.",
+        "ru-fa18",
+    ),
+    (
+        "altitude",
+        "altitude",
+        "Вы в {{aircraft_identity}}, высота большая.",
+        "ru-fa18",
+    ),
+    (
+        "fuel",
+        "fuel",
+        "Вы в {{aircraft_identity}}, топлива достаточно.",
+        "ru-fa18",
+    ),
+    (
+        "heading",
+        "heading",
+        "Вы в {{aircraft_identity}}, курс северный.",
+        "ru-fa18",
+    ),
+    (
+        "position",
+        "position",
+        "Вы в {{aircraft_identity}}, позиция известна.",
+        "ru-fa18",
+    ),
+    (
+        "radio-frequency",
+        "radio_frequency",
+        "Вы в {{aircraft_identity}}, радиочастота настроена.",
+        "ru-fa18",
+    ),
+    (
+        "tacan",
+        "tacan",
+        "Вы в {{aircraft_identity}}, TACAN доступен.",
+        "ru-fa18",
+    ),
+    (
+        "mission-state",
+        "mission_state",
+        "Вы в {{aircraft_identity}}, миссия продолжается.",
+        "ru-fa18",
+    ),
+    (
+        "numeric-identifier",
+        "numeric_identifier",
+        "Вы в {{aircraft_identity}}, код — девять.",
+        "ru-fa18",
+    ),
+    (
+        "operational-assertion",
+        "operational_assertion",
+        "Вы в {{aircraft_identity}}, полёт продолжается штатно.",
+        "ru-fa18",
+    ),
+    (
+        "uncertainty-drift",
+        "uncertainty_drift",
+        "Возможно, вы в {{aircraft_identity}}.",
+        "ru-fa18",
+    ),
+    (
+        "wrong-unavailable",
+        "wrong_fact_state",
+        "Вы находитесь в самолёте, но {{aircraft_unavailable}}.",
+        "ru-unavailable",
+    ),
+    (
+        "unrelated-fact-en",
+        "unrelated_fact",
+        "You are in {{aircraft_identity}}, and the weather is clear.",
+        "en-fa18",
+    ),
+)
+
 
 @dataclass(slots=True)
 class BenchmarkSample:
@@ -141,6 +224,16 @@ class DiagnosticRejection:
     total_latency_ms: float
 
 
+@dataclass(frozen=True, slots=True)
+class SemanticAdversarialSample:
+    case_id: str
+    expected_category: str
+    rejected: bool
+    downstream_reached: bool
+    latency_ms: float
+    error_code: str | None
+
+
 _DIAGNOSTIC_OUTPUT_LIMIT = 400
 
 
@@ -170,6 +263,29 @@ class _StaticQuery:
 
     def resolve(self) -> AircraftIdentityQueryResult:
         return self._result
+
+
+class _FixedShellPresenter:
+    provider_id = "yandex.realtime.text"
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+    async def formulate(
+        self,
+        request: RealtimeInformationalRequest,
+    ) -> RealtimeInformationalResult:
+        return RealtimeInformationalResult(
+            request_id=request.request_id,
+            provider_response_id="synthetic-adversarial-shell",
+            output_text=self.text,
+            first_token_latency_ms=0,
+            complete_latency_ms=0,
+            session_reused=True,
+        )
+
+    def record_event(self, _event: str, **_metadata: object) -> None:
+        return None
 
 
 def _identity_preserved(case: BenchmarkCase, text: str) -> bool:
@@ -414,6 +530,180 @@ def promotion_gates(
     return gates, decision
 
 
+def semantic_promotion_gates(
+    samples: list[BenchmarkSample],
+    adversarial_samples: tuple[SemanticAdversarialSample, ...],
+    *,
+    required_warm_samples: int,
+) -> tuple[dict[str, dict[str, object]], str, str]:
+    """Evaluate D75 gates for the semantic validator independently of C1."""
+
+    backend = "yandex_realtime_semantic"
+    warm = [item for item in samples if item.backend == backend and not item.cold]
+    primary_cases = {case.case_id for case in BENCHMARK_CASES[:4]}
+    primary = [item for item in warm if item.case_id in primary_cases]
+    successful = [item for item in primary if item.success]
+    per_case_counts = {
+        case_id: sum(item.case_id == case_id for item in primary)
+        for case_id in sorted(primary_cases)
+    }
+    sample_complete = all(
+        count >= required_warm_samples for count in per_case_counts.values()
+    )
+    session_established = any(
+        item.provider_output_status != "connect_failed"
+        for item in samples
+        if item.backend == backend
+    )
+    protocol_codes = {
+        "cancelled",
+        "provider_error",
+        "protocol_error",
+        "request_timeout",
+        "session_busy",
+        "session_unavailable",
+        "semantic_judge_protocol",
+        "semantic_judge_unavailable",
+    }
+    protocol_failures = [
+        item
+        for item in primary
+        if not item.success
+        and (
+            item.provider_output_status == "connect_failed"
+            or item.error_code in protocol_codes
+        )
+    ]
+    failure_rate = (
+        sum(not item.success for item in primary) / len(primary) if primary else 1.0
+    )
+    validation_values = [
+        item.validation_latency_ms
+        for item in successful
+        if item.validation_latency_ms is not None
+    ]
+    total_values = [item.total_latency_ms for item in successful]
+    validation_median = statistics.median(validation_values) if validation_values else None
+    total_median = statistics.median(total_values) if total_values else None
+    total_p90 = _percentile(total_values, 0.9)
+    exact_binding = bool(successful) and all(
+        item.validator_status == "pass" and item.identity_preserved
+        for item in successful
+    )
+    invalid_downstream = sum(
+        item.downstream_reached and not item.success for item in warm
+    )
+    unsafe_adversarial = sum(not item.rejected for item in adversarial_samples)
+    adversarial_protocol_failures = sum(
+        item.error_code
+        in {
+            "provider_error",
+            "protocol_error",
+            "request_timeout",
+            "session_unavailable",
+            "semantic_judge_protocol",
+            "semantic_judge_unavailable",
+        }
+        for item in adversarial_samples
+    )
+    adversarial_complete = bool(adversarial_samples)
+
+    def gate(value: bool | None, actual: object, target: str) -> dict[str, object]:
+        return {
+            "result": "INCOMPLETE" if value is None else ("PASS" if value else "FAIL"),
+            "actual": actual,
+            "target": target,
+        }
+
+    gates = {
+        "warm_sample_count": gate(
+            True if sample_complete else None,
+            per_case_counts,
+            f">={required_warm_samples} per primary combination",
+        ),
+        "accepted_output_semantic_correctness": gate(
+            exact_binding if successful else None,
+            f"{sum(item.validator_status == 'pass' and item.identity_preserved for item in successful)}/{len(successful)}",
+            "100%",
+        ),
+        "unsafe_acceptance": gate(
+            unsafe_adversarial == 0 if adversarial_complete else None,
+            unsafe_adversarial if adversarial_complete else None,
+            "0",
+        ),
+        "invalid_downstream": gate(
+            invalid_downstream == 0,
+            invalid_downstream,
+            "0",
+        ),
+        "overall_failure_rate": gate(
+            failure_rate <= 0.05 if sample_complete and session_established else None,
+            round(failure_rate * 100, 3),
+            "<=5%",
+        ),
+        "validation_median": {
+            "result": (
+                "INCOMPLETE"
+                if validation_median is None or not sample_complete
+                else ("PASS" if validation_median < 150 else "ADVISORY")
+            ),
+            "actual": (
+                round(validation_median, 3) if validation_median is not None else None
+            ),
+            "target": "<150 ms preferred; total latency gates remain mandatory",
+        },
+        "warm_total_median": gate(
+            total_median <= 1_500
+            if total_median is not None and sample_complete and session_established
+            else None,
+            round(total_median, 3) if total_median is not None else None,
+            "<=1500 ms",
+        ),
+        "warm_total_p90": gate(
+            total_p90 <= 3_000
+            if total_p90 is not None and sample_complete and session_established
+            else None,
+            total_p90,
+            "<=3000 ms",
+        ),
+        "realtime_protocol_execution": gate(
+            None
+            if not session_established
+            else not protocol_failures,
+            (
+                "no_session_established"
+                if not session_established
+                else f"substantive_failures={len(protocol_failures)}"
+            ),
+            "session established and protocol failures = 0",
+        ),
+        "adversarial_judge_protocol": gate(
+            adversarial_protocol_failures == 0 if adversarial_complete else None,
+            adversarial_protocol_failures if adversarial_complete else None,
+            "0 protocol failures",
+        ),
+        "persistent_session_reuse": gate(
+            any(item.session_reused is True for item in successful)
+            if successful
+            else None,
+            sum(item.session_reused is True for item in successful),
+            "demonstrated",
+        ),
+    }
+    results = {str(value["result"]) for value in gates.values()}
+    decision = (
+        "NO_GO"
+        if "FAIL" in results
+        else ("INCOMPLETE" if "INCOMPLETE" in results else "NUMERICAL_GO_ONLY")
+    )
+    reliability = (
+        "OPEN_ENDED"
+        if decision == "NUMERICAL_GO_ONLY"
+        else ("NOT_ESTABLISHED" if decision == "INCOMPLETE" else "UNSAFE_OR_UNRELIABLE")
+    )
+    return gates, decision, reliability
+
+
 class InformationalPresentationBenchmark:
     def __init__(
         self,
@@ -587,6 +877,139 @@ class InformationalPresentationBenchmark:
                 error_code=code,
             )
 
+    async def _semantic_sample(
+        self,
+        presenter: YandexRealtimeInformationalPresenter,
+        case: BenchmarkCase,
+        sample_index: int,
+        *,
+        cold: bool,
+        connect_latency_ms: float | None,
+    ) -> BenchmarkSample:
+        started = time.perf_counter()
+        try:
+            service = AircraftIdentityRealtimeCandidateService(
+                query=_StaticQuery(case.result())
+            )
+            outcome = await service.execute(
+                presenter=presenter,
+                semantic_validator=presenter,
+                interaction_id=uuid4(),
+                language=case.language,
+            )
+            preserved = _identity_preserved(case, outcome.final_text)
+            return BenchmarkSample(
+                backend="yandex_realtime_semantic",
+                case_id=case.case_id,
+                sample_index=sample_index,
+                cold=cold,
+                success=preserved,
+                provider_output_status="completed",
+                validator_status="pass" if preserved else "fail",
+                identity_preserved=preserved,
+                unsupported_claim_result="pass" if preserved else "fail",
+                downstream_reached=preserved,
+                session_reused=outcome.session_reused,
+                connect_latency_ms=connect_latency_ms,
+                first_token_latency_ms=outcome.first_token_latency_ms,
+                complete_formulation_ms=outcome.formulation_latency_ms,
+                validation_latency_ms=outcome.validation_latency_ms,
+                binding_latency_ms=outcome.binding_latency_ms,
+                total_latency_ms=(time.perf_counter() - started) * 1000,
+                bound_final_text=outcome.final_text if preserved else None,
+                error_code=None if preserved else "identity_mismatch",
+            )
+        except Exception as exc:
+            if isinstance(exc, InformationalPresenterError):
+                code = exc.code.value
+                validator_status = "not_run"
+            elif isinstance(exc, SemanticValidationError):
+                code = exc.code.value
+                validator_status = "fail"
+            elif isinstance(exc, AircraftIdentityShellValidationError) and exc.code:
+                code = exc.code.value
+                validator_status = "fail"
+            else:
+                code = type(exc).__name__
+                validator_status = "fail"
+            return BenchmarkSample(
+                backend="yandex_realtime_semantic",
+                case_id=case.case_id,
+                sample_index=sample_index,
+                cold=cold,
+                success=False,
+                provider_output_status=(
+                    "failed"
+                    if isinstance(exc, InformationalPresenterError)
+                    else "completed"
+                ),
+                validator_status=validator_status,
+                identity_preserved=False,
+                unsupported_claim_result="not_accepted",
+                downstream_reached=False,
+                session_reused=None,
+                connect_latency_ms=connect_latency_ms,
+                first_token_latency_ms=None,
+                complete_formulation_ms=None,
+                validation_latency_ms=None,
+                binding_latency_ms=None,
+                total_latency_ms=(time.perf_counter() - started) * 1000,
+                bound_final_text=None,
+                error_code=code,
+            )
+
+    async def run_semantic_adversarial(
+        self,
+        *,
+        samples_per_case: int,
+    ) -> tuple[SemanticAdversarialSample, ...]:
+        """Exercise the live semantic judge with fixed unsafe natural shells."""
+
+        by_id = {case.case_id: case for case in BENCHMARK_CASES}
+        presenter = YandexRealtimeInformationalPresenter(self._realtime_config)
+        samples: list[SemanticAdversarialSample] = []
+        try:
+            await presenter.connect()
+            if presenter.session_id:
+                self.session_ids.add(presenter.session_id)
+            for case_id, category, text, fact_case_id in SEMANTIC_ADVERSARIAL_CASES:
+                case = by_id[fact_case_id]
+                for index in range(1, samples_per_case + 1):
+                    started = time.perf_counter()
+                    rejected = False
+                    error_code: str | None = None
+                    try:
+                        await AircraftIdentityRealtimeCandidateService(
+                            query=_StaticQuery(case.result())
+                        ).execute(
+                            presenter=_FixedShellPresenter(text),  # type: ignore[arg-type]
+                            semantic_validator=presenter,
+                            interaction_id=uuid4(),
+                            language=case.language,
+                        )
+                    except SemanticValidationError as exc:
+                        rejected = True
+                        error_code = exc.code.value
+                    except AircraftIdentityShellValidationError as exc:
+                        rejected = True
+                        error_code = exc.code.value if exc.code else "structural_rejection"
+                    except InformationalPresenterError as exc:
+                        rejected = True
+                        error_code = exc.code.value
+                    samples.append(
+                        SemanticAdversarialSample(
+                            case_id=f"{case_id}-{index}",
+                            expected_category=category,
+                            rejected=rejected,
+                            downstream_reached=not rejected,
+                            latency_ms=(time.perf_counter() - started) * 1000,
+                            error_code=error_code,
+                        )
+                    )
+        finally:
+            await presenter.close()
+        return tuple(samples)
+
     async def _realtime_diagnostic_sample(
         self,
         presenter: YandexRealtimeInformationalPresenter,
@@ -733,6 +1156,7 @@ class InformationalPresentationBenchmark:
         warm_samples: int,
         qwen_samples: int,
         cases: tuple[BenchmarkCase, ...] = BENCHMARK_CASES,
+        include_semantic: bool = False,
     ) -> list[BenchmarkSample]:
         samples: list[BenchmarkSample] = []
         for case in cases:
@@ -830,6 +1254,112 @@ class InformationalPresentationBenchmark:
             finally:
                 await warm_presenter.close()
 
+        if include_semantic:
+            for case in cases:
+                cold_presenter = YandexRealtimeInformationalPresenter(
+                    self._realtime_config
+                )
+                connect_started = time.perf_counter()
+                try:
+                    await cold_presenter.connect()
+                    connect_ms = (time.perf_counter() - connect_started) * 1000
+                    if cold_presenter.session_id:
+                        self.session_ids.add(cold_presenter.session_id)
+                    samples.append(
+                        await self._semantic_sample(
+                            cold_presenter,
+                            case,
+                            0,
+                            cold=True,
+                            connect_latency_ms=connect_ms,
+                        )
+                    )
+                except Exception as exc:
+                    samples.append(
+                        BenchmarkSample(
+                            backend="yandex_realtime_semantic",
+                            case_id=case.case_id,
+                            sample_index=0,
+                            cold=True,
+                            success=False,
+                            provider_output_status="connect_failed",
+                            validator_status="not_run",
+                            identity_preserved=False,
+                            unsupported_claim_result="not_run",
+                            downstream_reached=False,
+                            session_reused=False,
+                            connect_latency_ms=(
+                                time.perf_counter() - connect_started
+                            )
+                            * 1000,
+                            first_token_latency_ms=None,
+                            complete_formulation_ms=None,
+                            validation_latency_ms=None,
+                            binding_latency_ms=None,
+                            total_latency_ms=(
+                                time.perf_counter() - connect_started
+                            )
+                            * 1000,
+                            bound_final_text=None,
+                            error_code=(
+                                exc.code.value
+                                if isinstance(exc, InformationalPresenterError)
+                                else type(exc).__name__
+                            ),
+                        )
+                    )
+                finally:
+                    await cold_presenter.close()
+
+                warm_presenter = YandexRealtimeInformationalPresenter(
+                    self._realtime_config
+                )
+                try:
+                    await warm_presenter.connect()
+                    if warm_presenter.session_id:
+                        self.session_ids.add(warm_presenter.session_id)
+                    for index in range(1, warm_samples + 1):
+                        sample = await self._semantic_sample(
+                            warm_presenter,
+                            case,
+                            index,
+                            cold=False,
+                            connect_latency_ms=None,
+                        )
+                        samples.append(sample)
+                        if not sample.success and warm_presenter.state.value != "ready":
+                            break
+                except Exception as exc:
+                    samples.append(
+                        BenchmarkSample(
+                            backend="yandex_realtime_semantic",
+                            case_id=case.case_id,
+                            sample_index=1,
+                            cold=False,
+                            success=False,
+                            provider_output_status="connect_failed",
+                            validator_status="not_run",
+                            identity_preserved=False,
+                            unsupported_claim_result="not_run",
+                            downstream_reached=False,
+                            session_reused=False,
+                            connect_latency_ms=None,
+                            first_token_latency_ms=None,
+                            complete_formulation_ms=None,
+                            validation_latency_ms=None,
+                            binding_latency_ms=None,
+                            total_latency_ms=0,
+                            bound_final_text=None,
+                            error_code=(
+                                exc.code.value
+                                if isinstance(exc, InformationalPresenterError)
+                                else type(exc).__name__
+                            ),
+                        )
+                    )
+                finally:
+                    await warm_presenter.close()
+
         for case in cases:
             for index in range(1, qwen_samples + 1):
                 samples.append(await self._qwen_sample(case, index))
@@ -844,10 +1374,27 @@ def build_report(
     diagnostic_rejections: tuple[DiagnosticRejection, ...] = (),
     diagnostic_capture_enabled: bool = False,
     selected_case_ids: tuple[str, ...] = (),
+    semantic_adversarial_samples: tuple[SemanticAdversarialSample, ...] = (),
+    promote_semantic: bool = False,
 ) -> dict[str, Any]:
-    gates, decision = promotion_gates(samples, required_warm_samples=warm_samples)
+    reference_gates, reference_decision = promotion_gates(
+        samples,
+        required_warm_samples=warm_samples,
+    )
+    semantic_gates, semantic_decision, semantic_failure_space = (
+        semantic_promotion_gates(
+            samples,
+            semantic_adversarial_samples,
+            required_warm_samples=warm_samples,
+        )
+    )
+    gates = semantic_gates if promote_semantic else reference_gates
+    decision = semantic_decision if promote_semantic else reference_decision
+    semantic_samples = [
+        item for item in samples if item.backend == "yandex_realtime_semantic"
+    ]
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "benchmark_id": f"IPB-{datetime.now(UTC).strftime('%Y%m%d-%H%M%S')}",
         "created_at": datetime.now(UTC).isoformat(),
         "environment": {
@@ -878,6 +1425,10 @@ def build_report(
             "yandex_realtime_text": sum(
                 item.backend == "yandex_realtime_text" for item in samples
             ),
+            "yandex_realtime_semantic_formulation": len(semantic_samples),
+            "yandex_realtime_semantic_validation": (
+                len(semantic_samples) + len(semantic_adversarial_samples)
+            ),
         },
         "diagnostic": {
             "capture_enabled": diagnostic_capture_enabled,
@@ -893,9 +1444,25 @@ def build_report(
         "summaries": summarize_samples(samples),
         "failure_distribution": failure_distribution(samples),
         "promotion_gates": gates,
-        "benchmark_decision": decision,
-        "realtime_candidate_decision": decision.replace(
-            "BENCHMARK_", "REALTIME_CANDIDATE_"
+        "reference_c1": {
+            "promotion_gates": reference_gates,
+            "decision": reference_decision,
+        },
+        "semantic_candidate": {
+            "promotion_gates": semantic_gates,
+            "decision": semantic_decision,
+            "failure_space": semantic_failure_space,
+            "adversarial_samples": [
+                asdict(item) for item in semantic_adversarial_samples
+            ],
+        },
+        "benchmark_decision": (
+            f"SEMANTIC_{decision}" if promote_semantic else decision
+        ),
+        "realtime_candidate_decision": (
+            f"SEMANTIC_{decision}"
+            if promote_semantic
+            else decision.replace("BENCHMARK_", "REALTIME_CANDIDATE_")
         ),
         "comparison_hierarchy": {
             "primary": "historical physical Qwen field evidence",
@@ -947,6 +1514,20 @@ def _human_summary(report: dict[str, Any]) -> str:
         )
     lines.extend(
         [
+            "",
+            "## Validator comparison",
+            "",
+            "```json",
+            json.dumps(
+                {
+                    "current_c1": report.get("reference_c1", {}),
+                    "semantic": report.get("semantic_candidate", {}),
+                },
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            ),
+            "```",
             "",
             "## Backend/combination summaries",
             "",
@@ -1013,6 +1594,14 @@ async def _run(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
         warm_samples=args.warm_samples,
         qwen_samples=0 if args.skip_qwen else args.qwen_samples,
         cases=selected_cases,
+        include_semantic=args.semantic_validator,
+    )
+    semantic_adversarial_samples = (
+        await benchmark.run_semantic_adversarial(
+            samples_per_case=args.adversarial_samples,
+        )
+        if args.semantic_validator
+        else ()
     )
     report = build_report(
         samples,
@@ -1021,6 +1610,8 @@ async def _run(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
         diagnostic_rejections=tuple(benchmark.diagnostic_rejections),
         diagnostic_capture_enabled=args.diagnostic_rejected_shells,
         selected_case_ids=tuple(case.case_id for case in selected_cases),
+        semantic_adversarial_samples=semantic_adversarial_samples,
+        promote_semantic=args.semantic_validator,
     )
     json_path, markdown_path = write_private_report(report, args.output_dir)
     return json_path, markdown_path, report
@@ -1035,6 +1626,8 @@ def main() -> int:
     parser.add_argument("--warm-samples", type=int, default=20)
     parser.add_argument("--qwen-samples", type=int, default=20)
     parser.add_argument("--skip-qwen", action="store_true")
+    parser.add_argument("--semantic-validator", action="store_true")
+    parser.add_argument("--adversarial-samples", type=int, default=3)
     parser.add_argument(
         "--case",
         action="append",
@@ -1049,10 +1642,12 @@ def main() -> int:
         parser.error("warm samples must be 1..100 and Qwen samples must be 0..100")
     if not 1 <= args.diagnostic_capture_limit <= 100:
         parser.error("diagnostic capture limit must be 1..100")
+    if not 1 <= args.adversarial_samples <= 20:
+        parser.error("adversarial samples must be 1..20")
     if args.diagnostic_rejected_shells and not args.skip_qwen:
         parser.error("rejected-shell diagnostics require --skip-qwen")
     json_path, markdown_path, report = asyncio.run(_run(args))
-    provider_calls = len(report["samples"])
+    provider_calls = sum(report["provider_call_counts"].values())
     print(f"credential_present=true provider_calls={provider_calls}")
     print(f"benchmark_decision={report['benchmark_decision']}")
     print(f"realtime_candidate_decision={report['realtime_candidate_decision']}")

@@ -362,6 +362,7 @@ def test_only_approved_architecture_boundaries_import_ia0_contracts() -> None:
         "planner_contracts.py",
         "radio_contracts.py",
         "realtime_test_evidence.py",
+        "semantic_response_validation.py",
         "semantic_value_binding.py",
         "tool_gateway.py",
         "tool_gateway_contracts.py",
