@@ -9,6 +9,7 @@ from typing import Any
 
 from tools.orion_arch_guard.config import SourceConfig
 from tools.orion_arch_guard.fingerprints import canonical_sha256
+from tools.orion_arch_guard.graph import CapabilityGraph
 from tools.orion_arch_guard.guard import ArchitectureGuard, GuardMode, PreflightInput
 from tools.orion_development_console.collectors import collect_git
 from tools.orion_development_console.comparison import compare_checkpoints, render_comparison
@@ -122,6 +123,18 @@ class DevelopmentMemoryService:
     def latest_prompt(self) -> PromptRecord | None:
         return self.prompts.latest()
 
+    def _global_canonical_context(
+        self, fallback: Mapping[str, Any]
+    ) -> Mapping[str, Any]:
+        database = self.context.guard_root / "index.sqlite3"
+        if not database.is_file():
+            return fallback
+        graph = CapabilityGraph(database, migrate_schema=False)
+        try:
+            return graph.canonical_context()
+        finally:
+            graph.close()
+
     def _verification_id(self) -> str | None:
         report = self.engine.cached_report()
         return report.verification_id if report else None
@@ -168,7 +181,9 @@ class DevelopmentMemoryService:
         implementation_map = implementations if isinstance(implementations, Mapping) else {}
         previous_best = guard.get("previous_best")
         previous_best_map = previous_best if isinstance(previous_best, Mapping) else {}
-        canonical = _mapping(guard.get("canonical_context"))
+        canonical = self._global_canonical_context(
+            _mapping(guard.get("canonical_context"))
+        )
         records = guard.get("implementation_records")
         implementation_records = records if isinstance(records, list) else []
         automated_or_probe = {
@@ -295,7 +310,9 @@ class DevelopmentMemoryService:
         verification = self.engine.cached_report()
         history = _mapping(guard.get("history_coverage"))
         previous_best = _mapping(guard.get("previous_best"))
-        canonical = _mapping(guard.get("canonical_context"))
+        canonical = self._global_canonical_context(
+            _mapping(guard.get("canonical_context"))
+        )
         stage = checkpoint.development_stage if checkpoint else "NOT RECORDED"
         next_step = checkpoint.approved_next_step if checkpoint and checkpoint.approved_next_step else "NOT RECORDED — USER CONFIRMATION REQUIRED"
         content = f"""ORION ARCHITECTURE GUARD: ON — {guard.get('report_id')}

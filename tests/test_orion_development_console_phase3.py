@@ -390,6 +390,10 @@ def test_checkpoint_candidate_uses_current_roadmap_not_stale_saved_checkpoint(
     assert saved is not None
     assert candidate.development_stage != saved.development_stage
     assert len(service.memory.checkpoints.list_records()) == 1
+    assert len(candidate.golden_components) == 18
+    assert len(candidate.historical_reconnect_items) == 2
+    assert len(candidate.recovered_ideas) == 20
+    assert len(candidate.retirement_candidates) == 8
 
 
 def test_canonical_roadmap_preserves_visual_classes_and_current_position(tmp_path: Path) -> None:

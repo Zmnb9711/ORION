@@ -941,10 +941,11 @@ class GraphBuilder:
 
 
 class CapabilityGraph:
-    def __init__(self, database_path: Path) -> None:
+    def __init__(self, database_path: Path, *, migrate_schema: bool = True) -> None:
         self.database_path = database_path
         self.connection = connect_index(database_path)
-        migrate(self.connection)
+        if migrate_schema:
+            migrate(self.connection)
 
     def close(self) -> None:
         self.connection.close()
