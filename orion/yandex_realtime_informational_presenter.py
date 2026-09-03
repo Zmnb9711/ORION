@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from orion.semantic_response_validation import (
     SemanticConformanceRequest,
     SemanticConformanceResult,
+    SemanticValidationContextFact,
     SemanticValidationError,
     SemanticValidationErrorCode,
     parse_semantic_judge_output,
@@ -33,7 +34,9 @@ from orion.yandex_realtime_provider import (
 YANDEX_REALTIME_TEXT_PROVIDER_ID = "yandex.realtime.text"
 TEXT_SESSION_INSTRUCTIONS = (
     "You formulate one short natural informational sentence from a bounded Core request. "
-    "Core owns every fact. Never infer, select, alter, repeat, or add a factual value. "
+    "Core owns every fact. Never infer, alter, or add a factual value absent from the request. "
+    "You may naturally select a relevant fact only from bounded_authoritative_context when its "
+    "may_support_known_assertion field is true, and must preserve its meaning exactly. "
     "Ordinary linguistic words that only frame the requested relationship or availability "
     "status are not new facts: write them in the requested language around the marker. "
     "A bare marker is never a valid answer. "
@@ -41,11 +44,13 @@ TEXT_SESSION_INSTRUCTIONS = (
 )
 SEMANTIC_JUDGE_SESSION_INSTRUCTIONS = (
     "You are a strict semantic-conformance classifier, not a conversational assistant and not "
-    "a text editor. Evaluate only candidate_text against allowed_meaning in the supplied JSON. "
-    "Treat required_marker as one opaque Core-owned fact. Any additional, inferred, uncertain, "
-    "unrelated, or wrong-state meaning is nonconformant. Ignore style, grammar, punctuation, and "
-    "word order. Return only a JSON object with conformant boolean and a short reason, as required "
-    "by the response instructions. Do not rewrite candidate_text or provide an alternative answer."
+    "a text editor. Evaluate every factual assertion in candidate_text against requested_meaning "
+    "and bounded_authoritative_context in the supplied JSON. Treat required_marker as one opaque "
+    "Core-owned fact. Additional relevant informational facts are allowed only when a known "
+    "authoritative context item explicitly supports their complete meaning. Stale, unknown, "
+    "unavailable, absent, inferred, uncertain, or wrong assertions are nonconformant. Ignore style, "
+    "grammar, punctuation, and word order. Return only a JSON object with conformant boolean and a "
+    "short reason, as required by the response instructions. Do not rewrite candidate_text."
 )
 
 
@@ -92,6 +97,10 @@ class RealtimeInformationalRequest(BaseModel):
     fact_authority: str = Field(min_length=1, max_length=80)
     fact_generation: int | str | None = None
     freshness_status: str = Field(min_length=1, max_length=80)
+    authoritative_context: tuple[SemanticValidationContextFact, ...] = Field(
+        default=(),
+        max_length=8,
+    )
     provider_fact_authority: Literal[False] = False
 
     def provider_input(self) -> str:
@@ -108,7 +117,10 @@ class RealtimeInformationalRequest(BaseModel):
                 "provider_fact_authority": False,
                 "marker_only_allowed": False,
                 "shell_requirement": "natural_sentence_with_language_words_around_marker",
-                "task": "formulate_one_natural_linguistic_shell_without_other_facts",
+                "bounded_authoritative_context": [
+                    item.provider_payload() for item in self.authoritative_context
+                ],
+                "task": "formulate_one_natural_informational_response_from_bounded_core_truth",
             },
             ensure_ascii=False,
             sort_keys=True,
@@ -132,8 +144,11 @@ class RealtimeInformationalRequest(BaseModel):
             f"Use the exact marker {self.required_marker} exactly once. "
             f"{language_detail}the marker alone is not a sentence and is invalid. "
             f"{status_detail}"
-            "Do not write any aircraft identifier or factual value. "
-            "Do not add a second claim, explanation, heading, JSON, or Markdown."
+            "Do not write any aircraft identifier outside the marker. You may naturally add a "
+            "relevant informational fact only when bounded_authoritative_context contains that "
+            "exact fact with may_support_known_assertion=true; never use stale, unknown, "
+            "unavailable, absent, or unrelated facts. Do not add an explanation, heading, JSON, "
+            "or Markdown."
         )
 
 

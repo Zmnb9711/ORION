@@ -251,6 +251,7 @@ def validate_aircraft_identity_structure(
     result: AircraftIdentityFactView,
     *,
     language: str,
+    allow_contextual_identifiers: bool = False,
 ) -> str:
     """Validate only bounded Core binding structure, not natural-language grammar."""
 
@@ -326,7 +327,7 @@ def validate_aircraft_identity_structure(
                 AircraftIdentityShellValidationErrorCode.CANONICAL_IDENTITY_OUTSIDE_MARKER
             ),
         )
-    if re.search(r"[\d/_+]", shell):
+    if not allow_contextual_identifiers and re.search(r"[\d/_+]", shell):
         raise AircraftIdentityShellValidationError(
             "Formulation introduced an identifier-like value outside the Core marker",
             code=AircraftIdentityShellValidationErrorCode.IDENTIFIER_PUNCTUATION,

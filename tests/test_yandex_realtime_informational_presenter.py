@@ -22,9 +22,12 @@ from orion.semantic_response_validation import (
     SemanticConformanceVerdict,
     SemanticValidationError,
     SemanticValidationErrorCode,
+    SemanticValidationContextFact,
 )
 from orion.world_model_contracts import (
+    WorldFact,
     WorldFactAuthority,
+    WorldFactReason,
     WorldFactSource,
     WorldFactStatus,
 )
@@ -433,6 +436,43 @@ def _unavailable_result() -> AircraftIdentityQueryResult:
     )
 
 
+def _known_context(
+    *,
+    key: str,
+    value: str | int | float | bool,
+    category: SemanticClaimCategory,
+    unit: str | None = None,
+) -> SemanticValidationContextFact:
+    return SemanticValidationContextFact(
+        fact=WorldFact(
+            key=key,
+            value=value,
+            status=WorldFactStatus.KNOWN,
+            source=WorldFactSource.DCS_EXPORT,
+            authority=WorldFactAuthority.AUTHORITATIVE,
+            generation=7,
+            unit=unit,
+        ),
+        category=category,
+    )
+
+
+def _stale_altitude_context() -> SemanticValidationContextFact:
+    return SemanticValidationContextFact(
+        fact=WorldFact(
+            key="flight.altitude_m",
+            value=1200.0,
+            status=WorldFactStatus.STALE,
+            source=WorldFactSource.DCS_EXPORT,
+            authority=WorldFactAuthority.AUTHORITATIVE,
+            generation=7,
+            unit="m",
+            reason=WorldFactReason.SOURCE_STALE,
+        ),
+        category=SemanticClaimCategory.ALTITUDE,
+    )
+
+
 async def _in_memory_candidate_preserves_core_fact_and_one_final_response() -> None:
     presenter = _FakePresenter("Вы сейчас находитесь в {{aircraft_identity}}.")
     service = AircraftIdentityRealtimeCandidateService(query=_StaticQuery(_known_result()))
@@ -492,6 +532,138 @@ def test_semantic_candidate_accepts_safe_natural_ru_en_without_grammar_rules(
         assert outcome.final_text.count("F/A-18C Hornet") == 1
         assert outcome.semantic_judge_response_id == "judge-response-1"
         assert "FA-18" not in judge.requests[0].provider_input()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    ("text", "language", "context"),
+    (
+        (
+            "Вы в {{aircraft_identity}}, топлива достаточно.",
+            "ru-RU",
+            _known_context(
+                key="flight.fuel.sufficient",
+                value=True,
+                category=SemanticClaimCategory.FUEL,
+            ),
+        ),
+        (
+            "Вы в {{aircraft_identity}} на высоте 1200 метров.",
+            "ru-RU",
+            _known_context(
+                key="flight.altitude_m",
+                value=1200.0,
+                category=SemanticClaimCategory.ALTITUDE,
+                unit="m",
+            ),
+        ),
+        (
+            "Сейчас вы в {{aircraft_identity}}, курс 137 градусов.",
+            "ru-RU",
+            _known_context(
+                key="flight.heading_deg",
+                value=137.0,
+                category=SemanticClaimCategory.HEADING,
+                unit="deg",
+            ),
+        ),
+        (
+            "You are flying {{aircraft_identity}}, with sufficient fuel.",
+            "en-US",
+            _known_context(
+                key="flight.fuel.sufficient",
+                value=True,
+                category=SemanticClaimCategory.FUEL,
+            ),
+        ),
+    ),
+)
+def test_semantic_candidate_accepts_natural_core_confirmed_additional_fact(
+    text: str,
+    language: str,
+    context: SemanticValidationContextFact,
+) -> None:
+    async def run() -> None:
+        presenter = _FakePresenter(text)
+        judge = _FakeSemanticJudge(verdict=SemanticConformanceVerdict.CONFORMANT)
+        outcome = await AircraftIdentityRealtimeCandidateService(
+            query=_StaticQuery(_known_result())
+        ).execute(
+            presenter=presenter,  # type: ignore[arg-type]
+            semantic_validator=judge,
+            authoritative_context=(context,),
+            interaction_id=INTERACTION_ID,
+            language=language,  # type: ignore[arg-type]
+        )
+        assert outcome.final_text.count("F/A-18C Hornet") == 1
+        assert context.fact.key in {
+            fact.key for fact in outcome.semantic_response.authoritative_facts
+        }
+        assert presenter.requests[0].authoritative_context == (context,)
+        assert judge.requests[0].authoritative_context == (context,)
+        assert "core_fact_binding_completed" in presenter.events
+
+    asyncio.run(run())
+
+
+def test_stale_context_and_invented_third_assertion_never_reach_downstream() -> None:
+    async def reject(text: str, context: SemanticValidationContextFact) -> None:
+        presenter = _FakePresenter(text)
+        judge = _FakeSemanticJudge(
+            verdict=SemanticConformanceVerdict.NONCONFORMANT,
+            categories=(SemanticClaimCategory.UNRELATED_FACT,),
+        )
+        with pytest.raises(SemanticValidationError):
+            await AircraftIdentityRealtimeCandidateService(
+                query=_StaticQuery(_known_result())
+            ).execute(
+                presenter=presenter,  # type: ignore[arg-type]
+                semantic_validator=judge,
+                authoritative_context=(context,),
+                interaction_id=INTERACTION_ID,
+                language="ru-RU",
+            )
+        assert "core_fact_binding_completed" not in presenter.events
+
+    async def run() -> None:
+        await reject(
+            "Вы в {{aircraft_identity}} на высоте 1200 метров.",
+            _stale_altitude_context(),
+        )
+        await reject(
+            "Вы в {{aircraft_identity}}, топлива достаточно, частота 251 МГц.",
+            _known_context(
+                key="flight.fuel.sufficient",
+                value=True,
+                category=SemanticClaimCategory.FUEL,
+            ),
+        )
+
+    asyncio.run(run())
+
+
+def test_additional_core_context_cannot_bypass_semantic_validation() -> None:
+    async def run() -> None:
+        context = _known_context(
+            key="flight.fuel.sufficient",
+            value=True,
+            category=SemanticClaimCategory.FUEL,
+        )
+        presenter = _FakePresenter(
+            "Вы в {{aircraft_identity}}, топлива достаточно."
+        )
+        with pytest.raises(SemanticValidationError) as caught:
+            await AircraftIdentityRealtimeCandidateService(
+                query=_StaticQuery(_known_result())
+            ).execute(
+                presenter=presenter,  # type: ignore[arg-type]
+                authoritative_context=(context,),
+                interaction_id=INTERACTION_ID,
+                language="ru-RU",
+            )
+        assert caught.value.code is SemanticValidationErrorCode.INVALID_CORE_CONTRACT
+        assert presenter.requests == []
 
     asyncio.run(run())
 

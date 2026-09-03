@@ -50,6 +50,8 @@ from orion.semantic_response_validation import (
     SemanticValidationErrorCode,
     SemanticValidationPolicy,
     semantic_request_from_response,
+    semantic_response_with_context,
+    SemanticValidationContextFact,
 )
 from orion.world_model import world_model
 from orion.world_model_contracts import (
@@ -71,17 +73,18 @@ AIRCRAFT_IDENTITY_CONTRACT = "aircraft_identity_query"
 AIRCRAFT_IDENTITY_SEMANTIC_MEANING = "flight.current_aircraft_identity"
 AIRCRAFT_IDENTITY_RADIO_ENTITY = "orion.assistant.aircraft_information"
 AIRCRAFT_IDENTITY_SEMANTIC_POLICY = SemanticValidationPolicy(
-    policy_id="flight.current_aircraft_identity.single_fact.v1",
+    policy_id="flight.current_aircraft_identity.bounded_context.v2",
     semantic_meaning=AIRCRAFT_IDENTITY_SEMANTIC_MEANING,
     allowed_known_meaning=(
-        "The response states only that the user's current aircraft identity is the "
-        "single opaque Core marker."
+        "The response states that the user's current aircraft identity is the single opaque "
+        "Core marker. It may also state relevant facts explicitly supported by "
+        "bounded_authoritative_context."
     ),
     allowed_unavailable_meaning=(
-        "The response states only that authoritative current-aircraft identity "
-        "information is unavailable."
+        "The response explicitly states that authoritative current-aircraft identity "
+        "information is unavailable; the unavailable marker is not an aircraft identity value."
     ),
-    prohibited_categories=tuple(SemanticClaimCategory),
+    factual_claim_categories=tuple(SemanticClaimCategory),
 )
 _AVAILABLE_MARKER = AVAILABLE_AIRCRAFT_MARKER
 _UNAVAILABLE_MARKER = UNAVAILABLE_AIRCRAFT_MARKER
@@ -511,10 +514,19 @@ class AircraftIdentityRealtimeCandidateService:
         interaction_id: UUID,
         language: Literal["ru-RU", "en-US"],
         semantic_validator: SemanticConformanceJudge | None = None,
+        authoritative_context: tuple[SemanticValidationContextFact, ...] = (),
     ) -> AircraftIdentityRealtimeCandidateOutcome:
         total_started = time.perf_counter()
+        if authoritative_context and semantic_validator is None:
+            raise SemanticValidationError(
+                SemanticValidationErrorCode.INVALID_CORE_CONTRACT,
+                "Additional Core facts require semantic conformance validation",
+            )
         result = self._query.resolve()
-        core_response = _core_semantic_response(result, interaction_id=interaction_id)
+        core_response = semantic_response_with_context(
+            _core_semantic_response(result, interaction_id=interaction_id),
+            authoritative_context,
+        )
         request = RealtimeInformationalRequest(
             request_id=interaction_id.hex,
             semantic_meaning=result.semantic_meaning,
@@ -525,6 +537,7 @@ class AircraftIdentityRealtimeCandidateService:
             fact_authority=result.authority.value,
             fact_generation=result.generation,
             freshness_status=result.fact_status.value,
+            authoritative_context=authoritative_context,
         )
         presentation = await presenter.formulate(request)
         validation_started = time.perf_counter()
@@ -552,6 +565,7 @@ class AircraftIdentityRealtimeCandidateService:
                 presentation.output_text,
                 result,
                 language=language,
+                allow_contextual_identifiers=bool(authoritative_context),
             )
             semantic_request = semantic_request_from_response(
                 core_response,
@@ -564,6 +578,7 @@ class AircraftIdentityRealtimeCandidateService:
                 ),
                 required_marker=aircraft_identity_marker(result),
                 candidate_text=validated_shell,
+                authoritative_context=authoritative_context,
             )
             decision = await semantic_validator.evaluate_semantic_conformance(
                 semantic_request
