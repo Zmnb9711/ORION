@@ -14,7 +14,7 @@ reconnected as a non-default `AIRCRAFT_IDENTITY_QUERY` candidate. C4,
 remains the production default. No automatic checkpoint save or direct
 ChatGPT/Codex send is authorized.
 
-> Canonical long-term project context. Updated: 2026-09-02.
+> Canonical long-term project context. Updated: 2026-09-04.
 >
 > Purpose: preserve approved product requirements, architectural invariants, milestone history, real-world test evidence, known risks, and the next agreed action across chats and development sessions.
 >
@@ -1185,6 +1185,44 @@ STAGE 6B NOT STARTED.**
 - Validation used isolated temporary HTTP/UDP ports and did not terminate or
   replace the installed Core holding canonical UDP 45100. IA-6 and Stage 6B were
   not started.
+
+## 26A. IA-6 Interaction Router and controlled Planner slice — 2026-08-27
+
+**Status: COMPLETE / CODE AND LIVE-PROVIDER VALIDATED.**
+
+- Commits `f1a3e08` and `5c5c831` introduced the first Core-owned routing
+  boundary for new controlled interactions and then stabilized its live
+  semantic contract. The policy supports a small deterministic health path, a
+  controlled Planner ownship query and typed fail-closed unsupported results;
+  it does not silently send every request to Qwen.
+- The Planner route is `InteractionRequest -> IA-6 -> IA-4 -> IA-5 Yandex
+  Qwen -> IA-3 -> IA-2 -> ToolResult -> Qwen continuation -> IA-0
+  SemanticResponse -> exact Core value binding`. Core replaces caller hints
+  with the exact `world.ownship.read` capability for this slice.
+- IA-6 closes the earlier value-binding gap. An authoritative fact is accepted
+  only when its key, typed value, unit, `known` status and specific
+  `authoritative` source match one retained ToolResult leaf. Lossless numeric
+  equality is allowed; changed values, duplicate keys, unrelated leaves and
+  derived-to-authoritative promotion fail closed.
+- The first bounded live attempts proved transport, tool execution and cleanup
+  but exposed stochastic Qwen semantic non-compliance: duplicate facts or
+  requested authoritative values placed in `derived_results`. Validation was
+  not relaxed. A narrow controlled-slice instruction correction required
+  exactly heading, latitude and longitude with no duplicates or extra altitude.
+- The post-fix live gate completed through real Qwen with one IA-3 ownship call,
+  heading `137 deg`, latitude `42.1`, longitude `41.2`, no derived facts, two
+  provider responses deleted and the transport closed. Focused IA-0...IA-6
+  validation was 126 passed; the full isolated suite was 1,412 passed with 82%
+  branch coverage. Ruff, Pyright, compileall, diff and privacy/secret checks
+  passed.
+- IA-6 added only provider-neutral Communication/Phraseology seams: profile,
+  domain, language-policy, priority, output classification, protected values,
+  provenance, immutable `OperationalSemanticUnit`, optional untrusted envelope
+  and deterministic composition shapes. It did not implement a Phraseology KB,
+  renderer, radio layer or domain migration.
+- Durable design: `docs/ia-6-interaction-router.md`. The consolidated IA-0
+  through Stage 6B.2 chronology is
+  `docs/orion-development-history-2026-08-26-28.md`.
 
 ## 27. Stage 6B.1 provider-neutral radio boundary — 2026-08-28
 
