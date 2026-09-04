@@ -6,7 +6,7 @@ import threading
 import urllib.error
 import urllib.request
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from tkinter import LEFT, X, BooleanVar, StringVar, TclError, filedialog, messagebox
 from tkinter import ttk
@@ -34,6 +34,32 @@ from orion.windows_credentials import (
 )
 
 SRS_CONNECT_INSTRUCTION = "In SRS Client press CONNECT, then CONNECT EAM."
+
+INFORMATIONAL_BACKEND_LABELS = {
+    "Current / Qwen": "CURRENT_QWEN",
+    "Realtime D75 Candidate": "REALTIME_D75_CANDIDATE",
+}
+DEFAULT_INFORMATIONAL_BACKEND = "CURRENT_QWEN"
+
+
+def informational_backend_display_value(value: object) -> str:
+    """Return the bounded Launcher label for one stored C3 backend value."""
+
+    reverse = {stored: label for label, stored in INFORMATIONAL_BACKEND_LABELS.items()}
+    return reverse.get(str(value), "Current / Qwen")
+
+
+def apply_informational_backend_selection(
+    config: CloudVoiceConfig,
+    display_value: object,
+) -> CloudVoiceConfig:
+    """Apply the existing C3 selector without changing unrelated voice settings."""
+
+    stored = INFORMATIONAL_BACKEND_LABELS.get(
+        str(display_value),
+        DEFAULT_INFORMATIONAL_BACKEND,
+    )
+    return replace(config, informational_backend=stored)
 
 
 @dataclass(slots=True)
@@ -147,7 +173,16 @@ class CloudVoiceConfigStore:
         if not isinstance(payload, dict):
             return CloudVoiceConfig()
         allowed = CloudVoiceConfig.__dataclass_fields__
-        return CloudVoiceConfig(**{key: value for key, value in payload.items() if key in allowed})
+        values = {key: value for key, value in payload.items() if key in allowed}
+        stored_backend = values.get(
+            "informational_backend",
+            DEFAULT_INFORMATIONAL_BACKEND,
+        )
+        values["informational_backend"] = INFORMATIONAL_BACKEND_LABELS.get(
+            informational_backend_display_value(stored_backend),
+            DEFAULT_INFORMATIONAL_BACKEND,
+        )
+        return CloudVoiceConfig(**values)
 
     def save(self, config: CloudVoiceConfig) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -311,6 +346,40 @@ class LauncherCloudVoiceSectionsMixin:
             raise ValueError("SRS Server Port must be between 1 and 65535")
         return port
 
+    @staticmethod
+    def _build_informational_backend_selector(
+        parent: Any,
+        config: CloudVoiceConfig,
+    ) -> StringVar:
+        informational_backend = StringVar(
+            master=parent,
+            value=informational_backend_display_value(config.informational_backend),
+        )
+        ttk.Label(
+            parent,
+            text="INFORMATIONAL RESPONSE BACKEND",
+            style="CardTitle.TLabel",
+        ).pack(anchor="w", pady=(4, 0))
+        ttk.Combobox(
+            parent,
+            textvariable=informational_backend,
+            values=tuple(INFORMATIONAL_BACKEND_LABELS),
+            state="readonly",
+            width=42,
+        ).pack(anchor="w", pady=(6, 4))
+        ttk.Label(
+            parent,
+            text=(
+                "Current / Qwen is the default. Realtime D75 Candidate provides low-latency "
+                "natural informational responses from Core-confirmed facts. The selection "
+                "applies when Live Golden starts."
+            ),
+            style="CardText.TLabel",
+            wraplength=780,
+            justify="left",
+        ).pack(anchor="w", pady=(0, 8))
+        return informational_backend
+
     def _page_settings(self) -> None:
         super()._page_settings()  # type: ignore[misc]
         config = self._cloud_voice_store().load()
@@ -429,6 +498,10 @@ class LauncherCloudVoiceSectionsMixin:
             wraplength=780,
             justify="left",
         ).pack(anchor="w", pady=(0, 8))
+        informational_backend = self._build_informational_backend_selector(
+            transport_fields,
+            config,
+        )
 
         srs_fields = ttk.Frame(box, style="Card.TFrame")
         ttk.Label(srs_fields, text="SRS CONNECTION", style="CardTitle.TLabel").pack(anchor="w")
@@ -593,7 +666,7 @@ class LauncherCloudVoiceSectionsMixin:
                 if selected_transport == "srs"
                 else config.srs_port
             )
-            return CloudVoiceConfig(
+            selected = CloudVoiceConfig(
                 cloud_provider=provider_labels[provider.get()],
                 voice_transport=selected_transport,
                 qwen_region=region_labels[region.get()],
@@ -607,6 +680,10 @@ class LauncherCloudVoiceSectionsMixin:
                 srs_port=selected_srs_port,
                 srs_server_path=srs_server_path.get().strip(),
                 srs_client_path=srs_client_path.get().strip(),
+            )
+            return apply_informational_backend_selection(
+                selected,
+                informational_backend.get(),
             )
 
         def save() -> None:
