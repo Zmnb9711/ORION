@@ -28,6 +28,8 @@ from orion.aircraft_identity_query import (
     AircraftIdentityFormulationError,
     AircraftIdentityFormulationService,
     AircraftIdentityQueryStatus,
+    AircraftIdentityRealtimeCandidateOutcome,
+    AircraftIdentityRealtimeRuntime,
     AircraftIdentitySemanticOutcome,
 )
 from orion.atc_status_query import (
@@ -79,6 +81,10 @@ from orion.yandex_qwen_planner import (
     QWEN_MODEL_ID,
     YandexQwenPlannerConfig,
     YandexQwenPlannerProvider,
+)
+from orion.yandex_realtime_informational_presenter import (
+    InformationalPresenterError,
+    YandexRealtimeTextConfig,
 )
 from orion.yandex_speechkit_streaming_tts import (
     SPEECHKIT_STREAM_TTS_RATE_HZ,
@@ -202,6 +208,11 @@ class LiveGoldenState(StrEnum):
     FAIL = "fail"
 
 
+class InformationalPresentationBackend(StrEnum):
+    CURRENT_QWEN = "CURRENT_QWEN"
+    REALTIME_D75_CANDIDATE = "REALTIME_D75_CANDIDATE"
+
+
 class LiveGoldenAcousticReview(StrEnum):
     CLEAR = "clear"
     UNCLEAR = "unclear"
@@ -224,6 +235,9 @@ class LiveGoldenStatus(BaseModel):
     completed_cases: int = 0
     reviewed_cases: int = 0
     capture_audio: bool = False
+    informational_backend: InformationalPresentationBackend = (
+        InformationalPresentationBackend.CURRENT_QWEN
+    )
     mode: str = "CONTROLLED ACOUSTIC GOLDEN PROOF / MODE A"
 
 
@@ -262,6 +276,9 @@ class LiveGoldenRuntimeContext:
     endpoint: LiveGoldenEndpoint
     main_session_id: str
     tts_output_mode: SpeechKitTtsOutputMode = SpeechKitTtsOutputMode.REST_BUFFERED
+    informational_runtime: AircraftIdentityRealtimeRuntime = field(
+        default_factory=AircraftIdentityRealtimeRuntime
+    )
 
 
 @dataclass(slots=True)
@@ -627,6 +644,9 @@ class LiveGoldenCaseRunner:
         cancelled: Callable[[], bool],
         capture_audio: bool,
         atc_sessions: PersistentAtcSessionCoordinator,
+        informational_backend: InformationalPresentationBackend = (
+            InformationalPresentationBackend.CURRENT_QWEN
+        ),
     ) -> dict[str, object]:
         accepted_at = self._monotonic()
         interaction_id = uuid.uuid4()
@@ -677,6 +697,7 @@ class LiveGoldenCaseRunner:
                 accepted_at=accepted_at,
                 route_selected_at=route_selected_at,
                 route=route,
+                informational_backend=informational_backend,
             )
 
         if route.contract == ATC_STATUS_CONTRACT:
@@ -1246,18 +1267,37 @@ class LiveGoldenCaseRunner:
         accepted_at: float,
         route_selected_at: float,
         route: KnownContractRoutingDecision,
+        informational_backend: InformationalPresentationBackend,
     ) -> dict[str, object]:
-        """Bind live Core truth into a validated Qwen wording shell."""
+        """Bind live Core truth through the explicitly selected wording backend."""
 
-        provider = self._provider_factory(
-            YandexQwenPlannerConfig(
-                folder_id=context.folder_id,
-                api_key=context.api_key,
-            )
+        realtime_test_evidence.record(
+            "informational_backend_selected",
+            probe_run_id=run_id,
+            probe_case_id=case.case_id,
+            interaction_id=str(interaction_id),
+            semantic_meaning="flight.current_aircraft_identity",
+            backend=informational_backend.value,
         )
-        try:
-            outcome: AircraftIdentitySemanticOutcome = (
-                self._aircraft_identity_service.execute(
+        provider: PlannerProvider | None = None
+        qwen_response_ids: tuple[str, ...] = ()
+        qwen_latency_ms = 0.0
+        qwen_fact_authority = False
+        candidate_response_id: str | None = None
+        semantic_judge_response_id: str | None = None
+        candidate_metrics: dict[str, float | bool | str] = {}
+        if informational_backend is InformationalPresentationBackend.CURRENT_QWEN:
+            provider = self._provider_factory(
+                YandexQwenPlannerConfig(
+                    folder_id=context.folder_id,
+                    api_key=context.api_key,
+                )
+            )
+            try:
+                outcome: (
+                    AircraftIdentitySemanticOutcome
+                    | AircraftIdentityRealtimeCandidateOutcome
+                ) = self._aircraft_identity_service.execute(
                     provider=provider,
                     interaction_id=interaction_id,
                     utterance=transcript,
@@ -1265,12 +1305,44 @@ class LiveGoldenCaseRunner:
                     deadline=datetime.now(UTC)
                     + timedelta(seconds=PROVIDER_DEADLINE_S),
                 )
-            )
-        except AircraftIdentityFormulationError as exc:
-            raise LiveGoldenCaseFailure(
-                "qwen_formulation",
-                "Qwen aircraft wording did not preserve Core fact authority",
-            ) from exc
+            except AircraftIdentityFormulationError as exc:
+                raise LiveGoldenCaseFailure(
+                    "qwen_formulation",
+                    "Qwen aircraft wording did not preserve Core fact authority",
+                ) from exc
+            qwen_call_count = outcome.qwen_call_count
+            qwen_response_ids = outcome.qwen_response_ids
+            qwen_latency_ms = outcome.qwen_latency_ms
+            qwen_fact_authority = outcome.qwen_fact_authority
+        else:
+            try:
+                outcome = context.informational_runtime.execute(
+                    interaction_id=interaction_id,
+                    language=language,  # type: ignore[arg-type]
+                    timeout_s=20.0,
+                )
+            except InformationalPresenterError as exc:
+                raise LiveGoldenCaseFailure(
+                    "realtime_formulation",
+                    f"Realtime D75 candidate failed closed: {exc.code.value}",
+                ) from exc
+            except Exception as exc:
+                raise LiveGoldenCaseFailure(
+                    "semantic_validation",
+                    "Realtime D75 candidate did not produce a validated Core-bound response",
+                ) from exc
+            qwen_call_count = 0
+            candidate_response_id = outcome.provider_response_id
+            semantic_judge_response_id = outcome.semantic_judge_response_id
+            candidate_metrics = {
+                "first_token_latency_ms": outcome.first_token_latency_ms,
+                "formulation_latency_ms": outcome.formulation_latency_ms,
+                "validation_latency_ms": outcome.validation_latency_ms,
+                "binding_latency_ms": outcome.binding_latency_ms,
+                "total_latency_ms": outcome.total_latency_ms,
+                "session_reused": outcome.session_reused,
+                "validation_model": outcome.validation_model,
+            }
         semantic_ready_at = self._monotonic()
         result = outcome.result
         live_truth = result.status is AircraftIdentityQueryStatus.AVAILABLE
@@ -1281,8 +1353,12 @@ class LiveGoldenCaseRunner:
             route_selected=route.route.value,
             contract=route.contract,
             qwen_required=False,
-            qwen_formulation_required=True,
-            qwen_call_count=outcome.qwen_call_count,
+            qwen_formulation_required=(
+                informational_backend
+                is InformationalPresentationBackend.CURRENT_QWEN
+            ),
+            qwen_call_count=qwen_call_count,
+            informational_backend=informational_backend.value,
             interaction_id=str(interaction_id),
         )
         realtime_test_evidence.record(
@@ -1293,8 +1369,11 @@ class LiveGoldenCaseRunner:
             semantic_meaning=result.semantic_meaning,
             semantic_response_id=str(outcome.semantic_response.response_id),
             radio_entity_id=outcome.radio_entity_id,
-            qwen_call_count=outcome.qwen_call_count,
-            qwen_fact_authority=outcome.qwen_fact_authority,
+            qwen_call_count=qwen_call_count,
+            qwen_fact_authority=qwen_fact_authority,
+            informational_backend=informational_backend.value,
+            provider_response_id=candidate_response_id,
+            semantic_judge_response_id=semantic_judge_response_id,
             formulation_origin=outcome.formulation_origin,
             status=result.status.value,
             fact_origin="LIVE_DCS_TRUTH" if live_truth else "LIVE_DCS_UNAVAILABLE",
@@ -1443,8 +1522,16 @@ class LiveGoldenCaseRunner:
         validations = {
             "real_spoken_input_observed": bool(turn_id and provider_item_id),
             "semantic_decomposition_not_required": True,
-            "qwen_formulation_used": outcome.qwen_call_count == 1,
-            "qwen_fact_authority_absent": not outcome.qwen_fact_authority,
+            "selected_informational_backend_used": (
+                qwen_call_count
+                == (
+                    1
+                    if informational_backend
+                    is InformationalPresentationBackend.CURRENT_QWEN
+                    else 0
+                )
+            ),
+            "qwen_fact_authority_absent": not qwen_fact_authority,
             "semantic_response_present": bool(outcome.semantic_response),
             "live_dcs_truth_available": live_truth,
             "fixture_identity_not_used": True,
@@ -1482,19 +1569,33 @@ class LiveGoldenCaseRunner:
                 "reason_code": route.reason_code.value,
                 "contract": route.contract,
                 "qwen_required": False,
-                "qwen_formulation_required": True,
-                "qwen_call_count": outcome.qwen_call_count,
+                "qwen_formulation_required": (
+                    informational_backend
+                    is InformationalPresentationBackend.CURRENT_QWEN
+                ),
+                "qwen_call_count": qwen_call_count,
+                "informational_backend": informational_backend.value,
                 "policy_version": route.policy_version,
             },
             "qwen": {
                 "semantic_interpretation_required": False,
-                "natural_language_formulation_required": True,
-                "call_count": outcome.qwen_call_count,
-                "fact_authority": outcome.qwen_fact_authority,
-                "provider": provider.provider_id,
-                "provider_response_ids": list(outcome.qwen_response_ids),
-                "latency_ms": outcome.qwen_latency_ms,
+                "natural_language_formulation_required": (
+                    informational_backend
+                    is InformationalPresentationBackend.CURRENT_QWEN
+                ),
+                "call_count": qwen_call_count,
+                "fact_authority": qwen_fact_authority,
+                "provider": provider.provider_id if provider is not None else None,
+                "provider_response_ids": list(qwen_response_ids),
+                "latency_ms": qwen_latency_ms,
                 "formulation_origin": outcome.formulation_origin,
+            },
+            "informational_presentation": {
+                "backend": informational_backend.value,
+                "provider_response_id": candidate_response_id,
+                "semantic_judge_response_id": semantic_judge_response_id,
+                "provider_fact_authority": False,
+                **candidate_metrics,
             },
             "aircraft_identity": {
                 "semantic_meaning": result.semantic_meaning,
@@ -1534,7 +1635,12 @@ class LiveGoldenCaseRunner:
             ).hexdigest(),
             "composition_order": [
                 "CORE_AUTHORITATIVE_FACT",
-                "QWEN_VALIDATED_NATURAL_FORMULATION",
+                (
+                    "QWEN_VALIDATED_NATURAL_FORMULATION"
+                    if informational_backend
+                    is InformationalPresentationBackend.CURRENT_QWEN
+                    else "REALTIME_D75_VALIDATED_NATURAL_FORMULATION"
+                ),
                 "CORE_FACT_BINDING",
             ],
             "speechkit": {
@@ -1579,6 +1685,18 @@ class LiveGoldenCaseRunner:
                 ),
                 "route_selected_to_aircraft_identity_complete": _elapsed_ms(
                     route_selected_at, semantic_ready_at
+                ),
+                "formulation_first_token": candidate_metrics.get(
+                    "first_token_latency_ms", "NOT OBSERVABLE"
+                ),
+                "formulation_complete": candidate_metrics.get(
+                    "formulation_latency_ms", qwen_latency_ms
+                ),
+                "semantic_validation": candidate_metrics.get(
+                    "validation_latency_ms", "NOT APPLICABLE"
+                ),
+                "core_fact_binding": candidate_metrics.get(
+                    "binding_latency_ms", "NOT OBSERVABLE"
                 ),
                 "identity_to_speechkit_complete": _elapsed_ms(
                     semantic_ready_at, speechkit_completed
@@ -2231,6 +2349,15 @@ class LiveGoldenCaseRunner:
         return pcm
 
 
+def _record_informational_presenter_event(
+    event: str,
+    payload: dict[str, object],
+) -> None:
+    safe = dict(payload)
+    safe.pop("event", None)
+    realtime_test_evidence.record(event, **safe)
+
+
 class LiveGoldenConversationService:
     def __init__(
         self,
@@ -2273,9 +2400,11 @@ class LiveGoldenConversationService:
             )
 
     def detach(self, main_session_id: str) -> None:
+        closing_runtime: AircraftIdentityRealtimeRuntime | None = None
         with self._lock:
             if self._context is None or self._context.main_session_id != main_session_id:
                 return
+            closing_runtime = self._context.informational_runtime
             active = self._status.state in {
                 LiveGoldenState.WAITING_INPUT,
                 LiveGoldenState.PROCESSING,
@@ -2293,6 +2422,8 @@ class LiveGoldenConversationService:
                     else "Live Golden Conversation is off"
                 ),
             )
+        if closing_runtime is not None:
+            closing_runtime.close()
         if active and run_id:
             realtime_test_evidence.finish_live_golden_run(
                 run_id=run_id,
@@ -2301,7 +2432,14 @@ class LiveGoldenConversationService:
             )
         self._atc_sessions.release_main_session(main_session_id)
 
-    def start(self, *, capture_audio: bool) -> LiveGoldenStatus:
+    def start(
+        self,
+        *,
+        capture_audio: bool,
+        informational_backend: InformationalPresentationBackend = (
+            InformationalPresentationBackend.CURRENT_QWEN
+        ),
+    ) -> LiveGoldenStatus:
         with self._lock:
             context = self._context
             if context is None:
@@ -2322,6 +2460,35 @@ class LiveGoldenConversationService:
                 or runtime.failed
             ):
                 raise ValueError("SRS radio is not fully ready for Live Golden")
+        if (
+            informational_backend
+            is InformationalPresentationBackend.REALTIME_D75_CANDIDATE
+            and any(
+                case.expected_contract == AIRCRAFT_IDENTITY_CONTRACT
+                for case in self._corpus
+            )
+        ):
+            try:
+                context.informational_runtime.prepare(
+                    YandexRealtimeTextConfig(
+                        api_key=context.api_key,
+                        folder_id=context.folder_id,
+                    ),
+                    observer=_record_informational_presenter_event,
+                )
+            except InformationalPresenterError as exc:
+                raise ValueError(
+                    f"Realtime D75 candidate is not ready: {exc.code.value}"
+                ) from exc
+        with self._lock:
+            if self._context is not context:
+                raise ValueError("Compatible Yandex + SRS session changed during start")
+            if self._status.state in {
+                LiveGoldenState.WAITING_INPUT,
+                LiveGoldenState.PROCESSING,
+                LiveGoldenState.AWAITING_REVIEW,
+            }:
+                raise ValueError("Live Golden Conversation is already active")
             self._generation += 1
             self._seen_provider_items.clear()
             run_id = uuid.uuid4().hex
@@ -2339,6 +2506,7 @@ class LiveGoldenConversationService:
                 total_cases=len(self._corpus),
                 primary_cases=sum(case.primary for case in self._corpus),
                 capture_audio=capture_audio,
+                informational_backend=informational_backend,
             )
             self._ptt_coordinator.reset_and_arm()
             fingerprint = _configuration_fingerprint(runtime)
@@ -2357,6 +2525,7 @@ class LiveGoldenConversationService:
                     for item in self._corpus
                 ),
                 capture_audio=capture_audio,
+                informational_backend=informational_backend.value,
             )
             return self._status.model_copy(deep=True)
 
@@ -2498,6 +2667,7 @@ class LiveGoldenConversationService:
             generation = self._generation
             case = self._corpus[index]
             capture_audio = self._status.capture_audio
+            informational_backend = self._status.informational_backend
             self._status = self._status.model_copy(
                 update={
                     "state": LiveGoldenState.PROCESSING,
@@ -2518,6 +2688,7 @@ class LiveGoldenConversationService:
                 provider_item_id,
                 speech_stopped_at,
                 capture_audio,
+                informational_backend,
             ),
             name="orion-live-golden-case",
             daemon=True,
@@ -2536,6 +2707,7 @@ class LiveGoldenConversationService:
         provider_item_id: str,
         speech_stopped_at: float | None,
         capture_audio: bool,
+        informational_backend: InformationalPresentationBackend,
     ) -> None:
         cancelled = lambda: self._is_cancelled(generation, run_id)
         try:
@@ -2551,6 +2723,7 @@ class LiveGoldenConversationService:
                 cancelled=cancelled,
                 capture_audio=capture_audio,
                 atc_sessions=self._atc_sessions,
+                informational_backend=informational_backend,
             )
         except Exception as exc:
             if cancelled():

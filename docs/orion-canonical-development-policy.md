@@ -134,13 +134,28 @@ all-aircraft/rotorcraft support, casual/random conversation, news/current
 information, and post-flight debrief. They stay visible until explicitly
 reclassified; they are not all immediate priorities.
 
+## Current canonical position — 2026-09-04
+
+C1 and its isolated reliability proof are complete. D75 is current and
+clarified: Core owns truth, availability, freshness and the final validated
+fact set; the informational presenter may naturally formulate and select only
+known, authoritative, permitted Core context. HR01 is reconnected and adapted
+as the explicit, non-default `REALTIME_D75_CANDIDATE` for the existing
+`AIRCRAFT_IDENTITY_QUERY` route. `CURRENT_QWEN` remains the default.
+
+C3 is automated-proven and complete. No physical DCS/SRS proof is claimed.
+The next exact stage is C4, the controlled informational DCS/SRS field proof.
+The historical `IPB-20260903-171624` `BENCHMARK_NO_GO` record remains valid for
+that earlier candidate state; later C1/D75 evidence and C3 integration do not
+rewrite it.
+
 ## Canonical roadmap
 
-- C0 **CANONICAL ORION BASELINE ESTABLISHED** — current/preserve baseline;
-- C1 **REALTIME INFORMATIONAL PRESENTER RELIABILITY CORRECTION** — next;
-- C2 Realtime isolated rebenchmark;
-- C3 bounded non-default presentation integration, conditional on PASS;
-- C4 controlled informational DCS/SRS field proof, conditional on preceding gates;
+- C0 **CANONICAL ORION BASELINE ESTABLISHED** — complete/preserve baseline;
+- C1 **REALTIME INFORMATIONAL PRESENTER RELIABILITY CORRECTION** — complete;
+- C2 Realtime isolated rebenchmark — complete;
+- C3 bounded non-default presentation integration — complete/automated-proven;
+- C4 **CONTROLLED INFORMATIONAL DCS/SRS FIELD PROOF** — next/field proof required;
 - C5 remove only proven redundant informational wiring;
 - C6 extend MODEL C one bounded domain at a time;
 - C7 restore user-valued capabilities incrementally.

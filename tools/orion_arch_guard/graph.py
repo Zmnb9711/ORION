@@ -165,7 +165,7 @@ class GraphBuilder:
         return resolved
 
     def _all_required_refs(self) -> list[str]:
-        refs: set[str] = {f"D{number:02d}" for number in range(1, 75)}
+        refs: set[str] = {f"D{number:02d}" for number in range(1, 76)}
         for seed in IMPLEMENTATION_SEEDS:
             refs.update(str(value) for value in seed.get("commits", []))
             refs.update(str(value) for value in seed.get("decisions", []))
@@ -416,7 +416,7 @@ class GraphBuilder:
 
     def _insert_decisions(self) -> dict[str, list[str]]:
         results: dict[str, list[str]] = {}
-        for number in range(1, 75):
+        for number in range(1, 76):
             decision_id = f"D{number:02d}"
             cells, resolved = self._parse_decision(decision_id)
             superseded = [
@@ -894,8 +894,8 @@ class GraphBuilder:
 
     def _validate_graph(self) -> None:
         counts = self._counts()
-        if counts["decisions"] != 74:
-            raise GraphBuildError(f"expected 74 decisions, found {counts['decisions']}")
+        if counts["decisions"] != 75:
+            raise GraphBuildError(f"expected 75 decisions, found {counts['decisions']}")
         if counts["canonical_records"] != len(ALL_CANONICAL_RECORDS):
             raise GraphBuildError(
                 f"expected {len(ALL_CANONICAL_RECORDS)} canonical records, "

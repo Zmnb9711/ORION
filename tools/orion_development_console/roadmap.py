@@ -524,7 +524,7 @@ class RoadmapService:
                     status=status,
                     proof_badges=badges,
                     completed=completed,
-                    current=status == "CURRENT",
+                    current=status == "CURRENT" or bool(metadata.get("current_position")),
                     capabilities=capabilities,
                     decision_ids=["D74"],
                     evidence_ids=evidence,

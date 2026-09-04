@@ -260,14 +260,23 @@ class AiohttpRealtimeTextTransport:
 TransportFactory = Callable[[YandexRealtimeTextConfig], RealtimeTextTransport]
 
 
+PresenterEventObserver = Callable[[str, dict[str, object]], None]
+
+
 class BoundedPresenterDiagnostics:
     """Scalar-only bounded diagnostics; never stores prompts, responses, or secrets."""
 
-    def __init__(self, max_events: int = 1_000) -> None:
+    def __init__(
+        self,
+        max_events: int = 1_000,
+        *,
+        observer: PresenterEventObserver | None = None,
+    ) -> None:
         if max_events <= 0:
             raise ValueError("Diagnostic bound must be positive")
         self._events: deque[dict[str, object]] = deque(maxlen=max_events)
         self._lock = threading.RLock()
+        self._observer = observer
 
     def record(self, event: str, **metadata: object) -> None:
         safe: dict[str, object] = {"event": event[:100]}
@@ -280,6 +289,12 @@ class BoundedPresenterDiagnostics:
                 raise TypeError("Presenter diagnostics accept scalar metadata only")
         with self._lock:
             self._events.append(safe)
+        if self._observer is not None:
+            try:
+                self._observer(str(safe["event"]), dict(safe))
+            except Exception:
+                # Diagnostics must never change the fail-closed provider path.
+                pass
 
     def snapshot(self) -> tuple[dict[str, object], ...]:
         with self._lock:
@@ -943,6 +958,7 @@ __all__ = [
     "InformationalPresenterError",
     "InformationalPresenterErrorCode",
     "InformationalPresenterState",
+    "PresenterEventObserver",
     "RealtimeInformationalRequest",
     "RealtimeInformationalResult",
     "RealtimeTextResponseAssembler",

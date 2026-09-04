@@ -224,6 +224,23 @@ def test_live_known_aircraft_uses_world_model_truth_and_existing_normalization(
     assert result.generation == generation_before == generation_after
 
 
+def test_realtime_context_uses_same_snapshot_and_exposes_only_fresh_authoritative_facts() -> None:
+    service = _service(_store("FA-18C_hornet"))
+    result, context = service.resolve_with_context()
+
+    assert result.display_name == "F/A-18C Hornet"
+    assert [item.fact.key for item in context] == ["ownship.heading_deg"]
+    assert context[0].fact.value == 137
+    assert context[0].fact.generation == result.generation
+    assert context[0].supports_assertion is True
+
+    stale_result, stale_context = _service(
+        _store("FA-18C_hornet", age_seconds=6)
+    ).resolve_with_context()
+    assert stale_result.status is AircraftIdentityQueryStatus.UNAVAILABLE
+    assert stale_context == ()
+
+
 def test_qwen_naturalizes_only_a_marker_and_core_binds_exact_live_fact() -> None:
     outcome, provider = _formulate(
         _store("FA-18C_hornet"),

@@ -46,6 +46,7 @@ class CloudVoiceConfig:
     yandex_folder_id: str = ""
     radio_stt_provider: str = "yandex_realtime"
     tts_output_mode: str = "speechkit_rest"
+    informational_backend: str = "CURRENT_QWEN"
     srs_host: str = "127.0.0.1"
     srs_port: int = 5002
     srs_server_path: str = ""
@@ -601,6 +602,7 @@ class LauncherCloudVoiceSectionsMixin:
                 yandex_folder_id=yandex_folder_id.get().strip(),
                 radio_stt_provider=radio_stt_labels[radio_stt_provider.get()],
                 tts_output_mode=tts_output_labels[tts_output_mode.get()],
+                informational_backend=config.informational_backend,
                 srs_host=srs_host.get().strip() or "127.0.0.1",
                 srs_port=selected_srs_port,
                 srs_server_path=srs_server_path.get().strip(),
@@ -1177,10 +1179,14 @@ class LauncherCloudVoiceSectionsMixin:
 
         def worker() -> None:
             try:
+                config = self._cloud_voice_store().load()
                 result = self._realtime_core_json(
                     "/v1/realtime/live-golden-conversation/start",
                     method="POST",
-                    payload={"capture_response_audio": capture_audio},
+                    payload={
+                        "capture_response_audio": capture_audio,
+                        "informational_backend": config.informational_backend,
+                    },
                 )
                 text = format_live_golden_status(result)
             except (OSError, ValueError, RuntimeError, urllib.error.URLError) as exc:

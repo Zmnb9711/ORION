@@ -4,8 +4,10 @@ from test_arch_guard_ag2 import _build  # type: ignore[import-not-found]
 from test_arch_guard_ag3 import _request, _run  # type: ignore[import-not-found]
 
 from tools.orion_arch_guard.canonical_seed import (
+    CANONICAL_ROADMAP_STAGES,
     DO_NOT_REINVENT_RULES,
     GOLDEN_COMPONENTS,
+    HISTORICAL_RECONNECT_ITEMS,
     RECOVERED_IDEAS,
     RETIREMENT_CANDIDATES,
     USER_VALUED_FORGOTTEN_IDEAS,
@@ -75,6 +77,18 @@ def test_three_layer_context_and_realtime_benchmark_are_preserved(tmp_path) -> N
     assert candidate["metadata"]["failure_rate_percent"] == 30
     assert context["work_classification"] == "HISTORICAL_ADAPTATION"
     assert context["actually_missing"] is False
+
+
+def test_c3_position_preserves_historical_no_go_and_advances_only_to_c4() -> None:
+    stages = {item.record_id: item for item in CANONICAL_ROADMAP_STAGES}
+    assert stages["C1"].status == "COMPLETE"
+    assert stages["C3"].status == "COMPLETE"
+    assert stages["C3"].metadata["current_position"] is True
+    assert stages["C4"].status == "APPROVED_NEXT_STEP"
+    reconnect = next(item for item in HISTORICAL_RECONNECT_ITEMS if item.record_id == "HR01")
+    assert reconnect.status == "RECONNECTED_ADAPTED_NON_DEFAULT"
+    assert reconnect.metadata["benchmark_verdict"] == "BENCHMARK_NO_GO"
+    assert reconnect.metadata["current_semantic_policy"] == "D75_CURRENT_CLARIFIED"
 
 
 def test_retirement_conflict_is_semantic_and_not_plain_capability_match(tmp_path) -> None:  # noqa: ANN001

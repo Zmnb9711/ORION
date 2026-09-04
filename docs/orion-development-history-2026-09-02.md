@@ -1003,3 +1003,38 @@ The mandatory stop rule therefore applies: no additional provider calls or
 validator loosening, no promotion, and no C3 integration. The remaining state
 requires an architectural/provider decision rather than another blind
 adaptation.
+
+## 29. D75 clarification and C3 bounded non-default integration
+
+D75 replaced the structural-shell safety assumption with provider-neutral
+semantic validation. Core continues to own `SemanticResponse`, fact truth,
+availability, freshness, provenance and final binding. Realtime may formulate
+natural informational text and include only supporting facts selected from a
+bounded, same-snapshot Core/WorldModel context. Unknown, stale, unconfirmed or
+unsupported facts fail closed. Protected operational wording remains
+Core-owned.
+
+The existing HR01 presenter and D75 validator are now connected to the real
+`AIRCRAFT_IDENTITY_QUERY` Live Golden route behind two explicit values:
+`CURRENT_QWEN` and `REALTIME_D75_CANDIDATE`. The default remains
+`CURRENT_QWEN`; there is no availability-driven selection and no silent Qwen
+fallback. The candidate owns one warm persistent text-only Realtime session,
+reuses that same session for formulation and semantic judgment, and closes it
+with the owning Live Golden runtime. It does not own STT, PTT, TTS or radio.
+
+The D75 context for this bounded route is derived from the same WorldModel
+snapshot as aircraft identity and is limited to known authoritative heading,
+AGL altitude and fuel facts already present in Core. Provider output reaches
+the existing SpeechKit/RadioRouter/SRS downstream only after semantic
+conformance and exact Core aircraft binding. Evidence records the selected
+backend, provider/session correlation, validation result and formulation,
+validation and binding phase timing without prompts, provider text or secrets.
+
+Deterministic integration covers the full selector → same-snapshot Core facts
+→ persistent Realtime formulation/judge → D75 validation → exact binding →
+existing TTS/radio seam, session reuse and shutdown, semantic rejection with
+zero downstream output, and protected pure-takeoff isolation. This establishes
+C3 only at automated/integration level. C1 is complete, D75 is
+current/clarified, HR01 is reconnected/adapted, C3 is complete, and C4
+controlled physical DCS/SRS field proof is the next exact stage. No C4 field
+proof is claimed here.

@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from orion.live_golden_conversation import (
+    InformationalPresentationBackend,
     LiveGoldenAcousticReview,
     live_golden_conversation,
 )
@@ -19,6 +20,9 @@ router = APIRouter(
 
 class LiveGoldenStart(BaseModel):
     capture_response_audio: bool = True
+    informational_backend: InformationalPresentationBackend = (
+        InformationalPresentationBackend.CURRENT_QWEN
+    )
 
 
 class LiveGoldenReview(BaseModel):
@@ -29,7 +33,8 @@ class LiveGoldenReview(BaseModel):
 def start_live_golden(request: LiveGoldenStart) -> dict[str, object]:
     try:
         return live_golden_conversation.start(
-            capture_audio=request.capture_response_audio
+            capture_audio=request.capture_response_audio,
+            informational_backend=request.informational_backend,
         ).model_dump(mode="json")
     except (RuntimeError, ValueError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc

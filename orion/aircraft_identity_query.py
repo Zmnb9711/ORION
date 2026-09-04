@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
+import concurrent.futures
 import json
 import re
+import threading
 import time
 import unicodedata
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
+from collections.abc import Callable
 from typing import Literal, Protocol
 from uuid import UUID
 
@@ -63,8 +67,13 @@ from orion.world_model_contracts import (
     WorldGeneration,
 )
 from orion.yandex_realtime_informational_presenter import (
+    BoundedPresenterDiagnostics,
+    InformationalPresenterError,
+    InformationalPresenterErrorCode,
+    InformationalPresenterState,
     RealtimeInformationalRequest,
     YandexRealtimeInformationalPresenter,
+    YandexRealtimeTextConfig,
 )
 
 
@@ -148,7 +157,7 @@ class AircraftIdentitySemanticOutcome(BaseModel):
 
 
 class AircraftIdentityRealtimeCandidateOutcome(BaseModel):
-    """Non-default benchmark result; it is not selected by production routing."""
+    """Explicit non-default integrated result; never selected by availability."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -262,7 +271,25 @@ class AircraftIdentityQueryService:
         self._source = source
 
     def resolve(self) -> AircraftIdentityQueryResult:
-        fact = self._source.ownship().aircraft
+        return self._resolve_snapshot(self._source.ownship())
+
+    def resolve_with_context(
+        self,
+    ) -> tuple[
+        AircraftIdentityQueryResult,
+        tuple[SemanticValidationContextFact, ...],
+    ]:
+        """Resolve identity and the permitted D75 context from one World snapshot."""
+
+        snapshot = self._source.ownship()
+        return (
+            self._resolve_snapshot(snapshot),
+            aircraft_identity_authoritative_context(snapshot),
+        )
+
+    @staticmethod
+    def _resolve_snapshot(snapshot: OwnshipSnapshot) -> AircraftIdentityQueryResult:
+        fact = snapshot.aircraft
         usable = (
             fact.status is WorldFactStatus.KNOWN
             and fact.source is WorldFactSource.DCS_EXPORT
@@ -306,6 +333,29 @@ class AircraftIdentityQueryService:
                 ),
             )
         return result
+
+
+def aircraft_identity_authoritative_context(
+    snapshot: OwnshipSnapshot,
+) -> tuple[SemanticValidationContextFact, ...]:
+    """Select only fresh authoritative scalar facts relevant to this information turn."""
+
+    candidates = (
+        (snapshot.heading_deg, SemanticClaimCategory.HEADING),
+        (snapshot.altitude_agl_m, SemanticClaimCategory.ALTITUDE),
+        (snapshot.fuel_fraction, SemanticClaimCategory.FUEL),
+    )
+    return tuple(
+        SemanticValidationContextFact.model_validate(
+            {
+                "fact": fact.model_dump(mode="python"),
+                "category": category,
+            }
+        )
+        for fact, category in candidates
+        if fact.status is WorldFactStatus.KNOWN
+        and fact.authority is WorldFactAuthority.AUTHORITATIVE
+    )
 
 
 def _core_semantic_response(
@@ -514,15 +564,24 @@ class AircraftIdentityRealtimeCandidateService:
         interaction_id: UUID,
         language: Literal["ru-RU", "en-US"],
         semantic_validator: SemanticConformanceJudge | None = None,
-        authoritative_context: tuple[SemanticValidationContextFact, ...] = (),
+        authoritative_context: tuple[SemanticValidationContextFact, ...] | None = None,
     ) -> AircraftIdentityRealtimeCandidateOutcome:
         total_started = time.perf_counter()
+        if authoritative_context is None:
+            if semantic_validator is not None and isinstance(
+                self._query, AircraftIdentityQueryService
+            ):
+                result, authoritative_context = self._query.resolve_with_context()
+            else:
+                result = self._query.resolve()
+                authoritative_context = ()
+        else:
+            result = self._query.resolve()
         if authoritative_context and semantic_validator is None:
             raise SemanticValidationError(
                 SemanticValidationErrorCode.INVALID_CORE_CONTRACT,
                 "Additional Core facts require semantic conformance validation",
             )
-        result = self._query.resolve()
         core_response = semantic_response_with_context(
             _core_semantic_response(result, interaction_id=interaction_id),
             authoritative_context,
@@ -651,6 +710,222 @@ class AircraftIdentityRealtimeCandidateService:
             validation_model=validation_model,
             semantic_judge_response_id=semantic_judge_response_id,
         )
+
+
+RealtimePresenterFactory = Callable[
+    [YandexRealtimeTextConfig, BoundedPresenterDiagnostics],
+    YandexRealtimeInformationalPresenter,
+]
+RealtimeRuntimeObserver = Callable[[str, dict[str, object]], None]
+
+
+def _realtime_presenter_factory(
+    config: YandexRealtimeTextConfig,
+    diagnostics: BoundedPresenterDiagnostics,
+) -> YandexRealtimeInformationalPresenter:
+    return YandexRealtimeInformationalPresenter(config, diagnostics=diagnostics)
+
+
+class AircraftIdentityRealtimeRuntime:
+    """Own one warm Realtime/D75 session on one dedicated asyncio loop."""
+
+    def __init__(
+        self,
+        *,
+        query: AircraftIdentityResolver | None = None,
+        presenter_factory: RealtimePresenterFactory = _realtime_presenter_factory,
+    ) -> None:
+        self._service = AircraftIdentityRealtimeCandidateService(query=query)
+        self._presenter_factory = presenter_factory
+        self._lock = threading.RLock()
+        self._ready = threading.Event()
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._thread: threading.Thread | None = None
+        self._presenter: YandexRealtimeInformationalPresenter | None = None
+        self._diagnostics: BoundedPresenterDiagnostics | None = None
+        self._start_error: Exception | None = None
+        self._closed = False
+        self._pending: set[
+            concurrent.futures.Future[AircraftIdentityRealtimeCandidateOutcome]
+        ] = set()
+
+    @property
+    def ready(self) -> bool:
+        with self._lock:
+            presenter = self._presenter
+            return (
+                not self._closed
+                and presenter is not None
+                and presenter.state is InformationalPresenterState.READY
+            )
+
+    @property
+    def session_id(self) -> str | None:
+        with self._lock:
+            return self._presenter.session_id if self._presenter is not None else None
+
+    def diagnostic_snapshot(self) -> tuple[dict[str, object], ...]:
+        with self._lock:
+            diagnostics = self._diagnostics
+        return diagnostics.snapshot() if diagnostics is not None else ()
+
+    def prepare(
+        self,
+        config: YandexRealtimeTextConfig,
+        *,
+        observer: RealtimeRuntimeObserver | None = None,
+        timeout_s: float | None = None,
+    ) -> bool:
+        """Warm one session; return True only when the current session was reused."""
+
+        wait_s = timeout_s or config.connect_timeout_s + 1.0
+        with self._lock:
+            if self._closed:
+                raise InformationalPresenterError(
+                    InformationalPresenterErrorCode.UNAVAILABLE,
+                    "Realtime informational runtime is closed",
+                )
+            if self.ready:
+                return True
+            if self._thread is None or not self._thread.is_alive():
+                self._ready.clear()
+                self._start_error = None
+                self._thread = threading.Thread(
+                    target=self._thread_main,
+                    args=(config, observer),
+                    name="orion-aircraft-realtime-presenter",
+                    daemon=True,
+                )
+                self._thread.start()
+        if not self._ready.wait(wait_s):
+            raise InformationalPresenterError(
+                InformationalPresenterErrorCode.TIMEOUT,
+                "Realtime informational session readiness timed out",
+            )
+        with self._lock:
+            error = self._start_error
+        if error is not None:
+            if isinstance(error, InformationalPresenterError):
+                raise error
+            raise InformationalPresenterError(
+                InformationalPresenterErrorCode.UNAVAILABLE,
+                f"Realtime informational session failed: {type(error).__name__}",
+            ) from error
+        if not self.ready:
+            raise InformationalPresenterError(
+                InformationalPresenterErrorCode.UNAVAILABLE,
+                "Realtime informational session is not ready",
+            )
+        return False
+
+    def execute(
+        self,
+        *,
+        interaction_id: UUID,
+        language: Literal["ru-RU", "en-US"],
+        timeout_s: float = 20.0,
+    ) -> AircraftIdentityRealtimeCandidateOutcome:
+        with self._lock:
+            loop = self._loop
+            presenter = self._presenter
+            if (
+                self._closed
+                or loop is None
+                or presenter is None
+                or presenter.state is not InformationalPresenterState.READY
+            ):
+                raise InformationalPresenterError(
+                    InformationalPresenterErrorCode.UNAVAILABLE,
+                    "Realtime informational session is not ready",
+                )
+            future = asyncio.run_coroutine_threadsafe(
+                self._service.execute(
+                    presenter=presenter,
+                    semantic_validator=presenter,
+                    interaction_id=interaction_id,
+                    language=language,
+                ),
+                loop,
+            )
+            self._pending.add(future)
+
+        def completed(
+            done: concurrent.futures.Future[AircraftIdentityRealtimeCandidateOutcome],
+        ) -> None:
+            with self._lock:
+                self._pending.discard(done)
+
+        future.add_done_callback(completed)
+        try:
+            return future.result(timeout=timeout_s)
+        except concurrent.futures.TimeoutError as exc:
+            future.cancel()
+            raise InformationalPresenterError(
+                InformationalPresenterErrorCode.TIMEOUT,
+                "Realtime informational integration timed out",
+            ) from exc
+
+    def close(self, timeout_s: float = 3.0) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            loop = self._loop
+            presenter = self._presenter
+            pending = tuple(self._pending)
+            thread = self._thread
+        for future in pending:
+            future.cancel()
+        if loop is not None and loop.is_running():
+            if presenter is not None:
+                close_future = asyncio.run_coroutine_threadsafe(presenter.close(), loop)
+                try:
+                    close_future.result(timeout=timeout_s)
+                except (Exception, concurrent.futures.TimeoutError):
+                    close_future.cancel()
+            loop.call_soon_threadsafe(loop.stop)
+        if thread is not None and thread.is_alive():
+            thread.join(timeout_s)
+
+    def _thread_main(
+        self,
+        config: YandexRealtimeTextConfig,
+        observer: RealtimeRuntimeObserver | None,
+    ) -> None:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        diagnostics = BoundedPresenterDiagnostics(observer=observer)
+        presenter = self._presenter_factory(config, diagnostics)
+        with self._lock:
+            self._loop = loop
+            self._diagnostics = diagnostics
+            self._presenter = presenter
+        try:
+            loop.run_until_complete(presenter.connect())
+        except Exception as exc:
+            with self._lock:
+                self._start_error = exc
+            self._ready.set()
+        else:
+            self._ready.set()
+            loop.run_forever()
+        finally:
+            if presenter.state is not InformationalPresenterState.STOPPED:
+                try:
+                    loop.run_until_complete(presenter.close())
+                except Exception:
+                    pass
+            remaining = asyncio.all_tasks(loop)
+            for task in remaining:
+                task.cancel()
+            if remaining:
+                loop.run_until_complete(
+                    asyncio.gather(*remaining, return_exceptions=True)
+                )
+            loop.close()
+            with self._lock:
+                self._loop = None
+                self._presenter = None
 
 
 aircraft_identity_query = AircraftIdentityQueryService()

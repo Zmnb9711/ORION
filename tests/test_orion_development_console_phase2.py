@@ -335,7 +335,9 @@ def test_checkpoint_candidate_contains_canonical_state_without_saving(tmp_path: 
     assert candidate.historical_reconnect_items == ["HR01"]
     assert candidate.recovered_ideas == ["U04", "U17"]
     assert candidate.canonical_input_signature == "CANONICAL-FIXTURE"
-    assert candidate.realtime_candidate == "BENCHMARK_NO_GO / KEEP / NON_DEFAULT"
+    assert candidate.realtime_candidate == (
+        "C3_AUTOMATED_PROVEN / KEEP / NON_DEFAULT / C4_FIELD_PROOF_REQUIRED"
+    )
     assert service.checkpoints.list_records() == []
 
 

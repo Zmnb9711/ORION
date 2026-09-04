@@ -13,6 +13,7 @@ from orion.aircraft_identity_query import (
     AircraftIdentityQueryResult,
     AircraftIdentityQueryStatus,
     AircraftIdentityRealtimeCandidateService,
+    AircraftIdentityRealtimeRuntime,
 )
 from orion.aircraft_identity_presentation import AircraftIdentityShellValidationError
 from orion.semantic_response_validation import (
@@ -138,6 +139,47 @@ class _Transport:
         self.closed = True
 
 
+class _RuntimeTransport(_Transport):
+    def __init__(self, config: YandexRealtimeTextConfig) -> None:
+        super().__init__(config)
+        self.operation = "info"
+        self.response_index = 0
+
+    async def send_json(self, payload: dict[str, object]) -> None:
+        if payload.get("type") == "conversation.item.create":
+            event_id = str(payload.get("event_id") or "")
+            self.operation = "semantic" if "-semantic-" in event_id else "info"
+        if payload.get("type") != "response.create":
+            await super().send_json(payload)
+            return
+        self.sent.append(payload)
+        self.response_index += 1
+        response_id = f"runtime-response-{self.response_index}"
+        text = (
+            '{"conformant":true,"reason":"only allowed meaning"}'
+            if self.operation == "semantic"
+            else "Вы сейчас находитесь в {{aircraft_identity}}."
+        )
+        for event in (
+            {"type": "response.created", "response": {"id": response_id}},
+            {
+                "type": "response.output_text.delta",
+                "response_id": response_id,
+                "delta": text,
+            },
+            {
+                "type": "response.output_text.done",
+                "response_id": response_id,
+                "text": text,
+            },
+            {
+                "type": "response.done",
+                "response": {"id": response_id, "status": "completed"},
+            },
+        ):
+            self.events.put_nowait(event)
+
+
 async def _presenter_is_explicit_text_only_ready_and_reuses_one_session() -> None:
     transports: list[_Transport] = []
 
@@ -179,6 +221,49 @@ async def _presenter_is_explicit_text_only_ready_and_reuses_one_session() -> Non
 
 def test_presenter_is_explicit_text_only_ready_and_reuses_one_session() -> None:
     asyncio.run(_presenter_is_explicit_text_only_ready_and_reuses_one_session())
+
+
+def test_realtime_runtime_warms_reuses_and_closes_one_presenter_session() -> None:
+    transports: list[_RuntimeTransport] = []
+    observed: list[str] = []
+
+    def presenter_factory(config, diagnostics):  # noqa: ANN001, ANN202
+        def transport_factory(inner: YandexRealtimeTextConfig) -> _RuntimeTransport:
+            transport = _RuntimeTransport(inner)
+            transports.append(transport)
+            return transport
+
+        return YandexRealtimeInformationalPresenter(
+            config,
+            diagnostics=diagnostics,
+            transport_factory=transport_factory,
+        )
+
+    runtime = AircraftIdentityRealtimeRuntime(
+        query=_StaticQuery(_known_result()),
+        presenter_factory=presenter_factory,
+    )
+    config = YandexRealtimeTextConfig(api_key="secret", folder_id="folder")
+    assert runtime.prepare(
+        config,
+        observer=lambda event, _payload: observed.append(event),
+    ) is False
+    assert runtime.prepare(config) is True
+    first = runtime.execute(interaction_id=INTERACTION_ID, language="ru-RU")
+    second = runtime.execute(
+        interaction_id=UUID("22345678-1234-5678-1234-567812345678"),
+        language="ru-RU",
+    )
+    assert first.final_text == "Вы сейчас находитесь в F/A-18C Hornet."
+    assert first.session_reused is False
+    assert second.session_reused is True
+    assert len(transports) == 1
+    assert "formulation_session_ready" in observed
+    assert "semantic_validation_completed" in observed
+    runtime.close()
+    assert transports[0].closed is True
+    assert runtime.ready is False
+    assert "secret" not in str(runtime.diagnostic_snapshot())
 
 
 async def _semantic_judge_reuses_the_same_fact_free_text_session() -> None:

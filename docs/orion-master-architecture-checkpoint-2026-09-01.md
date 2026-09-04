@@ -1,5 +1,17 @@
 # ORION Full-Product Master Architecture Checkpoint — 2026-09-01
 
+## 2026-09-04 C3 canonical position update
+
+C1 is complete and D75 is current/clarified. The historical HR01 persistent
+Realtime presenter is now reconnected through the existing
+`AIRCRAFT_IDENTITY_QUERY` path behind the explicit non-default
+`REALTIME_D75_CANDIDATE` selector. Core/WorldModel fact authority, semantic
+validation and exact binding remain mandatory; `CURRENT_QWEN` remains the
+default. C3 is complete at automated/integration proof level only. The next
+stage is C4, a controlled physical DCS/SRS field proof. The earlier
+`IPB-20260903-171624` result remains immutable historical evidence rather than
+the current development position.
+
 ## 2026-09-03 canonical development baseline
 
 D74 establishes `STRATEGY_A_CURRENT_RECONNECT`: current lineage is the

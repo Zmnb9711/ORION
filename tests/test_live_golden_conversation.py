@@ -7,10 +7,12 @@ import zipfile
 from pathlib import Path
 
 import orion.live_golden_conversation as live_module
+import pytest
 
 from orion.aircraft_identity_query import (
     AircraftIdentityFormulationService,
     AircraftIdentityQueryService,
+    AircraftIdentityRealtimeRuntime,
 )
 from orion.atc_status_query import PersistentAtcSessionCoordinator
 from orion.communication_contracts import CommunicationDomain
@@ -24,6 +26,7 @@ from orion.live_golden_conversation import (
     ATC_STATUS_CASE,
     LIVE_GOLDEN_CORPUS,
     PURE_TAKEOFF_FIRST_CORPUS,
+    InformationalPresentationBackend,
     LiveGoldenAcousticReview,
     LiveGoldenConversationService,
     LiveGoldenPttCoordinator,
@@ -52,6 +55,10 @@ from orion.srs_radio_adapter import SrsAdapterRuntime
 from orion.srs_radio_transport import SrsState
 from orion.tool_gateway_contracts import ToolArguments
 from orion.yandex_speechkit_streaming_tts import SpeechKitTtsOutputMode
+from orion.yandex_realtime_informational_presenter import (
+    YandexRealtimeInformationalPresenter,
+    YandexRealtimeTextConfig,
+)
 from orion.yandex_srs_live_core import YandexSrsStartRequest, YandexSrsStatus
 from orion.world_model import WorldModelFacade
 
@@ -298,6 +305,79 @@ class _Endpoint:
         }
 
 
+class _C3Transport:
+    def __init__(
+        self,
+        _config: YandexRealtimeTextConfig,
+        *,
+        conformant: bool = True,
+    ) -> None:
+        import asyncio
+
+        self.events: asyncio.Queue[dict[str, object]] = asyncio.Queue()
+        self.sent: list[dict[str, object]] = []
+        self.operation = "info"
+        self.response_index = 0
+        self.closed = False
+        self.conformant = conformant
+
+    async def connect(self) -> None:
+        return None
+
+    async def send_json(self, payload: dict[str, object]) -> None:
+        self.sent.append(payload)
+        kind = payload.get("type")
+        if kind == "session.update":
+            self.events.put_nowait(
+                {"type": "session.updated", "session": {"id": "c3-session"}}
+            )
+            return
+        if kind == "conversation.item.create":
+            self.operation = (
+                "semantic"
+                if "-semantic-" in str(payload.get("event_id") or "")
+                else "info"
+            )
+            return
+        if kind != "response.create":
+            return
+        self.response_index += 1
+        response_id = f"c3-response-{self.response_index}"
+        text = (
+            (
+                '{"conformant":true,"reason":"only Core-confirmed facts"}'
+                if self.conformant
+                else '{"conformant":false,"reason":"unsupported assertion"}'
+            )
+            if self.operation == "semantic"
+            else "Вы в {{aircraft_identity}}, текущий курс 137 градусов."
+        )
+        for event in (
+            {"type": "response.created", "response": {"id": response_id}},
+            {
+                "type": "response.output_text.delta",
+                "response_id": response_id,
+                "delta": text,
+            },
+            {
+                "type": "response.output_text.done",
+                "response_id": response_id,
+                "text": text,
+            },
+            {
+                "type": "response.done",
+                "response": {"id": response_id, "status": "completed"},
+            },
+        ):
+            self.events.put_nowait(event)
+
+    async def receive_json(self) -> dict[str, object]:
+        return await self.events.get()
+
+    async def close(self) -> None:
+        self.closed = True
+
+
 def _wait_for(service: LiveGoldenConversationService, state: LiveGoldenState) -> None:
     deadline = time.monotonic() + 3
     while time.monotonic() < deadline:
@@ -305,6 +385,30 @@ def _wait_for(service: LiveGoldenConversationService, state: LiveGoldenState) ->
             return
         time.sleep(0.01)
     raise AssertionError(f"Live Golden did not reach {state}: {service.status()}")
+
+
+def _c3_runtime(
+    query: AircraftIdentityQueryService,
+    transports: list[_C3Transport],
+    *,
+    conformant: bool = True,
+) -> AircraftIdentityRealtimeRuntime:
+    def presenter_factory(config, diagnostics):  # noqa: ANN001, ANN202
+        def transport_factory(inner: YandexRealtimeTextConfig) -> _C3Transport:
+            transport = _C3Transport(inner, conformant=conformant)
+            transports.append(transport)
+            return transport
+
+        return YandexRealtimeInformationalPresenter(
+            config,
+            diagnostics=diagnostics,
+            transport_factory=transport_factory,
+        )
+
+    return AircraftIdentityRealtimeRuntime(
+        query=query,
+        presenter_factory=presenter_factory,
+    )
 
 
 def _service(
@@ -317,6 +421,7 @@ def _service(
     corpus=LIVE_GOLDEN_CORPUS,  # noqa: ANN001
     atc_sessions=None,  # noqa: ANN001
     aircraft_identity_service=None,  # noqa: ANN001
+    informational_runtime=None,  # noqa: ANN001
     aircraft_recommendation: str = "Вы сейчас находитесь в {{aircraft_identity}}.",
 ) -> tuple[
     LiveGoldenConversationService,
@@ -360,6 +465,9 @@ def _service(
             endpoint=endpoint,
             main_session_id="yandex-main-session",
             tts_output_mode=tts_output_mode,
+            informational_runtime=(
+                informational_runtime or AircraftIdentityRealtimeRuntime()
+            ),
         )
     )
     return service, endpoint, recorder, provider
@@ -439,6 +547,7 @@ def test_live_dcs_aircraft_identity_field_case_uses_core_truth_and_qwen_wording(
         "qwen_required": False,
         "qwen_formulation_required": True,
         "qwen_call_count": 1,
+        "informational_backend": "CURRENT_QWEN",
         "policy_version": "model-c.known-contract-policy.v1",
     }
     assert record["qwen"]["semantic_interpretation_required"] is False
@@ -477,6 +586,211 @@ def test_live_dcs_aircraft_identity_field_case_uses_core_truth_and_qwen_wording(
         for event in events
     )
     assert b"memory-only-secret" not in combined
+
+
+def test_c3_realtime_candidate_integrates_full_route_reuses_session_and_calls_no_qwen(
+    tmp_path,
+    monkeypatch,
+) -> None:  # noqa: ANN001
+    observed_at = live_module.datetime.now(live_module.UTC)
+    telemetry = LiveTelemetryStore()
+    telemetry.set(
+        TelemetryEnvelope(
+            sequence=1,
+            state=AircraftState(
+                aircraft_type="FA-18C_hornet",
+                position=Position(latitude=42.1, longitude=41.2, altitude_m=1000),
+                heading_deg=137,
+                true_airspeed_mps=145,
+            ),
+        ),
+        received_at=observed_at,
+    )
+    query = AircraftIdentityQueryService(
+        WorldModelFacade(telemetry=telemetry, clock=lambda: observed_at)
+    )
+    transports: list[_C3Transport] = []
+    runtime = _c3_runtime(query, transports)
+    service, endpoint, recorder, provider = _service(
+        tmp_path,
+        monkeypatch,
+        corpus=AIRCRAFT_IDENTITY_FIELD_CORPUS,
+        informational_runtime=runtime,
+    )
+
+    for index in range(2):
+        status = service.start(
+            capture_audio=False,
+            informational_backend=(
+                InformationalPresentationBackend.REALTIME_D75_CANDIDATE
+            ),
+        )
+        assert status.informational_backend is (
+            InformationalPresentationBackend.REALTIME_D75_CANDIDATE
+        )
+        assert service.accept_transcript(
+            AIRCRAFT_IDENTITY_CASE.prompt,
+            f"aircraft-ptt-{index}",
+            f"aircraft-event-{index}",
+            f"aircraft-item-{index}",
+            time.monotonic(),
+        )
+        _wait_for(service, LiveGoldenState.AWAITING_REVIEW)
+        service.review(LiveGoldenAcousticReview.CLEAR)
+
+    assert provider.requests == []
+    assert len(transports) == 1
+    assert len(endpoint.transmissions) == 2
+    service.detach("yandex-main-session")
+    assert transports[0].closed is True
+    output = recorder.stop_and_export()
+    with zipfile.ZipFile(output) as archive:
+        summary = json.loads(archive.read("live-golden-summary.json"))
+        events = [
+            json.loads(line)
+            for line in archive.read("events.jsonl").decode().splitlines()
+        ]
+        combined = b"".join(archive.read(name) for name in archive.namelist())
+
+    cases = [run["cases"][0] for run in summary["runs"]]
+    assert all(
+        case["semantic_route"]["informational_backend"]
+        == "REALTIME_D75_CANDIDATE"
+        for case in cases
+    )
+    assert all(case["qwen"]["call_count"] == 0 for case in cases)
+    assert all(
+        case["final_composed_text"]
+        == "Вы в F/A-18C Hornet, текущий курс 137 градусов."
+        for case in cases
+    )
+    assert cases[0]["informational_presentation"]["session_reused"] is False
+    assert cases[1]["informational_presentation"]["session_reused"] is True
+    assert all(case["internal_result"] == "PASS" for case in cases)
+    assert any(event["event"] == "formulation_session_ready" for event in events)
+    assert sum(
+        event["event"] == "informational_backend_selected" for event in events
+    ) == 2
+    assert sum(
+        event["event"] == "semantic_validation_completed" for event in events
+    ) == 2
+    assert b"memory-only-secret" not in combined
+
+
+def test_c3_semantic_rejection_fails_before_tts_radio_and_qwen(
+    tmp_path,
+    monkeypatch,
+) -> None:  # noqa: ANN001
+    observed_at = live_module.datetime.now(live_module.UTC)
+    telemetry = LiveTelemetryStore()
+    telemetry.set(
+        TelemetryEnvelope(
+            sequence=1,
+            state=AircraftState(
+                aircraft_type="FA-18C_hornet",
+                position=Position(latitude=42.1, longitude=41.2, altitude_m=1000),
+                heading_deg=137,
+                true_airspeed_mps=145,
+            ),
+        ),
+        received_at=observed_at,
+    )
+    query = AircraftIdentityQueryService(
+        WorldModelFacade(telemetry=telemetry, clock=lambda: observed_at)
+    )
+    transports: list[_C3Transport] = []
+    runtime = _c3_runtime(query, transports, conformant=False)
+    service, endpoint, recorder, provider = _service(
+        tmp_path,
+        monkeypatch,
+        corpus=AIRCRAFT_IDENTITY_FIELD_CORPUS,
+        informational_runtime=runtime,
+    )
+    service.start(
+        capture_audio=False,
+        informational_backend=InformationalPresentationBackend.REALTIME_D75_CANDIDATE,
+    )
+    assert service.accept_transcript(
+        AIRCRAFT_IDENTITY_CASE.prompt,
+        "aircraft-ptt",
+        "aircraft-event",
+        "aircraft-item",
+        time.monotonic(),
+    )
+    _wait_for(service, LiveGoldenState.FAIL)
+    assert endpoint.transmissions == []
+    assert provider.requests == []
+    service.detach("yandex-main-session")
+    recorder.stop_and_export()
+
+
+def test_c3_unavailable_session_rejects_start_without_qwen_tts_or_radio(
+    tmp_path,
+    monkeypatch,
+) -> None:  # noqa: ANN001
+    class _UnavailableTransport(_C3Transport):
+        async def connect(self) -> None:
+            raise OSError("bounded unavailable fixture")
+
+    def presenter_factory(config, diagnostics):  # noqa: ANN001, ANN202
+        return YandexRealtimeInformationalPresenter(
+            config,
+            diagnostics=diagnostics,
+            transport_factory=lambda inner: _UnavailableTransport(inner),
+        )
+
+    runtime = AircraftIdentityRealtimeRuntime(presenter_factory=presenter_factory)
+    service, endpoint, recorder, provider = _service(
+        tmp_path,
+        monkeypatch,
+        corpus=AIRCRAFT_IDENTITY_FIELD_CORPUS,
+        informational_runtime=runtime,
+    )
+
+    with pytest.raises(ValueError, match="candidate is not ready: session_unavailable"):
+        service.start(
+            capture_audio=False,
+            informational_backend=(
+                InformationalPresentationBackend.REALTIME_D75_CANDIDATE
+            ),
+        )
+
+    assert service.status().state is LiveGoldenState.OFF
+    assert provider.requests == []
+    assert endpoint.transmissions == []
+    service.detach("yandex-main-session")
+    recorder.stop_and_export()
+
+
+def test_c3_selector_does_not_take_over_protected_takeoff_route(
+    tmp_path,
+    monkeypatch,
+) -> None:  # noqa: ANN001
+    runtime = AircraftIdentityRealtimeRuntime()
+    service, endpoint, recorder, provider = _service(
+        tmp_path,
+        monkeypatch,
+        corpus=(PURE_TAKEOFF_FIRST_CORPUS[0],),
+        informational_runtime=runtime,
+    )
+    service.start(
+        capture_audio=False,
+        informational_backend=InformationalPresentationBackend.REALTIME_D75_CANDIDATE,
+    )
+    assert runtime.ready is False
+    assert service.accept_transcript(
+        "Разрешите взлёт.",
+        "takeoff-ptt",
+        "takeoff-event",
+        "takeoff-item",
+        time.monotonic(),
+    )
+    _wait_for(service, LiveGoldenState.AWAITING_REVIEW)
+    assert provider.requests == []
+    assert len(endpoint.transmissions) == 1
+    service.stop()
+    service.detach("yandex-main-session")
+    recorder.stop_and_export()
 
 
 def test_aircraft_identity_qwen_override_fails_before_tts_or_radio(

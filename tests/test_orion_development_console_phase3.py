@@ -367,13 +367,13 @@ def test_expand_collapse_hides_stage_children_only(tmp_path: Path) -> None:
 def test_phase3_completion_moves_current_to_checkpoint(tmp_path: Path) -> None:
     service = _service(tmp_path, phase3_complete=True)
     snapshot = service.build_snapshot()
-    assert snapshot.current_node_id == "canonical:C0"
+    assert snapshot.current_node_id == "canonical:C3"
     assert sum(node.node_type is NodeType.PLANNED for node in snapshot.nodes) >= 4
 
     position = service.development_position(snapshot)
-    assert position.checkpoint_stage == "CANONICAL ORION BASELINE ESTABLISHED · CURRENT"
-    assert position.approved_next_step == "REALTIME INFORMATIONAL PRESENTER RELIABILITY CORRECTION"
-    assert position.current_node_id == "canonical:C0"
+    assert position.checkpoint_stage == "BOUNDED NON-DEFAULT PRESENTATION INTEGRATION · COMPLETE"
+    assert position.approved_next_step == "CONTROLLED INFORMATIONAL DCS/SRS FIELD PROOF"
+    assert position.current_node_id == "canonical:C3"
 
 
 def test_checkpoint_candidate_uses_current_roadmap_not_stale_saved_checkpoint(
@@ -384,8 +384,12 @@ def test_checkpoint_candidate_uses_current_roadmap_not_stale_saved_checkpoint(
 
     candidate = service.checkpoint_candidate(snapshot)
 
-    assert candidate.development_stage == "CANONICAL ORION BASELINE ESTABLISHED · CURRENT"
-    assert candidate.approved_next_step == "REALTIME INFORMATIONAL PRESENTER RELIABILITY CORRECTION"
+    assert candidate.development_stage == (
+        "BOUNDED NON-DEFAULT PRESENTATION INTEGRATION · COMPLETE"
+    )
+    assert candidate.approved_next_step == (
+        "CONTROLLED INFORMATIONAL DCS/SRS FIELD PROOF"
+    )
     saved = service.memory.latest_checkpoint()
     assert saved is not None
     assert candidate.development_stage != saved.development_stage
@@ -410,9 +414,9 @@ def test_canonical_roadmap_preserves_visual_classes_and_current_position(tmp_pat
     assert len(retirement) == 8
     assert all(node.completed for node in golden)
     assert all(not node.completed and node.branch_type is BranchType.RECOVERED_FUTURE for node in ideas)
-    assert snapshot.current_node_id == "canonical:C0"
+    assert snapshot.current_node_id == "canonical:C3"
     position = service.development_position(snapshot)
-    assert position.approved_next_node_id == "canonical:C1"
+    assert position.approved_next_node_id == "canonical:C4"
 
 
 def test_canonical_search_filters_and_summary_are_machine_retrievable(tmp_path: Path) -> None:

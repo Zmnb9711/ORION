@@ -14,6 +14,7 @@ def test_cloud_voice_config_round_trip_contains_only_non_secret_settings(tmp_pat
         yandex_folder_id="folder-123",
         radio_stt_provider="speechkit_v3",
         tts_output_mode="speechkit_v3_streaming",
+        informational_backend="REALTIME_D75_CANDIDATE",
         srs_host="radio.local",
         srs_port=5003,
         srs_server_path=r"C:\SRS\Server\SRS-Server.exe",
@@ -64,3 +65,4 @@ def test_config_without_radio_selector_migrates_to_explicit_legacy_default(tmp_p
 
     assert config.radio_stt_provider == "yandex_realtime"
     assert config.tts_output_mode == "speechkit_rest"
+    assert config.informational_backend == "CURRENT_QWEN"

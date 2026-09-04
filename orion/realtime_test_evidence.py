@@ -966,6 +966,7 @@ class RealtimeTestEvidenceRecorder:
         config_fingerprint: str,
         corpus: tuple[dict[str, object], ...],
         capture_audio: bool,
+        informational_backend: str = "CURRENT_QWEN",
     ) -> None:
         """Register one bounded real-speech Golden field session."""
 
@@ -986,6 +987,11 @@ class RealtimeTestEvidenceRecorder:
                 "profile_independent_from_input_language": True,
                 "config_fingerprint_sha256": config_fingerprint[:64],
                 "capture_response_audio": capture_audio,
+                "informational_backend": self._identifier(
+                    informational_backend,
+                    "informational backend",
+                    max_length=80,
+                ),
                 "corpus": [self._safe_structured(item) for item in corpus[:8]],
                 "cases": [],
                 "state": "running",

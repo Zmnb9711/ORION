@@ -253,7 +253,7 @@ class DevelopmentMemoryService:
             recovered_ideas=_ids(canonical.get("recovered_unimplemented_ideas"), "record_id"),
             retirement_candidates=_ids(canonical.get("retirement_candidates"), "record_id"),
             canonical_input_signature=str(canonical.get("input_signature") or "MISSING"),
-            realtime_candidate="BENCHMARK_NO_GO / KEEP / NON_DEFAULT",
+            realtime_candidate="C3_AUTOMATED_PROVEN / KEEP / NON_DEFAULT / C4_FIELD_PROOF_REQUIRED",
             provenance=[
                 f"guard:{guard.get('report_id')}",
                 f"git:{git.get('head')}",
@@ -345,9 +345,9 @@ Historical reconnect: {', '.join(_ids(canonical.get('historical_best'), 'record_
 Recovered ideas: {', '.join(_ids(canonical.get('recovered_unimplemented_ideas'), 'record_id')) or 'NONE'}
 User-valued forgotten ideas: {', '.join(_ids(canonical.get('user_valued_forgotten_ideas'), 'record_id')) or 'NONE'}
 Retirement candidates: {', '.join(_ids(canonical.get('retirement_candidates'), 'record_id')) or 'NONE'}
-Realtime candidate: KEEP / NON_DEFAULT / BENCHMARK_NO_GO · IPB-20260903-171624
-Current canonical stage: CANONICAL ORION BASELINE ESTABLISHED
-Next exact step: REALTIME INFORMATIONAL PRESENTER RELIABILITY CORRECTION
+Realtime candidate: KEEP / NON_DEFAULT / C3 AUTOMATED PROVEN; historical IPB-20260903-171624 BENCHMARK_NO_GO retained
+Current canonical stage: C3 BOUNDED NON-DEFAULT PRESENTATION INTEGRATION COMPLETE
+Next exact step: C4 CONTROLLED INFORMATIONAL DCS/SRS FIELD PROOF
 
 ## DO NOT REBUILD
 Phase 1 verification; Architecture Guard; authoritative Master/Decision history; applicable field-proven mechanisms.
