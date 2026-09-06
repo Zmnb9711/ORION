@@ -353,6 +353,8 @@ def test_only_approved_architecture_boundaries_import_ia0_contracts() -> None:
         "communication_contracts.py",
         "interaction_router.py",
         "interaction_router_api.py",
+        "phraseology_probe.py",
+        "phraseology_renderer.py",
         "planner.py",
         "planner_contracts.py",
         "radio_contracts.py",
