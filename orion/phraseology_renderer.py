@@ -21,6 +21,7 @@ from orion.communication_contracts import (
     ProtectedValueKind,
 )
 from orion.interaction_contracts import SemanticKey
+from orion.ownship_phraseology import OwnshipReportRuleset, OWNSHIP_REPORT_V1, render_ownship_report
 
 
 PILOT_SYNTHETIC_V1 = "PILOT_SYNTHETIC_V1"
@@ -238,7 +239,12 @@ def synthetic_pilot_ruleset() -> PilotRuleset:
 class PhraseologyRenderer:
     """Render resolved semantics using an explicitly injected synthetic ruleset."""
 
-    def __init__(self, ruleset: PilotRuleset) -> None:
+    def __init__(self, ruleset: PilotRuleset | OwnshipReportRuleset) -> None:
+        self._ownship = isinstance(ruleset, OwnshipReportRuleset)
+        if isinstance(ruleset, OwnshipReportRuleset):
+            if ruleset.version != OWNSHIP_REPORT_V1:
+                raise PhraseologyRenderError(PhraseologyFailureCode.UNSUPPORTED_RULESET)
+            return
         if ruleset.version != PILOT_SYNTHETIC_V1:
             raise PhraseologyRenderError(PhraseologyFailureCode.UNSUPPORTED_RULESET)
         # The version names content, not just a schema. Reordering is permitted;
@@ -255,6 +261,8 @@ class PhraseologyRenderer:
         unit: OperationalSemanticUnit,
         context: CommunicationContext,
     ) -> ProtectedOperationalFragment:
+        if self._ownship:
+            return render_ownship_report(unit, context)
         if context.phraseology_version not in (None, self._ruleset.version) or (
             context.phraseology_snapshot_id not in (None, self._ruleset.version)
         ):

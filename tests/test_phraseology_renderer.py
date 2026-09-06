@@ -375,8 +375,11 @@ def test_modules_have_only_offline_contract_dependencies() -> None:
         "orion.interaction_contracts",
         "orion.world_model_contracts",
         "orion.phraseology_renderer",
+        "orion.ownship_phraseology",
+        "decimal",
+        "math",
     }
-    for name in ("phraseology_renderer.py", "phraseology_probe.py"):
+    for name in ("phraseology_renderer.py", "phraseology_probe.py", "ownship_phraseology.py"):
         tree = ast.parse((root / "orion" / name).read_text(encoding="utf-8"))
         imports = set()
         for node in ast.walk(tree):

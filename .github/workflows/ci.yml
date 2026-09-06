@@ -44,7 +44,7 @@ jobs:
       - name: Install project and test dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[dev,cloud-realtime,srs-radio]"
+          python -m pip install -e ".[dev,cloud-realtime,srs-radio,speechkit-v3]"
 
       - name: Compile ORION modules
         run: python -m compileall -q orion
@@ -65,6 +65,20 @@ jobs:
           orion/airport_departure_control.py
           orion/srs_process_control.py
           orion/launcher_main.py
+          orion/interaction_router.py
+          orion/full_voice_core.py
+          orion/full_voice_capture.py
+          orion/full_voice_field.py
+          orion/full_voice_live_world.py
+          orion/full_voice_srs.py
+          orion/full_voice_stt.py
+          orion/ownship_report.py
+          orion/ownship_phraseology.py
+          orion/protected_streaming_presentation.py
+          orion/protected_streaming_tts.py
+          orion/bounded_radio_stream.py
+          orion/speechkit_v3_stt_transport.py
+          orion/srs_tx_state.py
 
       - name: Run test suite with coverage
         run: python -m pytest -q --cov=orion --cov-report=term-missing
@@ -87,7 +101,7 @@ jobs:
       - name: Install project and test dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[dev,cloud-realtime,srs-radio]"
+          python -m pip install -e ".[dev,cloud-realtime,srs-radio,speechkit-v3]"
 
       - name: Compile ORION modules
         run: python -m compileall -q orion
