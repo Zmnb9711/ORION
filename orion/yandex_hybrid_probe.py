@@ -16,34 +16,36 @@ import threading
 import time
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any, Awaitable, Callable, Protocol
-from urllib.parse import urlencode
+from typing import Any, Callable, Protocol
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict
 
 from orion.realtime_test_evidence import realtime_test_evidence
+from orion.speechkit_tts_adapter import (
+    ORION_PROVIDER_RATE,
+    PROBE_TIMEOUT_S,
+    SPEECHKIT_TTS_ENDPOINT,
+    SPEECHKIT_RATE,
+    SPEECHKIT_MAX_ATTEMPTS,
+    SPEECHKIT_RETRY_BACKOFF_S,
+    SPEECHKIT_RETRYABLE_HTTP_STATUSES,
+    SPEECHKIT_V1_PROBE_PROFILES,
+    TX_TIMEOUT_S,
+    TX_GUARD_S,
+    TestSemanticCase,
+    SpeechKitAttemptContext,
+    SpeechKitAttemptObserver,
+    SpeechKitFailureCategory,
+    SpeechKitProviderError,
+    SpeechKitTtsClient,
+    normalize_speechkit_pcm,
+    speechkit_request,
+)
 from orion.yandex_realtime_provider import (
     build_yandex_url,
     decode_yandex_output_audio,
     yandex_authorization_headers,
-)
-
-SPEECHKIT_TTS_ENDPOINT = "https://tts.api.cloud.yandex.net/speech/v1/tts:synthesize"
-SPEECHKIT_RATE = 48_000
-ORION_PROVIDER_RATE = 44_100
-PROBE_TIMEOUT_S = 30.0
-TX_TIMEOUT_S = 45.0
-TX_GUARD_S = 0.250
-SPEECHKIT_MAX_ATTEMPTS = 3
-SPEECHKIT_RETRY_BACKOFF_S = (0.250, 0.750)
-SPEECHKIT_RETRYABLE_HTTP_STATUSES = frozenset({429, 500, 502, 503, 504})
-SPEECHKIT_V1_PROBE_PROFILES = frozenset(
-    {
-        ("jane", "neutral"),
-        ("jane", "evil"),
-        ("ermil", "neutral"),
-    }
 )
 
 
@@ -53,87 +55,6 @@ class HybridProbeState(StrEnum):
     PASS = "pass"
     REVIEW = "review"
     FAIL = "fail"
-
-
-class SpeechKitFailureCategory(StrEnum):
-    UNAUTHORIZED = "unauthorized_credential_or_scope"
-    FORBIDDEN = "forbidden_or_missing_permission"
-    MALFORMED_REQUEST = "malformed_request"
-    RATE_LIMITED = "rate_limited"
-    PROVIDER_UNAVAILABLE = "provider_unavailable"
-    HTTP_ERROR = "provider_http_error"
-
-
-class SpeechKitProviderError(RuntimeError):
-    """Safe provider failure that never retains the response body or credential."""
-
-    def __init__(
-        self,
-        status: int,
-        *,
-        provider_code: str | None = None,
-        provider_message: str | None = None,
-    ) -> None:
-        self.status = status
-        self.provider_code = provider_code
-        self.provider_message = provider_message
-        if status == 401:
-            self.category = SpeechKitFailureCategory.UNAUTHORIZED
-            message = (
-                "SpeechKit authorization failed (HTTP 401): verify the service-account "
-                "API key, yc.ai.speechkitTts.execute scope, and ai.speechkit-tts.user role"
-            )
-        elif status == 403:
-            self.category = SpeechKitFailureCategory.FORBIDDEN
-            message = (
-                "SpeechKit permission denied (HTTP 403): verify ai.speechkit-tts.user "
-                "access and Yandex Cloud policy"
-            )
-        elif status == 400:
-            self.category = SpeechKitFailureCategory.MALFORMED_REQUEST
-            message = "SpeechKit rejected the synthesis request (HTTP 400)"
-        elif status == 429:
-            self.category = SpeechKitFailureCategory.RATE_LIMITED
-            message = "SpeechKit synthesis rate limit reached (HTTP 429)"
-        elif 500 <= status <= 599:
-            self.category = SpeechKitFailureCategory.PROVIDER_UNAVAILABLE
-            message = f"SpeechKit service unavailable (HTTP {status})"
-        else:
-            self.category = SpeechKitFailureCategory.HTTP_ERROR
-            message = f"SpeechKit request failed (HTTP {status})"
-        if provider_code or provider_message:
-            detail = ": ".join(item for item in (provider_code, provider_message) if item)
-            message = f"{message}: {detail}"
-        super().__init__(message)
-
-    @classmethod
-    def from_payload(cls, status: int, payload: bytes, *, secret: str) -> SpeechKitProviderError:
-        """Extract only bounded allow-listed provider fields from an error response."""
-
-        provider_code: str | None = None
-        provider_message: str | None = None
-        try:
-            decoded = json.loads(payload[:2048].decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            decoded = None
-        if isinstance(decoded, dict):
-            raw_code = decoded.get("error_code")
-            raw_message = decoded.get("error_message")
-            if isinstance(raw_code, str):
-                provider_code = _bounded_provider_field(raw_code, secret, 80)
-            if isinstance(raw_message, str):
-                provider_message = _bounded_provider_field(raw_message, secret, 240)
-        return cls(
-            status,
-            provider_code=provider_code,
-            provider_message=provider_message,
-        )
-
-
-def _bounded_provider_field(value: str, secret: str, limit: int) -> str:
-    safe = value.replace(secret, "<redacted>") if secret else value
-    safe = re.sub(r"[\x00-\x1f\x7f]+", " ", safe)
-    return re.sub(r"\s+", " ", safe).strip()[:limit]
 
 
 class AcousticReview(StrEnum):
@@ -157,15 +78,6 @@ class HybridProbeStatus(BaseModel):
     total_pairs: int = 20
     latest_artifact: str | None = None
     audio_capture_enabled: bool = False
-
-
-@dataclass(frozen=True, slots=True)
-class TestSemanticCase:
-    case_id: str
-    finalized_text: str
-    required_groups: tuple[tuple[str, ...], ...]
-    voice: str = "jane"
-    role: str = "neutral"
 
 
 def hybrid_probe_cases() -> tuple[TestSemanticCase, ...]:
@@ -204,45 +116,6 @@ def evaluate_semantics(case: TestSemanticCase, observed: str) -> dict[str, objec
     }
 
 
-def speechkit_request(
-    case: TestSemanticCase,
-    *,
-    api_key: str,
-) -> tuple[str, dict[str, str], bytes]:
-    """Build the documented SpeechKit v1 REST request without retaining secrets."""
-
-    key = api_key.strip()
-    if not key:
-        raise ValueError("Yandex API key is required")
-    text = case.finalized_text.strip()
-    if not text or len(text) > 5000:
-        raise ValueError("SpeechKit text must contain 1 to 5000 characters")
-    if (case.voice, case.role) not in SPEECHKIT_V1_PROBE_PROFILES:
-        raise ValueError(
-            f"Voice/role {case.voice}/{case.role} is not supported by the SpeechKit REST v1 probe"
-        )
-    fields = {
-        "text": text,
-        "lang": "ru-RU",
-        "voice": case.voice,
-        "emotion": case.role,
-        "speed": "1.0",
-        "format": "lpcm",
-        "sampleRateHertz": str(SPEECHKIT_RATE),
-    }
-    body = urlencode(fields).encode("utf-8")
-    if len(body) > 15 * 1024:
-        raise ValueError("SpeechKit request exceeds the documented 15 KB limit")
-    return (
-        SPEECHKIT_TTS_ENDPOINT,
-        {
-            "Authorization": f"Api-Key {key}",
-            "Content-Type": "application/x-www-form-urlencoded",
-        },
-        body,
-    )
-
-
 class ProbeTxEndpoint(Protocol):
     def transmit_probe_audio(self, response_id: str, pcm44: bytes, timeout_s: float) -> dict[str, float]: ...
 
@@ -254,225 +127,6 @@ class HybridRuntimeContext:
     endpoint: ProbeTxEndpoint
     main_session_id: str
     context_version: str | None
-
-
-@dataclass(frozen=True, slots=True)
-class SpeechKitAttemptContext:
-    run_id: str
-    case_id: str
-    response_id: str
-
-
-SpeechKitAttemptObserver = Callable[[str, dict[str, object]], None]
-
-
-def _speechkit_failure(exc: Exception) -> tuple[str, int | None, bool]:
-    """Return a safe category, optional HTTP status, and retry decision."""
-
-    import aiohttp
-
-    if isinstance(exc, SpeechKitProviderError):
-        return (
-            exc.category.value,
-            exc.status,
-            exc.status in SPEECHKIT_RETRYABLE_HTTP_STATUSES,
-        )
-    if isinstance(exc, aiohttp.ConnectionTimeoutError):
-        return "connect_timeout", None, True
-    if isinstance(exc, aiohttp.SocketTimeoutError):
-        return "read_timeout", None, True
-    if isinstance(exc, aiohttp.ClientConnectorDNSError):
-        return "dns_failure", None, True
-    if isinstance(
-        exc,
-        (
-            aiohttp.ClientConnectorCertificateError,
-            aiohttp.ClientConnectorSSLError,
-            aiohttp.ServerFingerprintMismatch,
-        ),
-    ):
-        return "tls_validation_failure", None, False
-    if isinstance(exc, aiohttp.ClientPayloadError):
-        return "response_body_failure", None, True
-    if isinstance(exc, aiohttp.ClientConnectionError):
-        return "connection_failure", None, True
-    if isinstance(exc, asyncio.TimeoutError):
-        return "request_timeout", None, True
-    if isinstance(exc, ValueError):
-        return "invalid_audio", None, False
-    return "local_error", None, False
-
-
-class SpeechKitTtsClient:
-    """Reusable async SpeechKit REST v1 transport with bounded transient retry."""
-
-    def __init__(
-        self,
-        *,
-        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
-    ) -> None:
-        self._sleep = sleep
-        self._session: Any = None
-
-    @staticmethod
-    def _timeout() -> Any:
-        import aiohttp
-
-        return aiohttp.ClientTimeout(total=PROBE_TIMEOUT_S, connect=5.0)
-
-    async def __aenter__(self) -> SpeechKitTtsClient:
-        import aiohttp
-
-        if self._session is not None:
-            raise RuntimeError("SpeechKit client session is already open")
-        self._session = aiohttp.ClientSession(timeout=self._timeout())
-        return self
-
-    async def __aexit__(self, *_args: object) -> None:
-        session = self._session
-        self._session = None
-        if session is not None:
-            await session.close()
-
-    async def synthesize(
-        self,
-        case: TestSemanticCase,
-        api_key: str,
-        *,
-        attempt_context: SpeechKitAttemptContext | None = None,
-        observer: SpeechKitAttemptObserver | None = None,
-    ) -> tuple[bytes, str]:
-        import aiohttp
-
-        url, headers, body = speechkit_request(case, api_key=api_key)
-        if self._session is not None:
-            return await self._synthesize_with_session(
-                self._session,
-                case,
-                api_key,
-                url,
-                headers,
-                body,
-                attempt_context,
-                observer,
-            )
-        async with aiohttp.ClientSession(timeout=self._timeout()) as client:
-            return await self._synthesize_with_session(
-                client,
-                case,
-                api_key,
-                url,
-                headers,
-                body,
-                attempt_context,
-                observer,
-            )
-
-    async def _synthesize_with_session(
-        self,
-        client: Any,
-        case: TestSemanticCase,
-        api_key: str,
-        url: str,
-        headers: dict[str, str],
-        body: bytes,
-        attempt_context: SpeechKitAttemptContext | None,
-        observer: SpeechKitAttemptObserver | None,
-    ) -> tuple[bytes, str]:
-        for attempt in range(1, SPEECHKIT_MAX_ATTEMPTS + 1):
-            started = time.monotonic()
-            self._emit_attempt(
-                observer,
-                "speechkit_attempt_started",
-                attempt_context,
-                case,
-                attempt_number=attempt,
-            )
-            try:
-                async with client.post(url, headers=headers, data=body) as response:
-                    payload = await response.read()
-                    if response.status != 200:
-                        raise SpeechKitProviderError.from_payload(
-                            response.status,
-                            payload,
-                            secret=api_key,
-                        )
-                if not payload or len(payload) % 2:
-                    raise ValueError("SpeechKit returned invalid LPCM audio")
-            except asyncio.CancelledError:
-                self._emit_attempt(
-                    observer,
-                    "speechkit_attempt_cancelled",
-                    attempt_context,
-                    case,
-                    attempt_number=attempt,
-                    elapsed_ms=(time.monotonic() - started) * 1000,
-                    retry_scheduled=False,
-                    retry_exhausted=False,
-                )
-                raise
-            except Exception as exc:
-                category, http_status, retryable = _speechkit_failure(exc)
-                retry_scheduled = retryable and attempt < SPEECHKIT_MAX_ATTEMPTS
-                self._emit_attempt(
-                    observer,
-                    "speechkit_attempt_failed",
-                    attempt_context,
-                    case,
-                    attempt_number=attempt,
-                    elapsed_ms=(time.monotonic() - started) * 1000,
-                    failure_category=category,
-                    http_status=http_status,
-                    retry_scheduled=retry_scheduled,
-                    retry_exhausted=retryable and not retry_scheduled,
-                )
-                if not retry_scheduled:
-                    raise
-                try:
-                    await self._sleep(SPEECHKIT_RETRY_BACKOFF_S[attempt - 1])
-                except asyncio.CancelledError:
-                    self._emit_attempt(
-                        observer,
-                        "speechkit_retry_cancelled",
-                        attempt_context,
-                        case,
-                        attempt_number=attempt + 1,
-                    )
-                    raise
-                continue
-            self._emit_attempt(
-                observer,
-                "speechkit_attempt_succeeded",
-                attempt_context,
-                case,
-                attempt_number=attempt,
-                elapsed_ms=(time.monotonic() - started) * 1000,
-                pcm_bytes=len(payload),
-                retry_scheduled=False,
-                retry_exhausted=False,
-            )
-            return payload, case.finalized_text
-        raise AssertionError("SpeechKit retry loop exhausted without a result")
-
-    @staticmethod
-    def _emit_attempt(
-        observer: SpeechKitAttemptObserver | None,
-        event: str,
-        context: SpeechKitAttemptContext | None,
-        case: TestSemanticCase,
-        **fields: object,
-    ) -> None:
-        if observer is None:
-            return
-        safe: dict[str, object] = {
-            "probe_run_id": context.run_id if context else "NOT OBSERVABLE",
-            "probe_case_id": context.case_id if context else case.case_id,
-            "response_id": context.response_id if context else "NOT OBSERVABLE",
-            "requested_voice": case.voice,
-            "requested_style": case.role,
-            **fields,
-        }
-        observer(event, safe)
 
 
 class RealtimePresentationClient:
@@ -641,13 +295,6 @@ class RealtimePresentationClient:
         if message.type is aiohttp.WSMsgType.TEXT:
             return dict(message.json())
         raise ConnectionError("Yandex closed the disposable hybrid probe session")
-
-
-def normalize_speechkit_pcm(pcm48: bytes) -> bytes:
-    from orion.srs_resampler import StreamingPcm16Resampler
-
-    resampler = StreamingPcm16Resampler(SPEECHKIT_RATE, ORION_PROVIDER_RATE)
-    return resampler.process(pcm48, end_of_input=True)
 
 
 class HybridProbeRunner:
