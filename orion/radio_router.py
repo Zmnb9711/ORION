@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from orion.radio_contracts import StreamingPcmAudio
 import heapq
 import json
 import threading
@@ -532,6 +533,8 @@ class RadioRouter:
         try:
             capabilities = adapter.capabilities()
             missing = REQUIRED_TX_CAPABILITIES - capabilities
+            if isinstance(request.audio, StreamingPcmAudio):
+                missing |= {RadioTransportCapability.STREAMING_PCM} - capabilities
             status = adapter.status()
         except Exception:
             return None, _failure(
@@ -776,7 +779,11 @@ def _request_signature(request: RadioTransmissionRequest) -> str:
             "sample_rate_hz": request.audio.sample_rate_hz,
             "sample_format": request.audio.sample_format.value,
             "channels": request.audio.channels,
-            "pcm_sha256": hashlib.sha256(request.audio.pcm).hexdigest(),
+            "pcm_sha256": (
+                "stream:" + request.audio.stream.identity
+                if isinstance(request.audio, StreamingPcmAudio)
+                else hashlib.sha256(request.audio.pcm).hexdigest()
+            ),
         },
     }
     encoded = json.dumps(

@@ -67,8 +67,9 @@ class TransmissionTracker:
             return completed
         return None
 
-    def accept(self, packet: VoicePacket, now: float) -> PacketDecision:
-        self.expire(now)
+    def accept(self, packet: VoicePacket, now: float, *, expire_on_quiescence: bool = True) -> PacketDecision:
+        if expire_on_quiescence:
+            self.expire(now)
         if not is_target_frequency(packet, self.frequency_hz, self.modulation):
             self.counters.wrong_channel += 1
             return PacketDecision.WRONG_CHANNEL
@@ -120,6 +121,16 @@ class TransmissionTracker:
             )
         )
 
+    def complete_active(self) -> str | None:
+        """Explicit physical EOU; existing packet-gap callers are unchanged."""
+        completed = self.active_origin_guid
+        if completed is not None:
+            self.active_origin_guid = None
+            self.active_started_at = None
+            self.active_packet_count = 0
+            self.counters.transmissions_completed += 1
+        return completed
+
     def reset(self) -> None:
         self.active_origin_guid = None
         self.active_started_at = None
@@ -154,8 +165,10 @@ class TxPacer:
         frames: Iterable[bytes],
         send_frame: Callable[[bytes, float], None],
         stop_event: threading.Event,
+        *,
+        streaming: bool = False,
     ) -> PacingReport:
-        materialized = tuple(frames)
+        materialized = frames if streaming else tuple(frames)
         if not materialized:
             return PacingReport(0, 0, None, None, None)
         started = self.clock()
@@ -176,7 +189,7 @@ class TxPacer:
             sent += 1
         drift = jitters[-1] if jitters else None
         return PacingReport(
-            scheduled_frames=len(materialized),
+            scheduled_frames=sent if streaming else len(tuple(materialized)),
             sent_frames=sent,
             median_jitter_ms=round(statistics.median(jitters), 3) if jitters else None,
             max_jitter_ms=round(max(abs(item) for item in jitters), 3) if jitters else None,

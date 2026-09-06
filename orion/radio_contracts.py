@@ -6,6 +6,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Annotated, Protocol, Self
 from uuid import UUID
+from orion.bounded_radio_stream import BoundedPcmStream
 
 from pydantic import (
     BaseModel,
@@ -73,6 +74,7 @@ class PcmSampleFormat(StrEnum):
 
 
 class RadioTransportCapability(StrEnum):
+    STREAMING_PCM = "streaming_pcm"
     TX_AUDIO = "tx_audio"
     TX_COMPLETION = "tx_completion"
     FREQUENCY = "frequency"
@@ -191,9 +193,19 @@ class FinalizedPcmAudio(_RadioModel):
         return self
 
 
+class StreamingPcmAudio(_RadioModel):
+    """Explicit in-process stream, never a claim of finalized PCM content."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, arbitrary_types_allowed=True)
+    stream: BoundedPcmStream = Field(repr=False, exclude=True)
+    sample_rate_hz: int = Field(default=44_100, ge=44_100, le=44_100)
+    sample_format: PcmSampleFormat = PcmSampleFormat.SIGNED_16_LE
+    channels: int = Field(default=1, ge=1, le=1)
+
+
 class RadioTransmissionRequest(_RadioModel):
     context: RadioContext
-    audio: FinalizedPcmAudio = Field(repr=False)
+    audio: FinalizedPcmAudio | StreamingPcmAudio = Field(repr=False)
     transport_id: TransportId | None = None
     timeout_s: float = Field(default=35.0, gt=0, le=120.0)
 
