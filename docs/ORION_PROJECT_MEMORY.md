@@ -1,10 +1,10 @@
 # ORION Project Memory
 
-> Canonical long-term project context. Updated: 2026-08-26.
+> Canonical long-term project context. Updated: 2026-09-06 (recovery-line Stage 7C closure).
 >
 > Purpose: preserve approved product requirements, architectural invariants, milestone history, real-world test evidence, known risks, and the next agreed action across chats and development sessions.
 >
-> Precedence: current `main` is the source of truth for implementation. This document is the source of truth for project intent and historical context. When an implementation detail conflicts with this document, verify the latest explicit decision and repository state before changing code.
+> Recovery-line precedence: on `recovery/a955d7c-radio-validated`, the verified recovery tree is the implementation source of truth; Stage 7C implementation is `847188d52f04a46656b1be5f5be7c39a407bbc00`. Post-recovery history and current `main` are not architectural sources for this line. This document preserves project intent and historical context; older entries retain their milestone-time status. Verify explicit decisions and repository state before changing code.
 
 ## 1. Product vision
 
@@ -1240,3 +1240,30 @@ REQUIRED; STAGE 6B.3 NOT STARTED.**
   client on the same coalition and 251.000 MHz AM remains required.
 - Do not begin Stage 6B.3/domain migration, Phraseology, Launcher UX or DCS
   Native Voice work without separate authorization.
+
+
+## 29. Recovery-line Stage 7C physical field closure — 2026-09-06
+
+**STAGE 7C — CLOSED / FIELD VALIDATED.**
+
+- Recovery branch: `recovery/a955d7c-radio-validated`; implementation commit:
+  `847188d52f04a46656b1be5f5be7c39a407bbc00`
+  (`Implement Stage 7C protected SpeechKit radio path`).
+- Machine gate: **PASS**. The existing uploaded `report.json` was rechecked
+  offline with this implementation's `field_machine_gate`: `machine_pass=true`,
+  `presentation_shutdown_clean=true`; all six cases exact, unique and terminal
+  `completed`, with `failure=null`. SpeechKit used `en-US` / `john`.
+  Each correlation has exactly one ordered radio
+  `ENQUEUED → STARTED → COMPLETED` and transport
+  `srs_adapter_tx_started → srs_tx_started → tx_completed → srs_adapter_tx_completed`.
+- Human acoustic gate: **PASS 6/6, user-confirmed through the official SRS Client**.
+  The user stated: “все 6/6 были чёткими и правильными”. This is human reception
+  and intelligibility evidence, separate from machine transport completion.
+  The original report's `human_review=REQUIRED` is unchanged; the report alone
+  does not establish acoustic PASS.
+- Canonical recovery history and evidence fingerprint:
+  [Stage 7C field-validation record](history/2026-09-06-stage-7c-field-validation.md).
+  The protected synthetic six-case path is field validated; this does not close
+  later stages or establish end-to-end live conversational integration.
+- This closure changes documentation only. No probe rerun, production changes,
+  or post-recovery architecture import; unrelated untracked artifacts preserved.

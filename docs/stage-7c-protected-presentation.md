@@ -1,6 +1,11 @@
 # Stage 7C — protected SpeechKit-to-radio path
 
-Status: IMPLEMENTED / AUTOMATED GATES PASS / FIELD VALIDATION REQUIRED.
+Status: CLOSED / FIELD VALIDATED.
+
+STAGE 7C — CLOSED / FIELD VALIDATED.
+Machine gate: PASS. Human acoustic gate: PASS 6/6 (user-confirmed through the
+official SRS Client). Closure recorded 2026-09-06; see the canonical
+[recovery field-validation record](history/2026-09-06-stage-7c-field-validation.md).
 Architecture Guard: OFF for this explicitly authorized historical recovery line.
 
 ## Baseline and source boundary
@@ -149,7 +154,11 @@ optional whole-suite coverage run finished all 1612 tests but failed combining
 branch/statement coverage from subprocesses; the clean no-coverage rerun exited
 successfully. No whole-suite coverage percentage is claimed.
 
-## Physical field gate — user execution only
+## Physical field gate — completed; retained execution procedure
+
+The six-case physical gate is complete. The procedure below is retained for
+reproducibility, not a request to repeat the run. Machine and user-confirmed
+acoustic evidence are recorded separately in the linked closure record.
 
 The implemented direct adapter gate passed on 2026-09-06 for both exact requests:
 `Fly heading zero three seven.` (226,938 PCM bytes) and
@@ -209,5 +218,8 @@ optional synthetic aids, not microphone/RX evidence. The runner always leaves
 No Realtime presenter, mixed/social envelope, broad PresentationRouter, normative
 KB, STT/PTT redesign, domain migration/expansion, entity registry, voice profiles,
 DCS Voice Chat, Launcher redesign, WorldModel/ToolGateway/planner changes or radio
-rewrite. No push/merge or automatic DCS/SRS launch. Stop after the focused commit
-and implementation report; Stage 7C is not CLOSED before physical validation.
+rewrite. The implementation-stage stop boundary required physical validation
+before closure and prohibited push/merge at that time. Physical validation is
+now complete; the user separately authorized this focused documentation commit
+and push of the recovery branch. No application launch or repeated transmission
+is part of closure. Further implementation still requires separate authorization.
