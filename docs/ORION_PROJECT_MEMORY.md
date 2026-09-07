@@ -1,10 +1,46 @@
 # ORION Project Memory
 
-> Canonical long-term project context. Updated: 2026-08-26.
+> Canonical long-term project context. Recovery checkpoint updated: 2026-09-07.
 >
 > Purpose: preserve approved product requirements, architectural invariants, milestone history, real-world test evidence, known risks, and the next agreed action across chats and development sessions.
 >
-> Precedence: current `main` is the source of truth for implementation. This document is the source of truth for project intent and historical context. When an implementation detail conflicts with this document, verify the latest explicit decision and repository state before changing code.
+> Recovery-line precedence: the frozen installed source is `333ca5e481c89b8294e0f491fbd2d2e6d6e87319` on `codex/fallback-20260906-1800`, not current `main` or the discarded productionization line. See [the canonical recovered working checkpoint](recovered-working-checkpoint.md). Older sections below remain historical context; they do not authorize importing excluded later work.
+
+## Current recovered working baseline — frozen 2026-09-07
+
+Architecture Guard: OFF for this explicitly authorized historical recovery line.
+This is a history/checkpoint update, not a new architecture or development stage.
+
+- Historical Launcher/Core/SRS: `a955d7c39f20c020e15de6bc2be272755928cc98`,
+  proven committed HEAD at 2026-09-06 18:00 Europe/Moscow.
+- Minimal golden full-voice migration: `3f364bdfb05d4c2a0141f75708032ec7a26e768b`.
+- Observation-only STT-to-Core boundary: `333ca5e481c89b8294e0f491fbd2d2e6d6e87319`.
+  Offline observation/regression set: 59 PASS, including golden replay with
+  explicit Test Session active; no voice behavior/lifecycle change.
+- Installed fallback completed physical SRS PTT -> native SpeechKit v3
+  FINAL/External EOU -> supported ownship Core -> protected presentation/TTS ->
+  SRS TX. User explicitly confirmed hearing the response clearly.
+- Successful turn: `d9b31e5c-9853-4c07-994a-297490ef32d3`;
+  exact FINAL: `какой мой текущий курс и координаты`.
+  Evidence: `ORION-Test-Evidence-20260907-202700.zip` (full identities/hashes,
+  timestamps and preservation paths in the canonical checkpoint).
+- STT boundary 20:26:02.097 UTC; adapter TX admission 20:26:02.100;
+  first SRS TX 20:26:04.755; TX completed 20:26:20.171; 385 frames.
+  STT final -> first SRS TX = 2.658 s, NOT physical PTT release -> audible reply.
+- Preceding silent turn FINAL was `какой мой текущий вкус или оригинал`.
+  Its correct unsupported/no-response outcome is not a Launcher/full-voice
+  failure. No fuzzy matching or intent expansion is authorized.
+- Limits: natural Russian STT robustness remains unresolved; <1 s latency is
+  not achieved/proven; complete physical-release-to-audible latency is not
+  established. Exact protected/TTS response and per-turn authoritative
+  heading/latitude/longitude were not retained, so numerical fidelity of this
+  particular field response has not been independently verified.
+- Broad productionization/readiness/lifecycle, RX/TX WAV/evidence redesign and
+  latency tooling remain excluded. The small boundary observation is the sole
+  separately approved evidence addition. No next milestone is authorized.
+
+RECOVERED LAUNCHER + MINIMAL FULL-VOICE VERTICAL —
+WORKING BASELINE FROZEN / FIELD VALIDATED.
 
 ## 1. Product vision
 
@@ -114,7 +150,8 @@ Important invariants:
 - Installer must package the complete canonical runtime and DCS integration resources.
 - Mission snapshot persistence must not be rolled back by failure of an optional observer.
 - Optional observer failures must be visible in logs.
-- `main` plus automated tests/build gates remain the implementation source of truth.
+- Historically `main` plus automated tests/build gates were the implementation
+  source of truth; this recovery line now uses the frozen source identified above.
 
 These invariants are also reflected in the #65.5 hardening baseline.
 

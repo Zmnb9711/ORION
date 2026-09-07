@@ -1,5 +1,22 @@
 # 18:00 historical fallback — migration manifest
 
+## Current checkpoint — 2026-09-07
+
+The migration below was committed as `3f364bdfb05d4c2a0141f75708032ec7a26e768b`.
+The installed, physically validated source is its direct child
+`333ca5e481c89b8294e0f491fbd2d2e6d6e87319`: only the separately authorized
+STT-to-Core terminal observation plus tests. That addition records exact FINAL
+text only during an explicit Test Session; existing recorder START/STOP/export,
+Launcher/Core/SRS lifecycle and golden voice components remain unchanged.
+
+The installed runtime completed turn `d9b31e5c-9853-4c07-994a-297490ef32d3`,
+FINAL `какой мой текущий курс и координаты`, and 385 response TX frames;
+the user confirmed the response was heard clearly. This supersedes the historical
+"no build/installation yet" status at the end of the original migration record.
+Full source/build/evidence identity, limitations and excluded work are in the
+[canonical recovered working checkpoint](recovered-working-checkpoint.md).
+The record below describes the original migration, not a new implementation task.
+
 Baseline: `a955d7c39f20c020e15de6bc2be272755928cc98`.
 Tree: `7c010efadc2a8c0b6b892b49354a4019e4fdb3b2`.
 Cutoff: 2026-09-06 18:00 Europe/Moscow (15:00 UTC).
@@ -129,8 +146,9 @@ hooks; core_process timeout changes; coordinator/controller stopping semantics;
 new packaging/build identity/smoke endpoints; EAM/port/configuration changes;
 ownship context refactor; Realtime STT investigations and Qwen experiments.
 No field CLI, second RecoveryLiveWorld owner or live probe is deployed.
-Old Test Evidence, diagnostics, UI, Core lifecycle and SRS process control remain
-literal baseline files. Golden scalar timing fields remain inside unchanged
+At migration commit 3f364bdf, old Test Evidence, diagnostics, UI, Core lifecycle
+and SRS process control remained literal baseline files. Commit 333ca5e adds only
+the explicitly approved boundary recorder described above. Golden scalar timing fields remain inside unchanged
 components; no profiling facility or RX/TX WAV integration is added.
 
 ## Verified exact Launcher/Core/SRS lifecycle diff
@@ -162,7 +180,7 @@ request/config/credentials. The golden component sequence and original
 RadioContext/freshness calculation are copied into _voice without today's
 context refactor, readiness gates or evidence machinery.
 
-## Offline validation — clean, no build performed
+## Original migration-time offline validation — before build/field validation
 
 - 257 component/semantic/lifecycle/baseline tests PASS.
 - 3 differential oracle tests PASS, comprising 168 host-turn executions:
@@ -187,7 +205,7 @@ connection/channel/send calls forbidden. No today's production modules enter it.
 An initial test run found a helper path still targeting orion/; this test-only
 path was corrected to tests/, then the complete component suite passed.
 
-No broader Launcher/Core/SRS lifecycle change proved necessary. Migration and
-offline equivalence are clean; no build, installation, process or configuration
-action has been performed for this fallback. Installed build-07 is unchanged
-and is NOT the new baseline or evidence of a fallback physical PASS.
+At migration completion, no broader Launcher/Core/SRS lifecycle change proved
+necessary and no fallback build/installation had yet occurred. Build-07 was not
+the new baseline. That historical status is superseded by the installed fallback
+physical PASS and freeze at the top of this document, not by build-07.
