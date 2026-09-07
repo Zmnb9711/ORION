@@ -14,6 +14,7 @@ from typing import Callable
 from uuid import UUID, uuid4
 
 from orion.srs_tx_state import SrsTxStateSnapshot
+from orion.full_voice_timing import observe
 
 
 class RadioTurnEventKind(StrEnum):
@@ -90,6 +91,7 @@ class PhysicalRadioTurn:
                     self.abort("physical_end_without_owner")
                     return
                 self._end = value.received_at
+                observe("T0", self.owner)
 
     def pcm(self, pcm: bytes, at: float) -> None:
         with self._lock:

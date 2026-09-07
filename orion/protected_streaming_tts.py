@@ -7,6 +7,7 @@ from uuid import uuid4
 from typing import Any
 
 from orion.yandex_speechkit_v3_proto import tts_pb2
+from orion.full_voice_timing import observe
 
 # Generated protobuf classes are installed dynamically by the official runtime.
 p: Any = tts_pb2
@@ -32,6 +33,7 @@ class ProtectedStreamingTts:
         self._key = api_key
         self._call = None
         self._closed = False
+        self.observation_turn_id = None
 
     async def synthesize(self, text, language, tx_id, observer=None) -> bytes:
         raise RuntimeError("streaming_tts_requires_explicit_stream_boundary")
@@ -53,6 +55,7 @@ class ProtectedStreamingTts:
                 request_serializer=p.StreamSynthesisRequest.SerializeToString,
                 response_deserializer=p.StreamSynthesisResponse.FromString,
             )
+            observe("T6", self.observation_turn_id)
             self._call = method(
                 iter(requests), timeout=15.0, wait_for_ready=False,
                 metadata=(("authorization", "Api-Key " + self._key), ("x-client-request-id", str(uuid4()))),

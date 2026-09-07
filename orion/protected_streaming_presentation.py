@@ -10,6 +10,7 @@ from orion.protected_presentation import (
     ProtectedPresentationService, PresentationResult, PresentationFailure,
 )
 from orion.protected_streaming_tts import ProtectedStreamingTts
+from orion.full_voice_timing import observe
 from orion.radio_contracts import RadioTransmissionRequest, StreamingPcmAudio
 from orion.srs_resampler import StreamingPcm16Resampler
 
@@ -33,10 +34,14 @@ class StreamingProtectedPresentation(ProtectedPresentationService):
 
         async def produce() -> None:
             resampler = StreamingPcm16Resampler(48000, 44100)
+            self.streaming_tts.observation_turn_id = context.turn_id
             self.marks["tts_started"] = time.monotonic()
+            observe("T5", context.turn_id)
             total = 0
             try:
                 async for chunk in self.streaming_tts.stream(finalized.text):
+                    if "tts_first_pcm" not in self.marks:
+                        observe("T7", context.turn_id)
                     self.marks.setdefault("tts_first_pcm", time.monotonic())
                     total += len(chunk)
                     normalized = resampler.process(chunk)

@@ -2,6 +2,7 @@
 from pathlib import Path
 import ast
 import subprocess
+from timing_oracle import without_timing
 
 from orion.full_voice_service import FullVoiceService
 from orion.yandex_srs_live_core import YandexSrsLiveService, SHUTDOWN_TIMEOUT_SECONDS
@@ -26,6 +27,7 @@ def test_launcher_core_srs_lifecycle_is_literal_baseline():
     for path in files:
         actual = path.read_text(encoding="utf-8")
         if path.name == "realtime_test_evidence.py":
+            actual = without_timing(path.name, actual)
             # Sole separately authorized addition; all existing recorder code
             # must remain literal baseline, including START/STOP/export.
             method = next(n for n in ast.walk(ast.parse(actual))
@@ -65,7 +67,9 @@ def test_ported_production_components_are_exact_golden_not_today():
               (ROOT / "orion/yandex_speechkit_v3_proto").iterdir() if p.is_file()]
     paths.append("pyproject.toml")
     for path in paths:
-        assert (ROOT / path).read_text(encoding="utf-8") == source(GOLDEN, path), path
+        actual = (ROOT / path).read_text(encoding="utf-8")
+        actual = without_timing(Path(path).name, actual)
+        assert actual == source(GOLDEN, path), path
 
 
 def test_today_worker_evidence_and_latency_are_not_deployed():

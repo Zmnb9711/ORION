@@ -10,6 +10,7 @@ from uuid import UUID
 
 from orion.bounded_radio_stream import BoundedPcmStream
 from orion.full_voice_capture import PhysicalRadioTurn, RadioTurnEvent, RadioTurnEventKind
+from orion.full_voice_timing import observe
 from orion.srs_protocol import Frequency, VoicePacket, decode_voice_packet, encode_voice_packet
 from orion.srs_radio_adapter import SrsTxCompletion
 from orion.srs_transmission import PacketDecision, TxPacer
@@ -101,6 +102,7 @@ class FullVoiceSrsEndpoint(SrsYandexPcmEndpoint):
         frames = 0
         self._stream = stream
         self.tx_marks = {"radio_started": queued}
+        observe("T8", response_id=tx_id)
         try:
             stream.wait_prebuffer(timeout=min(10.0, timeout_s))
             while True:
@@ -164,6 +166,7 @@ class FullVoiceSrsEndpoint(SrsYandexPcmEndpoint):
                 if first is None:
                     first = self.clock()
                     self.tx_marks["radio_first_frame"] = first
+                    observe("T9", response_id=tx_id)
                     self.diagnostics.record("srs_tx_started", response_id=tx_id)
 
             report = TxPacer(clock=self.clock).send(encoded(), send_frame, self.stop_event, streaming=True)
@@ -174,6 +177,7 @@ class FullVoiceSrsEndpoint(SrsYandexPcmEndpoint):
                 raise RuntimeError("stream_tx_cancelled")
             completed = self.clock()
             self.tx_marks.update(radio_completed=completed, frames=frames)
+            observe("T10", response_id=tx_id)
             self.tx_transmissions += 1
             self.tx_frames += frames
             self.diagnostics.record("tx_completed", response_id=tx_id, frames=frames)

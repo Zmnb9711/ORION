@@ -16,6 +16,7 @@ import sys
 from math import sqrt
 from typing import Callable
 from uuid import UUID
+from orion.full_voice_timing import observe
 
 from orion.speechkit_v3_stt_transport import (
     SpeechKitProviderEvent,
@@ -179,6 +180,7 @@ class NativeSpeechKitTurns:
             if len(event.transcript) > 4000:
                 self._reject("transcript_bound")
             self._marks["final_received"] = self.clock()
+            observe("T1", self.owner)
         self._terminal[event.kind] = event
         if set(self._terminal) != {"final", "eou_update"}:
             return
@@ -216,6 +218,7 @@ class NativeSpeechKitTurns:
             )
         assert self.future is not None
         self.future.set_result(result)
+        observe("T2", self.owner)
 
     def safe_turn_evidence(self) -> dict[str, object]:
         """Bounded scalar-only evidence survives empty FINAL and contains no text."""

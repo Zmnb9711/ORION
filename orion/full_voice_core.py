@@ -13,6 +13,7 @@ from orion.communication_contracts import (
     FinalizedCommunicationText, ResponseCompositionPlan,
 )
 from orion.full_voice_stt import FinalizedUserUtterance
+from orion.full_voice_timing import observe
 from orion.interaction_contracts import InteractionRequest
 from orion.interaction_router import InteractionRouter, RouterExecutionStatus
 from orion.ownship_phraseology import OwnshipReportRuleset, OWNSHIP_REPORT_V1
@@ -91,6 +92,7 @@ class FullVoiceCore:
         self.gateway.marks.clear()
         marks = {"interaction_started": time.monotonic()}
         identity = utterance.interaction_id
+        observe("T3", identity)
         request = InteractionRequest(
             interaction_id=identity, session_id="recovery-full-voice",
             turn_id=str(identity), text=utterance.text, role_hint="pilot",
@@ -117,6 +119,7 @@ class FullVoiceCore:
             protected_fragments=(fragment,), suppress_conversational_envelope=True,
         ))
         marks["composed"] = time.monotonic()
+        observe("T4", identity)
         return FullVoiceCoreResult("completed", finalized, marks, tools)
 
 

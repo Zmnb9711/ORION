@@ -18,11 +18,11 @@ GOLDEN = "57a563a067c980c3ff8057172aa6f5fefb33a5b0"
 ROOT = Path(__file__).resolve().parents[1]
 
 
-@pytest.fixture(scope="module")
-def replays(tmp_path_factory):
+@pytest.fixture(scope="module", params=[GOLDEN, "05c832762a73ed38f98984942227dbdee1e89ef3"])
+def replays(tmp_path_factory, request):
     root = tmp_path_factory.mktemp("golden-differential")
     golden = root / "golden"
-    archive = subprocess.check_output(["git", "archive", "--format=zip", GOLDEN], cwd=ROOT)
+    archive = subprocess.check_output(["git", "archive", "--format=zip", request.param], cwd=ROOT)
     with zipfile.ZipFile(io.BytesIO(archive)) as source:
         source.extractall(golden)
     pairs = []
@@ -33,7 +33,7 @@ def replays(tmp_path_factory):
              for metadata in ("full", "missing", "lost-after-arm")]
     for index, (wav, coalition, metadata) in enumerate(cases):
         pair = []
-        for tree, host in ((golden, "field"), (ROOT, "runtime")):
+        for tree, host in ((golden, "field" if request.param == GOLDEN else "runtime"), (ROOT, "runtime")):
             directory = root / f"replay-{index}-{len(pair)}"
             command = [sys.executable, str(ROOT / "tests/fallback_voice_replay.py"),
                        "--tree", str(tree), "--host", host, "--output", str(directory),
@@ -90,5 +90,4 @@ def test_replayed_final_fixtures_match_saved_successful_field_hashes(replays):
         for index, digest in expected.items():
             text = golden["rows"][index]["finalized_utterances"][0]["text"]
             assert hashlib.sha256(text.encode("utf-8")).hexdigest() == digest
-
 

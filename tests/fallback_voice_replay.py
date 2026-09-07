@@ -192,6 +192,9 @@ def main():
                 observation = RealtimeTestEvidenceRecorder(output)
                 observation.start(provider="yandex", transport="srs")
                 patch.setattr(host, "realtime_test_evidence", observation)
+                if (tree / "orion/full_voice_timing.py").exists():
+                    import orion.full_voice_timing as timing
+                    patch.setattr(timing, "realtime_test_evidence", observation)
                 from orion.yandex_srs_live_core import YandexSrsStartRequest
                 patch.setattr(host, "NativeSpeechKitTurns", Native)
                 patch.setattr(host, "GrpcSpeechKitStreamingPort", FinalPort)
@@ -211,9 +214,17 @@ def main():
                     service.stop()
                 assert service.status().state == "stopped"
                 assert service._thread is not None and not service._thread.is_alive()
-                observed = list(observation._events)
+                observed = [e for e in observation._events if e["event"] == "stt_core_boundary"]
                 assert len(observed) == 1 and observed[0]["status"] == "FinalizedUserUtterance"
                 assert observed[0]["transcript"] == query
+                if (tree / "orion/full_voice_timing.py").exists():
+                    ticks = [e for e in observation._events if e["event"] == "full_voice_timing"]
+                    expected_ticks = ["T0", "T1", "T2", "T3"]
+                    if terminal_state == "completed": expected_ticks += ["T4", "T5", "T7"]
+                    # Fake TTS and fake radio do not claim actual T6/T8-T10.
+                    assert [e["event_id"] for e in ticks] == expected_ticks
+                    assert all(e["turn_id"] == observed[0]["turn_id"] for e in ticks)
+                    assert [e["perf_counter_seconds"] for e in ticks] == sorted(e["perf_counter_seconds"] for e in ticks)
         transmitted = adapter.transmit_calls
         row = {"query":query, "finalized_utterances":inputs, "core_status":results,
                "finalized":finals, "tts_texts":texts, "terminal":terminal_state,

@@ -20,6 +20,7 @@ from orion.interaction_contracts import PresentationMode, SemanticResponse
 
 
 _ALLOWED_FIELDS = {
+    "perf_counter_seconds",
     "active_turn_id",
     "aircraft_type",
     "attempt_number",

@@ -19,10 +19,11 @@ ROOT = Path(__file__).resolve().parents[1]
 
 @pytest.mark.parametrize("outcome", ["FinalizedUserUtterance", "None", "exception", "cancellation", "stop_pending"])
 @pytest.mark.parametrize("recording", ["active", "inactive", "broken"])
-def test_actual_host_control_and_data_trace_identical_to_fallback(monkeypatch, tmp_path, outcome, recording):
+@pytest.mark.parametrize("baseline_sha", ["3f364bdf", "05c832762a73ed38f98984942227dbdee1e89ef3"])
+def test_actual_host_control_and_data_trace_identical_to_fallback(monkeypatch, tmp_path, outcome, recording, baseline_sha):
     baseline = {"__name__": "pre_observation_host"}
     exec(compile(subprocess.check_output(
-        ["git", "show", "3f364bdf:orion/full_voice_service.py"], cwd=ROOT
+        ["git", "show", f"{baseline_sha}:orion/full_voice_service.py"], cwd=ROOT
     ).decode("utf-8"), "3f364bdf/full_voice_service.py", "exec"), baseline)
     identity = uuid4()
     exact = "  Какой мой текущий курс и координаты?\n"
