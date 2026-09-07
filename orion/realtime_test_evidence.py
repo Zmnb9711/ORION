@@ -209,6 +209,33 @@ class RealtimeTestEvidenceRecorder:
                 elif case is not None and event == "tx_completed":
                     case["srs_tx_completed_at"] = safe["timestamp"]
 
+    def record_stt_core_boundary(
+        self, *, turn_id: str, realtime_session_id: str, status: str,
+        transcript: str | None = None, error_type: str | None = None,
+    ) -> None:
+        """One in-memory boundary observation; exact text only in explicit tests."""
+        with self._lock:
+            if not self._active or self._test_session_id is None:
+                return
+            event: dict[str, object] = {
+                "timestamp": datetime.now(UTC).isoformat(timespec="milliseconds"),
+                "test_session_id": self._test_session_id,
+                "realtime_session_id": realtime_session_id,
+                "event": "stt_core_boundary", "turn_id": turn_id,
+                "provider": self._provider, "transport": self._transport,
+                "status": status,
+            }
+            if transcript is not None:
+                # NativeSpeechKitTurns already bounds FINAL to 4000 characters.
+                # Do not strip, sanitize, truncate or rewrite this observation.
+                event["transcript"] = transcript
+                self._user_transcript_count += 1
+            if error_type is not None:
+                event["error_type"] = error_type
+            if len(self._events) == self._events.maxlen:
+                self._dropped += 1
+            self._events.append(event)
+
     def record_transcript(
         self,
         role: str,

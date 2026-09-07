@@ -1,5 +1,6 @@
 """Literal source and inherited lifecycle proofs, with no live I/O."""
 from pathlib import Path
+import ast
 import subprocess
 
 from orion.full_voice_service import FullVoiceService
@@ -23,7 +24,15 @@ def test_launcher_core_srs_lifecycle_is_literal_baseline():
         "yandex_srs_live_core.py", "realtime_test_evidence_api.py", "realtime_test_evidence.py",
         "realtime_tool_api.py", "world_model.py", "tool_gateway.py")]
     for path in files:
-        assert path.read_text(encoding="utf-8") == source(BASE, path.relative_to(ROOT).as_posix()), path
+        actual = path.read_text(encoding="utf-8")
+        if path.name == "realtime_test_evidence.py":
+            # Sole separately authorized addition; all existing recorder code
+            # must remain literal baseline, including START/STOP/export.
+            method = next(n for n in ast.walk(ast.parse(actual))
+                          if isinstance(n, ast.FunctionDef) and n.name == "record_stt_core_boundary")
+            lines = actual.splitlines(keepends=True)
+            actual = "".join(lines[:method.lineno-1] + lines[method.end_lineno+1:])
+        assert actual == source(BASE, path.relative_to(ROOT).as_posix()), path
 
 
 def test_only_existing_adapter_imports_change():

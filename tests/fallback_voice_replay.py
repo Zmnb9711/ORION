@@ -188,6 +188,10 @@ def main():
                 assert not report["failures"]
             else:
                 import orion.full_voice_service as host
+                from orion.realtime_test_evidence import RealtimeTestEvidenceRecorder
+                observation = RealtimeTestEvidenceRecorder(output)
+                observation.start(provider="yandex", transport="srs")
+                patch.setattr(host, "realtime_test_evidence", observation)
                 from orion.yandex_srs_live_core import YandexSrsStartRequest
                 patch.setattr(host, "NativeSpeechKitTurns", Native)
                 patch.setattr(host, "GrpcSpeechKitStreamingPort", FinalPort)
@@ -207,6 +211,9 @@ def main():
                     service.stop()
                 assert service.status().state == "stopped"
                 assert service._thread is not None and not service._thread.is_alive()
+                observed = list(observation._events)
+                assert len(observed) == 1 and observed[0]["status"] == "FinalizedUserUtterance"
+                assert observed[0]["transcript"] == query
         transmitted = adapter.transmit_calls
         row = {"query":query, "finalized_utterances":inputs, "core_status":results,
                "finalized":finals, "tts_texts":texts, "terminal":terminal_state,
@@ -230,4 +237,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

@@ -16,6 +16,7 @@ from orion.protected_presentation import tx_correlation
 from orion.protected_streaming_presentation import StreamingProtectedPresentation
 from orion.protected_streaming_tts import ProtectedStreamingTts
 from orion.radio_contracts import RadioContext, RadioEntityRef, RadioModulation
+from orion.realtime_test_evidence import realtime_test_evidence
 from orion.speechkit_v3_stt_transport import GrpcSpeechKitStreamingPort
 from orion.srs_diagnostics import SrsTransportDiagnostics
 from orion.srs_radio_transport import SrsRadioConfig
@@ -23,6 +24,33 @@ from orion.tool_gateway import build_tool_gateway
 from orion.world_model import world_model
 from orion.yandex_realtime_provider import sanitize_yandex_error
 from orion.yandex_srs_live_core import YandexSrsLiveService, YandexSrsState
+
+
+class _SttCoreObservation:
+    """Best-effort observation only: no I/O, awaits, control or provider calls."""
+
+    def __init__(self, session_id):
+        self.session_id = session_id
+        self.turn_id = None
+        self.recorded = False
+
+    def begin(self, identity):
+        self.turn_id = str(identity)
+        self.recorded = False
+
+    def record(self, status, *, utterance=None, error_type=None):
+        if self.turn_id is None or self.recorded:
+            return
+        self.recorded = True
+        try:
+            realtime_test_evidence.record_stt_core_boundary(
+                turn_id=self.turn_id, realtime_session_id=self.session_id,
+                status=status, transcript=utterance.text if utterance is not None else None,
+                error_type=error_type,
+            )
+        except Exception:
+            # Evidence failure must never change the accepted voice turn.
+            pass
 
 
 class FullVoiceService(YandexSrsLiveService):
@@ -44,8 +72,10 @@ class FullVoiceService(YandexSrsLiveService):
 
     async def _voice(self, request, session_id, stopped):
         cancellation = PlannerCancellationToken()
+        observation = _SttCoreObservation(session_id)
 
         def fail(code):
+            observation.record("exception", error_type=code)
             self._set(state=YandexSrsState.ERROR, phase="error", message=code, last_error=code)
             stopped.set()
             cancellation.cancel()
@@ -124,6 +154,7 @@ class FullVoiceService(YandexSrsLiveService):
                     event = None
                 if event is not None:
                     if event.kind is RadioTurnEventKind.START:
+                        observation.begin(event.identity)
                         native.start(event.identity, event.timestamp)
                         consumed = False
                     elif event.kind is RadioTurnEventKind.PCM:
@@ -133,10 +164,17 @@ class FullVoiceService(YandexSrsLiveService):
                         await native.end(event.identity, event.timestamp)
                 if native.future is not None and native.future.done() and not native.future.cancelled() and not consumed:
                     consumed = True
-                    workflow = asyncio.create_task(answer(await native.result()), name="full-voice-answer")
+                    utterance = await native.result()
+                    observation.record("FinalizedUserUtterance" if utterance is not None else "None", utterance=utterance)
+                    workflow = asyncio.create_task(answer(utterance), name="full-voice-answer")
             if workflow is not None:
                 await workflow
+        except BaseException as exc:
+            observation.record("cancellation" if isinstance(exc, asyncio.CancelledError) else "exception",
+                               error_type=type(exc).__name__)
+            raise
         finally:
+            observation.record("cancellation")
             stopped.set()
             cancellation.cancel()
             await native.close()
