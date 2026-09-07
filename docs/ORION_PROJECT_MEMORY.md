@@ -1,10 +1,10 @@
 # ORION Project Memory
 
-> Canonical long-term project context. Updated: 2026-09-06 (recovery-line Stage 7C closure).
+> Canonical long-term project context. Updated: 2026-09-07 (first full bidirectional voice field closure).
 >
 > Purpose: preserve approved product requirements, architectural invariants, milestone history, real-world test evidence, known risks, and the next agreed action across chats and development sessions.
 >
-> Recovery-line precedence: on `recovery/a955d7c-radio-validated`, the verified recovery tree is the implementation source of truth; Stage 7C implementation is `847188d52f04a46656b1be5f5be7c39a407bbc00`. Post-recovery history and current `main` are not architectural sources for this line. This document preserves project intent and historical context; older entries retain their milestone-time status. Verify explicit decisions and repository state before changing code.
+> Recovery-line precedence: on `recovery/a955d7c-radio-validated`, the verified recovery tree is the implementation source of truth; current full-voice implementation commits are `ba627867fe92acab7d54297844c3f38339b38f61` and `ba43a2c52f952a43cec0adde2bce99394a6c71d1`; field evidence and tested diagnostics are retained in `e753d0c96b5dd901df709b66fe5171d65060c005`. Stage 7C implementation `847188d52f04a46656b1be5f5be7c39a407bbc00` remains the earlier protected-output baseline. Post-recovery history and current `main` are not architectural sources for this line. This document preserves project intent and historical context; older entries retain their milestone-time status. Verify explicit decisions and repository state before changing code.
 
 ## 1. Product vision
 
@@ -1267,3 +1267,46 @@ REQUIRED; STAGE 6B.3 NOT STARTED.**
   later stages or establish end-to-end live conversational integration.
 - This closure changes documentation only. No probe rerun, production changes,
   or post-recovery architecture import; unrelated untracked artifacts preserved.
+
+
+## 30. First full bidirectional voice vertical — 2026-09-07
+
+**FIRST FULL BIDIRECTIONAL VOICE VERTICAL — CLOSED / FIELD VALIDATED.**
+
+- Verified recovery branch: `recovery/a955d7c-radio-validated`; pre-preservation
+  HEAD: `e753d0c96b5dd901df709b66fe5171d65060c005`. Repository state takes
+  precedence over cached chat summaries. Implementation and closure history:
+  [dated field-validation record](history/2026-09-07-full-voice-field-validation.md).
+- Two user-spoken Russian SRS PTT queries, `Какой мой текущий курс и координаты?`,
+  produced clear responses heard through the official SRS Client, one completed
+  TX each. After the aircraft changed heading/position, all three selected live
+  DCS values changed and a new authoritative ToolGateway result was used.
+- The valid retry of `Расскажи анекдот.` produced a nonempty STT final,
+  Core `unsupported`, zero response TX and no errors; the user confirmed silence.
+  The first negative attempt had STT transport failure and is NOT PASS evidence.
+- Input: `ru-RU`; current protected output: `en-US` / `john`. Native SpeechKit v3
+  External EOU and finalized-utterance barrier, physical SRS turn ownership,
+  and protected streaming TTS/radio output are part of this implementation.
+- Bounded ownship routing makes **zero Qwen calls**. The strict semantic mapper
+  selects only heading, latitude and longitude from authoritative
+  ToolGateway/WorldModel facts. Regression proves extra telemetry cannot leak
+  into the OSU, rendered/composed speech or TTS request.
+- Response start: **3.266 s and 3.000 s** from physical turn end to first SRS
+  audio frame. These are transmission-start proxies, not measured acoustic
+  onset; the **<1 s target is NOT met**.
+- Existing field-closure validation: **57 tests PASS**, scoped Ruff/Pyright and
+  diff checks PASS. Earlier broad suite: 1768 PASS / 3 unrelated Saved Games
+  baseline failures. This does not claim whole-suite green or general
+  conversation/long-running reliability/Launcher rollout.
+- Detailed evidence paths, hashes, user confirmations and limitations:
+  [full-voice field report](full-voice-field-ready.md). Raw Temp evidence is
+  external to Git; hashes do not make those temporary paths a durable archive.
+- Preservation scope: documentation closure and recovery-branch push only;
+  preserve unrelated untracked/generated files, with no physical/provider
+  reruns and no merge into `dev/adr004-post-389`.
+- **Exact next checkpoint:** resume from the pushed recovery branch's docs-only
+  preservation commit, verify HEAD/status and read this section plus the dated
+  history and field report. The vertical remains CLOSED / FIELD VALIDATED.
+  The next proposed work is separately authorized stage-by-stage latency
+  profiling against the 3.266/3.000 s baseline; optimization and further
+  development have NOT started in this preservation task.

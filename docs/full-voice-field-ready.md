@@ -1,5 +1,12 @@
 # First full bidirectional voice vertical — field validated
 
+**FIRST FULL BIDIRECTIONAL VOICE VERTICAL — CLOSED / FIELD VALIDATED.**
+
+Canonical preservation record: [2026-09-07 history](history/2026-09-07-full-voice-field-validation.md).
+Input is `ru-RU`; current protected output is `en-US` / `john`.
+The later documentation-preservation task authorizes a recovery-branch push;
+pre-field pending statuses and no-push statements below describe earlier work.
+
 2026-09-07. Architecture Guard: OFF, explicit historical recovery exemption.
 This is the existing full-voice milestone, not a new stage. All three bounded
 physical scenarios now have machine evidence and user acoustic confirmation.
