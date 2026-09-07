@@ -172,3 +172,57 @@ class ResponseCompositionPlan(_CommunicationModel):
                     "IMMEDIATE composition must suppress conversational envelope"
                 )
         return self
+
+
+# Stage 7B implementation bounds, not permanent product policy.
+MAX_ENVELOPE_CHARS = 512
+MAX_PROTECTED_FRAGMENTS = 8
+MAX_FRAGMENT_CHARS = 1024
+MAX_FINAL_TEXT_CHARS = 4096
+COMPOSITION_SEPARATOR = " "
+COMPOSER_VERSION = "stage7b.composer.v1"
+
+
+class FinalizedCommunicationText(_CommunicationModel):
+    """Completed Core composition; never return protected wording for rewriting.
+
+    Envelope retains its original untrusted identity even when suppressed.
+    Renderer versions and operational provenance remain in the original fragments.
+    This is neither an authority grant nor a presentation/backend selection.
+    """
+
+    # Unlike SemanticText, final text must not strip whitespace or cap at 4000.
+    text: str = Field(
+        strict=True, min_length=1, max_length=MAX_FINAL_TEXT_CHARS, repr=False
+    )
+    context: CommunicationContext
+    priority: CommunicationPriority
+    interaction_id: UUID
+    envelope: UntrustedConversationalEnvelope | None = Field(default=None, repr=False)
+    protected_fragments: tuple[ProtectedOperationalFragment, ...] = Field(
+        min_length=1, max_length=MAX_PROTECTED_FRAGMENTS, repr=False
+    )
+    suppress_conversational_envelope: bool
+    composer_version: Literal["stage7b.composer.v1"] = COMPOSER_VERSION
+
+    @property
+    def provenance(self) -> tuple[ProtectedProvenance, ...]:
+        """Original references in fragment order, without deduplication/upgrades."""
+        return tuple(
+            source
+            for fragment in self.protected_fragments
+            for source in fragment.semantic_unit.provenance
+        )
+
+    @model_validator(mode="after")
+    def text_matches_parts(self) -> Self:
+        if self.priority is CommunicationPriority.IMMEDIATE and (
+            not self.suppress_conversational_envelope or self.envelope is not None
+        ):
+            raise ValueError("Invalid finalized suppression")
+        parts = [fragment.text for fragment in self.protected_fragments]
+        if self.envelope is not None and not self.suppress_conversational_envelope:
+            parts.insert(0, self.envelope.text)
+        if self.text != COMPOSITION_SEPARATOR.join(parts):
+            raise ValueError("Finalized text does not match structured parts")
+        return self

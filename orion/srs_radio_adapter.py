@@ -20,6 +20,7 @@ from orion.radio_contracts import (
     RadioTransportStatus,
 )
 from orion.srs_protocol import AM, FM
+from orion.radio_contracts import StreamingPcmAudio
 from orion.srs_radio_transport import SrsState
 
 
@@ -89,6 +90,8 @@ class SrsRadioTransportAdapter:
         self._stopped = False
 
     def capabilities(self) -> frozenset[RadioTransportCapability]:
+        if callable(getattr(self._port, "transmit_srs_stream", None)):
+            return REQUIRED_TX_CAPABILITIES | {RadioTransportCapability.STREAMING_PCM}
         return REQUIRED_TX_CAPABILITIES
 
     def status(self) -> RadioTransportStatus:
@@ -163,11 +166,18 @@ class SrsRadioTransportAdapter:
                 modulation=request.context.modulation.value,
                 radio_entity_id=request.context.radio_entity.entity_id,
             )
-            completion = self._port.transmit_srs_pcm(
-                tx_id,
-                request.audio.pcm,
-                request.timeout_s,
-            )
+            if isinstance(request.audio, StreamingPcmAudio):
+                method = getattr(self._port, "transmit_srs_stream", None)
+                if not callable(method):
+                    return _failed_result(tx_id, RadioFailureCode.UNSUPPORTED_CAPABILITY,
+                                          "Streaming PCM is unavailable", began_at)
+                completion = method(tx_id, request.audio.stream, request.timeout_s)
+                if not isinstance(completion, SrsTxCompletion):
+                    raise RuntimeError("invalid_stream_completion")
+            else:
+                completion = self._port.transmit_srs_pcm(
+                    tx_id, request.audio.pcm, request.timeout_s,
+                )
             first_tx_at = began_at + timedelta(
                 milliseconds=completion.queue_to_first_tx_ms
             )

@@ -42,6 +42,9 @@ from orion.planner_contracts import (
     PlannerTaskStatus,
     ProviderRetryPolicy,
 )
+from orion.ownship_report import ownship_semantics_from_tool_result
+from orion.tool_gateway import ToolGateway
+from orion.tool_gateway_contracts import ToolCall, ExecutionContext
 
 POLICY_VERSION = "ia6.router-policy.v1"
 OWNERSHIP_CAPABILITY = CapabilityId("world.ownship.read")
@@ -64,6 +67,7 @@ class _RouterModel(BaseModel):
 
 class InteractionRoute(StrEnum):
     DIRECT_HEALTH_OR_TEST = "direct_health_or_test"
+    BOUNDED_OWNSHIP_REPORT = "bounded_ownship_report"
     PLANNER_CONTROLLED = "planner_controlled"
     UNSUPPORTED = "unsupported"
     DENIED = "denied"
@@ -72,6 +76,8 @@ class InteractionRoute(StrEnum):
 
 class RouteReasonCode(StrEnum):
     KNOWN_CORE_HEALTH_INTENT = "known_core_health_intent"
+    BOUNDED_OWNSHIP_REPORT = "bounded_ownship_report"
+    OWNSHIP_EVIDENCE_REJECTED = "ownship_evidence_rejected"
     CURRENT_OWNSHIP_SITUATION_REQUIRES_PLANNER = (
         "current_ownship_situation_requires_planner"
     )
@@ -174,12 +180,14 @@ class InteractionRouter:
         provider_factory: ProviderFactory,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         max_replay_entries: int = 256,
+        bounded_ownship_gateway: ToolGateway | None = None,
     ) -> None:
         if max_replay_entries <= 0:
             raise ValueError("Router replay bound must be positive")
         self._planner = planner
         self._provider_factory = provider_factory
         self._clock = clock
+        self._bounded_ownship_gateway = bounded_ownship_gateway
         self._replay: OrderedDict[str, tuple[str, InteractionRouterExecution]] = (
             OrderedDict()
         )
@@ -194,6 +202,22 @@ class InteractionRouter:
     ) -> InteractionRoutingDecision:
         normalized = _normalize_text(request.text)
         reference = _communication_reference(communication)
+        if self._bounded_ownship_gateway is not None:
+            # Explicit recovery field mode, not a change to the default IA-6
+            # policy. Match the whole authorized query, never keyword presence.
+            matched = bool(re.fullmatch(
+                r"\s*какой\s+мой\s+текущий\s+курс\s+и\s+координаты[?.!]?\s*",
+                request.text.casefold(),
+            )) and communication.domain is CommunicationDomain.NAVIGATION
+            return InteractionRoutingDecision(
+                interaction_id=request.interaction_id,
+                route=InteractionRoute.BOUNDED_OWNSHIP_REPORT if matched else InteractionRoute.UNSUPPORTED,
+                reason_code=RouteReasonCode.BOUNDED_OWNSHIP_REPORT if matched else RouteReasonCode.UNSUPPORTED_INTERACTION_CLASS,
+                domain=communication.domain,
+                requested_capability=OWNERSHIP_CAPABILITY if matched else None,
+                planner_required=False, policy_version="recovery.ownship-route.v1",
+                communication_context_reference=reference,
+            )
         if normalized in _HEALTH_INTENTS:
             return InteractionRoutingDecision(
                 interaction_id=request.interaction_id,
@@ -297,6 +321,45 @@ class InteractionRouter:
                     response=response,
                 )
                 self._record(decision, RouterDiagnosticStage.COMPLETED)
+                return self._remember(replay_key, signature, result)
+
+            if decision.route is InteractionRoute.BOUNDED_OWNSHIP_REPORT:
+                assert self._bounded_ownship_gateway is not None
+                try:
+                    tool = self._bounded_ownship_gateway.execute(ToolCall(
+                        call_id=f"ownship-{request.interaction_id}",
+                        name="orion.world.ownship.get", version="1.0",
+                        context=ExecutionContext(
+                            actor_id="orion-interaction-router",
+                            interaction_id=str(request.interaction_id),
+                            session_id=request.session_id, turn_id=request.turn_id,
+                            role="pilot", domain="navigation",
+                            allowed_capabilities=(OWNERSHIP_CAPABILITY,),
+                            permissions=("world.read",), deadline=deadline,
+                        ),
+                    ))
+                    if cancellation.cancelled:
+                        return self._remember(replay_key, signature, self._terminal_error(
+                            request, communication, InteractionRoute.DENIED,
+                            RouteReasonCode.CANCELLED, RouterExecutionStatus.CANCELLED,
+                        ))
+                    if self._now() >= deadline:
+                        return self._remember(replay_key, signature, self._terminal_error(
+                            request, communication, InteractionRoute.UNAVAILABLE,
+                            RouteReasonCode.DEADLINE_EXCEEDED, RouterExecutionStatus.TIMED_OUT,
+                        ))
+                    response = ownship_semantics_from_tool_result(tool, request.interaction_id, now=self._now())
+                    result = InteractionRouterExecution(
+                        decision=decision, status=RouterExecutionStatus.COMPLETED,
+                        response=response,
+                    )
+                except Exception:
+                    # Safe category only: no raw ToolResult/provider data in speech.
+                    result = InteractionRouterExecution(
+                        decision=decision, status=RouterExecutionStatus.FAILED,
+                        error_code=RouteReasonCode.OWNSHIP_EVIDENCE_REJECTED,
+                    )
+                self._record(decision, RouterDiagnosticStage.COMPLETED if result.response else RouterDiagnosticStage.REJECTED)
                 return self._remember(replay_key, signature, result)
 
             try:

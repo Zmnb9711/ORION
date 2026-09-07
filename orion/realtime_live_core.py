@@ -99,7 +99,8 @@ class _YandexSrsLiveAdapter:
     transport_id = "srs"
 
     def start_live(self, payload: dict[str, Any]) -> RealtimeLiveStatus:
-        from orion.yandex_srs_live_core import YandexSrsStartRequest, yandex_srs_live
+        from orion.yandex_srs_live_core import YandexSrsStartRequest
+        from orion.full_voice_service import full_voice_service as yandex_srs_live
 
         srs = payload.pop("srs", None)
         if not isinstance(srs, dict):
@@ -111,12 +112,12 @@ class _YandexSrsLiveAdapter:
         return self._normalize(status)
 
     def live_status(self) -> RealtimeLiveStatus:
-        from orion.yandex_srs_live_core import yandex_srs_live
+        from orion.full_voice_service import full_voice_service as yandex_srs_live
 
         return self._normalize(yandex_srs_live.status())
 
     def stop_live(self) -> RealtimeLiveStatus:
-        from orion.yandex_srs_live_core import yandex_srs_live
+        from orion.full_voice_service import full_voice_service as yandex_srs_live
 
         return self._normalize(yandex_srs_live.stop())
 

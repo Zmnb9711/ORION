@@ -40,6 +40,10 @@ srs-radio = [
   "numpy>=1.23,<3.0",
   "samplerate==0.2.4",
 ]
+speechkit-v3 = [
+  "grpcio>=1.78,<2.0",
+  "protobuf>=7.35.1,<8.0",
+]
 
 [tool.setuptools.packages.find]
 include = ["orion*"]
