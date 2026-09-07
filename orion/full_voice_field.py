@@ -108,6 +108,7 @@ async def run_field(args, output: Path) -> dict:
             if identity is None:
                 fail("turn_owner_lost"); return
             row: dict[str, Any] = {"interaction_id": str(identity), "state": "empty_final"}
+            row["input_evidence"] = native.safe_turn_evidence()
             try:
                 if utterance is not None:
                     row.update(

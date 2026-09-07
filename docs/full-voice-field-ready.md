@@ -1,7 +1,10 @@
-# First full bidirectional voice vertical — automated gates pass, physical test required
+# First full bidirectional voice vertical — field validated
 
 2026-09-07. Architecture Guard: OFF, explicit historical recovery exemption.
-This is the existing full-voice milestone, not a new stage. No field closure yet.
+This is the existing full-voice milestone, not a new stage. All three bounded
+physical scenarios now have machine evidence and user acoustic confirmation.
+The pre-field sections below retain their historical context; the appended
+field evidence and final closure section supersede their pending-field status.
 
 ## 1. Baseline and preserved work
 
@@ -197,3 +200,145 @@ and exactly one answer per supported turn. Unsupported silence needs machine
 corroboration. First-SRS-frame timing is a response-start proxy, not human
 audibility proof. Do not declare CLOSED before user hearing and machine evidence
 are both reviewed.
+
+## Physical field evidence update — 2026-09-07, first supported turn
+
+The first supported physical user-spoken turn has passed machine review and
+the user confirmed: `ответ услышал четко` (the answer was heard clearly).
+This confirmation applies to this turn only; it does not close all field gates.
+
+- Evidence: `C:/Users/Алексей/AppData/Local/Temp/orion-full-voice-_i1vaz55/report.json`.
+- Original report SHA-256:
+  `6CF3C5A2B79227D4CFA8F4B939F22AF656D1BB12B177805CB4D2F477E4231526`.
+  The original report remains unchanged; its `human_review: REQUIRED` field
+  predates the user's confirmation recorded here.
+- Tested HEAD: `ba43a2c52f952a43cec0adde2bce99394a6c71d1`, with uncommitted
+  safe input-evidence diagnostics in `full_voice_stt.py`, `full_voice_field.py`
+  and their tests. Those diagnostics measure PCM counts/amplitude and terminal
+  state, without changing STT segmentation, VAD, text or radio behavior.
+- Interaction: `c7a0aa8d-b807-4e0a-b371-97e44fc75a2b`; completed.
+  Physical input: 154880 bytes of 16 kHz PCM, 4840 ms; one finalized utterance
+  and matching FINAL/EOU barrier. Actual completed ownship ToolGateway receipt
+  and three authoritative selected facts share the interaction/call identity.
+- One SRS transmission started and completed: 385 frames, matching TX identity.
+  No failures recorded; presentation shutdown clean; Qwen calls: zero.
+- Physical turn end to final barrier: 422 ms; EOU to barrier: 328 ms.
+  TTS start to first PCM: 2828 ms; first PCM to first SRS frame: 16 ms.
+  Physical turn end to first SRS frame: **3266 ms**. This is a transmission-start
+  proxy, not measured acoustic onset, and misses the ideal below-1000-ms target.
+  Functional success is not rejected solely because of that latency.
+- Exact live values and protected wording remain in the private Temp evidence;
+  they are not duplicated here. No clipping/overlap-specific assertions beyond
+  the user's actual clear-hearing confirmation are inferred.
+- Diagnostic regression checks: 57 tests passed; touched-module Pyright,
+  scoped Ruff and diff whitespace checks passed.
+
+Earlier `orion-full-voice-wl_tkg6i` evidence had two empty-final turns and no TX.
+Its missing input-amplitude diagnostics do not retrospectively establish why
+recognition was empty. This successful turn does not prove that earlier cause.
+
+Still required: a second supported physical query after a real aircraft
+heading/position change, with fresh changed facts and clear hearing, followed
+by the unsupported-query physical gate with machine-confirmed no operational
+TX. The dedicated host has closed after this first turn; re-arm only that host
+when the user is ready. Do not declare the milestone CLOSED yet.
+
+### Second supported physical turn — changed aircraft state
+
+The second supported turn passed machine review. The user confirmed:
+`ответ четко услышал` (the answer was heard clearly).
+
+- Evidence: `C:/Users/Алексей/AppData/Local/Temp/orion-full-voice-wde0cf7t/report.json`.
+- Original report SHA-256:
+  `5A02672E8F03450C5371752526CFFF3C29707618A7ABE901D4AC6E56DF482055`.
+  The original report is unchanged; human confirmation is recorded here.
+- New interaction: `9cb1f23f-302c-48ef-8dcf-88292a10601c`; completed. The
+  recognized-query hash matches the first successful query. All three selected
+  values (heading, latitude, longitude) differ from the first turn; new actual
+  completed ToolGateway receipt, matching new call/interaction and authoritative
+  provenance are present. Generation is local to each restarted host and is
+  not compared numerically across processes as a freshness test.
+- Input: 145920 bytes at 16 kHz, 4560 ms; matching FINAL/EOU barrier closed.
+  Exactly one SRS TX started/completed, 373 frames, no recorded failures,
+  zero Qwen calls, clean presentation shutdown and host exit code zero.
+- Physical end to final barrier: 422 ms. TTS start to first PCM: 2500 ms;
+  first PCM to first SRS frame: 16 ms. Physical end to first SRS frame:
+  **3000 ms**, again a transmission-start proxy rather than acoustic onset.
+- Same implementation HEAD plus the previously recorded diagnostic changes;
+  no runtime code changes between these two successful turns.
+
+The unsupported physical query/no-operational-TX gate is still pending.
+The full milestone is not yet CLOSED.
+
+### Unsupported-query attempt — inconclusive transport failure
+
+The user reported silence, but
+`C:/Users/Алексей/AppData/Local/Temp/orion-full-voice-h2_3zaz3/report.json`
+contains zero completed turn records, `provider_transport_failure`, no transport
+events, and clean presentation shutdown. Host exit code: 1.
+Original report SHA-256:
+`43455B2D23051E8D34E5FB5483012DDB04887357B227F82540A3FD822E827A75`.
+
+This is NOT a passed unsupported-query gate: recognition and an explicit
+unsupported routing result were not established. The normalized error alone
+does not establish idle timeout, billing, authentication or another precise
+provider root cause. Preserve the evidence unchanged. A new bounded physical
+attempt is required; no semantic/STT/VAD/radio behavior is changed to obtain it.
+
+### Unsupported-query retry — PASS
+
+The user spoke the requested unsupported-query test and reported `тишина`
+(silence). The new report establishes an actual nonempty recognized utterance,
+matching FINAL/EOU barrier and Core result `unsupported`, not transport failure
+or empty recognition:
+
+- Evidence: `C:/Users/Алексей/AppData/Local/Temp/orion-full-voice-h9p79h8n/report.json`.
+- Original SHA-256:
+  `7441A8A2D2266F9AC1E88891E71237C73A7B03B087607043290DC956B517D541`.
+- Interaction: `c9c3b462-e679-4b61-80b2-19c9d579318b`; 125440 bytes at 16 kHz,
+  3920 ms, 16 final characters; physical end to final barrier: 422 ms.
+- Transcript SHA-256:
+  `1c7329d38a21b94b9a7eadd042cb8980a1b677ffcc9de95e9faab0478b8c4ba9`.
+  Exact recognized spelling is not stored and is not claimed to be
+  byte-identical to the displayed test instruction. The nonempty final and
+  explicit unsupported result are evidenced independently of user silence.
+- No protected text, TTS/presentation marks or transport events. In the tested
+  field code, presentation is invoked only when Core supplies a finalized
+  response; this unsupported result did not do so. No failures; zero Qwen
+  calls; clean shutdown; host exited with code zero.
+
+## Final bounded milestone closure
+
+The two supported physical turns produced exactly one completed SRS response
+each, both heard clearly by the user. The second used changed heading and both
+coordinates with a new authoritative ToolGateway result. The unsupported
+physical turn produced a nonempty final, explicit rejection and no output,
+corroborated by user silence. All original Temp reports remain unchanged.
+
+Final diagnostic regression rerun: **57 passed**, one existing Starlette warning;
+scoped Ruff PASS, touched runtime Pyright 0 errors/0 warnings, diff check PASS.
+Earlier broad results remain 1768 passed / 3 documented unrelated Saved Games
+baseline failures; no claim is made that the whole repository suite is green.
+
+Two implementation commits remain unchanged:
+`ba627867fe92acab7d54297844c3f38339b38f61` and
+`ba43a2c52f952a43cec0adde2bce99394a6c71d1`.
+The final evidence commit includes this document plus the small scalar-only
+input diagnostics in `orion/full_voice_stt.py`, their report attachment in
+`orion/full_voice_field.py`, and `tests/test_full_voice.py`. Unlike the preferred
+docs-only third commit, these already field-tested diagnostics are retained
+to make the tested tree reproducible; no new transport/semantic behavior is
+introduced at closure. Unrelated untracked artifacts are not staged.
+
+Limits remain explicit: 3.266 s / 3.000 s physical-end-to-first-frame proxies
+miss the ideal <1 s objective. Earlier failed sessions remain recorded and
+their precise transport cause unresolved; successful bounded gates are not
+proof of long-running reliability. This is the controlled ownship vertical,
+not general conversational coverage, a Launcher migration or production rollout.
+
+After the last turn, no dedicated field host remains and UDP7082/45100 are
+free. DCS, SRS Server and the official SRS Client remain running and externally
+owned. No further provider/audio requests, implementation stage, merge or push
+is started as part of closure.
+
+FIRST FULL BIDIRECTIONAL VOICE VERTICAL — CLOSED / FIELD VALIDATED

@@ -125,9 +125,38 @@ def test_empty_final_and_late_closed_event_do_not_dispatch():
         await native.end(identity, 1.2)
         native.accept(terminal(text="")); native.accept(terminal("eou_update"))
         assert await native.result() is None
+        evidence = native.safe_turn_evidence()
+        assert evidence["final_characters"] == 0
+        assert evidence["pcm_bytes"] == 640 and evidence["pcm_duration_ms"] == 20
+        assert evidence["pcm_peak_abs"] == evidence["pcm_rms"] == 1
+        assert evidence["pcm_nonzero_samples"] == 320
+        assert evidence["final_eou_barrier_closed"] is True
         await native.close()
         native.accept(terminal(text="late"))
         assert not failures
+    asyncio.run(run())
+
+
+def test_audio_evidence_distinguishes_silence_without_changing_asr_or_recording_audio():
+    async def run():
+        port = Port()
+        native = NativeSpeechKitTurns(port, fail=lambda _: pytest.fail("unexpected failure"))
+        await native.open("fake")
+        identity = uuid4()
+        native.start(identity, 1)
+        try:
+            await native.audio(identity, bytes(1280), 1.04)
+            evidence = native.safe_turn_evidence()
+            assert evidence["pcm_peak_abs"] == evidence["pcm_rms"] == evidence["pcm_nonzero_samples"] == 0
+            await native.audio(identity, b"\x00\x80\xff\x7f", 1.05)
+            native.accept(terminal("partial", "PRIVATE_WORDS"))
+            evidence = native.safe_turn_evidence()
+            assert evidence["pcm_peak_abs"] == 32768 and evidence["pcm_nonzero_samples"] == 2
+            assert 1800 < evidence["pcm_rms"] < 1900
+            assert "PRIVATE_WORDS" not in repr(evidence) and "provider-session" not in repr(evidence)
+            assert all(not isinstance(value, bytes) for value in evidence.values())
+            assert port.audio == [bytes(1280), b"\x00\x80\xff\x7f"]
+        finally: await native.close()
     asyncio.run(run())
 
 

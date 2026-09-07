@@ -8,9 +8,12 @@ the turn only after its downstream terminal result (half-duplex, no turn queue).
 from __future__ import annotations
 
 import asyncio
+from array import array
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 import time
+import sys
+from math import sqrt
 from typing import Callable
 from uuid import UUID
 
@@ -70,6 +73,8 @@ class NativeSpeechKitTurns:
         self._marks: dict[str, float] = {}
         self._bytes = 0
         self._events = 0
+        self._samples = self._nonzero = self._peak = self._squares = 0
+        self._partial_events = self._partial_characters_max = 0
         self._started_at = datetime.now(UTC)
 
     async def open(self, api_key: str) -> None:
@@ -90,6 +95,8 @@ class NativeSpeechKitTurns:
         self._terminal = {}
         self._marks = {"physical_start": physical_start}
         self._bytes = self._events = 0
+        self._samples = self._nonzero = self._peak = self._squares = 0
+        self._partial_events = self._partial_characters_max = 0
         self._started_at = datetime.now(UTC)
         self.future = asyncio.get_running_loop().create_future()
 
@@ -99,6 +106,15 @@ class NativeSpeechKitTurns:
         if not pcm or len(pcm) % 2 or self._bytes + len(pcm) > self.max_audio_bytes:
             self._reject("invalid_or_excessive_pcm")
         self._bytes += len(pcm)
+        # Aggregate only; no audio or transcript persistence. This distinguishes
+        # a valid empty ASR result from zero/very quiet incoming radio PCM.
+        samples = array("h", pcm)
+        if sys.byteorder != "little":
+            samples.byteswap()
+        self._samples += len(samples)
+        self._nonzero += sum(value != 0 for value in samples)
+        self._peak = max(self._peak, max(abs(value) for value in samples))
+        self._squares += sum(value * value for value in samples)
         self._marks["last_pcm"] = received_at
         try:
             await asyncio.wait_for(self.port.send_audio(pcm), 2.0)
@@ -143,6 +159,9 @@ class NativeSpeechKitTurns:
                 self._reject("provider_status_failure")
             return
         if event.kind not in {"final", "eou_update"}:
+            if event.kind == "partial":
+                self._partial_events += 1
+                self._partial_characters_max = max(self._partial_characters_max, len(event.transcript))
             return
         old = self._terminal.get(event.kind)
         if old is not None:
@@ -197,6 +216,27 @@ class NativeSpeechKitTurns:
             )
         assert self.future is not None
         self.future.set_result(result)
+
+    def safe_turn_evidence(self) -> dict[str, object]:
+        """Bounded scalar-only evidence survives empty FINAL and contains no text."""
+        final = self._terminal.get("final")
+        eou = self._terminal.get("eou_update")
+        return {
+            "pcm_bytes": self._bytes,
+            "pcm_sample_rate_hz": 16000,
+            "pcm_duration_ms": self._bytes / 32,
+            "pcm_peak_abs": self._peak,
+            "pcm_rms": round(sqrt(self._squares / self._samples), 3) if self._samples else 0.0,
+            "pcm_nonzero_samples": self._nonzero,
+            "partial_events": self._partial_events,
+            "partial_characters_max": self._partial_characters_max,
+            "final_characters": len(final.transcript) if final is not None else None,
+            "provider_final_index": final.final_index if final is not None else None,
+            "provider_received_ms": final.received_data_ms if final is not None else None,
+            "provider_eou_ms": eou.eou_time_ms if eou is not None else None,
+            "final_eou_barrier_closed": self._sealed,
+            "input_marks": dict(self._marks),
+        }
 
     def _reject(self, code: str) -> None:
         self._failed = True
