@@ -71,6 +71,38 @@ _FOLDER_ID = re.compile(r"^[a-z0-9][a-z0-9-]{2,62}$")
 _MAX_PROVIDER_BODY_BYTES = 1_000_000
 _MAX_OUTPUT_TOKENS = 8192
 
+# Cleanup starts after the foreground planner work, with no active presentation.
+# Reserve the remaining outer six-second STOP for native close (2 s), listener
+# join (1 s), cooperative router shutdown (2 s), and scheduling/unwinding.
+_CLEANUP_BUDGET_SECONDS = 0.5
+_DELETE_SHARE = 0.2
+
+
+class CleanupIssue(StrEnum):
+    DELETE_INCOMPLETE = "delete_incomplete"
+    CANCELLATION_FAILED = "provider_cancellation_failed"
+    SESSION_CLOSE_FAILED = "session_close_failed"
+    DRAIN_FAILED = "event_loop_drain_failed"
+    THREAD_ALIVE = "transport_thread_alive"
+    DEADLINE = "cleanup_deadline_exceeded"
+    INTERNAL = "cleanup_internal_failure"
+    IN_PROGRESS = "cleanup_in_progress"
+
+
+@dataclass(frozen=True, slots=True)
+class CleanupResult:
+    closed: bool
+    issues: tuple[CleanupIssue, ...] = ()
+    already_closed: bool = False
+
+
+class YandexPlannerCleanupError(RuntimeError):
+    """Internal ownership failure; contains categories only, never provider data."""
+
+    def __init__(self, result: CleanupResult) -> None:
+        self.result = result
+        super().__init__("qwen_cleanup_failed:" + ",".join(result.issues))
+
 
 class YandexPlannerConfigurationError(RuntimeError):
     """Safe configuration failure which never includes credential material."""
@@ -189,7 +221,7 @@ class YandexResponsesTransport(Protocol):
 
     def delete(self, response_id: str) -> None: ...
 
-    def close(self) -> None: ...
+    def close(self) -> CleanupResult | None: ...
 
 
 class AiohttpYandexResponsesTransport:
@@ -206,6 +238,12 @@ class AiohttpYandexResponsesTransport:
         )
         self._session: aiohttp.ClientSession | None = None
         self._closed = False
+        self._cleanup_deadline: float | None = None
+        self._delete_deadline = 0.0
+        self._delete_attempted: set[str] = set()
+        self._cleanup_issues: set[CleanupIssue] = set()
+        self._cleanup_result: CleanupResult | None = None
+        self._close_lock = threading.Lock()
         self._thread.start()
         if not self._ready.wait(5):
             raise YandexPlannerTransportError(YandexFailureCategory.UNAVAILABLE)
@@ -244,23 +282,58 @@ class AiohttpYandexResponsesTransport:
         deadline: datetime,
         cancellation: PlannerCancellationToken,
     ) -> YandexTransportResponse:
+        if self._cleanup_deadline is not None:
+            raise YandexPlannerTransportError(YandexFailureCategory.CANCELLED)
         return self._await(self._create(payload), deadline=deadline, cancellation=cancellation)
 
     async def _delete(self, response_id: str) -> None:
         session = await self._get_session()
         url = f"{self._config.endpoint}/{response_id}"
         async with session.delete(url) as response:
-            await response.read()
+            if not 200 <= response.status < 300:
+                raise RuntimeError("delete_incomplete")
+            # DELETE body is not needed; exiting the response releases it.
+
+    def _begin_cleanup(self) -> float:
+        if self._cleanup_deadline is None:
+            if not self._close_lock.acquire(blocking=False):
+                raise YandexPlannerCleanupError(CleanupResult(False, (CleanupIssue.IN_PROGRESS,)))
+            try:
+                if self._cleanup_deadline is None:
+                    started = time.monotonic()
+                    self._delete_deadline = started + _CLEANUP_BUDGET_SECONDS * _DELETE_SHARE
+                    self._cleanup_deadline = started + _CLEANUP_BUDGET_SECONDS
+            finally:
+                self._close_lock.release()
+        return self._cleanup_deadline
 
     def delete(self, response_id: str) -> None:
-        if self._closed:
+        self._begin_cleanup()
+        if self._closed or response_id in self._delete_attempted or self._cleanup_result is not None:
             return
-        future = asyncio.run_coroutine_threadsafe(self._delete(response_id), self._loop)
+        self._delete_attempted.add(response_id)
+        remaining = self._delete_deadline - time.monotonic()
+        if remaining <= 0:
+            self._cleanup_issues.add(CleanupIssue.DELETE_INCOMPLETE)
+            return
+        coroutine = self._delete(response_id)
         try:
-            future.result(timeout=min(5.0, self._config.read_timeout_seconds))
+            future = asyncio.run_coroutine_threadsafe(coroutine, self._loop)
         except Exception:
+            coroutine.close()
+            self._cleanup_issues.add(CleanupIssue.DELETE_INCOMPLETE)
+            return
+        try:
+            future.result(timeout=max(0.0, min(self._delete_deadline - time.monotonic(),
+                                             self._config.read_timeout_seconds)))
+        except Exception as exc:
             future.cancel()
-            logger.warning("IA-5 provider response cleanup did not complete")
+            if isinstance(exc, FutureTimeoutError):
+                # Windows timed waits may return just before the clock cutoff.
+                # A timed-out DELETE ends hygiene attempts; never start another
+                # using that residual fraction of the same window.
+                self._delete_deadline = min(self._delete_deadline, time.monotonic())
+            self._cleanup_issues.add(CleanupIssue.DELETE_INCOMPLETE)
 
     def _await(
         self,
@@ -282,29 +355,112 @@ class AiohttpYandexResponsesTransport:
                 future.cancel()
                 raise YandexPlannerTransportError(YandexFailureCategory.TIMEOUT)
             try:
-                return future.result(timeout=min(0.05, remaining))
+                result = future.result(timeout=min(0.05, remaining))
+                # Completion racing cancellation/deadline is not permission to
+                # admit a late provider result.
+                if cancellation.cancelled:
+                    raise YandexPlannerTransportError(YandexFailureCategory.CANCELLED)
+                if datetime.now(UTC) >= deadline:
+                    raise YandexPlannerTransportError(YandexFailureCategory.TIMEOUT)
+                return result
             except FutureTimeoutError:
                 continue
             except aiohttp.ClientError as exc:
                 raise YandexPlannerTransportError(YandexFailureCategory.UNAVAILABLE) from exc
 
-    def close(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
+    async def _shutdown(self, deadline: float) -> tuple[CleanupIssue, ...]:
+        issues: set[CleanupIssue] = set()
+        current = asyncio.current_task()
+        pending = {task for task in asyncio.all_tasks() if task is not current}
+        for task in pending:
+            task.cancel()
+        if pending:
+            done, pending = await asyncio.wait(pending, timeout=max(
+                0.0, deadline - _CLEANUP_BUDGET_SECONDS * .5 - time.monotonic()))
+            for task in done:
+                if not task.cancelled():
+                    task.exception()
+            if pending:
+                issues.add(CleanupIssue.CANCELLATION_FAILED)
 
-        async def close_session() -> None:
-            if self._session is not None:
-                await self._session.close()
+        if self._session is not None:
+            try:
+                closing = asyncio.create_task(self._session.close())
+                done, _ = await asyncio.wait({closing}, timeout=max(
+                    0.0, deadline - _CLEANUP_BUDGET_SECONDS * .2 - time.monotonic()))
+                if not done:
+                    closing.cancel()
+                    issues.add(CleanupIssue.SESSION_CLOSE_FAILED)
+                else:
+                    closing.result()
+            except Exception:
+                issues.add(CleanupIssue.SESSION_CLOSE_FAILED)
 
-        future = asyncio.run_coroutine_threadsafe(close_session(), self._loop)
+        # A cancel request is not a drain acknowledgement. Bound the latter too;
+        # asyncio.wait_for would wait indefinitely for cancellation-resistant work.
+        pending = {task for task in asyncio.all_tasks() if task is not current}
+        for task in pending:
+            task.cancel()
+        if pending:
+            done, pending = await asyncio.wait(pending, timeout=max(
+                0.0, deadline - _CLEANUP_BUDGET_SECONDS * .1 - time.monotonic()))
+            for task in done:
+                if not task.cancelled():
+                    task.exception()  # Retrieve, never log provider exception text.
+            if pending:
+                issues.add(CleanupIssue.DRAIN_FAILED)
+        return tuple(sorted(issues))
+
+    def close(self) -> CleanupResult:
+        deadline = self._begin_cleanup()
+        if not self._close_lock.acquire(blocking=False):
+            raise YandexPlannerCleanupError(CleanupResult(False, (CleanupIssue.IN_PROGRESS,)))
         try:
-            future.result(timeout=5)
-        except Exception:
-            future.cancel()
-        self._loop.call_soon_threadsafe(self._loop.stop)
-        self._thread.join(timeout=5)
-        self._loop.close()
+            if self._cleanup_result is not None:
+                if not self._cleanup_result.closed:
+                    raise YandexPlannerCleanupError(self._cleanup_result)
+                return CleanupResult(True, self._cleanup_result.issues, already_closed=True)
+            issues = set(self._cleanup_issues)
+            coroutine = self._shutdown(deadline)
+            try:
+                future = asyncio.run_coroutine_threadsafe(coroutine, self._loop)
+            except Exception:
+                coroutine.close()
+                issues.add(CleanupIssue.INTERNAL)
+            else:
+                try:
+                    issues.update(future.result(timeout=max(
+                        0.0, deadline - _CLEANUP_BUDGET_SECONDS * .1 - time.monotonic())))
+                except FutureTimeoutError:
+                    future.cancel()
+                    issues.update((CleanupIssue.DEADLINE, CleanupIssue.DRAIN_FAILED))
+                except Exception:
+                    future.cancel()
+                    issues.add(CleanupIssue.INTERNAL)
+            try:
+                self._loop.call_soon_threadsafe(self._loop.stop)
+                self._thread.join(max(0.0, deadline - time.monotonic()))
+                if self._thread.is_alive() or self._loop.is_running():
+                    issues.add(CleanupIssue.THREAD_ALIVE)
+                else:
+                    if asyncio.all_tasks(self._loop):
+                        issues.add(CleanupIssue.DRAIN_FAILED)
+                    else:
+                        self._loop.close()
+            except Exception:
+                issues.add(CleanupIssue.INTERNAL)
+            if self._session is not None and not self._session.closed:
+                issues.add(CleanupIssue.SESSION_CLOSE_FAILED)
+            if time.monotonic() >= deadline:
+                issues.add(CleanupIssue.DEADLINE)
+            self._closed = (not self._thread.is_alive() and self._loop.is_closed()
+                            and not (issues - {CleanupIssue.DELETE_INCOMPLETE}))
+            self._cleanup_result = CleanupResult(self._closed, tuple(sorted(issues)))
+            if not self._closed:
+                raise YandexPlannerCleanupError(self._cleanup_result)
+            return self._cleanup_result
+        finally:
+            self._close_lock.release()
 
 
 class YandexDiagnosticStage(StrEnum):
@@ -414,6 +570,8 @@ class YandexQwenPlannerRun(PlannerRun):
         self._terminal = False
         self._closed = False
         self._event_sequence = 0
+        self._cleanup_lock = threading.Lock()
+        self._cleanup_error: YandexPlannerCleanupError | None = None
 
     def next_event(
         self,
@@ -711,14 +869,33 @@ class YandexQwenPlannerRun(PlannerRun):
         return f"ia5-{hashlib.sha256(seed.encode()).hexdigest()[:24]}"
 
     def _cleanup(self) -> None:
-        if self._closed:
-            return
-        for response_id in self._response_ids:
-            self._transport.delete(response_id)
-        self._response_ids.clear()
-        self._transport.close()
-        self._closed = True
-        self._diagnostic(YandexDiagnosticStage.CLEANUP)
+        if not self._cleanup_lock.acquire(blocking=False):
+            raise YandexPlannerCleanupError(CleanupResult(False, (CleanupIssue.IN_PROGRESS,)))
+        try:
+            if self._closed:
+                return
+            if self._cleanup_error is not None:
+                raise self._cleanup_error
+            issues: set[CleanupIssue] = set()
+            try:
+                for response_id in dict.fromkeys(self._response_ids):
+                    try:
+                        self._transport.delete(response_id)
+                    except Exception:
+                        issues.add(CleanupIssue.DELETE_INCOMPLETE)
+                self._response_ids.clear()
+                self._transport.close()
+            except YandexPlannerCleanupError as exc:
+                self._cleanup_error = exc
+                raise
+            except Exception:
+                self._cleanup_error = YandexPlannerCleanupError(CleanupResult(
+                    False, tuple(sorted(issues | {CleanupIssue.INTERNAL}))))
+                raise self._cleanup_error from None
+            self._closed = True
+            self._diagnostic(YandexDiagnosticStage.CLEANUP)
+        finally:
+            self._cleanup_lock.release()
 
     def _diagnostic(
         self,

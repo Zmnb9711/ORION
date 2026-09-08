@@ -121,10 +121,13 @@ def test_stop_preserves_cleanup_error_with_live_transport(
             result = service.stop()  # Corrected state propagation; same six-second bound.
             elapsed = time.monotonic() - began
 
-        expected_error = "RuntimeError" if failure == "actual_cleanup" else "YandexPlannerTransportError"
+        expected_error = "YandexPlannerCleanupError" if failure == "actual_cleanup" else "YandexPlannerTransportError"
         assert cleanup_errors == [expected_error]
         assert error_states == [YandexSrsState.ERROR]
-        assert waits == ([5, 5] if failure == "actual_cleanup" else [])
+        if failure == "actual_cleanup":
+            assert len(waits) == 2 and all(0 <= wait <= q._CLEANUP_BUDGET_SECONDS for wait in waits)
+        else:
+            assert waits == []
         assert result.state is YandexSrsState.ERROR
         assert not service._thread.is_alive()
         assert transport._thread.is_alive() and transport._loop.is_running()
