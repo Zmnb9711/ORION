@@ -910,16 +910,21 @@ class YandexSrsLiveService:
                     self._status.message = "Yandex SRS voice stopped"
 
     def stop(self) -> YandexSrsStatus:
-        self._stop.set()
-        thread = self._thread
+        with self._lock:
+            stop_event = self._stop
+            thread = self._thread
+            stop_event.set()
         if thread is not None and thread.is_alive():
             thread.join(SHUTDOWN_TIMEOUT_SECONDS)
         with self._lock:
+            # A START after this owner's exit must not receive its stale STOP.
+            if self._thread is not thread or self._stop is not stop_event:
+                return self._status.model_copy(deep=True)
             if thread is not None and thread.is_alive():
                 self._status.state = YandexSrsState.ERROR
                 self._status.message = "Yandex SRS shutdown exceeded its bound"
                 self._status.last_error = self._status.message
-            else:
+            elif self._status.state is not YandexSrsState.ERROR:
                 self._status.state = YandexSrsState.STOPPED
                 self._status.phase = "idle"
                 self._status.message = "Yandex SRS voice stopped"

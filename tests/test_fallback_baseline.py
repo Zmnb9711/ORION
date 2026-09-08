@@ -25,14 +25,44 @@ def test_launcher_core_srs_lifecycle_is_literal_baseline():
         "realtime_tool_api.py", "world_model.py", "tool_gateway.py")]
     for path in files:
         actual = path.read_text(encoding="utf-8")
+        baseline = source(BASE, path.relative_to(ROOT).as_posix())
+        if path.name == "yandex_srs_live_core.py":
+            # Separately authorized truthful STOP only. Prove the exact method
+            # delta before restoring it for the whole-file baseline comparison.
+            def stop_span(text):
+                owner = next(n for n in ast.parse(text).body
+                             if isinstance(n, ast.ClassDef) and n.name == "YandexSrsLiveService")
+                method = next(n for n in owner.body
+                              if isinstance(n, ast.FunctionDef) and n.name == "stop")
+                lines = text.splitlines(keepends=True)
+                return lines, method.lineno - 1, method.end_lineno
+
+            old_lines, old_start, old_end = stop_span(baseline)
+            new_lines, new_start, new_end = stop_span(actual)
+            old = "".join(old_lines[old_start:old_end])
+            expected = old.replace(
+                "        self._stop.set()\n        thread = self._thread\n",
+                "        with self._lock:\n            stop_event = self._stop\n"
+                "            thread = self._thread\n            stop_event.set()\n",
+            ).replace(
+                "        with self._lock:\n            if thread is not None",
+                "        with self._lock:\n"
+                "            # A START after this owner's exit must not receive its stale STOP.\n"
+                "            if self._thread is not thread or self._stop is not stop_event:\n"
+                "                return self._status.model_copy(deep=True)\n"
+                "            if thread is not None",
+            ).replace("            else:\n", "            elif self._status.state is not YandexSrsState.ERROR:\n")
+            assert "".join(new_lines[new_start:new_end]) == expected
+            actual = "".join(new_lines[:new_start]) + old + "".join(new_lines[new_end:])
         if path.name == "realtime_test_evidence.py":
             # Sole separately authorized addition; all existing recorder code
             # must remain literal baseline, including START/STOP/export.
             method = next(n for n in ast.walk(ast.parse(actual))
                           if isinstance(n, ast.FunctionDef) and n.name == "record_stt_core_boundary")
+            assert method.end_lineno is not None
             lines = actual.splitlines(keepends=True)
             actual = "".join(lines[:method.lineno-1] + lines[method.end_lineno+1:])
-        assert actual == source(BASE, path.relative_to(ROOT).as_posix()), path
+        assert actual == baseline, path
 
 
 def test_only_existing_adapter_imports_change():
