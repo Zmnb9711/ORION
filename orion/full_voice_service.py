@@ -9,6 +9,9 @@ from typing import cast
 
 from orion.full_voice_capture import RadioTurnEventKind
 from orion.full_voice_core import FullVoiceCore
+from orion.communication_contracts import CommunicationDomain, CommunicationPriority
+from orion.hybrid_aircraft_core import HybridAircraftCore
+from orion.informational_presentation import InformationalPresentation, InformationalStreamingTts
 from orion.full_voice_srs import FullVoiceSrsEndpoint
 from orion.full_voice_stt import NativeSpeechKitTurns
 from orion.planner import PlannerCancellationToken
@@ -23,6 +26,7 @@ from orion.srs_radio_transport import SrsRadioConfig
 from orion.tool_gateway import build_tool_gateway
 from orion.world_model import world_model
 from orion.yandex_realtime_provider import sanitize_yandex_error
+from orion.yandex_qwen_planner import YandexQwenPlannerConfig, YandexQwenPlannerProvider
 from orion.yandex_srs_live_core import YandexSrsLiveService, YandexSrsState
 
 
@@ -74,6 +78,12 @@ class FullVoiceService(YandexSrsLiveService):
         cancellation = PlannerCancellationToken()
         observation = _SttCoreObservation(session_id)
 
+        def observe_slice(event, **fields):
+            try:
+                realtime_test_evidence.record_aircraft_slice(event, realtime_session_id=session_id, **fields)
+            except Exception:
+                pass  # Evidence never changes accepted voice behavior.
+
         def fail(code):
             observation.record("exception", error_type=code)
             self._set(state=YandexSrsState.ERROR, phase="error", message=code, last_error=code)
@@ -88,11 +98,15 @@ class FullVoiceService(YandexSrsLiveService):
             eam_password=password), stopped, diagnostics, self._set))
         native = NativeSpeechKitTurns(GrpcSpeechKitStreamingPort(), fail=fail)
         presentation = workflow = core_worker = None
+        informational: InformationalPresentation | None = None
+        hybrid: HybridAircraftCore | None = None
+        hybrid_active = False
         consumed = False
         try:
             # The existing Core already owns ingress and this WorldModel. Only
             # the field CLI's RecoveryLiveWorld ownership is omitted here.
-            core = FullVoiceCore(build_tool_gateway(world=world_model))
+            gateway = build_tool_gateway(world=world_model)
+            core = FullVoiceCore(gateway)
             await asyncio.to_thread(endpoint.connect_radio)
             endpoint.start()
             if endpoint.radio_router is None:
@@ -106,7 +120,7 @@ class FullVoiceService(YandexSrsLiveService):
             self._set(state=YandexSrsState.STREAMING, phase="streaming", message="Yandex SRS voice is running")
 
             async def answer(utterance):
-                nonlocal core_worker
+                nonlocal core_worker, hybrid, informational, hybrid_active
                 identity = native.owner
                 if identity is None:
                     fail("turn_owner_lost")
@@ -117,6 +131,7 @@ class FullVoiceService(YandexSrsLiveService):
                         result = await asyncio.shield(core_worker)
                         finalized = result.finalized
                         if finalized is not None:
+                            observe_slice("routing", turn_id=str(identity), route="FROZEN_OWNSHIP", provider_call_count=0)
                             if stopped.is_set() or cancellation.cancelled:
                                 raise RuntimeError("turn_cancelled_before_presentation")
                             context = RadioContext(
@@ -134,9 +149,51 @@ class FullVoiceService(YandexSrsLiveService):
                                 fail("protected_presentation_not_completed")
                         elif result.status != "unsupported":
                             fail("core_semantics_not_completed")
+                        else:
+                            # Only the existing ownship router's unsupported outcome
+                            # opens this new slice. It cannot steal a protected turn.
+                            if stopped.is_set() or cancellation.cancelled:
+                                return
+                            hybrid_active = True
+                            if hybrid is None:
+                                hybrid = HybridAircraftCore(gateway, lambda: YandexQwenPlannerProvider(
+                                    YandexQwenPlannerConfig(api_key=request.api_key, folder_id=request.folder_id)),
+                                    observe=observe_slice)
+                            core_worker = asyncio.create_task(asyncio.to_thread(hybrid.run, utterance, cancellation))
+                            information = await asyncio.shield(core_worker)
+                            if information.finalized is not None:
+                                if stopped.is_set() or cancellation.cancelled:
+                                    raise RuntimeError("turn_cancelled_before_presentation")
+                                if informational is None:
+                                    informational = InformationalPresentation(InformationalStreamingTts(request.api_key,
+                                        observe=lambda text: observe_slice("tts_input", turn_id=str(native.owner), tts_input=text)),
+                                        endpoint.radio_router, authorize=hybrid.authorize, observe=observe_slice)
+                                plan = information.finalized.plan
+                                expiry = min(plan.deadline, plan.aircraft.expires_at) if plan.aircraft else plan.deadline
+                                endpoint.response_valid_until = time.monotonic() + (expiry - datetime.now(UTC)).total_seconds()
+                                context = RadioContext(tx_correlation_id=tx_correlation(identity), interaction_id=identity,
+                                    turn_id=str(identity), session_id="recovery-full-voice", source_domain=CommunicationDomain.GENERAL,
+                                    communication_priority=CommunicationPriority.ROUTINE, radio_entity=entity,
+                                    target_frequency_hz=251000000, modulation=RadioModulation.AM)
+                                previous_marks = endpoint.tx_marks
+                                packet_before = endpoint.packet_id
+                                outcome = await informational.present(information.finalized, context)
+                                marks = endpoint.tx_marks if endpoint.tx_marks is not previous_marks else {}
+                                observe_slice("response_terminal", turn_id=str(identity), tx_id=tx_correlation(identity),
+                                    status=outcome.state, frames=endpoint.packet_id - packet_before,
+                                    failure_stage="presentation" if outcome.failure else None,
+                                    failure_category=outcome.failure.value if outcome.failure else None,
+                                    tts_started=informational.marks.get("tts_started"),
+                                    tts_first_pcm=informational.marks.get("tts_first_pcm"),
+                                    tts_completed=informational.marks.get("tts_completed"),
+                                    tts_pcm_bytes=informational.marks.get("tts_pcm_bytes"),
+                                    radio_first_frame=marks.get("radio_first_frame"), radio_completed=marks.get("radio_completed"))
+                                if outcome.state != "completed":
+                                    fail("informational_presentation_not_completed")
                 except Exception:
                     fail("turn_processing_failed")
                 finally:
+                    hybrid_active = False
                     self._set(output_chunks=endpoint.tx_frames)
                     if not stopped.is_set():
                         native.release(identity)
@@ -168,6 +225,8 @@ class FullVoiceService(YandexSrsLiveService):
                     observation.record("FinalizedUserUtterance" if utterance is not None else "None", utterance=utterance)
                     workflow = asyncio.create_task(answer(utterance), name="full-voice-answer")
             if workflow is not None:
+                if hybrid_active:
+                    cancellation.cancel()
                 await workflow
         except BaseException as exc:
             observation.record("cancellation" if isinstance(exc, asyncio.CancelledError) else "exception",
@@ -180,6 +239,9 @@ class FullVoiceService(YandexSrsLiveService):
             await native.close()
             if presentation is not None:
                 await presentation.shutdown()
+            information_owner = cast(InformationalPresentation | None, informational)
+            if information_owner is not None:
+                await information_owner.shutdown()
             await asyncio.to_thread(endpoint.stop)
             if core_worker is not None:
                 await asyncio.gather(core_worker, return_exceptions=True)

@@ -211,7 +211,7 @@ def main():
                     service.stop()
                 assert service.status().state == "stopped"
                 assert service._thread is not None and not service._thread.is_alive()
-                observed = list(observation._events)
+                observed = [e for e in observation._events if e["event"] == "stt_core_boundary"]
                 assert len(observed) == 1 and observed[0]["status"] == "FinalizedUserUtterance"
                 assert observed[0]["transcript"] == query
         transmitted = adapter.transmit_calls

@@ -228,6 +228,13 @@ class ProtectedPresentationService:
             )
         except ValueError:
             return _failure(tx, PresentationFailure.RADIO_CONTEXT_MISMATCH)
+        return await self._admit_validated(checked, context)
+
+    async def _admit_validated(
+        self, checked: FinalizedCommunicationText, context: RadioContext
+    ) -> PresentationResult:
+        """Internal operation mechanics; caller must complete typed admission first."""
+        tx = str(context.tx_correlation_id)
         signature = hashlib.sha256(
             json.dumps(
                 {

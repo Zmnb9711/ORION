@@ -36,10 +36,14 @@ class ProtectedStreamingTts:
     async def synthesize(self, text, language, tx_id, observer=None) -> bytes:
         raise RuntimeError("streaming_tts_requires_explicit_stream_boundary")
 
+    def _requests(self, text: str) -> tuple:
+        """Internal builder seam; the protected default is unchanged."""
+        return protected_stream_requests(text)
+
     async def stream(self, text: str) -> AsyncIterator[bytes]:
         if self._closed or self._call is not None:
             raise RuntimeError("streaming_tts_unavailable")
-        requests = protected_stream_requests(text)
+        requests = self._requests(text)
         assert requests[1].synthesis_input.text == text
         import grpc
         channel = grpc.aio.secure_channel(

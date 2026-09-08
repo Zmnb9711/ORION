@@ -53,6 +53,7 @@ _ALLOWED_FIELDS = {
     "error_type",
     "failure_category",
     "fact_origin",
+    "frames",
     "first_provider_audio_latency_ms",
     "first_srs_tx_latency_ms",
     "interacted",
@@ -235,6 +236,45 @@ class RealtimeTestEvidenceRecorder:
             if len(self._events) == self._events.maxlen:
                 self._dropped += 1
             self._events.append(event)
+
+    def record_aircraft_slice(self, event: str, *, realtime_session_id: str, **fields: object) -> None:
+        """Bounded typed projection, in the existing explicit session only."""
+        from orion.hybrid_aircraft_contracts import (
+            AircraftIdentityQueryResult, HybridAircraftDecomposition, InformationalResponsePlan,
+        )
+        with self._lock:
+            if not self._active or self._test_session_id is None:
+                return
+            if event not in {"routing", "decomposition_started", "decomposition_validation",
+                             "authoritative_read", "authoritative_read_started", "authoritative_read_returned",
+                             "local_composition", "presentation_admitted",
+                             "presentation_rejected", "tts_input", "response_terminal", "failed"}:
+                return
+            safe: dict[str, object] = {
+                "timestamp": datetime.now(UTC).isoformat(timespec="milliseconds"),
+                "test_session_id": self._test_session_id, "realtime_session_id": realtime_session_id,
+                "event": "aircraft_slice." + event,
+            }
+            models = {"decomposition": HybridAircraftDecomposition,
+                      "aircraft": AircraftIdentityQueryResult, "plan": InformationalResponsePlan}
+            scalar = {"turn_id", "tx_id", "route", "provider_call_count", "pure_aircraft", "status",
+                      "provider_category", "failure_stage", "monotonic", "frames", "radio_first_frame",
+                      "radio_completed", "tool_name", "tool_version", "call_id", "failure_category",
+                      "tts_started", "tts_first_pcm", "tts_completed", "tts_pcm_bytes"}
+            for key, value in fields.items():
+                if key in models:
+                    safe[key] = models[key].model_validate(value).model_dump(mode="json")
+                elif key in {"finalized_text", "tts_input"}:
+                    if not isinstance(value, str) or not 0 < len(value) <= 1000:
+                        raise ValueError("invalid_informational_evidence_text")
+                    safe[key] = value  # Exact finalized text; explicit mode only.
+                elif key in scalar and (value is None or isinstance(value, (str, int, float, bool))):
+                    if isinstance(value, str) and len(value) > 200:
+                        raise ValueError("invalid_informational_evidence_scalar")
+                    safe[key] = value
+            if len(self._events) == self._events.maxlen:
+                self._dropped += 1
+            self._events.append(safe)
 
     def record_transcript(
         self,

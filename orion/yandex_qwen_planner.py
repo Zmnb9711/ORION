@@ -535,6 +535,74 @@ class YandexQwenPlannerProvider(PlannerProvider):
     def diagnostic_snapshot(self) -> tuple[YandexPlannerDiagnostic, ...]:
         return self._diagnostics.snapshot()
 
+    def decompose_aircraft(self, text, identity, deadline, cancellation):
+        """Strict no-tools I/O extension; reuse the existing run/cleanup owner."""
+        from orion.hybrid_aircraft_contracts import HybridAircraftDecomposition
+        from orion.interaction_contracts import InteractionRequest
+        from orion.planner_contracts import ProviderRetryPolicy
+
+        if cancellation.cancelled or datetime.now(UTC) >= deadline:
+            raise YandexPlannerTransportError(YandexFailureCategory.CANCELLED)
+        request = PlannerProviderRequest(
+            planner_task_id=f"aircraft-decomposition-{identity}",
+            interaction=InteractionRequest(interaction_id=identity, text=text, allowed_capabilities=()),
+            allowed_capabilities=(), deadline=deadline, retry_policy=ProviderRetryPolicy(max_attempts=1),
+        )
+        run = YandexQwenPlannerRun(request=request, config=self._config,
+            transport=self._transport_factory(self._config), diagnostics=self._diagnostics)
+        try:
+            schema = _strict_provider_schema(HybridAircraftDecomposition.model_json_schema())
+            payload = {
+                "model": self._config.model_uri,
+                "input": text,  # Exact FINAL, not InteractionRequest's normalized SemanticText.
+                "instructions": (
+                    "Decompose this Russian utterance only into bounded social acts and at most one "
+                    "AIRCRAFT_IDENTITY_QUERY referring explicitly to the user's current own aircraft. "
+                    "Return exact Unicode character offsets start inclusive/end exclusive in the unchanged input. "
+                    "Cover every meaningful word in ordered nonoverlapping spans. Social acts are GREETING "
+                    "(добрый день, здравствуйте, и добрый день), THANKS_ACKNOWLEDGEMENT (спасибо), "
+                    "SOCIAL_WELLBEING_QUERY (как дела). Never correct or rewrite input. Never resolve quotes, "
+                    "negation, hypotheticals or ambiguous referents. Unsupported residue means UNSUPPORTED. "
+                    "Rejected or ambiguous classifications require empty spans. No facts, response wording or tools."
+                ),
+                "reasoning": {"effort": self._config.reasoning_effort},
+                "max_output_tokens": _MAX_OUTPUT_TOKENS, "parallel_tool_calls": False, "store": False,
+                "text": {"format": {"type": "json_schema", "name": "hybrid_aircraft_decomposition",
+                                     "strict": True, "schema": schema}},
+            }
+            response, _attempts = run._request_with_retry(payload, deadline=deadline, cancellation=cancellation)
+            if response.status != 200:
+                raise YandexPlannerTransportError(_http_failure(response.status))
+            body = response.payload
+            if body is None:
+                raise ValueError("invalid_decomposition_response")
+            response_id = body.get("id")
+            if not isinstance(response_id, str) or not _safe_provider_id(response_id):
+                raise ValueError("invalid_decomposition_id")
+            run._response_ids.append(response_id)
+            if body.get("status") != "completed":
+                raise ValueError("incomplete_decomposition")
+            output = body.get("output")
+            if not isinstance(output, list):
+                raise ValueError("invalid_decomposition_output")
+            parts = []
+            for item in output:
+                if not isinstance(item, dict):
+                    raise ValueError("invalid_decomposition_item")
+                if item.get("type") == "reasoning":
+                    continue
+                if item.get("type") != "message" or not isinstance(item.get("content"), list):
+                    raise ValueError("decomposition_tools_forbidden")
+                for part in item["content"]:
+                    if not isinstance(part, dict) or part.get("type") != "output_text" or not isinstance(part.get("text"), str):
+                        raise ValueError("invalid_decomposition_text")
+                    parts.append(part["text"])
+            if len(parts) != 1 or cancellation.cancelled or datetime.now(UTC) >= deadline:
+                raise ValueError("invalid_or_late_decomposition")
+            return HybridAircraftDecomposition.model_validate_json(parts[0], strict=True)
+        finally:
+            run.cancel()  # Exactly the 474d11bc owner, shared budget and truthful failure.
+
 
 class _SemanticDraft(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)

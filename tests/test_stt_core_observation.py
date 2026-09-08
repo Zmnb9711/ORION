@@ -119,7 +119,7 @@ def test_actual_host_control_and_data_trace_identical_to_fallback(monkeypatch, t
             asyncio.run(run())
         traces.append(trace)
     assert traces[0] == traces[1]
-    events = list(recorder._events)
+    events = [e for e in recorder._events if e["event"] == "stt_core_boundary"]
     if recording == "active":
         assert len(events) == 1
         assert events[0]["status"] == ("cancellation" if outcome == "stop_pending" else outcome)
