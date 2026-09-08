@@ -13,7 +13,7 @@ from orion.flight_context import aircraft_display_name
 from orion.full_voice_stt import FinalizedUserUtterance
 from orion.hybrid_aircraft_contracts import (
     AircraftIdentityQueryResult, FinalizedInformationalText, HybridAircraftDecomposition,
-    HybridRoute, InformationalResponsePlan, SocialAct,
+    HybridRoute, InformationalResponsePlan, SocialAct, SourceSpan,
 )
 from orion.interaction_contracts import CapabilityId
 from orion.planner import PlannerCancellationToken
@@ -56,12 +56,49 @@ def classify_aircraft_identity_query(text: str) -> HybridRoute:
 
 
 def eligible_decomposition(text: str) -> bool:
-    """Eligibility is not decomposition: provider must return the anchored spans."""
+    """Eligibility is not recognition: exact full-source parsing must follow."""
     if not text or len(text) > 4000 or re.search(r'[^А-Яа-яЁё\s.!?,]', text):
         return False
     words = set(re.findall(r"[а-я]+", text.casefold().replace("ё", "е")))
     vocabulary = set(" ".join((*AIRCRAFT_FORMS, *SOCIAL_FORMS)).split())
     return words <= vocabulary and bool(words & {"добрый", "здравствуйте", "спасибо", "дела"})
+
+
+def recognize_local_decomposition(text: str) -> HybridAircraftDecomposition | None:
+    """Partition only existing closed forms; offsets always address the exact FINAL.
+
+    Enumerate at most three complete acts, never strip a greeting or accept a
+    known substring. Punctuation may separate acts, not words inside a form.
+    The returned candidate still requires the unchanged Core validator/mapper.
+    """
+    if not eligible_decomposition(text):
+        return None
+    tokens = tuple(re.finditer(r"[^\s.!?,]+", text))
+    forms = tuple((form, "AIRCRAFT_IDENTITY_QUERY") for form in sorted(AIRCRAFT_FORMS)) + tuple(
+        (form, act.value) for form, act in SOCIAL_FORMS.items())
+
+    def partition(index: int, spans: tuple[SourceSpan, ...]) -> tuple[SourceSpan, ...] | None:
+        if index == len(tokens):
+            return spans or None
+        if len(spans) == 3:
+            return None
+        for form, act in forms:
+            end = index + len(form.split())
+            if end > len(tokens) or any(span.act == act for span in spans):
+                continue
+            if act != "AIRCRAFT_IDENTITY_QUERY" and sum(
+                    span.act != "AIRCRAFT_IDENTITY_QUERY" for span in spans) == 2:
+                continue
+            start_offset, end_offset = tokens[index].start(), tokens[end-1].end()
+            if canonical(text[start_offset:end_offset]) != form:
+                continue
+            candidate = partition(end, (*spans, SourceSpan(start=start_offset, end=end_offset, act=act)))
+            if candidate is not None:
+                return candidate
+        return None
+
+    spans = partition(0, ())
+    return HybridAircraftDecomposition(language="ru-RU", spans=spans) if spans else None
 
 
 def validate_decomposition(text: str, value: HybridAircraftDecomposition) -> HybridAircraftDecomposition:
@@ -161,7 +198,7 @@ class HybridResult:
 
 
 class HybridAircraftCore:
-    """Borrowed gateway/provider. Bounded replay cache, no background owners."""
+    """Borrowed gateway. Provider factory retained for handoff compatibility, unused."""
     def __init__(self, gateway: ToolGateway, provider_factory: Callable[[], Decomposer], *,
                  clock=lambda: datetime.now(UTC), observe=lambda _event, **_fields: None):
         self.gateway, self.provider_factory, self.clock, self.observe = gateway, provider_factory, clock, observe
@@ -219,21 +256,21 @@ class HybridAircraftCore:
                 if not eligible_decomposition(text):
                     return HybridResult(route)
                 stage = "decomposition"
-                provider = self.provider_factory()
+                self._emit("decomposition_started", turn_id=str(identity), provider_call_count=count,
+                           decomposition_source="LOCAL")
+                decomposition = recognize_local_decomposition(text)
+                self._emit("decomposition_completed", turn_id=str(identity), provider_call_count=count,
+                           decomposition_source="LOCAL", status="candidate" if decomposition else "unsupported")
                 check()
-                count = 1
-                self._emit("decomposition_started", turn_id=str(identity), provider_call_count=count)
-                decomposition = provider.decompose_aircraft(text, identity, deadline, cancellation,
-                    observe=lambda event, **fields: self._emit(event, turn_id=str(identity),
-                        provider_call_count=count, **fields))
-                check()
+                if decomposition is None:
+                    return HybridResult(HybridRoute.UNSUPPORTED)
                 stage = "decomposition_validation"
                 self._emit(stage, turn_id=str(identity), decomposition=decomposition.model_dump(mode="json"),
-                           status="checking", provider_call_count=count, provider_category="completed")
+                           status="checking", provider_call_count=count, decomposition_source="LOCAL")
                 decomposition = validate_decomposition(text, decomposition)
                 route = derive_route(decomposition)
                 self._emit(stage, turn_id=str(identity), decomposition=decomposition.model_dump(mode="json"),
-                           core_derived_route=route.value, status="accepted", provider_call_count=count, provider_category="completed")
+                           core_derived_route=route.value, status="accepted", provider_call_count=count, decomposition_source="LOCAL")
                 if route in {HybridRoute.UNSUPPORTED, HybridRoute.AMBIGUOUS}:
                     return HybridResult(route)
                 social = tuple(SocialAct(s.act) for s in decomposition.spans if s.act != "AIRCRAFT_IDENTITY_QUERY")

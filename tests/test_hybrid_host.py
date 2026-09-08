@@ -21,13 +21,13 @@ from test_hybrid_aircraft import MIXED, PURE, FREE, Provider, Gateway, utterance
 from test_full_voice import StreamingFakeRadio
 
 
-@pytest.mark.parametrize("text,expected,calls", [(MIXED, True, 1), (PURE, True, 0), (FREE, True, 1),
+@pytest.mark.parametrize("text,expected,calls", [(MIXED, True, 0), (PURE, True, 0), (FREE, True, 0),
     ("какой мой текущий курс и координаты", True, 0), ("какой мой текущий вкус или оригинал", False, 0),
     ("Какой это самолёт?", False, 0)])
-@pytest.mark.parametrize("mode", ["active", "inactive", "broken", "stop_provider"])
+@pytest.mark.parametrize("mode", ["active", "inactive", "broken", "stop_local"])
 def test_gate10_normal_host_coexistence_and_single_owner(monkeypatch, tmp_path, text, expected, calls, mode):
-    if mode == "stop_provider" and calls == 0:
-        pytest.skip("No provider owner exists for this deterministic route")
+    if mode == "stop_local" and text not in {MIXED, FREE}:
+        pytest.skip("Pure/frozen routes do not invoke local decomposition")
     u = utterance(text)
     stop = threading.Event()
     first, entered = threading.Event(), threading.Event()
@@ -35,19 +35,25 @@ def test_gate10_normal_host_coexistence_and_single_owner(monkeypatch, tmp_path, 
     router = RadioRouter(default_transport_id="srs")
     router.register_adapter(adapter); router.start()
     closed, tts_texts, hybrid_invoked = [], [], []
+    factory_calls = []
     recorder = RealtimeTestEvidenceRecorder(tmp_path)
     if mode != "inactive": recorder.start(provider="yandex", transport="srs")
     if mode == "broken":
         def broken(*args, **kwargs): raise PermissionError("fixture evidence unavailable")
         monkeypatch.setattr(recorder, "record_aircraft_slice", broken)
-    def action(token):
-        if mode == "stop_provider":
-            entered.set()
-            stop.set()
-            deadline = time.monotonic()+1
-            while not token.cancelled and time.monotonic() < deadline: time.sleep(.001)
-            assert token.cancelled, "STOP must reach provider without waiting for its deadline"
-    provider, gateway = Provider(action=action), Gateway()
+    provider, gateway = Provider(), Gateway()
+    active_token = []
+    if mode == "stop_local":
+        import orion.hybrid_aircraft_core as local
+        recognize = local.recognize_local_decomposition
+        def stopping(text):
+            entered.set(); stop.set()
+            deadline = time.monotonic() + 1
+            while not active_token[0].cancelled and time.monotonic() < deadline:
+                time.sleep(.001)
+            assert active_token[0].cancelled
+            return recognize(text)
+        monkeypatch.setattr(local, "recognize_local_decomposition", stopping)
 
     class Native:
         owner, future = None, None
@@ -80,8 +86,14 @@ def test_gate10_normal_host_coexistence_and_single_owner(monkeypatch, tmp_path, 
 
     class Hybrid(HybridAircraftCore):
         def __init__(self, gateway, _factory, **kwargs):
-            super().__init__(gateway, lambda: provider, clock=lambda: NOW, **kwargs)
-        def run(self, *args): hybrid_invoked.append(True); return super().run(*args)
+            def forbidden():
+                factory_calls.append(True)
+                raise AssertionError("Hybrid must not instantiate provider")
+            super().__init__(gateway, forbidden, clock=lambda: NOW, **kwargs)
+        def run(self, *args):
+            hybrid_invoked.append(True)
+            active_token.append(args[1])
+            return super().run(*args)
     class Info(InformationalPresentation):
         def __init__(self, *args, **kwargs): super().__init__(*args, clock=lambda: NOW, **kwargs)
     async def tts(self, text):
@@ -107,9 +119,10 @@ def test_gate10_normal_host_coexistence_and_single_owner(monkeypatch, tmp_path, 
         asyncio.run(asyncio.wait_for(service._voice(request, "fixture-session", stop), 3))
         assert closed == ["native", "endpoint"]
         assert len(provider.calls) == calls
+        assert not factory_calls
         owns = text == "какой мой текущий курс и координаты"
         assert bool(hybrid_invoked) != owns
-        accepted = expected and mode != "stop_provider"
+        accepted = expected and mode != "stop_local"
         assert len(tts_texts) == len(adapter.transmit_calls) == int(accepted)
         assert len(gateway.calls) == int(accepted and text != FREE)
         assert service.status().state != "error"
@@ -121,9 +134,18 @@ def test_gate10_normal_host_coexistence_and_single_owner(monkeypatch, tmp_path, 
                 assert finalized == tts_texts[0]
                 assert any(e.get("tts_input") == finalized for e in events)
                 assert any(e["event"] == "aircraft_slice.response_terminal" for e in events)
+                terminal = next(e for e in events if e["event"] == "aircraft_slice.response_terminal")
+                assert terminal["status"] == "completed" and "frames" in terminal
+                assert {"radio_first_frame", "radio_completed", "tts_started", "tts_first_pcm"} <= terminal.keys()
+                if text not in {PURE}:
+                    accepted_event = next(e for e in events if e["event"] == "aircraft_slice.decomposition_validation" and e["status"] == "accepted")
+                    assert accepted_event["decomposition_source"] == "LOCAL" and accepted_event["provider_call_count"] == 0
+                if text != FREE:
+                    fact = next(e["aircraft"] for e in events if e["event"] == "aircraft_slice.authoritative_read")
+                    assert fact["aircraft_type"] == "FA-18C_hornet" and fact["source"] == "dcs_export"
             if owns: assert next(e for e in events if e.get("route") == "FROZEN_OWNSHIP")["provider_call_count"] == 0
         if mode == "inactive": assert not recorder._events
-        if mode == "stop_provider": assert entered.is_set() and not tts_texts
+        if mode == "stop_local": assert entered.is_set() and not tts_texts
     finally:
         stop.set(); router.shutdown()
 

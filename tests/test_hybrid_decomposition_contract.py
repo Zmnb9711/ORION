@@ -94,9 +94,11 @@ def test_gate03_required_triad(case, monkeypatch):
         derived.append(checked)
         return original(checked)
     monkeypatch.setattr(core, "derive_route", derive)
+    # Fault injection at the new candidate boundary; historical spans unchanged.
+    monkeypatch.setattr(core, "recognize_local_decomposition", lambda _: value)
     c, gateway, provider, events, utterance = setup(TEXT, provider=Provider(result=value))
     result = c.run(utterance, PlannerCancellationToken())
-    assert len(provider.calls) == 1
+    assert not provider.calls
     if case == "REAL_B":
         with pytest.raises(ValueError, match="invalid_social_span"):
             core.validate_decomposition(TEXT, value)
@@ -109,7 +111,7 @@ def test_gate03_required_triad(case, monkeypatch):
         assert result.finalized.plan.aircraft.aircraft_type == "FA-18C_hornet"
         assert c.authorize(result.finalized)
     assert c.run(utterance, PlannerCancellationToken()) is result
-    assert len(provider.calls) == 1
+    assert not provider.calls
 
 
 @pytest.mark.parametrize("text,spans,error", [
@@ -184,21 +186,25 @@ def test_gate07_exact_field_structure_through_normal_host(monkeypatch, tmp_path,
     if case == "SYNTHETIC_CORRECTED_B": payload["classification"] = "UNSUPPORTED"
     value = legacy_fixture_structure(payload)
     monkeypatch.setattr(host_test, "Provider", lambda **kwargs: Provider(result=value, **kwargs))
+    monkeypatch.setattr(core, "recognize_local_decomposition", lambda _: value)
     # Actual FullVoiceService/Core/ToolGateway/informational TTS request builder
     # and RadioRouter; only PCM, STT terminal input and network endpoints are fake.
     host_test.test_gate10_normal_host_coexistence_and_single_owner(
-        monkeypatch, tmp_path, TEXT, case != "REAL_B", 1, "active")
+        monkeypatch, tmp_path, TEXT, case != "REAL_B", 0, "active")
 
 
-def test_gate08_fifteen_second_deadline_not_enlarged():
+def test_gate08_fifteen_second_deadline_not_enlarged(monkeypatch):
     from test_hybrid_aircraft import NOW
     now = [NOW]
-    def exceed(_): now[0] += timedelta(seconds=15.001)
+    def exceed(_):
+        now[0] += timedelta(seconds=15.001)
+        return legacy_fixture_structure(RESULTS[0]["decomposition"])
+    monkeypatch.setattr(core, "recognize_local_decomposition", exceed)
     c, g, p, events, u = setup(TEXT, provider=Provider(
         result=legacy_fixture_structure(RESULTS[0]["decomposition"]), action=exceed), clock=lambda: now[0])
     result = c.run(u, PlannerCancellationToken())
     assert result.failure == "decomposition" and not result.finalized
-    assert len(p.calls) == 1 and not g.calls
+    assert not p.calls and not g.calls
     assert not any("core_derived_route" in fields for _, fields in events)
 
 
@@ -260,7 +266,7 @@ def test_gate09_new_evidence_separates_validated_core_route(tmp_path):
     assert legacy in exported and accepted in exported
 
 
-def test_gate09_actual_provider_core_timing_order(monkeypatch, tmp_path):
+def test_gate09_local_core_timing_order(monkeypatch, tmp_path):
     from test_hybrid_aircraft import NOW
     class Clock(datetime):
         @classmethod
@@ -276,15 +282,16 @@ def test_gate09_actual_provider_core_timing_order(monkeypatch, tmp_path):
     recorder.start(provider="yandex", transport="srs")
     c.observe = lambda name, **fields: recorder.record_aircraft_slice(name, realtime_session_id="fixture", **fields)
     result = c.run(u, PlannerCancellationToken())
-    assert result.finalized and len(gateway.calls) == 1 and transport.closed
+    assert result.finalized and len(gateway.calls) == 1 and not transport.payloads
     events = list(recorder._events)
-    assert [e["event"] for e in events[:7]] == ["aircraft_slice." + name for name in (
-        "routing", "decomposition_started", "provider_result_received", "cleanup_completed",
+    assert [e["event"] for e in events[:6]] == ["aircraft_slice." + name for name in (
+        "routing", "decomposition_started", "decomposition_completed",
         "decomposition_validation", "decomposition_validation", "authoritative_read_started")]
-    assert events[4]["status"] == "checking" and events[5]["status"] == "accepted"
+    assert events[3]["status"] == "checking" and events[4]["status"] == "accepted"
     assert all(e["turn_id"] == str(u.interaction_id) for e in events)
     assert [e["monotonic"] for e in events] == sorted(e["monotonic"] for e in events)
-    assert events[3]["provider_category"] == "completed"
+    assert events[2]["decomposition_source"] == "LOCAL"
+    assert events[4]["provider_call_count"] == 0
 
 
 def test_gate11_literal_span_checks_and_frozen_sources():

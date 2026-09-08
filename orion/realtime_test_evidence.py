@@ -245,7 +245,7 @@ class RealtimeTestEvidenceRecorder:
         with self._lock:
             if not self._active or self._test_session_id is None:
                 return
-            if event not in {"routing", "decomposition_started", "decomposition_validation",
+            if event not in {"routing", "decomposition_started", "decomposition_completed", "decomposition_validation",
                              "provider_result_received", "cleanup_completed",
                              "authoritative_read", "authoritative_read_started", "authoritative_read_returned",
                              "local_composition", "presentation_admitted",
@@ -263,7 +263,11 @@ class RealtimeTestEvidenceRecorder:
                       "radio_completed", "tool_name", "tool_version", "call_id", "failure_category",
                       "tts_started", "tts_first_pcm", "tts_completed", "tts_pcm_bytes"}
             for key, value in fields.items():
-                if key in models:
+                if key == "decomposition_source":
+                    if value not in {"LOCAL", "PROVIDER"}:
+                        raise ValueError("invalid_decomposition_source")
+                    safe[key] = value
+                elif key in models:
                     safe[key] = models[key].model_validate(value).model_dump(mode="json")
                 elif key in {"finalized_text", "tts_input"}:
                     if not isinstance(value, str) or not 0 < len(value) <= 1000:

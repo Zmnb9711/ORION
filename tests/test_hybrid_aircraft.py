@@ -91,11 +91,11 @@ def test_gate01_strict_schema(extra):
     (PURE, HybridRoute.AIRCRAFT_IDENTITY, 1, 0),
     ("На каком самолёте я нахожусь?", HybridRoute.AIRCRAFT_IDENTITY, 1, 0),
     ("Какой у меня самолёт?", HybridRoute.AIRCRAFT_IDENTITY, 1, 0),
-    (MIXED, HybridRoute.FREE_PLUS_AIRCRAFT_IDENTITY, 1, 1),
-    ("Здравствуйте! На каком самолёте я сейчас нахожусь?", HybridRoute.FREE_PLUS_AIRCRAFT_IDENTITY, 1, 1),
-    ("В каком самолёте я нахожусь? И добрый день!", HybridRoute.FREE_PLUS_AIRCRAFT_IDENTITY, 1, 1),
-    (FREE, HybridRoute.FREE_ONLY, 0, 1), ("Добрый день!", HybridRoute.FREE_ONLY, 0, 1),
-    ("Спасибо.", HybridRoute.FREE_ONLY, 0, 1),
+    (MIXED, HybridRoute.FREE_PLUS_AIRCRAFT_IDENTITY, 1, 0),
+    ("Здравствуйте! На каком самолёте я сейчас нахожусь?", HybridRoute.FREE_PLUS_AIRCRAFT_IDENTITY, 1, 0),
+    ("В каком самолёте я нахожусь? И добрый день!", HybridRoute.FREE_PLUS_AIRCRAFT_IDENTITY, 1, 0),
+    (FREE, HybridRoute.FREE_ONLY, 0, 0), ("Добрый день!", HybridRoute.FREE_ONLY, 0, 0),
+    ("Спасибо.", HybridRoute.FREE_ONLY, 0, 0),
     ("Какой это самолёт?", HybridRoute.AMBIGUOUS, 0, 0),
     ("какой мой текущий вкус или оригинал", HybridRoute.UNSUPPORTED, 0, 0),
     ("Он спросил: в каком самолёте я нахожусь?", HybridRoute.UNSUPPORTED, 0, 0),
@@ -182,7 +182,7 @@ def test_gate05_extra_telemetry_cannot_leak_any_boundary():
     payload = result.finalized.model_dump_json() + json.dumps(events, ensure_ascii=False)
     for forbidden in (": 137,", ": 42.1,", ": 41.2,", "Colt", "F-16C", '"fuel"', '"heading"', '"position"'):
         assert forbidden not in payload
-    assert p.calls == [MIXED]
+    assert not p.calls
 
 
 def radio_for(finalized):
@@ -256,7 +256,7 @@ def test_gate07_ru_builder_exact_and_john_unchanged():
 
 
 @pytest.mark.parametrize("mode", ["failure", "timeout", "cancel", "late", "before_read", "after_read"])
-def test_gate08_cancellation_and_provider_failures(mode):
+def test_gate08_cancellation_and_provider_failures(mode, monkeypatch):
     token = PlannerCancellationToken()
     clock = [NOW]
     def action(cancel):
@@ -268,6 +268,10 @@ def test_gate08_cancellation_and_provider_failures(mode):
         provider=provider, clock=lambda: clock[0], action=token.cancel if mode == "after_read" else None)
     if mode == "before_read": token.cancel()
     result = core.run(u, token)
+    if mode in {"failure", "timeout", "cancel", "late"}:
+        # Provider failures cannot affect the local slice: no factory/method call.
+        assert result.finalized and len(g.calls) == 1 and not provider.calls
+        return
     assert result.finalized is None
     assert len(g.calls) == int(mode == "after_read")
     assert "private provider payload" not in str(events)
@@ -387,12 +391,13 @@ def test_gate04_real_no_dcs_read_stays_unavailable():
     assert result.finalized.plan.aircraft.aircraft_type is None
 
 
-def test_gate08_invalid_decomposition_never_reads():
+def test_gate08_invalid_decomposition_never_reads(monkeypatch):
     invalid = decomposition().model_copy(update={"spans": (SourceSpan(start=0, end=3000, act="GREETING"),)})
     core, g, p, events, u = setup(MIXED, provider=Provider(invalid))
+    monkeypatch.setattr("orion.hybrid_aircraft_core.recognize_local_decomposition", lambda _: invalid)
     result = core.run(u, PlannerCancellationToken())
     assert result.failure == "decomposition_validation" and not g.calls and result.finalized is None
-    assert len(p.calls) == 1 and any(name == "failed" for name, _ in events)
+    assert not p.calls and any(name == "failed" for name, _ in events)
 
 
 def test_gate08_ru_actual_stream_rpc_exact_text_and_closed(monkeypatch):
