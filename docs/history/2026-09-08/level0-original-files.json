@@ -1,0 +1,44 @@
+[
+  {
+    "path": "docs/level0-conversation-prerequisite-stop-20260908.md",
+    "sha256": "f972e8b84dca71dc3940d6af4425716105c87c85f7879cb74cad08840c0482b7",
+    "size": 11460,
+    "classification": "historical stop report"
+  },
+  {
+    "path": "orion/conversational_contracts.py",
+    "sha256": "d5b76a03b1605b0c6237a6e3cb92fb88263defe47ab0fec0fe2b9284fd8dcc7a",
+    "size": 1427,
+    "classification": "unwired experimental prerequisite"
+  },
+  {
+    "path": "orion/conversational_core.py",
+    "sha256": "161e3536d8c0a13be4552e0fec6314d89a0b457edfd8a2fb7ad06f5bae481b4b",
+    "size": 5971,
+    "classification": "unwired experimental prerequisite"
+  },
+  {
+    "path": "orion/conversational_presentation.py",
+    "sha256": "6a2c7a8e69a377b8534e61b023d45e1a33a09d71bafc8fad9af972b2498feffb",
+    "size": 7842,
+    "classification": "unwired experimental prerequisite"
+  },
+  {
+    "path": "orion/yandex_realtime_text_conversation.py",
+    "sha256": "ac10c3637dc3d71a106b74d7e0f5c32e47806a7d6837c41a2347b3907d6843db",
+    "size": 14083,
+    "classification": "unwired experimental prerequisite"
+  },
+  {
+    "path": "tests/test_conversation_prerequisites.py",
+    "sha256": "37e0a46b36e403806071f275e963d8f5fa82e7570963265ef563c435e63908a9",
+    "size": 15921,
+    "classification": "offline test"
+  },
+  {
+    "path": "tests/test_conversation_presentation.py",
+    "sha256": "0cb2bb888bb4820d6a0ad42fd2622acf25084dfd4361ec9cd6d1b660a0f759c1",
+    "size": 9626,
+    "classification": "offline test"
+  }
+]

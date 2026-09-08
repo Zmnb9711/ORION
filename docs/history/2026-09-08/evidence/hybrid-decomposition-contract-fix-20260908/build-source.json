@@ -1,0 +1,6 @@
+{
+  "source_commit": "013a36a956cb67565290c506c0e7bda0a89fdf24",
+  "source_tree": "20651a420e596f066a6fd765aea24f6c9be0e963",
+  "parent_commit": "4ca5effe2c5772a3268ba1f131bbad77a095c7ea",
+  "policy": "Build archived staged tree; commit exactly this tree only after package/smoke PASS."
+}

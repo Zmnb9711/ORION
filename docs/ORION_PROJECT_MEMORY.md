@@ -1,5 +1,56 @@
 # ORION Project Memory
 
+## Current recovery position — end of 2026-09-08
+
+ORION ARCHITECTURE GUARD: OFF
+
+**ORION_EOD_20260908_AWAIT_DT403405 — awaiting provider clarification.**
+Read the [full end-of-day checkpoint](history/2026-09-08-end-of-day-checkpoint.md)
+and [saved evidence index](history/2026-09-08/README.md) before resuming.
+
+- Field-validated Hybrid local routing runtime:
+  `f0c9e364ed653e9497d7e2ef8ef8f35dc97157d4`; documentation freeze:
+  `dca668d530dc6cbc4de05064400b22c2216ada3f`. Frozen ownship regression passed.
+  Original field ZIP has build SHA `unknown`; later artifact matching does not
+  repair that session field. Keep the documented identity limitation.
+- Current recovery docs branch: `codex/eod-20260908-checkpoint`, based on that
+  freeze. Unwired Level-0 work is preserved separately at
+  `9ccab967dfe018f29302fb87e8105a4bb11a89de` on
+  `codex/level0-conversational-voice`: four original modules, two offline tests,
+  original stop report and an explicit experimental-status note. No production
+  integration, build, installation or field readiness is implied.
+- Early free generative voice conversation is historically confirmed: Qwen
+  Realtime Build #402, `4e8b49afff0b8f5d1ec1a008f09f79ae08e1a546`, was accepted
+  by the user; later Yandex tester evidence preserves actual generative text
+  and audio. Earlier fixed small-talk is a different capability. Historical
+  success does not close current Level-0 prerequisites or authorize rollback.
+- Level-0 remains PARTIALLY VALIDATED / NOT INTEGRATED / NOT BUILT / NOT FIELD
+  READY. First probe stopped at `nontext_session` before text input; a later
+  isolated text protocol probe did generate text but returned audio-related
+  events. Zero audio-delta events is proven; zero audio payload across all
+  possible content fields is not. The strict adapter was not relaxed.
+- The audio-envelope audit found documentation/observed-protocol conflicts.
+  Yandex ticket [DT403405](https://center.yandex.cloud/support/tickets/DT403405),
+  submitted 2026-09-08 at 23:22 Moscow, is awaiting provider clarification in
+  the saved record. Session `4a11ff2e5d7a`, response
+  `resp_3d259f4f9f4d4806b03c0792a9b64fbb`. No engineering reply is saved.
+- **Approved presentation policy: authoritative source labels silent by
+  default; provenance remains internal unless explicitly requested.** Internal
+  authority, freshness, provenance and exact binding remain required. The
+  frozen runtime still says `По данным DCS`; removing that spoken prefix is an
+  unimplemented presentation change, not part of this preservation task.
+- Next step: compare the actual provider answer, when available, with the saved
+  evidence. No automatic provider calls, retries, backend switch, parser
+  relaxation, Level-0 integration or build. Runtime/Launcher/SRS/STT/TTS/
+  ToolGateway/Planner remain frozen.
+
+The older sections below remain intact as history. Their `NOT STARTED`, `next`
+and `main`-baseline statements describe their original date and do not override
+this explicitly identified recovery baseline. Newer broader canonical docs at
+`42520a57b01cd314978bcb51bdf4bbc75b38c156` are preserved unchanged under
+`history/2026-09-08/canonical-snapshots/dev-42520a57/`; they retain full-product
+intent and D71–D75 without importing their runtime or older C3/C4 status.
+
 > Canonical long-term project context. Updated: 2026-08-26.
 >
 > Purpose: preserve approved product requirements, architectural invariants, milestone history, real-world test evidence, known risks, and the next agreed action across chats and development sessions.

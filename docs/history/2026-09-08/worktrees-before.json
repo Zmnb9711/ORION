@@ -1,0 +1,117 @@
+{
+  "observed_at_utc": "2026-09-08T20:31:39.049216+00:00",
+  "worktrees": [
+    {
+      "path": "C:\\Users\\Алексей\\Documents\\GitHub\\ORION",
+      "branch": "dev/adr004-post-389",
+      "head": "42520a57b01cd314978bcb51bdf4bbc75b38c156",
+      "status": "?? .coverage\n?? ORION-Core.spec\n?? ORION-Launcher.spec\n?? build/\n?? data/\n?? dist-installer/\n?? dist-product/\n?? dist-stage51-product-20260825/\n?? dist/\n?? orion_dcs.egg-info/\n?? reference_tests/qwen_realtime/\n?? reference_tests/qwen_realtime_gui/\n?? release-20260825/\n?? release-aircraft-identity-20260902-27e94bd/\n?? release-atc-status-20260901-6dea803/\n?? release-build-identity-stt-provider-20260831-d3fe39e/\n?? release-c3-realtime-presentation-20260904-9ed45bb/\n?? release-c31-informational-selector-20260904-8182e89/\n?? release-communication-profiles-20260901-01a499e/\n?? release-communication-profiles-20260901-21c6cbb/\n?? release-ia1-20260826/\n?? release-ia11-20260826/\n?? release-ia11-auth-20260826/\n?? release-ia11-http400-20260826/\n?? release-ia11-retry-20260826/\n?? release-ia2-20260826/\n?? release-ia3-20260827/\n?? release-ia3-final-20260827/\n?? release-ia4-20260827/\n?? release-ia5-20260827/\n?? release-ia6-live-20260827/\n?? release-live-golden-20260828/\n?? release-live-golden-input-fix-20260828/\n?? release-live-golden-merge-20260830/\n?? release-live-golden-option-a-20260830/\n?? release-live-golden-vad-fix-20260828/\n?? release-live-golden-wakeup-fix-20260828/\n?? release-pre-ia6-lifecycle-20260827/\n?? release-pure-takeoff-20260901-6f6f2f1/\n?? release-speechkit-barrier-candidate-20260831-43c364a/\n?? release-speechkit-field-input-20260831-5259769/\n?? release-speechkit-streaming-tts-20260831-0902710/\n?? release-speechkit-tts-telemetry-20260831-92c059d/\n?? release-speechkit-v3-stt-20260831/\n?? release-srs-7082-tx-end-20260831-55e70f8/\n?? release-srs-cadence-liveness-20260901-5cc976a/\n?? release-stage61-20260825/\n?? release-stage62-20260826/\n?? release-stage6b2-20260828/\n?? release-tts-propagation-20260901-a716b44/\n?? runtime/",
+      "tracked_diff": "",
+      "staged_diff": ""
+    },
+    {
+      "path": "C:\\Users\\Алексей\\Documents\\GitHub\\ORION-eod-20260908",
+      "branch": "codex/eod-20260908-checkpoint",
+      "head": "dca668d530dc6cbc4de05064400b22c2216ada3f",
+      "status": "?? docs/history/2026-09-08/",
+      "tracked_diff": "",
+      "staged_diff": ""
+    },
+    {
+      "path": "C:\\Users\\Алексей\\Documents\\GitHub\\ORION-fallback-20260906-1800",
+      "branch": "codex/latency-profile-20260908",
+      "head": "92a019f31a57d4758d1133aeaf0ba872f4b64508",
+      "status": "",
+      "tracked_diff": "",
+      "staged_diff": ""
+    },
+    {
+      "path": "C:\\Users\\Алексей\\Documents\\GitHub\\ORION-hybrid-aircraft-after-cleanup",
+      "branch": "codex/hybrid-aircraft-identity-after-cleanup",
+      "head": "260434f20e5cb962e558a78bcd181efcfaa7b9ac",
+      "status": "",
+      "tracked_diff": "",
+      "staged_diff": ""
+    },
+    {
+      "path": "C:\\Users\\Алексей\\Documents\\GitHub\\ORION-hybrid-aircraft-contract-fix",
+      "branch": "codex/hybrid-aircraft-decomposition-contract-fix",
+      "head": "013a36a956cb67565290c506c0e7bda0a89fdf24",
+      "status": "",
+      "tracked_diff": "",
+      "staged_diff": ""
+    },
+    {
+      "path": "C:\\Users\\Алексей\\Documents\\GitHub\\ORION-hybrid-aircraft-local-routing",
+      "branch": "codex/hybrid-aircraft-local-routing",
+      "head": "8f8009c5e7e00eb3c59eb0247156b005dd932729",
+      "status": "",
+      "tracked_diff": "",
+      "staged_diff": ""
+    },
+    {
+      "path": "C:\\Users\\Алексей\\Documents\\GitHub\\ORION-level0-conversation",
+      "branch": "codex/level0-conversational-voice",
+      "head": "dca668d530dc6cbc4de05064400b22c2216ada3f",
+      "status": "?? docs/level0-conversation-prerequisite-stop-20260908.md\n?? orion/conversational_contracts.py\n?? orion/conversational_core.py\n?? orion/conversational_presentation.py\n?? orion/yandex_realtime_text_conversation.py\n?? tests/test_conversation_prerequisites.py\n?? tests/test_conversation_presentation.py",
+      "tracked_diff": "",
+      "staged_diff": ""
+    },
+    {
+      "path": "C:\\Users\\Алексей\\Documents\\GitHub\\ORION-qwen-cleanup-333ca5e",
+      "branch": "codex/qwen-cleanup-bound-333ca5e",
+      "head": "333ca5e481c89b8294e0f491fbd2d2e6d6e87319",
+      "status": "?? tests/test_qwen_cleanup_stop_boundary.py",
+      "tracked_diff": "",
+      "staged_diff": ""
+    },
+    {
+      "path": "C:\\Users\\Алексей\\Documents\\GitHub\\ORION-qwen-cleanup-after-truthful-stop",
+      "branch": "codex/qwen-cleanup-bound-after-truthful-stop",
+      "head": "474d11bc349ce70986524faf9b53ed7968e25c24",
+      "status": "",
+      "tracked_diff": "",
+      "staged_diff": ""
+    },
+    {
+      "path": "C:\\Users\\Алексей\\Documents\\GitHub\\ORION-recovery-2026-08-27",
+      "branch": "recovery/2026-08-27-stage6b",
+      "head": "29bf6770ee71a855674405f4a24f690b0a894158",
+      "status": "?? .coverage\n?? data/",
+      "tracked_diff": "",
+      "staged_diff": ""
+    },
+    {
+      "path": "C:\\Users\\Алексей\\Documents\\GitHub\\ORION-recovery-a955d7c",
+      "branch": "recovery/a955d7c-radio-validated",
+      "head": "2c9d20f4ca406ef7039e4672252e8eb370ac4dc9",
+      "status": "?? .coverage\n?? .coverage.DESKTOP-PV0SMQG.pid40704.XYjv7Sfx.c\n?? .coverage.DESKTOP-PV0SMQG.pid4584.X4JTjDex.HNQIp837rWOh\n?? .coverage.DESKTOP-PV0SMQG.pid4584.XRgYMQEx.Hb61XX6odiGh\n?? data/\n?? docs/yandex-stt-paced-latency-probe.md\n?? orion/full_voice_qwen.py\n?? tests/full_voice_provider_gate.py\n?? tests/stt_pacing_probe.py\n?? tests/test_full_voice_qwen.py\n?? tests/test_stt_pacing_probe.py",
+      "tracked_diff": "",
+      "staged_diff": ""
+    },
+    {
+      "path": "C:\\Users\\Алексей\\Documents\\GitHub\\ORION-truthful-voice-stop-333ca5e",
+      "branch": "codex/truthful-voice-stop-333ca5e",
+      "head": "7b041d64b663fad1862c14d960c2b9c52cab0c99",
+      "status": "",
+      "tracked_diff": "",
+      "staged_diff": ""
+    },
+    {
+      "path": "C:\\Users\\Алексей\\Documents\\ORION-Restoration\\worktrees\\restore-20260827-2200",
+      "branch": "restore/20260827-2200",
+      "head": "b7800db89e4470bc9aea4e89d5376d5cb9fafc15",
+      "status": "",
+      "tracked_diff": "",
+      "staged_diff": ""
+    },
+    {
+      "path": "C:\\Users\\Алексей\\Documents\\Codex\\2026-08-24\\referenced-chatgpt-conversation-this-is-an\\work\\ORION",
+      "branch": "dev/adr004-post-389",
+      "head": "1d4e0cbc299c8e2dd3db041bec10099b6172f68c",
+      "status": "",
+      "tracked_diff": "",
+      "staged_diff": ""
+    }
+  ]
+}

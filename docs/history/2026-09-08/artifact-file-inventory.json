@@ -1,0 +1,212 @@
+[
+  {
+    "source": "C:\\Users\\Алексей\\Documents\\ORION-Builds\\hybrid-aircraft-4ca5eff-20260908\\artifact-identity.json",
+    "size": 612751,
+    "sha256": "73742a72b8db925c5370a2316113de728d3c6b65ed6d17e8cea49341fc5b9b34"
+  },
+  {
+    "source": "C:\\Users\\Алексей\\Documents\\ORION-Builds\\hybrid-aircraft-4ca5eff-20260908\\assembled-control.json",
+    "size": 143,
+    "sha256": "87114add73d5c78cfada9100b95679291a91f03672f5625879bfdb68f395ce7b"
+  },
+  {
+    "source": "C:\\Users\\Алексей\\Documents\\ORION-Builds\\hybrid-aircraft-4ca5eff-20260908\\assembled-integrated.json",
+    "size": 848,
+    "sha256": "18770e21e1e1ac0108cb07759f4956e9fecc57af6e86a52181330c7b7516d65d"
+  },
+  {
+    "source": "C:\\Users\\Алексей\\Documents\\ORION-Builds\\hybrid-aircraft-4ca5eff-20260908\\assembled-native.json",
+    "size": 292,
+    "sha256": "47a7a8cd74c5d64e82771ec6a8aebff1b01f67b140e4c334f4471fb313ab1cbb"
+  },
+  {
+    "source": "C:\\Users\\Алексей\\Documents\\ORION-Builds\\hybrid-aircraft-4ca5eff-20260908\\build.ps1",
+    "size": 2149,
+    "sha256": "b8e1cb4f1baf98634180f713e69404c5bc7e80b517b6f3937ca592f1bfe73766"
+  },
+  {
+    "source": "C:\\Users\\Алексей\\Documents\\ORION-Builds\\hybrid-aircraft-4ca5eff-20260908\\core-build.log",
+    "size": 40843,
+    "sha256": "9ac9f057908611930c428a8da56b2c3e5ae3481f45f6f4f5d28d7633714c2961"
+  },
+  {
+    "source": "C:\\Users\\Алексей\\Documents\\ORION-Builds\\hybrid-aircraft-4ca5eff-20260908\\installer-build.log",
+    "size": 504656,
+    "sha256": "ccebafe558d8ed18f32590ded86827f0fa546f156449a66dc0ff73c5494cad11"
+  },
+  {
+    "source": "C:\\Users\\Алексей\\Documents\\ORION-Builds\\hybrid-aircraft-4ca5eff-20260908\\launcher-build.log",
+    "size": 24609,
+    "sha256": "bb5562de512b362e24eedd9386c06d6ef406d078505be3b2935b15b55a9a824a"
+  },
+  {
+    "source": "C:\\Users\\Алексей\\Documents\\ORION-Builds\\hybrid-aircraft-4ca5eff-20260908\\production.diff",
+    "size": 43933,
+    "sha256": "e797e8cb047f27e06b7d484460db1de881f344540ca91c47c2f6b092cc6a3dbf"
+  },
+  {
+    "source": "C:\\Users\\Алексей\\Documents\\ORION-Builds\\hybrid-aircraft-4ca5eff-20260908\\smoke.ps1",
+    "size": 2520,
+    "sha256": "6300dbc061b17e2e26d36be1369e5c088282d8e7612728b67adb8dcd87f2b985"
+  },
+  {
+    "source": "C:\\Users\\Алексей\\Documents\\ORION-Builds\\hybrid-aircraft-4ca5eff-20260908\\source.zip",
+    "size": 2120595,
+    "sha256": "0a8d825b05644a983f1e34b5cc2cab3fadba7c88d3dbd5b3bf1d8d67f439d9c7"
+  },
+  {
+    "source": "C:\\Users\\Алексей\\Documents\\ORION-Builds\\hybrid-aircraft-4ca5eff-20260908\\verify_package.py",
+    "size": 4709,
+    "sha256": "ae7e21b473955e05091e04859e721ed0b2adbd5ec90b1a05526e02a3d65fe5b0"
+  },
+  {
+    "source": "C:\\Users\\Алексей\\Documents\\ORION-Builds\\hybrid-decomposition-contract-fix-20260908\\artifact-identity.json",
+    "size": 612862,
+    "sha256": "e48cff0b11b385fe069b8870e79303152a08a7652195c0f681816df1d3365ced"
+  },
+  {
+    "source": "C:\\Users\\Алексей\\Documents\\ORION-Builds\\hybrid-decomposition-contract-fix-20260908\\assembled-control.json",
+    "size": 143,
+    "sha256": "87114add73d5c78cfada9100b95679291a91f03672f5625879bfdb68f395ce7b"
+  },
+  {
+    "source": "C:\\Users\\Алексей\\Documents\\ORION-Builds\\hybrid-decomposition-contract-fix-20260908\\assembled-integrated.json",
+    "size": 868,
+    "sha256": "f3c7fce1d9ba4f5e755b44629f35ea600376d36944519b78cad356b7d18c6b46"
+  },
+  {
+    "source": "C:\\Users\\Алексей\\Documents\\ORION-Builds\\hybrid-decomposition-contract-fix-20260908\\assembled-native.json",
+    "size": 292,
+    "sha256": "47a7a8cd74c5d64e82771ec6a8aebff1b01f67b140e4c334f4471fb313ab1cbb"
+  },
+  {
+    "source": "C:\\Users\\Алексей\\Documents\\ORION-Builds\\hybrid-decomposition-contract-fix-20260908\\build-source.json",
+    "size": 289,
+    "sha256": "a51599e842c083fb54384767c3712f1b014cfae37ee36ecb33b3dce9cd52819b"
+  },
+  {
+    "source": "C:\\Users\\Алексей\\Documents\\ORION-Builds\\hybrid-decomposition-contract-fix-20260908\\build.ps1",
+    "size": 2149,
+    "sha256": "b8e1cb4f1baf98634180f713e69404c5bc7e80b517b6f3937ca592f1bfe73766"
+  },
+  {
+    "source": "C:\\Users\\Алексей\\Documents\\ORION-Builds\\hybrid-decomposition-contract-fix-20260908\\core-build.log",
+    "size": 40925,
+    "sha256": "bbe8c69036ab785658cf50580bcbe9e4dc79966232d25b1b8456988375ec5e1d"
+  },
+  {
+    "source": "C:\\Users\\Алексей\\Documents\\ORION-Builds\\hybrid-decomposition-contract-fix-20260908\\installer-build.log",
+    "size": 537346,
+    "sha256": "cfb79ec50fe5751dae1facb5b56ae2a738936fa9c8570b15f347c0ba6fcaa1fe"
+  },
+  {
+    "source": "C:\\Users\\Алексей\\Documents\\ORION-Builds\\hybrid-decomposition-contract-fix-20260908\\launcher-build.log",
+    "size": 24719,
+    "sha256": "4e57a045fc1fdc3caafdc141a757137cffd8355dab28c36a9eecf14cad946a9e"
+  },
+  {
+    "source": "C:\\Users\\Алексей\\Documents\\ORION-Builds\\hybrid-decomposition-contract-fix-20260908\\offline-regression.xml",
+    "size": 104820,
+    "sha256": "3322245d37d3b594bf746636a09d68c65256f52350f1439287ed3d2787aefb09"
+  },
+  {
+    "source": "C:\\Users\\Алексей\\Documents\\ORION-Builds\\hybrid-decomposition-contract-fix-20260908\\production.diff",
+    "size": 10369,
+    "sha256": "95e8415b3354e57c1e82aee1bc2dbc1bc582b30229cb9c0576803c51147b800f"
+  },
+  {
+    "source": "C:\\Users\\Алексей\\Documents\\ORION-Builds\\hybrid-decomposition-contract-fix-20260908\\smoke.ps1",
+    "size": 2525,
+    "sha256": "2d40a615bd20166952ccd9eff98cfa6015bbcea46181a1f4bd8d7d130b43310a"
+  },
+  {
+    "source": "C:\\Users\\Алексей\\Documents\\ORION-Builds\\hybrid-decomposition-contract-fix-20260908\\source.zip",
+    "size": 2132461,
+    "sha256": "c3b18494180f25a3cecdb7ee92fed430d56f284e5b8bf28fa24d5e83b0a2f431"
+  },
+  {
+    "source": "C:\\Users\\Алексей\\Documents\\ORION-Builds\\hybrid-decomposition-contract-fix-20260908\\verify_package.py",
+    "size": 5197,
+    "sha256": "c1d3c3d9365cdec7128e7e4d04cce6acf76157b0f8ad7f07e32e88793e331980"
+  },
+  {
+    "source": "C:\\Users\\Алексей\\Documents\\ORION-Builds\\hybrid-local-routing-20260908\\artifact-identity.json",
+    "size": 612849,
+    "sha256": "6db73e466970839c67953cbf28ea4b238c22756a1f7c0df6dfb677012e6f2070"
+  },
+  {
+    "source": "C:\\Users\\Алексей\\Documents\\ORION-Builds\\hybrid-local-routing-20260908\\assembled-control.json",
+    "size": 143,
+    "sha256": "87114add73d5c78cfada9100b95679291a91f03672f5625879bfdb68f395ce7b"
+  },
+  {
+    "source": "C:\\Users\\Алексей\\Documents\\ORION-Builds\\hybrid-local-routing-20260908\\assembled-integrated.json",
+    "size": 842,
+    "sha256": "e18935f1264366e63d0dfc0940852216ed1ea65318e1f9d5fd386acf71740034"
+  },
+  {
+    "source": "C:\\Users\\Алексей\\Documents\\ORION-Builds\\hybrid-local-routing-20260908\\assembled-native.json",
+    "size": 292,
+    "sha256": "47a7a8cd74c5d64e82771ec6a8aebff1b01f67b140e4c334f4471fb313ab1cbb"
+  },
+  {
+    "source": "C:\\Users\\Алексей\\Documents\\ORION-Builds\\hybrid-local-routing-20260908\\build-source.json",
+    "size": 365,
+    "sha256": "d37d470edaa895504a8fe5f938cb9510a1aa2984678b6403f2bb4726ae491085"
+  },
+  {
+    "source": "C:\\Users\\Алексей\\Documents\\ORION-Builds\\hybrid-local-routing-20260908\\build.ps1",
+    "size": 2149,
+    "sha256": "b8e1cb4f1baf98634180f713e69404c5bc7e80b517b6f3937ca592f1bfe73766"
+  },
+  {
+    "source": "C:\\Users\\Алексей\\Documents\\ORION-Builds\\hybrid-local-routing-20260908\\core-build.log",
+    "size": 40750,
+    "sha256": "757eb17db2b5c0a41d51b9efd83b32fdb845c6025bc6863459660c16dfc14a52"
+  },
+  {
+    "source": "C:\\Users\\Алексей\\Documents\\ORION-Builds\\hybrid-local-routing-20260908\\installer-build.log",
+    "size": 494849,
+    "sha256": "58779b4c34eda81115ffa254ae4c57a96e5aa785e6e15ea6d401226413137c41"
+  },
+  {
+    "source": "C:\\Users\\Алексей\\Documents\\ORION-Builds\\hybrid-local-routing-20260908\\launcher-build.log",
+    "size": 24558,
+    "sha256": "f796d24815d0b451631189e61d2080dd42f7972d8aa3d9f19fc35d338617032b"
+  },
+  {
+    "source": "C:\\Users\\Алексей\\Documents\\ORION-Builds\\hybrid-local-routing-20260908\\offline-regression.xml",
+    "size": 135530,
+    "sha256": "cb49890d78c362f7cbc9bcee05c1f3f12b3ddc5f4ba7ac1fd96b695c270c34e5"
+  },
+  {
+    "source": "C:\\Users\\Алексей\\Documents\\ORION-Builds\\hybrid-local-routing-20260908\\production.diff",
+    "size": 7927,
+    "sha256": "2b4ad117671abd720477a61a0569069a155521e6ba391b57bc8799ce597872c5"
+  },
+  {
+    "source": "C:\\Users\\Алексей\\Documents\\ORION-Builds\\hybrid-local-routing-20260908\\smoke.ps1",
+    "size": 2525,
+    "sha256": "122bda7883c390712d450765bc992e810a137d058e68f6f8bb51180aaa73b1b0"
+  },
+  {
+    "source": "C:\\Users\\Алексей\\Documents\\ORION-Builds\\hybrid-local-routing-20260908\\source.zip",
+    "size": 2136878,
+    "sha256": "f4fbc588dcedada053113a2be3d88f5d271e9258c5b6293d06edbb8e146822b6"
+  },
+  {
+    "source": "C:\\Users\\Алексей\\Documents\\ORION-Builds\\hybrid-local-routing-20260908\\verify_package.py",
+    "size": 5198,
+    "sha256": "da5f905f11bf0afba0d22e2b956da7ece1d81c45659b2b0971a353bf39b24dea"
+  },
+  {
+    "source": "C:\\Users\\Алексей\\Downloads\\8b671f56c3ff3df7035ae1d1ec80174fa7f73adfa50705729b779ab8d5aebfe7-2026-08-28-13-02-09-2d3aca73e120442a869eecc0aec68752.zip",
+    "size": 233063533,
+    "sha256": "edd800f61210c6c682414e960c1a54d62dbbcc6deed27b7fdf741dc5499937db",
+    "disposition": "Original kept locally; unrelated export content not published",
+    "diagnostic_entry_matches": [
+      "file_00000000af6c81fb87a42f168505133c.dat"
+    ],
+    "diagnostic_sha256": "d869b61eab64813ebddf043f3b84b8c26fa596a060fcf5852043760677c637f7"
+  }
+]

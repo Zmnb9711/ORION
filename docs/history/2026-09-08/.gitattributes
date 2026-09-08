@@ -1,0 +1,4 @@
+# Preserve original evidence bytes and hashes across platforms.
+* -text whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
+# Original Markdown report intentionally uses two-space hard line breaks.
+reports/early-free-conversation-audit.md whitespace=-blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol

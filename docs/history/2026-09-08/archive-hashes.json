@@ -1,0 +1,247 @@
+[
+  {
+    "path": "docs/history/2026-09-08/.gitattributes",
+    "size": 316,
+    "sha256": "964fa1eb7d2eef8d00717129142d5632449e407bd225fac4e874dc0955a78e48"
+  },
+  {
+    "path": "docs/history/2026-09-08/artifact-file-inventory.json",
+    "size": 10054,
+    "sha256": "36d10e666ab5a68de4d41381d83b296cad6d212f67d57a08b07993f5fcf9390c"
+  },
+  {
+    "path": "docs/history/2026-09-08/branches-before.json",
+    "size": 12800,
+    "sha256": "ed65716b09f8f543901a99e1f5148464df02330350ffaa155f6a547e14b2b5fc"
+  },
+  {
+    "path": "docs/history/2026-09-08/canonical-snapshots/dev-42520a57/orion-canonical-development-policy.md",
+    "size": 8600,
+    "sha256": "ce11f683ec0002a68a29f756fff136c13968338ca2ee45c06e205d0e678f18eb"
+  },
+  {
+    "path": "docs/history/2026-09-08/canonical-snapshots/dev-42520a57/orion-development-history-2026-08-26-28.md",
+    "size": 17787,
+    "sha256": "84d2b384497bbdfcfd34d59a10c29857129c8c27b8de6f1a9b863c8ae574652d"
+  },
+  {
+    "path": "docs/history/2026-09-08/canonical-snapshots/dev-42520a57/orion-master-architecture-checkpoint-2026-09-01.md",
+    "size": 51454,
+    "sha256": "df7d5a2d4df3569b4517a67b07a40f1d57524581a071eca527a15063e380bea0"
+  },
+  {
+    "path": "docs/history/2026-09-08/canonical-snapshots/dev-42520a57/orion-master-decision-register-2026-09-01.md",
+    "size": 23401,
+    "sha256": "40f751bbe695892640d60320bfc47f1b3912874de19532415d7f2a6409acfb69"
+  },
+  {
+    "path": "docs/history/2026-09-08/canonical-snapshots/dev-42520a57/ORION_PROJECT_MEMORY.md",
+    "size": 90006,
+    "sha256": "f2cc3020f349ea80eee442c6cf2f575959ba6f04a2d761b57c793fd7cab82112"
+  },
+  {
+    "path": "docs/history/2026-09-08/evidence/field/ORION-Test-Evidence-20260908-123259.zip",
+    "size": 2340,
+    "sha256": "8f592bc26d3fb31e1a2f15fdf1347bdb170e8c6b0c8ce1269a44297794e657a8"
+  },
+  {
+    "path": "docs/history/2026-09-08/evidence/field/ORION-Test-Evidence-20260908-123800.zip",
+    "size": 2334,
+    "sha256": "3e5433f45cdc85540f7a5a60136fdc292ed3a11cd2a41cb74fdd26089b9d3aad"
+  },
+  {
+    "path": "docs/history/2026-09-08/evidence/field/ORION-Test-Evidence-20260908-155651.zip",
+    "size": 2157,
+    "sha256": "0f6cdafa6dbdf46362c162fd174cbabc52b8ca3746bb4b67254f04d2e6c18057"
+  },
+  {
+    "path": "docs/history/2026-09-08/evidence/field/ORION-Test-Evidence-20260908-155733.zip",
+    "size": 1465,
+    "sha256": "be50102c7b0e61116fb4fe3b986de435baa5f1bf4ed367cf2600022ab1e82393"
+  },
+  {
+    "path": "docs/history/2026-09-08/evidence/field/ORION-Test-Evidence-20260908-163908.zip",
+    "size": 2209,
+    "sha256": "86710fbea868591551099b23cc8c75d6e3e033e0313e3255e5264f8b4d7cc0e7"
+  },
+  {
+    "path": "docs/history/2026-09-08/evidence/field/ORION-Test-Evidence-20260908-173035.zip",
+    "size": 3690,
+    "sha256": "8e85904b00d198d5556d11027653a58cdb36b0305618682a85cf689ea0d25272"
+  },
+  {
+    "path": "docs/history/2026-09-08/evidence/hybrid-aircraft-4ca5eff-20260908/artifact-identity.json",
+    "size": 612751,
+    "sha256": "73742a72b8db925c5370a2316113de728d3c6b65ed6d17e8cea49341fc5b9b34"
+  },
+  {
+    "path": "docs/history/2026-09-08/evidence/hybrid-aircraft-4ca5eff-20260908/assembled-control.json",
+    "size": 143,
+    "sha256": "87114add73d5c78cfada9100b95679291a91f03672f5625879bfdb68f395ce7b"
+  },
+  {
+    "path": "docs/history/2026-09-08/evidence/hybrid-aircraft-4ca5eff-20260908/assembled-integrated.json",
+    "size": 848,
+    "sha256": "18770e21e1e1ac0108cb07759f4956e9fecc57af6e86a52181330c7b7516d65d"
+  },
+  {
+    "path": "docs/history/2026-09-08/evidence/hybrid-aircraft-4ca5eff-20260908/assembled-native.json",
+    "size": 292,
+    "sha256": "47a7a8cd74c5d64e82771ec6a8aebff1b01f67b140e4c334f4471fb313ab1cbb"
+  },
+  {
+    "path": "docs/history/2026-09-08/evidence/hybrid-decomposition-contract-fix-20260908/artifact-identity.json",
+    "size": 612862,
+    "sha256": "e48cff0b11b385fe069b8870e79303152a08a7652195c0f681816df1d3365ced"
+  },
+  {
+    "path": "docs/history/2026-09-08/evidence/hybrid-decomposition-contract-fix-20260908/assembled-control.json",
+    "size": 143,
+    "sha256": "87114add73d5c78cfada9100b95679291a91f03672f5625879bfdb68f395ce7b"
+  },
+  {
+    "path": "docs/history/2026-09-08/evidence/hybrid-decomposition-contract-fix-20260908/assembled-integrated.json",
+    "size": 868,
+    "sha256": "f3c7fce1d9ba4f5e755b44629f35ea600376d36944519b78cad356b7d18c6b46"
+  },
+  {
+    "path": "docs/history/2026-09-08/evidence/hybrid-decomposition-contract-fix-20260908/assembled-native.json",
+    "size": 292,
+    "sha256": "47a7a8cd74c5d64e82771ec6a8aebff1b01f67b140e4c334f4471fb313ab1cbb"
+  },
+  {
+    "path": "docs/history/2026-09-08/evidence/hybrid-decomposition-contract-fix-20260908/build-source.json",
+    "size": 289,
+    "sha256": "a51599e842c083fb54384767c3712f1b014cfae37ee36ecb33b3dce9cd52819b"
+  },
+  {
+    "path": "docs/history/2026-09-08/evidence/hybrid-decomposition-contract-fix-20260908/offline-regression.xml",
+    "size": 104820,
+    "sha256": "3322245d37d3b594bf746636a09d68c65256f52350f1439287ed3d2787aefb09"
+  },
+  {
+    "path": "docs/history/2026-09-08/evidence/hybrid-local-routing-20260908/artifact-identity.json",
+    "size": 612849,
+    "sha256": "6db73e466970839c67953cbf28ea4b238c22756a1f7c0df6dfb677012e6f2070"
+  },
+  {
+    "path": "docs/history/2026-09-08/evidence/hybrid-local-routing-20260908/assembled-control.json",
+    "size": 143,
+    "sha256": "87114add73d5c78cfada9100b95679291a91f03672f5625879bfdb68f395ce7b"
+  },
+  {
+    "path": "docs/history/2026-09-08/evidence/hybrid-local-routing-20260908/assembled-integrated.json",
+    "size": 842,
+    "sha256": "e18935f1264366e63d0dfc0940852216ed1ea65318e1f9d5fd386acf71740034"
+  },
+  {
+    "path": "docs/history/2026-09-08/evidence/hybrid-local-routing-20260908/assembled-native.json",
+    "size": 292,
+    "sha256": "47a7a8cd74c5d64e82771ec6a8aebff1b01f67b140e4c334f4471fb313ab1cbb"
+  },
+  {
+    "path": "docs/history/2026-09-08/evidence/hybrid-local-routing-20260908/build-source.json",
+    "size": 365,
+    "sha256": "d37d470edaa895504a8fe5f938cb9510a1aa2984678b6403f2bb4726ae491085"
+  },
+  {
+    "path": "docs/history/2026-09-08/evidence/hybrid-local-routing-20260908/offline-regression.xml",
+    "size": 135530,
+    "sha256": "cb49890d78c362f7cbc9bcee05c1f3f12b3ddc5f4ba7ac1fd96b695c270c34e5"
+  },
+  {
+    "path": "docs/history/2026-09-08/evidence/level0-conversation-20260908/prerequisite-regression.xml",
+    "size": 196780,
+    "sha256": "c552fe01961d147e443bd891cbcd01380a0b90404b334136026cec7e225193e1"
+  },
+  {
+    "path": "docs/history/2026-09-08/evidence/level0-conversation-20260908/provider-probe-result.json",
+    "size": 1373,
+    "sha256": "6597173f03bc272f3fea01f5a956d9a0c08937b4aa34b75b98a53d2b9b53b152"
+  },
+  {
+    "path": "docs/history/2026-09-08/evidence/level0-conversation-20260908/provider_probe.py",
+    "size": 4300,
+    "sha256": "8fc323fbff1f309bb8c7633f95cf164a175380535655c0ef24f3feaec4546077"
+  },
+  {
+    "path": "docs/history/2026-09-08/evidence/yandex-realtime-text-protocol-probe-20260908/attempt-latch.json",
+    "size": 96,
+    "sha256": "a10a8c8de0e2c3dfcfff26c245c9dd6eb5a11cea012e3c8c4d9e5af0389ddd3b"
+  },
+  {
+    "path": "docs/history/2026-09-08/evidence/yandex-realtime-text-protocol-probe-20260908/offline-characterization.json",
+    "size": 72,
+    "sha256": "616b4b9b9a62cffe04f0786a191ae5a94a41cd24d8517e21d3d0848a51171f3e"
+  },
+  {
+    "path": "docs/history/2026-09-08/evidence/yandex-realtime-text-protocol-probe-20260908/protocol_probe.py",
+    "size": 17773,
+    "sha256": "4668f7a75e12bf5782a1fa3a6d06916127f0cfcd783641e87655e1aa7ad68e2f"
+  },
+  {
+    "path": "docs/history/2026-09-08/evidence/yandex-realtime-text-protocol-probe-20260908/provider-protocol-result.json",
+    "size": 186124,
+    "sha256": "c45012c772fbb45d5b5b1c0b30135401548046d08a5127980b7a90a1088e6dad"
+  },
+  {
+    "path": "docs/history/2026-09-08/evidence/yandex-realtime-text-protocol-probe-20260908/test_protocol_probe.py",
+    "size": 7222,
+    "sha256": "cae680c98b5fa1d8f02d3ad73a8128908106b2300ae493228108afeeae5bf025"
+  },
+  {
+    "path": "docs/history/2026-09-08/evidence-manifest.json",
+    "size": 15474,
+    "sha256": "5af1a7a9982c9b8664366bcadb1a6f7ae9a269ee2c8601cc05e96134ec1a502b"
+  },
+  {
+    "path": "docs/history/2026-09-08/level0-original-files.json",
+    "size": 1550,
+    "sha256": "5e21517d67e1dc8c67a8b1d1044ef83a8550f94ed736b20db2b201aec8cf9b7d"
+  },
+  {
+    "path": "docs/history/2026-09-08/preservation-validation.json",
+    "size": 8067,
+    "sha256": "6ed7a40de36b2c3b32747a04a5935de9fc2683f3142a9e9968ae92e9479b6624"
+  },
+  {
+    "path": "docs/history/2026-09-08/README.md",
+    "size": 3406,
+    "sha256": "4ca6f6aba9fe008e4d09bf9db228774218d47ffdb4b13dc8bf86905923fd2492"
+  },
+  {
+    "path": "docs/history/2026-09-08/reports/early-free-conversation-audit.md",
+    "size": 39551,
+    "sha256": "1ab6f39022e719937d89fd7bb39580df9b24f3733823c13f59583c98f945d4d7"
+  },
+  {
+    "path": "docs/history/2026-09-08/reports/latency-profile.md",
+    "size": 11639,
+    "sha256": "179a1af376ea084786a3910d8c2d5e8f62c111087c04116bdd5b78d3e721c4e0"
+  },
+  {
+    "path": "docs/history/2026-09-08/reports/level0-conversation-prerequisite-stop-20260908.md",
+    "size": 11460,
+    "sha256": "f972e8b84dca71dc3940d6af4425716105c87c85f7879cb74cad08840c0482b7"
+  },
+  {
+    "path": "docs/history/2026-09-08/reports/support-ticket-DT403405.md",
+    "size": 6174,
+    "sha256": "cff7438756741bce95b1b704827a6163fda3dbeaffe90aacd9702c77618607ae"
+  },
+  {
+    "path": "docs/history/2026-09-08/reports/yandex-audio-envelope-contract-audit.md",
+    "size": 32159,
+    "sha256": "5446dfadeb11496c3ed822c1734ce37f2ab2566be5f3115e171069f50131bf8f"
+  },
+  {
+    "path": "docs/history/2026-09-08/reports/yandex-text-protocol-probe-report.md",
+    "size": 23682,
+    "sha256": "f0a60a8ce4ee5998c88d7e87eca7bd7ec34b0a1a033622d5aeeed23ee383b2f5"
+  },
+  {
+    "path": "docs/history/2026-09-08/worktrees-before.json",
+    "size": 6825,
+    "sha256": "ba6bbb6b08b435c94d256e57248edc5791de5c2d92e6306efd0ea352f4aea096"
+  }
+]

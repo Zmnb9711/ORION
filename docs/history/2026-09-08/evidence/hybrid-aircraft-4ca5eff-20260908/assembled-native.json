@@ -1,0 +1,1 @@
+{"audio_devices_opened": false, "decoded_bytes": 1280, "encoded_bytes": 15, "network_used": false, "ok": true, "opus_version": "libopus 1.6.1", "resampler": {"roundtrip_bytes": 1280, "rx_input_samples": 640, "rx_output_samples": 1764, "samplerate_version": "0.2.4", "tx_output_samples": 640}}

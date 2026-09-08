@@ -1,0 +1,33 @@
+{
+  "time": "2026-09-08T19:01:02.236089+00:00",
+  "credential_present": true,
+  "folder_present": true,
+  "audio_calls": 0,
+  "srs_calls": 0,
+  "planner_calls": 0,
+  "tool_gateway_calls": 0,
+  "status": "FAILED_STOP_NO_BUILD",
+  "turns": [{
+    "input_planned_not_sent": "Что-то сегодня полёт тяжело идёт.",
+    "turn_id": "4ef75b7d-6774-459d-b535-fd0360e567a1",
+    "cancel_probe": false,
+    "status": "failed",
+    "failure_category": "nontext_session",
+    "elapsed_ms": 1594.0000000409782,
+    "connections": 1,
+    "user_items_sent": 0,
+    "response_create_sent": 0,
+    "session_update_output_modalities": ["text"],
+    "response_output_modalities_exact_value": "NOT_RETAINED",
+    "events": [
+      {"event": "connect_started", "monotonic": 592569.281},
+      {"wire_event_type": "session.created"},
+      {"wire_event_type": "session.updated"},
+      {"event": "closed", "monotonic": 592570.875}
+    ],
+    "owned_tasks": 0,
+    "session_closed": true,
+    "websocket_closed": true
+  }],
+  "interpretation_limit": "The adapter rejects session.updated.session.output_modalities unless absent/None or exactly [text]. The exact returned value was not retained. This is NOT proof that Yandex lacks text-only generation capability. No user text or response.create was sent; no generated text or live generative-variation evidence exists."
+}

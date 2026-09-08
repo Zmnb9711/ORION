@@ -1,0 +1,6 @@
+{
+  "source_commit": "f0c9e364ed653e9497d7e2ef8ef8f35dc97157d4",
+  "source_tree": "cb167c0c15425e94739b712196836f60071bb686",
+  "parent_commit": "013a36a956cb67565290c506c0e7bda0a89fdf24",
+  "policy": "Build archived staged tree; commit this exact implementation tree only after package/smoke PASS. Documentation checkpoint follows separately after those gates."
+}
