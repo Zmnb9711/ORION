@@ -4,7 +4,11 @@ ORION ARCHITECTURE GUARD: OFF (explicit historical recovery exemption).
 
 ## Status and exact source identity
 
-IMPLEMENTED + OFFLINE/BUILD VALIDATED. FIELD RETEST PENDING.
+IMPLEMENTED + OFFLINE/BUILD VALIDATED. HYBRID AIRCRAFT FIELD GATE PASSED.
+
+The subsequent field result and its build-identity limitation are recorded in
+`hybrid-aircraft-field-freeze-20260908.md`. The original ZIP reports build SHA
+unknown; later installed EXE hash equality is not retroactive session identity.
 
 Parent: `013a36a956cb67565290c506c0e7bda0a89fdf24`.
 Required ancestry verified: `333ca5e` -> `7b041d6` (truthful STOP) ->
@@ -160,7 +164,7 @@ External `artifact-identity.json`, `build-source.json`, `offline-regression.xml`
 `production.diff`, build logs and three smoke JSONs retain machine evidence.
 No merge or push.
 
-## Next field gate — separately authorized, NOT performed
+## Original field plan — subsequently completed; see field freeze record
 
 After separate installation/authorization, first turn only:
 `Добрый день! В каком самолете я нахожусь?`
