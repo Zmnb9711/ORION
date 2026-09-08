@@ -1,0 +1,189 @@
+[
+  {
+    "kind": "PHYSICAL_EVIDENCE",
+    "sha256": "0f6cdafa6dbdf46362c162fd174cbabc52b8ca3746bb4b67254f04d2e6c18057",
+    "summary": "test_session_id=030a4753eb194b3ebedf808b3ff3b0c6\nstarted_at=2026-09-08T15:55:35.085+00:00\nstopped_at=2026-09-08T15:56:51.155+00:00\norion_build_sha=unknown\nprovider=yandex\ntransport=srs\nevent_count=87\ndropped_event_count=0\nuser_transcript_count=2\nassistant_transcript_count=0\n",
+    "archive": "ORION-Test-Evidence-20260908-155651.zip",
+    "events": [
+      {
+        "event": "stt_core_boundary",
+        "provider": "yandex",
+        "realtime_session_id": "35457cd689c9466f92263e8a2e426f32",
+        "status": "FinalizedUserUtterance",
+        "test_session_id": "030a4753eb194b3ebedf808b3ff3b0c6",
+        "timestamp": "2026-09-08T18:55:55.93+03:00",
+        "transcript": "добрый день в каком самолете я нахожусь",
+        "transport": "srs",
+        "turn_id": "eca5f73e-811f-463b-8062-119d784f492b"
+      },
+      {
+        "event": "aircraft_slice.routing",
+        "monotonic": 581462.984,
+        "provider_call_count": 0,
+        "pure_aircraft": false,
+        "realtime_session_id": "35457cd689c9466f92263e8a2e426f32",
+        "route": "UNSUPPORTED",
+        "test_session_id": "030a4753eb194b3ebedf808b3ff3b0c6",
+        "timestamp": "2026-09-08T18:55:55.931+03:00",
+        "turn_id": "eca5f73e-811f-463b-8062-119d784f492b"
+      },
+      {
+        "event": "aircraft_slice.decomposition_started",
+        "monotonic": 581462.984,
+        "provider_call_count": 1,
+        "realtime_session_id": "35457cd689c9466f92263e8a2e426f32",
+        "test_session_id": "030a4753eb194b3ebedf808b3ff3b0c6",
+        "timestamp": "2026-09-08T18:55:55.931+03:00",
+        "turn_id": "eca5f73e-811f-463b-8062-119d784f492b"
+      },
+      {
+        "decomposition": {
+          "classification": "AIRCRAFT_IDENTITY",
+          "language": "ru-RU",
+          "spans": [
+            {
+              "act": "GREETING",
+              "end": 11,
+              "start": 0
+            },
+            {
+              "act": "AIRCRAFT_IDENTITY_QUERY",
+              "end": 39,
+              "start": 12
+            }
+          ]
+        },
+        "event": "aircraft_slice.decomposition_validation",
+        "monotonic": 581476.937,
+        "provider_call_count": 1,
+        "provider_category": "completed",
+        "realtime_session_id": "35457cd689c9466f92263e8a2e426f32",
+        "status": "checking",
+        "test_session_id": "030a4753eb194b3ebedf808b3ff3b0c6",
+        "timestamp": "2026-09-08T18:56:09.878+03:00",
+        "turn_id": "eca5f73e-811f-463b-8062-119d784f492b"
+      },
+      {
+        "event": "aircraft_slice.failed",
+        "failure_stage": "decomposition_validation",
+        "monotonic": 581476.937,
+        "provider_call_count": 1,
+        "provider_category": "ValueError",
+        "realtime_session_id": "35457cd689c9466f92263e8a2e426f32",
+        "status": "failed",
+        "test_session_id": "030a4753eb194b3ebedf808b3ff3b0c6",
+        "timestamp": "2026-09-08T18:56:09.878+03:00",
+        "turn_id": "eca5f73e-811f-463b-8062-119d784f492b"
+      },
+      {
+        "event": "stt_core_boundary",
+        "provider": "yandex",
+        "realtime_session_id": "35457cd689c9466f92263e8a2e426f32",
+        "status": "FinalizedUserUtterance",
+        "test_session_id": "030a4753eb194b3ebedf808b3ff3b0c6",
+        "timestamp": "2026-09-08T18:56:19.341+03:00",
+        "transcript": "добрый день в каком самолете я нахожусь",
+        "transport": "srs",
+        "turn_id": "f6093267-12b2-4a8e-a44e-9e8982ed58c2"
+      },
+      {
+        "event": "aircraft_slice.routing",
+        "monotonic": 581486.406,
+        "provider_call_count": 0,
+        "pure_aircraft": false,
+        "realtime_session_id": "35457cd689c9466f92263e8a2e426f32",
+        "route": "UNSUPPORTED",
+        "test_session_id": "030a4753eb194b3ebedf808b3ff3b0c6",
+        "timestamp": "2026-09-08T18:56:19.342+03:00",
+        "turn_id": "f6093267-12b2-4a8e-a44e-9e8982ed58c2"
+      },
+      {
+        "event": "aircraft_slice.decomposition_started",
+        "monotonic": 581486.406,
+        "provider_call_count": 1,
+        "realtime_session_id": "35457cd689c9466f92263e8a2e426f32",
+        "test_session_id": "030a4753eb194b3ebedf808b3ff3b0c6",
+        "timestamp": "2026-09-08T18:56:19.342+03:00",
+        "turn_id": "f6093267-12b2-4a8e-a44e-9e8982ed58c2"
+      },
+      {
+        "decomposition": {
+          "classification": "UNSUPPORTED",
+          "language": "ru-RU",
+          "spans": [
+            {
+              "act": "GREETING",
+              "end": 10,
+              "start": 0
+            },
+            {
+              "act": "AIRCRAFT_IDENTITY_QUERY",
+              "end": 39,
+              "start": 11
+            }
+          ]
+        },
+        "event": "aircraft_slice.decomposition_validation",
+        "monotonic": 581496.937,
+        "provider_call_count": 1,
+        "provider_category": "completed",
+        "realtime_session_id": "35457cd689c9466f92263e8a2e426f32",
+        "status": "checking",
+        "test_session_id": "030a4753eb194b3ebedf808b3ff3b0c6",
+        "timestamp": "2026-09-08T18:56:29.882+03:00",
+        "turn_id": "f6093267-12b2-4a8e-a44e-9e8982ed58c2"
+      },
+      {
+        "event": "aircraft_slice.failed",
+        "failure_stage": "decomposition_validation",
+        "monotonic": 581496.937,
+        "provider_call_count": 1,
+        "provider_category": "ValueError",
+        "realtime_session_id": "35457cd689c9466f92263e8a2e426f32",
+        "status": "failed",
+        "test_session_id": "030a4753eb194b3ebedf808b3ff3b0c6",
+        "timestamp": "2026-09-08T18:56:29.882+03:00",
+        "turn_id": "f6093267-12b2-4a8e-a44e-9e8982ed58c2"
+      }
+    ]
+  },
+  {
+    "kind": "PHYSICAL_EVIDENCE",
+    "sha256": "be50102c7b0e61116fb4fe3b986de435baa5f1bf4ed367cf2600022ab1e82393",
+    "summary": "test_session_id=5d760e48a60b4a968dad78101577a570\nstarted_at=2026-09-08T15:57:09.895+00:00\nstopped_at=2026-09-08T15:57:33.054+00:00\norion_build_sha=unknown\nprovider=yandex\ntransport=srs\nevent_count=28\ndropped_event_count=0\nuser_transcript_count=1\nassistant_transcript_count=0\n",
+    "archive": "ORION-Test-Evidence-20260908-155733.zip",
+    "events": [
+      {
+        "event": "stt_core_boundary",
+        "provider": "yandex",
+        "realtime_session_id": "acdfbd3703b4401b8a0013f5c7339911",
+        "status": "FinalizedUserUtterance",
+        "test_session_id": "5d760e48a60b4a968dad78101577a570",
+        "timestamp": "2026-09-08T18:57:21.124+03:00",
+        "transcript": "добрый день в каком самолете я нахожусь",
+        "transport": "srs",
+        "turn_id": "a6b72725-5c97-44ad-a4bd-cace7e2946ba"
+      },
+      {
+        "event": "aircraft_slice.routing",
+        "monotonic": 581548.187,
+        "provider_call_count": 0,
+        "pure_aircraft": false,
+        "realtime_session_id": "acdfbd3703b4401b8a0013f5c7339911",
+        "route": "UNSUPPORTED",
+        "test_session_id": "5d760e48a60b4a968dad78101577a570",
+        "timestamp": "2026-09-08T18:57:21.125+03:00",
+        "turn_id": "a6b72725-5c97-44ad-a4bd-cace7e2946ba"
+      },
+      {
+        "event": "aircraft_slice.decomposition_started",
+        "monotonic": 581548.187,
+        "provider_call_count": 1,
+        "realtime_session_id": "acdfbd3703b4401b8a0013f5c7339911",
+        "test_session_id": "5d760e48a60b4a968dad78101577a570",
+        "timestamp": "2026-09-08T18:57:21.125+03:00",
+        "turn_id": "a6b72725-5c97-44ad-a4bd-cace7e2946ba"
+      }
+    ]
+  }
+]

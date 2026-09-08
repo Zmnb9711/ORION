@@ -47,14 +47,12 @@ def decomposition(text=MIXED):
     if text.startswith("В каком"):
         split = text.index("И добрый")
         parts = [(0, split, "AIRCRAFT_IDENTITY_QUERY"), (split, len(text), "GREETING")]
-    aircraft = any(p[2] == "AIRCRAFT_IDENTITY_QUERY" for p in parts)
-    return HybridAircraftDecomposition(classification=HybridRoute.FREE_PLUS_AIRCRAFT_IDENTITY if aircraft else HybridRoute.FREE_ONLY,
-        language="ru-RU", spans=tuple(SourceSpan(start=a, end=b, act=c) for a, b, c in parts))
+    return HybridAircraftDecomposition(language="ru-RU", spans=tuple(SourceSpan(start=a, end=b, act=c) for a, b, c in parts))
 
 
 class Provider:
     def __init__(self, result=None, action=None): self.result, self.action, self.calls = result, action, []
-    def decompose_aircraft(self, text, identity, deadline, cancellation):
+    def decompose_aircraft(self, text, identity, deadline, cancellation, *, observe=None):
         self.calls.append(text)
         if self.action: self.action(cancellation)
         return self.result or decomposition(text)

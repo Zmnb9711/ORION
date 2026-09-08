@@ -37,7 +37,7 @@ class SourceSpan(StrictModel):
 
 
 class HybridAircraftDecomposition(StrictModel):
-    classification: HybridRoute
+    """Untrusted source structure only. Final route belongs exclusively to Core."""
     language: Literal["ru-RU"]
     spans: tuple[SourceSpan, ...] = Field(max_length=3)
 

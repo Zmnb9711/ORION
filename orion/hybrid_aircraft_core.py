@@ -66,10 +66,6 @@ def eligible_decomposition(text: str) -> bool:
 
 def validate_decomposition(text: str, value: HybridAircraftDecomposition) -> HybridAircraftDecomposition:
     checked = HybridAircraftDecomposition.model_validate(value.model_dump(), strict=True)
-    if checked.classification in {HybridRoute.UNSUPPORTED, HybridRoute.AMBIGUOUS}:
-        if checked.spans:
-            raise ValueError("rejected_decomposition_has_spans")
-        return checked
     position = 0
     social = []
     aircraft = 0
@@ -91,11 +87,20 @@ def validate_decomposition(text: str, value: HybridAircraftDecomposition) -> Hyb
         position = span.end
     if text[position:].strip(_DELIMITERS) or aircraft > 1 or len(social) > 2:
         raise ValueError("uncovered_or_excess_intent")
-    expected = (HybridRoute.FREE_PLUS_AIRCRAFT_IDENTITY if social and aircraft else
-                HybridRoute.AIRCRAFT_IDENTITY if aircraft else HybridRoute.FREE_ONLY)
-    if not checked.spans or checked.classification != expected:
-        raise ValueError("decomposition_class_mismatch")
     return checked
+
+
+def derive_route(validated: HybridAircraftDecomposition) -> HybridRoute:
+    """Core-only closed mapping; called only AFTER complete source validation."""
+    acts = tuple(span.act for span in validated.spans)
+    aircraft = acts.count("AIRCRAFT_IDENTITY_QUERY")
+    social = tuple(act for act in acts if act != "AIRCRAFT_IDENTITY_QUERY")
+    if (not acts or aircraft > 1 or len(social) > 2 or len(set(social)) != len(social)
+            or any(act not in {member.value for member in SocialAct} for act in social)):
+        return HybridRoute.UNSUPPORTED
+    if aircraft:
+        return HybridRoute.FREE_PLUS_AIRCRAFT_IDENTITY if social else HybridRoute.AIRCRAFT_IDENTITY
+    return HybridRoute.FREE_ONLY
 
 
 def safe_aircraft_name(raw: str) -> str | None:
@@ -144,7 +149,8 @@ def render_informational(plan: InformationalResponsePlan, now: datetime) -> str:
 
 class Decomposer(Protocol):
     def decompose_aircraft(self, text: str, identity: UUID, deadline: datetime,
-                          cancellation: PlannerCancellationToken) -> HybridAircraftDecomposition: ...
+                          cancellation: PlannerCancellationToken, *,
+                          observe: Callable[..., None] | None = None) -> HybridAircraftDecomposition: ...
 
 
 @dataclass(frozen=True)
@@ -217,15 +223,17 @@ class HybridAircraftCore:
                 check()
                 count = 1
                 self._emit("decomposition_started", turn_id=str(identity), provider_call_count=count)
-                decomposition = provider.decompose_aircraft(text, identity, deadline, cancellation)
+                decomposition = provider.decompose_aircraft(text, identity, deadline, cancellation,
+                    observe=lambda event, **fields: self._emit(event, turn_id=str(identity),
+                        provider_call_count=count, **fields))
                 check()
                 stage = "decomposition_validation"
                 self._emit(stage, turn_id=str(identity), decomposition=decomposition.model_dump(mode="json"),
                            status="checking", provider_call_count=count, provider_category="completed")
                 decomposition = validate_decomposition(text, decomposition)
-                route = decomposition.classification
+                route = derive_route(decomposition)
                 self._emit(stage, turn_id=str(identity), decomposition=decomposition.model_dump(mode="json"),
-                           route=route.value, status="accepted", provider_call_count=count, provider_category="completed")
+                           core_derived_route=route.value, status="accepted", provider_call_count=count, provider_category="completed")
                 if route in {HybridRoute.UNSUPPORTED, HybridRoute.AMBIGUOUS}:
                     return HybridResult(route)
                 social = tuple(SocialAct(s.act) for s in decomposition.spans if s.act != "AIRCRAFT_IDENTITY_QUERY")

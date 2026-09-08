@@ -246,6 +246,7 @@ class RealtimeTestEvidenceRecorder:
             if not self._active or self._test_session_id is None:
                 return
             if event not in {"routing", "decomposition_started", "decomposition_validation",
+                             "provider_result_received", "cleanup_completed",
                              "authoritative_read", "authoritative_read_started", "authoritative_read_returned",
                              "local_composition", "presentation_admitted",
                              "presentation_rejected", "tts_input", "response_terminal", "failed"}:
@@ -257,7 +258,7 @@ class RealtimeTestEvidenceRecorder:
             }
             models = {"decomposition": HybridAircraftDecomposition,
                       "aircraft": AircraftIdentityQueryResult, "plan": InformationalResponsePlan}
-            scalar = {"turn_id", "tx_id", "route", "provider_call_count", "pure_aircraft", "status",
+            scalar = {"turn_id", "tx_id", "route", "core_derived_route", "provider_call_count", "pure_aircraft", "status",
                       "provider_category", "failure_stage", "monotonic", "frames", "radio_first_frame",
                       "radio_completed", "tool_name", "tool_version", "call_id", "failure_category",
                       "tts_started", "tts_first_pcm", "tts_completed", "tts_pcm_bytes"}

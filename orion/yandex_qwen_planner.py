@@ -535,7 +535,7 @@ class YandexQwenPlannerProvider(PlannerProvider):
     def diagnostic_snapshot(self) -> tuple[YandexPlannerDiagnostic, ...]:
         return self._diagnostics.snapshot()
 
-    def decompose_aircraft(self, text, identity, deadline, cancellation):
+    def decompose_aircraft(self, text, identity, deadline, cancellation, *, observe=None):
         """Strict no-tools I/O extension; reuse the existing run/cleanup owner."""
         from orion.hybrid_aircraft_contracts import HybridAircraftDecomposition
         from orion.interaction_contracts import InteractionRequest
@@ -550,6 +550,15 @@ class YandexQwenPlannerProvider(PlannerProvider):
         )
         run = YandexQwenPlannerRun(request=request, config=self._config,
             transport=self._transport_factory(self._config), diagnostics=self._diagnostics)
+
+        def emit(event, category):
+            # Scalar-only observation; never affects the existing request/cleanup owner.
+            if observe is not None:
+                try:
+                    observe(event, provider_category=category)
+                except Exception:
+                    pass
+
         try:
             schema = _strict_provider_schema(HybridAircraftDecomposition.model_json_schema())
             payload = {
@@ -562,8 +571,9 @@ class YandexQwenPlannerProvider(PlannerProvider):
                     "Cover every meaningful word in ordered nonoverlapping spans. Social acts are GREETING "
                     "(добрый день, здравствуйте, и добрый день), THANKS_ACKNOWLEDGEMENT (спасибо), "
                     "SOCIAL_WELLBEING_QUERY (как дела). Never correct or rewrite input. Never resolve quotes, "
-                    "negation, hypotheticals or ambiguous referents. Unsupported residue means UNSUPPORTED. "
-                    "Rejected or ambiguous classifications require empty spans. No facts, response wording or tools."
+                    "negation, hypotheticals or ambiguous referents. If any meaningful source cannot be "
+                    "represented by these bounded acts, return empty spans. Return structure only: Core validates "
+                    "the source and derives the route. No classification, facts, response wording or tools."
                 ),
                 "reasoning": {"effort": self._config.reasoning_effort},
                 "max_output_tokens": _MAX_OUTPUT_TOKENS, "parallel_tool_calls": False, "store": False,
@@ -571,6 +581,7 @@ class YandexQwenPlannerProvider(PlannerProvider):
                                      "strict": True, "schema": schema}},
             }
             response, _attempts = run._request_with_retry(payload, deadline=deadline, cancellation=cancellation)
+            emit("provider_result_received", "received" if response.status == 200 else _http_failure(response.status).value)
             if response.status != 200:
                 raise YandexPlannerTransportError(_http_failure(response.status))
             body = response.payload
@@ -601,7 +612,13 @@ class YandexQwenPlannerProvider(PlannerProvider):
                 raise ValueError("invalid_or_late_decomposition")
             return HybridAircraftDecomposition.model_validate_json(parts[0], strict=True)
         finally:
-            run.cancel()  # Exactly the 474d11bc owner, shared budget and truthful failure.
+            try:
+                run.cancel()  # Exactly the 474d11bc owner, shared budget and truthful failure.
+            except Exception as exc:
+                emit("cleanup_completed", type(exc).__name__)
+                raise
+            else:
+                emit("cleanup_completed", "completed")
 
 
 class _SemanticDraft(BaseModel):
