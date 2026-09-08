@@ -116,5 +116,10 @@ turn and reused for a second turn in that runtime. TTS creates a fresh channel
 and RPC per response. Neither behavior is changed or deliberately warmed.
 Actual lower-level DNS/TLS/cache/server warmth remains unknown unless observed.
 
-Field results and artifact identity are pending. Do not mark this document as
-measurement completion. No optimization or profiling push is authorized.
+Field measurement completed on 2026-09-08: two successful turns, all eleven
+boundaries present, T9-T0 3389.100 / 3039.413 ms. See the
+[documentation checkpoint](latency-profiling-checkpoint-20260908.md) and
+[full dated report](history/2026-09-08-full-voice-latency-report.md).
+The user separately authorized a documentation/history push on the profiling
+branch only. Production freeze remains 05c8327 / production source 333ca5e;
+18a3a79 remains profiling-only. No optimization or production merge is authorized.

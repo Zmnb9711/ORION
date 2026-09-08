@@ -1,10 +1,40 @@
 # ORION Project Memory
 
-> Canonical long-term project context. Recovery checkpoint updated: 2026-09-07.
+> Canonical long-term project context. Profiling checkpoint updated: 2026-09-08; production freeze unchanged.
 >
 > Purpose: preserve approved product requirements, architectural invariants, milestone history, real-world test evidence, known risks, and the next agreed action across chats and development sessions.
 >
 > Recovery-line precedence: the frozen installed source is `333ca5e481c89b8294e0f491fbd2d2e6d6e87319` on `codex/fallback-20260906-1800`, not current `main` or the discarded productionization line. See [the canonical recovered working checkpoint](recovered-working-checkpoint.md). Older sections below remain historical context; they do not authorize importing excluded later work.
+
+## Latency profile completed — 2026-09-08; optimization deferred
+
+Architecture Guard: OFF. Documentation only; no new architecture approved.
+
+- Canonical production branch remains `codex/fallback-20260906-1800`, frozen
+  documentation HEAD `05c832762a73ed38f98984942227dbdee1e89ef3`, field-validated
+  production source `333ca5e481c89b8294e0f491fbd2d2e6d6e87319`.
+- Profiling-only source `18a3a79917292a15792b7c9b412c638e77fd03f1` was installed
+  for measurement; this does not promote it to the canonical production baseline.
+  Profiling history is retained separately on `codex/latency-profile-20260908`.
+- Two exact FINALs: `какой мой текущий курс и координаты`; both clearly heard,
+  385 frames each, completed TX, zero dropped profiling events.
+- T0 -> T9: **3389.100 / 3039.413 ms**. T0 is ORION's observed UDP7082 TX end,
+  not sample-exact button release; T9 is first locally sent SRS frame, not
+  sample-exact headphone onset.
+- Protected text -> first PCM: **2898.734 / 2538.003 ms**, the dominant measured
+  interval; STT/EOU **420.698 / 425.914 ms**, Core itself **2.406 / 1.524 ms**,
+  first PCM -> first SRS frame **6.385 / 6.167 ms**. No <1 s success is claimed.
+- Latency optimization was not performed and is deliberately deferred until
+  broader complex-response/LLM/tool/streaming flows can be assessed end-to-end.
+  Deferred questions are backlog items, not architecture approvals.
+- A post-completion `provider_transport_failure` was observed around runtime
+  shutdown; underlying cause unproven, not the cause of either measured latency.
+  Follow up if recurrent. Natural Russian STT robustness remains separate.
+- Exact T0–T10 definitions, limits, evidence paths/hashes and deferred backlog:
+  [latency checkpoint](latency-profiling-checkpoint-20260908.md). Full tables:
+  [preserved dated report](history/2026-09-08-full-voice-latency-report.md).
+- No optimization, rebuild, provider call, PTT or next implementation milestone
+  is authorized by this documentation checkpoint.
 
 ## Current recovered working baseline — frozen 2026-09-07
 
