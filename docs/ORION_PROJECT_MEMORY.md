@@ -1,11 +1,14 @@
 # ORION Project Memory
 
-## Current recovery position — end of 2026-09-08
+## Current recovery position — 2026-09-09 support reply
 
 ORION ARCHITECTURE GUARD: OFF
 
-**ORION_EOD_20260908_AWAIT_DT403405 — awaiting provider clarification.**
-Read the [full end-of-day checkpoint](history/2026-09-08-end-of-day-checkpoint.md)
+**ORION_20260909_LEVEL0_CONVERSATIONAL_HANDSHAKE_EVENT_CONTRACT_CORRECTION**.
+Previous marker **ORION_EOD_20260908_AWAIT_DT403405 is closed as a blocker**.
+Yandex follow-up question 2 remains **non-blocking pending clarification**.
+Read the [full support reply and recovery update](history/2026-09-09-yandex-support-DT403405.md),
+the [full end-of-day checkpoint](history/2026-09-08-end-of-day-checkpoint.md)
 and [saved evidence index](history/2026-09-08/README.md) before resuming.
 
 - Field-validated Hybrid local routing runtime:
@@ -14,7 +17,9 @@ and [saved evidence index](history/2026-09-08/README.md) before resuming.
   Original field ZIP has build SHA `unknown`; later artifact matching does not
   repair that session field. Keep the documented identity limitation.
 - Current recovery docs branch: `codex/eod-20260908-checkpoint`, based on that
-  freeze. Unwired Level-0 work is preserved separately at
+  freeze; this docs-only update follows verified parent
+  `8dc2f215e8680f81d76c5bb192d22ed18179ae5c` (local and GitHub matched;
+  no newer checkpoint found). Unwired Level-0 work is preserved separately at
   `9ccab967dfe018f29302fb87e8105a4bb11a89de` on
   `codex/level0-conversational-voice`: four original modules, two offline tests,
   original stop report and an explicit experimental-status note. No production
@@ -27,21 +32,33 @@ and [saved evidence index](history/2026-09-08/README.md) before resuming.
 - Level-0 remains PARTIALLY VALIDATED / NOT INTEGRATED / NOT BUILT / NOT FIELD
   READY. First probe stopped at `nontext_session` before text input; a later
   isolated text protocol probe did generate text but returned audio-related
-  events. Zero audio-delta events is proven; zero audio payload across all
-  possible content fields is not. The strict adapter was not relaxed.
+  events. Zero audio-delta events is proven. The original projection omitted
+  some content fields; support now confirms that no audio delta reliably means
+  no audio payload. This is contract clarification, not new forensic evidence.
+  The strict adapter was not relaxed.
 - The audio-envelope audit found documentation/observed-protocol conflicts.
   Yandex ticket [DT403405](https://center.yandex.cloud/support/tickets/DT403405),
-  submitted 2026-09-08 at 23:22 Moscow, is awaiting provider clarification in
-  the saved record. Session `4a11ff2e5d7a`, response
-  `resp_3d259f4f9f4d4806b03c0792a9b64fbb`. No engineering reply is saved.
+  submitted 2026-09-08 at 23:22 Moscow, now has its full user-supplied official
+  reply dated 2026-09-09 saved. Support reproduced text-only generation with
+  multimodal session acknowledgements: `output_modalities=["text"]` limits
+  generation; structural/terminal events with `audio: null` are not audio
+  generation. Audio chunks arrive only in `response.output_audio.delta`.
+  Authoritative final text is `response.output_text.done`;
+  `response.done.output` can retain an audio-shaped wrapper/transcript.
+  Question 2 (why the ACK retains both modalities) remains escalated and
+  non-blocking; the ticket is not declared closed. Support did not inspect
+  original session `4a11ff2e5d7a` / response
+  `resp_3d259f4f9f4d4806b03c0792a9b64fbb` server-side.
 - **Approved presentation policy: authoritative source labels silent by
   default; provenance remains internal unless explicitly requested.** Internal
   authority, freshness, provenance and exact binding remain required. The
   frozen runtime still says `По данным DCS`; removing that spoken prefix is an
   unimplemented presentation change, not part of this preservation task.
-- Next step: compare the actual provider answer, when available, with the saved
-  evidence. No automatic provider calls, retries, backend switch, parser
-  relaxation, Level-0 integration or build. Runtime/Launcher/SRS/STT/TTS/
+- Next step: **Level-0 Conversational Handshake/Event Contract Correction**,
+  in a separate bounded task; the text-only generation architecture is no
+  longer blocked by DT403405. This docs-only task makes no parser correction,
+  provider calls, retries, backend switch, Level-0 integration or build.
+  Runtime/Launcher/SRS/STT/TTS/
   ToolGateway/Planner remain frozen.
 
 The older sections below remain intact as history. Their `NOT STARTED`, `next`

@@ -2,7 +2,33 @@
 
 ORION ARCHITECTURE GUARD: OFF
 
-**STOPPED — AWAITING PROVIDER CLARIFICATION.** This is a preservation/history
+## Recovery status supersession — 2026-09-09
+
+The [full Yandex Support reply and recovery update](2026-09-09-yandex-support-DT403405.md)
+supersedes the waiting status below. **ORION_EOD_20260908_AWAIT_DT403405 is
+CLOSED AS A BLOCKER**; question 2 is escalated and remains **non-blocking pending
+clarification**, not a closed ticket. Text-only generation is confirmed despite
+the multimodal session envelope; audio chunks arrive only through
+`response.output_audio.delta`. Its absence reliably indicates no audio payload.
+Use `response.output_text.done` as authoritative final text; terminal output
+may retain an audio-shaped wrapper/transcript with `audio: null`.
+
+Current recovery / next-step marker:
+**ORION_20260909_LEVEL0_CONVERSATIONAL_HANDSHAKE_EVENT_CONTRACT_CORRECTION**.
+Next step: **Level-0 Conversational Handshake/Event Contract Correction** in a
+separate bounded task. Runtime and Level-0 code remain unchanged; no provider,
+DCS/SRS/PTT, build/install or production merge is performed by this update.
+Approved authoritative source labels remain silent by default.
+
+The original checkpoint below is preserved as the state at end of 2026-09-08.
+Its waiting language and protocol uncertainty are historical, not the current
+blocker or next-step instruction. Original checkpoint commit:
+`8dc2f215e8680f81d76c5bb192d22ed18179ae5c`, also the verified parent of this
+docs-only support update on `codex/eod-20260908-checkpoint`.
+
+## Historical EOD record — 2026-09-08
+
+**THEN STOPPED — AWAITING PROVIDER CLARIFICATION.** This is a preservation/history
 checkpoint, not a production release or Level-0 integration. The session may
 finish after midnight; the workday recorded here is 2026-09-08 Moscow.
 
@@ -199,7 +225,9 @@ secret-pattern inspection and branch/remote verification. Prior test results are
 historical evidence, not fresh tests. No workflow dispatch or release tag is used;
 push targets are outside the saved production/build workflow branch filters.
 
-Recovery marker: **ORION_EOD_20260908_AWAIT_DT403405**.
+Historical recovery marker (closed as a blocker on 2026-09-09):
+**ORION_EOD_20260908_AWAIT_DT403405**. The instructions below are the original
+EOD stop instructions, superseded by the dated recovery update at the top.
 Read this file and Project Memory on `codex/eod-20260908-checkpoint`; inspect
 actual worktree state before resuming. Obtain the full provider answer when it
 arrives and compare it with the saved session/response. Without clarification,
