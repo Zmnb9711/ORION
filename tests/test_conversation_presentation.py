@@ -45,7 +45,7 @@ def rig(fake, *, tts=None, observe=None):
 @pytest.mark.parametrize("text", SOCIAL[:3])
 def test_fake_complete_exact_candidate_to_tts_once(text):
     async def run():
-        voice, router, radio, tts, observed = rig(Fake(events(SAFE[SOCIAL.index(text)])))
+        voice, router, radio, tts, observed = rig(Fake(events(SAFE[SOCIAL.index(text)]), echo_submitted=True))
         u = utterance(text)
         try:
             assert await voice.run(u, PlannerCancellationToken())

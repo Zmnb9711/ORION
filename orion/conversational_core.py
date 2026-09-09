@@ -62,6 +62,18 @@ def admit_social_text(text: str) -> bool:
     return all(any(re.fullmatch(pattern, clause.strip()) for pattern in _CLAUSES) for clause in clauses)
 
 
+def normalize_candidate_envelope(text: str) -> str:
+    """One whole-message fence only; return exact JSON body, never rewrite it."""
+    if not isinstance(text, str) or not 0 < len(text) <= 4096:
+        raise ConversationFailure("invalid_candidate_envelope")
+    if "```" not in text:
+        return text
+    match = re.fullmatch(r"[ \t\r\n]*```(?:json)?[ \t]*\r?\n(?P<body>[\s\S]*?)\r?\n```[ \t\r\n]*", text)
+    if match is None or "```" in match["body"] or not match["body"].strip():
+        raise ConversationFailure("invalid_candidate_envelope")
+    return match["body"]
+
+
 def parse_draft(text: str) -> SocialDraft:
     def unique(pairs):
         result = {}
@@ -71,7 +83,7 @@ def parse_draft(text: str) -> SocialDraft:
             result[key] = value
         return result
     try:
-        return SocialDraft.model_validate(json.loads(text, object_pairs_hook=unique), strict=True)
+        return SocialDraft.model_validate(json.loads(normalize_candidate_envelope(text), object_pairs_hook=unique), strict=True)
     except Exception:
         raise ConversationFailure("invalid_candidate_schema") from None
 

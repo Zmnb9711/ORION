@@ -8,6 +8,8 @@ from uuid import uuid4
 
 import pytest
 
+from hybrid_privacy_assertions import assert_aircraft_privacy, assert_content_private
+
 from orion.full_voice_stt import FinalizedUserUtterance
 from orion.hybrid_aircraft_contracts import *
 from orion.hybrid_aircraft_core import *
@@ -179,9 +181,9 @@ def test_gate05_extra_telemetry_cannot_leak_any_boundary():
     core, g, p, events, u = setup(MIXED, mutate=mutate)
     result = core.run(u, PlannerCancellationToken())
     assert result.finalized.text == "Добрый день! По данным DCS, вы находитесь в F/A-18C Hornet."
-    payload = result.finalized.model_dump_json() + json.dumps(events, ensure_ascii=False)
-    for forbidden in (": 137,", ": 42.1,", ": 41.2,", "Colt", "F-16C", '"fuel"', '"heading"', '"position"'):
-        assert forbidden not in payload
+    assert_aircraft_privacy(finalized=result.finalized, events=events,
+                           forbidden_strings=("9876", "Colt", "F-16C", "cleared for takeoff"),
+                           forbidden_numbers=(9876, 137, 42.1, 41.2))
     assert not p.calls
 
 
@@ -274,7 +276,7 @@ def test_gate08_cancellation_and_provider_failures(mode, monkeypatch):
         return
     assert result.finalized is None
     assert len(g.calls) == int(mode == "after_read")
-    assert "private provider payload" not in str(events)
+    assert_aircraft_privacy(events=events, forbidden_strings=("private provider payload",))
     assert core.run(u, token) is result
 
 
@@ -314,7 +316,8 @@ def test_gate08_real_qwen_io_extension_one_request_cleanup(monkeypatch, mode):
     request = transport.payloads[0]
     assert request["input"] == text and request["store"] is False
     assert "tools" not in request and request["text"]["format"]["strict"] is True
-    assert "FA-18C_hornet" not in json.dumps(request) and "ToolResult" not in json.dumps(request)
+    assert_content_private(request, forbidden_strings=("FA-18C_hornet", "ToolResult"),
+                           forbidden_numbers=(), forbidden_keys=set())
 
 
 def test_gate08_evidence_explicit_bounded_and_aircraft_only(tmp_path):
@@ -328,9 +331,9 @@ def test_gate08_evidence_explicit_bounded_and_aircraft_only(tmp_path):
         recorder.record_aircraft_slice(name, realtime_session_id="fixture", secret="not allowed", tool_result={"fuel":9876}, **fields)
     recorder.record_aircraft_slice("tts_input", realtime_session_id="fixture", tts_input=result.finalized.text)
     recorder.record("tx_completed", response_id=tx_correlation(u.interaction_id), frames=123)
-    serialized = json.dumps(list(recorder._events), ensure_ascii=False)
-    assert "9876" not in serialized and "not allowed" not in serialized and "heading" not in serialized
-    assert recorder._events[-1]["frames"] == 123 and result.finalized.text in serialized
+    assert_aircraft_privacy(finalized=result.finalized, events=recorder._events)
+    assert recorder._events[-1]["frames"] == 123
+    assert next(e["tts_input"] for e in recorder._events if "tts_input" in e) == result.finalized.text
     assert len({e["test_session_id"] for e in recorder._events}) == 1
 
 

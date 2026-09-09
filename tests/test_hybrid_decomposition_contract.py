@@ -16,6 +16,8 @@ import zipfile
 
 import pytest
 
+from hybrid_privacy_assertions import assert_aircraft_privacy
+
 import orion.hybrid_aircraft_contracts as contracts
 import orion.hybrid_aircraft_core as core
 import orion.yandex_qwen_planner as qwen
@@ -243,8 +245,7 @@ def test_gate08_timing_observation_preserves_single_request_cleanup(monkeypatch,
     assert events[-1][1]["provider_category"] == ("RuntimeError" if mode == "cleanup_failure" else "completed")
     assert [e[0] for e in events] == ["provider_result_received", "cleanup_completed"]
     if mode == "timeout": assert events[0][1]["provider_category"] == qwen.YandexFailureCategory.TIMEOUT.value
-    saved = json.dumps(list(recorder._events))
-    assert "private" not in saved and "exact input" not in saved
+    assert_aircraft_privacy(events=recorder._events, forbidden_strings=("private", "exact input"), forbidden_numbers=())
     assert len(recorder._events) == len(events)
 
 
@@ -302,9 +303,9 @@ def test_gate11_literal_span_checks_and_frozen_sources():
         isinstance(n, ast.Assign) and ast.unparse(n.targets[0]) == "expected")]
     current = ast.parse(inspect.getsource(core.validate_decomposition)).body[0]
     assert ast.dump(current) == ast.dump(validator)
-    changed = subprocess.check_output(["git", "diff", BASE, "--name-only", "--", "orion", "dcs-export", "packaging"], cwd=ROOT).decode().splitlines()
-    assert set(changed) <= {"orion/hybrid_aircraft_contracts.py", "orion/hybrid_aircraft_core.py",
-                            "orion/yandex_qwen_planner.py", "orion/realtime_test_evidence.py"}
+    from level0_scope_guard import assert_historical_and_current_scope
+    assert_historical_and_current_scope(ROOT, BASE, {"orion/hybrid_aircraft_contracts.py", "orion/hybrid_aircraft_core.py",
+                            "orion/yandex_qwen_planner.py", "orion/realtime_test_evidence.py"})
     # Provider transport/retry/cleanup classes and the general planner are byte-for-byte frozen.
     before = source("orion/yandex_qwen_planner.py")
     after = (ROOT / "orion/yandex_qwen_planner.py").read_text(encoding="utf-8")

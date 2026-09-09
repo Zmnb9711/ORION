@@ -166,5 +166,5 @@ def test_exact_source_invariance():
         before = subprocess.check_output(["git", "show", f"{BASE}:orion/hybrid_aircraft_core.py"], cwd=ROOT).decode()
         node = next(n for n in ast.parse(before).body if isinstance(n, ast.FunctionDef) and n.name == symbol)
         assert ast.dump(node) == ast.dump(ast.parse(inspect.getsource(getattr(core, symbol))).body[0])
-    paths = subprocess.check_output(["git", "diff", BASE, "--name-only", "--", "orion", "packaging", "dcs-export"], cwd=ROOT).decode().splitlines()
-    assert set(paths) <= {"orion/hybrid_aircraft_core.py", "orion/realtime_test_evidence.py"}
+    from level0_scope_guard import assert_historical_and_current_scope
+    assert_historical_and_current_scope(ROOT, BASE, {"orion/hybrid_aircraft_core.py", "orion/realtime_test_evidence.py"})

@@ -34,26 +34,34 @@ def setup(text=SOCIAL[0]):
     return core, request
 
 
-def events(text=SAFE[0]):
+def events(text=SAFE[0], source=SOCIAL[0]):
     body = json.dumps({"kind": "social_support", "text": text}, ensure_ascii=False)
     result = [
-        {"type": "session.created"}, {"type": "session.updated", "session": {"output_modalities": ["text"]}},
-        {"type": "conversation.item.created", "item": {"type": "message", "role": "user"}},
-        {"type": "response.created", "response": {"id": "response-one"}},
+        {"type": "session.created", "session": {"id": "session-one", "output_modalities": ["text"]}},
+        {"type": "session.updated", "session": {"id": "session-one", "output_modalities": ["text"]}},
+        {"type": "conversation.item.created", "item": {"id": "user-one", "type": "message", "role": "user",
+            "content": [{"type": "input_text", "text": source}]}},
+        {"type": "response.created", "response": {"id": "response-one", "status": "in_progress", "output_modalities": ["text"]}},
         {"type": "response.output_item.added", "response_id": "response-one",
-         "item": {"type": "message", "role": "assistant", "id": "item-one"}},
-        {"type": "response.text.delta", "response_id": "response-one", "item_id": "item-one", "delta": body[:20]},
-        {"type": "response.text.delta", "response_id": "response-one", "item_id": "item-one", "delta": body[20:]},
-        {"type": "response.text.done", "response_id": "response-one", "item_id": "item-one", "text": body},
-        {"type": "response.done", "response": {"id": "response-one", "status": "completed"}},
+         "item": {"type": "message", "role": "assistant", "id": "item-one", "content": []}},
+        {"type": "response.output_text.delta", "response_id": "response-one", "item_id": "item-one", "delta": body[:20]},
+        {"type": "response.output_text.delta", "response_id": "response-one", "item_id": "item-one", "delta": body[20:]},
+        {"type": "response.output_text.done", "response_id": "response-one", "item_id": "item-one", "text": body},
+        {"type": "response.done", "response": {"id": "response-one", "status": "completed", "output_modalities": ["text"],
+            "output": [{"type": "message", "role": "assistant", "id": "item-one", "content": [{"type": "output_text", "text": body}]}]}},
     ]
+    for event in result[4:-1]:
+        event["output_index"] = 0
+        if "item_id" in event: event["content_index"] = 0
     for i, event in enumerate(result): event["event_id"] = str(i)
     return result
 
 
 class Fake:
-    def __init__(self, sequence=None, *, stall=None, cancel=None, noncooperative=False):
+    def __init__(self, sequence=None, *, stall=None, cancel=None, noncooperative=False, echo_submitted=False):
         self.sequence = events() if sequence is None else sequence
+        # Opt-in request-derived ACK. Explicit hostile replay sequences stay intact.
+        self.echo_submitted = echo_submitted
         self.stall, self.token, self.noncooperative = stall, cancel, noncooperative
         self.entered, self.rescue = asyncio.Event(), asyncio.Event()
         self.sent, self.closed, self.connected, self.received = [], 0, 0, 0
@@ -72,13 +80,17 @@ class Fake:
         self.connected += 1
     async def send(self, value):
         self.sent.append(value)
+        if self.echo_submitted and value["type"] == "conversation.item.create":
+            for event in self.sequence:
+                if event.get("type") == "conversation.item.created" and event.get("item", {}).get("role") == "user":
+                    event["item"]["content"] = deepcopy(value["item"]["content"])
         if value["type"] == "response.create": await self.point("request")
     async def receive(self):
         self.received += 1
         if self.received == 6: await self.point("receive")
         if not self.sequence: raise ConversationFailure("provider_closed")
         event = self.sequence.pop(0)
-        if self.token is not None and event["type"] == "response.text.delta" and self.stall == "first_token":
+        if self.token is not None and event["type"] == "response.output_text.delta" and self.stall == "first_token":
             self.token.cancel()
         return event
     async def close(self):
@@ -144,7 +156,7 @@ def test_transport_normal_variation_no_history_and_replay():
     async def run():
         instances, observed = [], []
         def factory():
-            f = Fake(events(SAFE[len(instances)])); instances.append(f); return f
+            f = Fake(events(SAFE[len(instances)], SOCIAL[len(instances)])); instances.append(f); return f
         provider = TextConversationProvider(factory, observe=lambda e, **f: observed.append((e,f)))
         texts = []
         for text in SOCIAL[:3]:

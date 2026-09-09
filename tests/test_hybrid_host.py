@@ -152,10 +152,10 @@ def test_gate10_normal_host_coexistence_and_single_owner(monkeypatch, tmp_path, 
 
 def test_gate11_no_unapproved_production_delta():
     root = Path(__file__).resolve().parents[1]
-    changed = subprocess.check_output(["git", "diff", "--name-only", "474d11bc", "--", "orion"], cwd=root).decode().splitlines()
-    assert set(changed) <= {"orion/full_voice_service.py", "orion/yandex_qwen_planner.py",
+    from level0_scope_guard import assert_historical_and_current_scope
+    assert_historical_and_current_scope(root, "474d11bc", {"orion/full_voice_service.py", "orion/yandex_qwen_planner.py",
         "orion/protected_presentation.py", "orion/protected_streaming_tts.py", "orion/realtime_test_evidence.py",
-        "orion/hybrid_aircraft_contracts.py", "orion/hybrid_aircraft_core.py", "orion/informational_presentation.py"}
+        "orion/hybrid_aircraft_contracts.py", "orion/hybrid_aircraft_core.py", "orion/informational_presentation.py"})
     import ast
     path = "orion/yandex_qwen_planner.py"
     current = (root/path).read_text(encoding="utf-8")
