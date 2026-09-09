@@ -61,7 +61,7 @@ def test_fake_complete_exact_candidate_to_tts_once(text):
     asyncio.run(run())
 
 
-@pytest.mark.parametrize("mode", ["provider_closed", "unsafe", "radio_reject", "tts_fail", "observer_fail"])
+@pytest.mark.parametrize("mode", ["provider_closed", "invalid_text", "radio_reject", "tts_fail", "observer_fail"])
 def test_failures_no_factual_or_planner_fallback(mode):
     async def run():
         class Tts:
@@ -71,7 +71,7 @@ def test_failures_no_factual_or_planner_fallback(mode):
                 raise RuntimeError("secret provider body")
                 yield b""
             async def aclose(self): pass
-        fake = Fake([] if mode == "provider_closed" else events(UNSAFE[0] if mode == "unsafe" else SAFE[0]))
+        fake = Fake([] if mode == "provider_closed" else events("Привет\x00" if mode == "invalid_text" else SAFE[0]))
         def broken(*args, **kwargs): raise PermissionError("evidence unavailable")
         voice, router, radio, tts, observed = rig(fake, tts=Tts() if mode == "tts_fail" else None,
             observe=broken if mode == "observer_fail" else None)

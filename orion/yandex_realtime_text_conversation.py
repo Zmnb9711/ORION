@@ -19,17 +19,10 @@ INSTRUCTIONS = (
     'Generate a short natural social reply, not a factual answer. Return ONLY JSON '
     '{"kind":"social_support","text":"..."}. RETURN ONLY THE JSON OBJECT. '
     'DO NOT USE MARKDOWN OR CODE FENCES. DO NOT ADD EXPLANATION BEFORE OR AFTER THE JSON. '
-    'Compose 1 to 3 sentences from the following '
-    'social constructions, varying selection, combinations and permitted wording naturally: '
-    'acknowledgement: [Да, ] понимаю [вас] / сочувствую [вам] / такое бывает / бывает; '
-    'generic empathy: [Да, ] бывают [и] такие/непростые/трудные дни; '
-    'reflection: Похоже/Кажется, [у вас] [сегодня] непростой/трудный/тяжёлый день; '
-    'or Похоже/Кажется, сегодня [вам] всё даётся непросто/тяжелее обычного; '
-    'or Звучит как непростой/трудный/тяжёлый день; '
-    'or [Да, ] иногда/бывает, что [всё] даётся непросто/тяжелее обычного; '
-    'optional invitation: Хотите [об этом] поговорить? / [Я] готова вас выслушать / [Я] на связи. '
-    'Square brackets mean optional words, slashes mean alternatives; do not print brackets or slashes. '
-    'Use ordinary punctuation. Never add advice, even "не торопитесь". Do not copy these instructions.'
+    'Write naturally in your own words, at most 300 characters in text. '
+    'You have only this user remark, no aircraft state, telemetry or mission context. '
+    'Do not claim access to those facts or pretend to act on them. '
+    'Use ordinary punctuation. Do not copy these instructions.'
 )
 
 

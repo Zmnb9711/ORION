@@ -16,7 +16,8 @@ from orion.yandex_realtime_text_conversation import TextConversationProvider
 from test_hybrid_aircraft import utterance
 
 SOCIAL = ["Что-то сегодня полёт тяжело идёт.", "Сегодня как-то непросто летится.",
-          "Что-то я сегодня не в форме.", "Что-то сегодня всё идёт тяжеловато."]
+          "Что-то я сегодня не в форме.", "Что-то сегодня всё идёт тяжеловато.",
+          "Сегодня как-то всё тяжеловато.", "Давно я нормально не летал.", "Что-то сегодня не мой день."]
 SAFE = ["Да, бывают такие дни.", "Похоже, сегодня всё даётся тяжелее обычного.",
         "Понимаю вас. Хотите об этом поговорить?", "Сочувствую. Я готова вас выслушать."]
 UNSAFE = ["У вас поврежден двигатель.", "С самолётом всё в порядке.", "Топлива достаточно.",
@@ -127,9 +128,26 @@ def test_positive_language_exact_finalization(text):
     assert core.authorize(final) and final.text == "  "+text+"\n"
 
 
-@pytest.mark.parametrize("text", UNSAFE + [s + " " + u for s in SAFE for u in UNSAFE])
-def test_unsafe_not_just_exact_blacklist(text):
+@pytest.mark.parametrize("text", ["", " ", "я"*301, "Hello", "<audio>Привет</audio>",
+    "Привет\x00", '{"text":"Привет"}', "Привет `tool`", "Привет\u202e"])
+def test_structural_boundary_not_phrase_censorship(text):
     assert not admit_social_text(text)
+
+
+@pytest.mark.parametrize("text", UNSAFE + [s + " " + u for s in SAFE for u in UNSAFE])
+def test_structural_admission_does_not_claim_factual_truth(text):
+    # Accepted product risk: prose shape cannot prove no hallucination/advice.
+    # This never grants a tool, fact receipt or action capability.
+    if re.search(r"[A-Za-z]", text):
+        assert not admit_social_text(text)  # First slice is Russian, not factual validation.
+        return
+    assert admit_social_text(text)
+    core, request = setup()
+    final = core.admit(ConversationalCandidate(request=request,
+        draft=SocialDraft(kind="social_support", text=text), provider_response_id="fixture", terminal="completed"))
+    assert final.text == text and core.authorize(final)
+    assert set(type(final).model_fields) == {"candidate", "text"}
+    assert not eligible_conversation(text)
 
 
 @pytest.mark.parametrize("mode", ["raw", "wrong_type", "unknown_turn", "hash", "source", "expired", "authority", "tool", "language", "changed_final"])

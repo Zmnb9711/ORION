@@ -1,8 +1,8 @@
-"""Closed subjective-input eligibility and positive Level-0 semantic language.
+"""Bounded input eligibility and non-authoritative conversation finalization.
 
-This is NOT a general prose safety classifier. The provider authors the complete
-reply; every clause must belong to a non-operational social construction. No
-unknown prose is admitted by absence of blacklist words. Core never rewrites it.
+Structural validity is NOT factual validation. Conversation owns no facts,
+tools or actions. The provider authors the complete reply; Core never rewrites
+it. Hallucination risk is accepted, not disguised as a semantic guarantee.
 """
 from datetime import UTC, datetime, timedelta
 import hashlib
@@ -26,7 +26,8 @@ def normalized(text: str) -> str:
 _INPUT = re.compile(
     r"(?:(?:что-то )?(?:сегодня )?полет (?:тяжело идет|идет тяжело)|"
     r"сегодня (?:как-то )?(?:непросто|тяжело) летится|"
-    r"(?:что-то )?я сегодня не в форме|что-то сегодня все идет тяжеловато)[.!]?"
+    r"(?:что-то )?я сегодня не в форме|что-то сегодня все идет тяжеловато|"
+    r"сегодня как-то все тяжеловато|давно я нормально не летал|что-то сегодня не мой день)[.!]?"
 )
 
 
@@ -34,32 +35,11 @@ def eligible_conversation(text: str) -> bool:
     return len(text) <= 500 and _INPUT.fullmatch(normalized(text)) is not None
 
 
-# Positive semantic productions, not forbidden-word matching. They express only
-# empathy, generic difficult-day acknowledgement and invitation to TALK.
-# Advice (including "не торопитесь"), diagnoses and reassurance of safety have
-# no production. No free-text slot can smuggle in another assertion.
-_CLAUSES = (
-    r"(?:да, )?(?:понимаю(?: вас)?|сочувствую(?: вам)?|такое бывает|бывает)",
-    r"(?:да, )?бывают (?:и )?(?:такие|непростые|трудные) дни",
-    r"(?:похоже|кажется), (?:у вас )?(?:сегодня )?(?:непростой|трудный|тяжелый) день",
-    r"(?:похоже|кажется), сегодня (?:вам )?все дается (?:непросто|тяжелее обычного)",
-    r"звучит как (?:непростой|трудный|тяжелый) день",
-    r"(?:да, )?(?:иногда|бывает, что) (?:все )?дается (?:непросто|тяжелее обычного)",
-    r"хотите (?:об этом )?поговорить",
-    r"(?:я )?(?:готова вас выслушать|на связи)",
-)
-
-
 def admit_social_text(text: str) -> bool:
-    if not 0 < len(text) <= 300 or re.search(r"[^А-Яа-яЁё\s,.!?—-]", text):
-        return False
-    # No hyphen/dash production, quotation, arbitrary suffix or unmatched word.
-    clauses = re.split(r"[.!?]", normalized(text))
-    if clauses[-1] == "":
-        clauses.pop()
-    if not 1 <= len(clauses) <= 3:
-        return False
-    return all(any(re.fullmatch(pattern, clause.strip()) for pattern in _CLAUSES) for clause in clauses)
+    """Russian text shape only; neither semantic certification nor authority."""
+    return (isinstance(text, str) and 0 < len(text) <= 300
+        and re.search(r"[А-Яа-яЁё]", text) is not None
+        and re.search(r'[^А-Яа-яЁё0-9 \t\r\n,.!?—–:;…«»"()\-]', text) is None)
 
 
 def normalize_candidate_envelope(text: str) -> str:

@@ -18,6 +18,14 @@ CURRENT_SCOPE = {"orion/yandex_realtime_text_conversation.py", "orion/conversati
 
 def assert_candidate_core_scope(before: str, after: str):
     original, current = ast.parse(before), ast.parse(after)
+    # The 2026-09-09 user explicitly replaced phrase admission and extended the
+    # closed input slice. Ledger, binding, expiry and exact text remain frozen.
+    def policy_node(n):
+        return (isinstance(n, ast.Expr) and isinstance(n.value, ast.Constant)
+            or isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id in {"_INPUT", "_CLAUSES"} for t in n.targets)
+            or isinstance(n, ast.FunctionDef) and n.name == "admit_social_text")
+    original.body = [n for n in original.body if not policy_node(n)]
+    current.body = [n for n in current.body if not policy_node(n)]
     additions = [n for n in current.body if isinstance(n, ast.FunctionDef) and n.name == "normalize_candidate_envelope"]
     assert len(additions) == 1
     current.body.remove(additions[0])

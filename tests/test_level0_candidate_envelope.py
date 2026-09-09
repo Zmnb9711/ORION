@@ -17,11 +17,9 @@ def test_exact_fourth_live_candidate_parses_without_semantic_rewrite():
     assert draft.text == "Похоже, сегодня у вас непростой день. Бывает, что всё даётся тяжелее обычного. Я готова вас выслушать."
     core, request = setup()
     candidate = ConversationalCandidate(request=request, draft=draft, provider_response_id="fixture", terminal="completed")
-    # Existing positive grammar does not accept 'сегодня у вас' word order.
-    # Wrapper compatibility does not authorize changing this semantic boundary.
-    with pytest.raises(ConversationFailure, match="candidate_not_admitted"):
-        core.admit(candidate)
-    assert not core._finalized
+    # 2026-09-09 approved non-authoritative policy; exact words stay intact.
+    assert core.admit(candidate).text == draft.text
+    assert core.authorize(core.admit(candidate))
 
 
 @pytest.mark.parametrize("opening", [None, "```", "```json"])

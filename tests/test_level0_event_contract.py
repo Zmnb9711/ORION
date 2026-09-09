@@ -174,13 +174,17 @@ def test_negative_mutations(mode):
 
 
 @pytest.mark.parametrize("text", UNSAFE)
-def test_valid_protocol_does_not_bypass_admission(text):
+def test_protocol_validity_does_not_certify_facts(text):
     async def run():
         fake = Fake(sequence(text)); provider = TextConversationProvider(lambda:fake)
         core, request = setup()
         candidate = await provider.generate(request, PlannerCancellationToken())
-        with pytest.raises(ConversationFailure, match="candidate_not_admitted"): core.admit(candidate)
-        assert not core._finalized and fake.closed == 1 and not provider.owned
+        if "TACAN" in text:  # Latin text shape remains outside this Russian slice.
+            with pytest.raises(ConversationFailure): core.admit(candidate)
+        else:
+            assert core.admit(candidate).text == text
+        assert fake.closed == 1 and not provider.owned
+        assert set(type(candidate.draft).model_fields) == {"kind", "text"}
     asyncio.run(run())
 
 
