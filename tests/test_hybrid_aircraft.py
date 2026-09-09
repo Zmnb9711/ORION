@@ -172,7 +172,7 @@ def test_gate04_missing_stale_unknown(state):
     core, _, _, _, u = setup(mutate=mutate)
     result = core.run(u, PlannerCancellationToken())
     assert result.finalized
-    assert result.finalized.text == ("По данным DCS, вы находитесь в X TEST 2026." if state == "unknown_type" else UNAVAILABLE_TEXT)
+    assert result.finalized.text == ("Вы находитесь в X TEST 2026." if state == "unknown_type" else UNAVAILABLE_TEXT)
 
 
 def test_gate05_extra_telemetry_cannot_leak_any_boundary():
@@ -180,7 +180,7 @@ def test_gate05_extra_telemetry_cannot_leak_any_boundary():
         r["data"]["snapshot"]["extra_fuel"] = "F-16C Viper fuel 9876 cleared for takeoff"
     core, g, p, events, u = setup(MIXED, mutate=mutate)
     result = core.run(u, PlannerCancellationToken())
-    assert result.finalized.text == "Добрый день! По данным DCS, вы находитесь в F/A-18C Hornet."
+    assert result.finalized.text == "Добрый день! Вы находитесь в F/A-18C Hornet."
     assert_aircraft_privacy(finalized=result.finalized, events=events,
                            forbidden_strings=("9876", "Colt", "F-16C", "cleared for takeoff"),
                            forbidden_numbers=(9876, 137, 42.1, 41.2))
@@ -411,7 +411,7 @@ def test_gate08_ru_actual_stream_rpc_exact_text_and_closed(monkeypatch):
         monkeypatch.setitem(sys.modules, "grpc", rpc.module())
         observed = []
         tts = InformationalStreamingTts("fixture", observe=observed.append)
-        text = "  Добрый день! По данным DCS, вы находитесь в F/A-18C Hornet.\n"
+        text = "  Добрый день! Вы находитесь в F/A-18C Hornet.\n"
         chunks = [chunk async for chunk in tts.stream(text)]
         await tts.aclose()
         from orion.protected_streaming_tts import p

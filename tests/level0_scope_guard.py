@@ -13,7 +13,9 @@ ADDED_AT_BASELINE = {
     "orion/conversational_contracts.py", "orion/conversational_core.py",
     "orion/conversational_presentation.py", "orion/yandex_realtime_text_conversation.py",
 }
-CURRENT_SCOPE = {"orion/yandex_realtime_text_conversation.py", "orion/conversational_core.py"}
+CURRENT_SCOPE = {"orion/yandex_realtime_text_conversation.py", "orion/conversational_core.py",
+    "orion/conversational_presentation.py", "orion/full_voice_service.py",
+    "orion/hybrid_aircraft_core.py", "orion/realtime_test_evidence.py"}
 
 
 def assert_candidate_core_scope(before: str, after: str):

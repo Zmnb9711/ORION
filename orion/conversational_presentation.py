@@ -62,7 +62,7 @@ class ConversationalPresentation(StreamingProtectedPresentation):
 
 
 class ConversationVoice:
-    """Lazy Level-0 owner. No world/gateway/planner dependencies or global readiness.
+    """Turn-scoped Conversation owner. No world/gateway/planner or global readiness.
 
     Invoked only after existing routes decline. Provider errors are turn-local;
     a non-terminated owned resource is a cleanup error, never false STOPPED.
@@ -81,6 +81,7 @@ class ConversationVoice:
 
     def emit(self, event, **fields):
         try:
+            fields.setdefault("monotonic", time.monotonic())
             self.observe(event, **fields)
         except Exception:
             pass
@@ -94,7 +95,7 @@ class ConversationVoice:
             if request is None:
                 return False
             self.emit("routing", turn_id=self.turn_id, source_text=request.source_text,
-                source_sha256=request.source_sha256, route="CONVERSATIONAL_LEVEL0", route_source="LOCAL",
+                source_sha256=request.source_sha256, route="CONVERSATION", route_source="LOCAL",
                 conversation_provider_call_count=0, planner_call_count=0, tool_gateway_call_count=0)
             stage = "provider"
             candidate = await self.provider.generate(request, cancellation)
@@ -129,6 +130,12 @@ class ConversationVoice:
         except ConversationFailure as exc:
             self.emit("failed", turn_id=self.turn_id, failure_stage=stage, failure_category=str(exc))
             return True  # Fail closed: no fallback text, tools or Planner.
+        except asyncio.CancelledError:
+            self.emit("failed", turn_id=self.turn_id, failure_stage=stage, failure_category="cancelled")
+            raise
+        except Exception as exc:
+            self.emit("failed", turn_id=self.turn_id, failure_stage=stage, failure_category=type(exc).__name__)
+            return True  # Unexpected turn-local failure; shutdown still verifies ownership.
 
     async def shutdown(self):
         clean = await self.presentation.shutdown()

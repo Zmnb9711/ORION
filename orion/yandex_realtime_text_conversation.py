@@ -9,7 +9,7 @@ import time
 from typing import Any, cast
 
 from orion.conversational_contracts import ConversationalCandidate, ConversationCleanupError, ConversationFailure
-from orion.conversational_core import parse_draft, source_hash
+from orion.conversational_core import normalize_candidate_envelope, parse_draft, source_hash
 from orion.yandex_realtime_provider import build_yandex_url, yandex_authorization_headers
 
 
@@ -311,6 +311,15 @@ class TextConversationProvider:
         except Exception:
             pass
 
+    def _observe_terminal(self, text, **fields):
+        # Only the terminal text slot, never the provider event/body. Evidence
+        # failures and invalid envelopes cannot affect the parser/control flow.
+        self.emit("terminal_text", raw_terminal_text=text, **fields)
+        try:
+            self.emit("normalized_candidate", normalized_candidate=normalize_candidate_envelope(text), **fields)
+        except Exception:
+            pass
+
     async def _bounded(self, coroutine, timeout, cancellation=None, *, cleanup_budget=.1):
         task = asyncio.create_task(coroutine)
         self.owned.add(task)
@@ -398,6 +407,7 @@ class TextConversationProvider:
                     if not isinstance(response_id, str) or not 0 < len(response_id) <= 200:
                         raise ConversationFailure("response_correlation")
                     terminal = True
+                    self._observe_terminal(done_text, provider_response_id=response_id, **fields)
                     candidate = ConversationalCandidate(request=request, draft=parse_draft(done_text),
                         provider_response_id=response_id, terminal="completed")
                     self.emit("candidate_complete", candidate_text=candidate.draft.text,

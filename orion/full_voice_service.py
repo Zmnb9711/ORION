@@ -9,7 +9,10 @@ from typing import cast
 
 from orion.full_voice_capture import RadioTurnEventKind
 from orion.full_voice_core import FullVoiceCore
+from orion.conversational_core import eligible_conversation
+from orion.conversational_presentation import ConversationVoice
 from orion.communication_contracts import CommunicationDomain, CommunicationPriority
+from orion.hybrid_aircraft_contracts import HybridRoute
 from orion.hybrid_aircraft_core import HybridAircraftCore
 from orion.informational_presentation import InformationalPresentation, InformationalStreamingTts
 from orion.full_voice_srs import FullVoiceSrsEndpoint
@@ -89,6 +92,12 @@ class FullVoiceService(YandexSrsLiveService):
             self._set(state=YandexSrsState.ERROR, phase="error", message=code, last_error=code)
             stopped.set()
             cancellation.cancel()
+
+        def observe_conversation(event, **fields):
+            try:
+                realtime_test_evidence.record_conversation_slice(event, realtime_session_id=session_id, **fields)
+            except Exception:
+                pass  # The existing explicit evidence session is observation-only.
 
         password = request.eam_password.get_secret_value()
         diagnostics = SrsTransportDiagnostics(session_id, secrets=(request.api_key, password))
@@ -190,6 +199,19 @@ class FullVoiceService(YandexSrsLiveService):
                                     radio_first_frame=marks.get("radio_first_frame"), radio_completed=marks.get("radio_completed"))
                                 if outcome.state != "completed":
                                     fail("informational_presentation_not_completed")
+                            elif information.route is HybridRoute.UNSUPPORTED and information.failure is None:
+                                # Whole-source eligibility, never generic unsupported fallback.
+                                # This owner receives no gateway, WorldModel or Planner.
+                                if eligible_conversation(utterance.text):
+                                    conversation = ConversationVoice(request.api_key, request.folder_id,
+                                        endpoint, entity, observe=observe_conversation)
+                                    try:
+                                        await conversation.run(utterance, cancellation)
+                                    finally:
+                                        await conversation.shutdown()
+                                else:
+                                    observe_conversation("routing", turn_id=str(identity), route="UNSUPPORTED",
+                                        conversation_provider_call_count=0, planner_call_count=0, tool_gateway_call_count=0)
                 except Exception:
                     fail("turn_processing_failed")
                 finally:
@@ -218,6 +240,7 @@ class FullVoiceService(YandexSrsLiveService):
                         await native.audio(event.identity, event.pcm, event.timestamp)
                         self._set(input_chunks_delta=1)
                     else:
+                        observe_conversation("physical_turn_end", turn_id=str(event.identity), monotonic=event.timestamp)
                         await native.end(event.identity, event.timestamp)
                 if native.future is not None and native.future.done() and not native.future.cancelled() and not consumed:
                     consumed = True

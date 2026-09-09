@@ -120,7 +120,7 @@ def test_gate10_normal_host_coexistence_and_single_owner(monkeypatch, tmp_path, 
         assert closed == ["native", "endpoint"]
         assert len(provider.calls) == calls
         assert not factory_calls
-        owns = text == "какой мой текущий курс и координаты"
+        owns = text.casefold().rstrip("?") == "какой мой текущий курс и координаты"
         assert bool(hybrid_invoked) != owns
         accepted = expected and mode != "stop_local"
         assert len(tts_texts) == len(adapter.transmit_calls) == int(accepted)

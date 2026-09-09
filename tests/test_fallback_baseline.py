@@ -55,6 +55,12 @@ def test_launcher_core_srs_lifecycle_is_literal_baseline():
             assert "".join(new_lines[new_start:new_end]) == expected
             actual = "".join(new_lines[:new_start]) + old + "".join(new_lines[new_end:])
         if path.name == "realtime_test_evidence.py":
+            # 2026-09-09 explicit Conversation projection only; the separate
+            # scope test compares every other method to preservation f346e13.
+            method = next(n for n in ast.walk(ast.parse(actual))
+                          if isinstance(n, ast.FunctionDef) and n.name == "record_conversation_slice")
+            lines = actual.splitlines(keepends=True)
+            actual = "".join(lines[:method.lineno-1] + lines[method.end_lineno+1:])
             # New explicitly authorized bounded recorder method; no changes to
             # old collection/export/lifecycle implementation are permitted.
             method = next(n for n in ast.walk(ast.parse(actual))

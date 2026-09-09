@@ -71,6 +71,16 @@ def test_event_audio_transport_ownership_symbols_are_frozen():
     import hashlib
     from pathlib import Path
     tree = ast.parse(Path("orion/yandex_realtime_text_conversation.py").read_text(encoding="utf-8"))
+    provider = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "TextConversationProvider")
+    observer = next(n for n in provider.body if isinstance(n, ast.FunctionDef) and n.name == "_observe_terminal")
+    provider.body.remove(observer)
+    calls = [n for n in ast.walk(provider) if isinstance(n, ast.Expr) and isinstance(n.value, ast.Call)
+             and ast.unparse(n.value.func) == "self._observe_terminal"]
+    assert len(calls) == 1
+    assert ast.unparse(calls[0].value) == "self._observe_terminal(done_text, provider_response_id=response_id, **fields)"
+    for n in ast.walk(provider):
+        if isinstance(n, ast.If) and calls[0] in n.body:
+            n.body.remove(calls[0])
     expected = {
         "_identifier": "1d1a4d9de63c92d09b57e6e7271cbbdab486fbd6b5a300a898ca96ab229c3b88",
         "_capabilities": "ce2d39793d979950a3a6c7e4e668a1f6ed951e99c91bd4ae86e1b30e842317e3",

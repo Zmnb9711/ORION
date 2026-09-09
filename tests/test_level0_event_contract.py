@@ -79,7 +79,8 @@ def test_structured_replay_exact_admission_and_cleanup(text, audio):
         assert fake.sent[2]["response"] == {"instructions": INSTRUCTIONS, "output_modalities": ["text"]}
         assert fake.sent[1]["item"]["content"] == [{"type": "input_text", "text": SOURCE}]
         assert observed == ["connect_started", "connect_complete", "session.created", "session.updated", "connected",
-                            "request_sent", "first_token", "text_complete", "candidate_complete", "closed"]
+                            "request_sent", "first_token", "text_complete", "terminal_text", "normalized_candidate",
+                            "candidate_complete", "closed"]
     asyncio.run(run())
 
 

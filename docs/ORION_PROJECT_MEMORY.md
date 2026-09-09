@@ -1,5 +1,40 @@
 # ORION Project Memory
 
+## Recovery-line checkpoint — 2026-09-09 bounded free Conversation
+
+This notice scopes the older memory below: for this task, the isolated recovery
+tree and explicit user-approved policy take precedence over unrelated main or
+later architecture. Architecture Guard is OFF by explicit user instruction.
+Canonical contextual recovery record: `d0f58b5693e4a5f7467e32566be88674e24d4001`.
+Working line: `codex/level0-yandex-event-contract`; Hybrid physical baseline
+`f0c9e364ed653e9497d7e2ef8ef8f35dc97157d4`, frozen full-voice `57a563a`.
+
+- Core = authority; Conversation = natural non-authoritative language;
+  Planner = separate reasoning/tools. Conversation gets no WorldModel,
+  ToolGateway, telemetry, mission context or action capability.
+- Five text-protocol provider gates were preserved at
+  `f346e13f879a7845ad2ffa24ee6360afd8ebde70`. Policy correction is `51ad57f`.
+  `_CLAUSES` censorship was removed under explicit user authorization. Strict
+  structural/turn/expiry/replay checks remain; factual truth is NOT certified.
+- Normal full-voice host invokes the bounded turn-scoped Conversation owner
+  only after existing ownship/Hybrid routes decline and whole-source Russian
+  eligibility passes. No automatic Planner escalation or unknown fallback.
+- Yandex Realtime produces terminal text only; finalized exact text enters
+  existing SpeechKit `ru-RU/jane` streaming presentation and RadioRouter/SRS.
+  No Realtime audio enters playback, and no STT/SRS lifecycle changed.
+- Source labels are silent by default. Aircraft provenance stays internal;
+  only the automatic “По данным DCS” prefix is removed from informational text.
+- Existing opt-in Test Session records correlated bounded Conversation text,
+  timings, IDs, failure and TX counters. No new recorder/audio archive system.
+- IMPLEMENTED / physical Conversation validation PENDING. The saved fifth
+  candidate is replayed offline, not relabeled as a successful physical test.
+  One committed-source installer is to be produced and smoked before handoff;
+  no installation or production merge is authorized automatically.
+
+See [authority contract](free-conversation-authority-20260909.md) and
+[host integration manifest](free-conversation-host-20260909.md). The historical
+memory below is retained verbatim, not used to undo the explicit recovery scope.
+
 > Canonical long-term project context. Updated: 2026-08-26.
 >
 > Purpose: preserve approved product requirements, architectural invariants, milestone history, real-world test evidence, known risks, and the next agreed action across chats and development sessions.

@@ -180,7 +180,7 @@ def render_informational(plan: InformationalResponsePlan, now: datetime) -> str:
     if plan.aircraft is not None:
         validate_aircraft(plan.aircraft, now)
         display = safe_aircraft_name(plan.aircraft.aircraft_type) if plan.aircraft.aircraft_type else None
-        parts.append(f"По данным DCS, вы находитесь в {display}." if display else UNAVAILABLE_TEXT)
+        parts.append(f"Вы находитесь в {display}." if display else UNAVAILABLE_TEXT)
     return " ".join(parts)
 
 

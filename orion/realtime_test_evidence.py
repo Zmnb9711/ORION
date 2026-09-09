@@ -281,6 +281,45 @@ class RealtimeTestEvidenceRecorder:
                 self._dropped += 1
             self._events.append(safe)
 
+    def record_conversation_slice(self, event: str, *, realtime_session_id: str, **fields: object) -> None:
+        """Text-only bounded projection inside the existing opt-in Test Session.
+
+        Not a provider-body logger. Unknown fields/audio/tools/headers are never
+        retained. This reuses the existing event ring, export and session IDs.
+        """
+        with self._lock:
+            if not self._active or self._test_session_id is None:
+                return
+            if event not in {"physical_turn_end", "routing", "connect_started", "connect_complete",
+                "session.created", "session.updated", "connected", "request_sent", "first_token",
+                "text_complete", "terminal_text", "normalized_candidate", "candidate_complete", "closed",
+                "candidate", "admission", "tts_input", "response_terminal", "failed"}:
+                return
+            safe: dict[str, object] = {
+                "timestamp": datetime.now(UTC).isoformat(timespec="milliseconds"),
+                "test_session_id": self._test_session_id, "realtime_session_id": realtime_session_id,
+                "event": "conversation_slice." + event,
+            }
+            text_bounds = {"source_text": 500, "raw_terminal_text": 4096, "normalized_candidate": 4096,
+                           "candidate_text": 300, "finalized_text": 300, "tts_input": 300}
+            scalar = {"turn_id", "tx_id", "route", "route_source", "source_sha256", "provider_response_id",
+                "conversation_provider_call_count", "planner_call_count", "tool_gateway_call_count",
+                "status", "failure_stage", "failure_category", "monotonic", "connect_ms", "first_token_ms",
+                "completion_ms", "frames", "tts_started", "tts_first_pcm", "tts_completed", "tts_pcm_bytes",
+                "radio_first_frame", "radio_completed"}
+            for key, value in fields.items():
+                if key in text_bounds:
+                    if not isinstance(value, str) or not 0 < len(value) <= text_bounds[key]:
+                        raise ValueError("invalid_conversation_evidence_text")
+                    safe[key] = value  # Exact, and only in explicitly enabled mode.
+                elif key in scalar and (value is None or isinstance(value, (str, int, float, bool))):
+                    if isinstance(value, str) and len(value) > 200:
+                        raise ValueError("invalid_conversation_evidence_scalar")
+                    safe[key] = value
+            if len(self._events) == self._events.maxlen:
+                self._dropped += 1
+            self._events.append(safe)
+
     def record_transcript(
         self,
         role: str,

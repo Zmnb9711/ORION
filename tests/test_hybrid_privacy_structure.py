@@ -33,7 +33,7 @@ def test_exact_collision_is_metadata_not_leak(tmp_path):
     # AFTER: exact fact projection + semantic fields, not serialized metadata.
     assert_aircraft_privacy(finalized=final, events=events)
     assert final["plan"]["aircraft"]["aircraft_type"] == "FA-18C_hornet"
-    assert final["text"] == "Добрый день! По данным DCS, вы находитесь в F/A-18C Hornet."
+    assert final["text"] == "Добрый день! Вы находитесь в F/A-18C Hornet."
     assert next(e["tts_input"] for e in events if "tts_input" in e) == final["text"]
 
 
