@@ -1,5 +1,56 @@
 # ORION Project Memory
 
+## Current recovery checkpoint — 2026-09-10 Moscow
+
+**ORION_EOD_20260910_FREE_CONVERSATION_FIELD_PASS_AI_INTERPRETATION_NEXT**
+
+Read [the full EOD record](history/2026-09-10-end-of-day-checkpoint.md) and
+[the product-direction decision](natural-language-core-product-direction-20260910.md)
+before acting on any older next-step or pending-field statement below.
+Documentation branch: `codex/eod-20260910-checkpoint`; runtime/source branch:
+`codex/level0-yandex-event-contract`, build `d3245292c176d6dc51b2a9adcb71b2e238e0b234`.
+The docs checkpoint is a direct child of that build and changes no runtime behavior.
+
+- FIRST MODERN FREE-CONVERSATION VOICE VERTICAL FIELD PASS: archive
+  `ORION-Test-Evidence-20260909-214800.zip`, actual FINAL
+  `что то сегодня полет идет тяжело`, CONVERSATION, Yandex=1,
+  finalized=TTS input, 131 completed frames, Planner=0, ToolGateway=0,
+  DCS reads=0 for the turn. User: «звук есть, нормальный, с небольшой задержкой».
+- Same archive proves Core aircraft identity: authoritative ownship read,
+  `Вы находитесь в F/A-18C Hornet.`, Conversation=0, 91 frames completed.
+  Silent source labels remain policy; provenance stays internal.
+- Prior FINAL `чтото полет сегодня тяжело идет` failed input eligibility on
+  c444860; bounded STT recognition was fixed in d3245292. SRS/EAM read-only
+  audit found headless BLUE=2 / 251 MHz AM / UDP READY during failure.
+  Official-client 0→2→0 remains separately unresolved; UI indication is not
+  proof of headless registration failure. No evidence Conversation broke SRS.
+- No proven golden ownship regression: `Какой мой текущий курс и координаты?`
+  was modern FIELD VALIDATED and still reaches the current host's fake TTS/TX.
+  Coordinates-only, heading-only and looser `Какой у меня курс и координаты`
+  were not confirmed accepted modern recovery contracts. Their silence is a
+  coverage gap, not proven loss. Earlier regression/baseline-rejection claims
+  based on that assumption are superseded; no blanket baseline acceptance.
+- Product goal: natural AI interpretation plus permitted Core/ToolGateway DCS
+  facts/actions, Core truth/action authority, Planner reasoning, natural
+  Conversation. Current build has generated Conversation and Core facts
+  separately; general arbitrary DCS-request interpretation/retrieval is missing.
+  Design that layer next; do not implement tonight or solve the product solely
+  by accumulating predefined voice templates.
+- Reachability differs from source invariance. Capability Preservation Matrix/
+  gate remains recommended and NOT IMPLEMENTED; audit stopped on evidence
+  classification. Saved offline scenarios are not an installed pre-build gate.
+- Latency: provider first token ~349 ms, TTS TTFA ~2.656 s, physical
+  PTT END→first TX ~5.3 s; ideal <1 s remains unmet. Optimize after correctness.
+- DT403405 stays closed as a blocker, with question 2 last recorded as
+  non-blocking pending clarification. Structural `audio:null` is not payload;
+  `response.output_audio.delta` indicates payload and `response.output_text.done`
+  is authoritative. Preserve all previous support/probe records.
+
+Tomorrow recover actual Git state and use the linked checkpoint. No runtime,
+provider, DCS/SRS/PTT, build/install or gate implementation was performed by
+this documentation task. Older records below are preserved verbatim as history.
+
+
 ## Recovery-line checkpoint — 2026-09-09 bounded free Conversation
 
 This notice scopes the older memory below: for this task, the isolated recovery

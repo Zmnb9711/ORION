@@ -1,0 +1,16 @@
+[
+  {
+    "file": "routing-preservation-audit.md",
+    "original_path": "C:/Users/Алексей/Documents/ORION-Restoration/routing-preservation-audit-20260910/AUDIT_A-YY.md",
+    "sha256": "660494E0468B29E586C943970BE9776AA8A6BA77EDF77C9DD1D83D7A034C80CB",
+    "bytes": 26903,
+    "status": "Unmodified historical audit artifact; not rerun in EOD task"
+  },
+  {
+    "file": "offline-results.json",
+    "original_path": "C:/Users/Алексей/Documents/ORION-Restoration/routing-preservation-audit-20260910/offline-results.json",
+    "sha256": "9A24FD48C36AC60DE440434B17F3A41512A6189AB47592866FE09F7CBF66D1E6",
+    "bytes": 7645,
+    "status": "Unmodified historical audit artifact; not rerun in EOD task"
+  }
+]

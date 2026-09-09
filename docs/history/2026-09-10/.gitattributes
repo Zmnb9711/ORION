@@ -1,0 +1,4 @@
+# Preserve copied historical artifacts byte-for-byte.
+# Original audit has a trailing blank line; retain it for hash identity.
+routing-preservation-audit.md -text whitespace=-blank-at-eof
+offline-results.json -text

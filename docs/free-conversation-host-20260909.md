@@ -1,5 +1,7 @@
 # Free Conversation host integration — 2026-09-09
 
+> Historical implementation report. Physical Conversation PASS and existing aircraft evidence are now recorded in the [2026-09-10 EOD checkpoint](history/2026-09-10-end-of-day-checkpoint.md). Older pending-test instructions below describe the pre-field state; use the current checkpoint for continuation.
+
 ORION ARCHITECTURE GUARD: OFF — user-approved recovery implementation.
 
 ## Exact implementation surface relative to preserved f346e13

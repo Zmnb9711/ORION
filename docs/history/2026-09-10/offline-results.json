@@ -1,0 +1,261 @@
+{
+  "host_replay": [
+    {
+      "text": "какой мой текущий курс и координаты",
+      "production_host_assertions": "PASS",
+      "response": true
+    },
+    {
+      "text": "в каком самолёте я нахожусь?",
+      "production_host_assertions": "PASS",
+      "response": true
+    },
+    {
+      "text": "Добрый день! В каком самолёте я нахожусь?",
+      "production_host_assertions": "PASS",
+      "response": true
+    },
+    {
+      "text": "Добрый день! Как дела?",
+      "production_host_assertions": "PASS",
+      "response": true
+    },
+    {
+      "text": "какие у меня координаты",
+      "production_host_assertions": "PASS",
+      "response": false
+    },
+    {
+      "text": "какой мой курс",
+      "production_host_assertions": "PASS",
+      "response": false
+    },
+    {
+      "text": "какой у меня курс и координаты",
+      "production_host_assertions": "PASS",
+      "response": false
+    },
+    {
+      "text": "проверка ядра",
+      "production_host_assertions": "PASS",
+      "response": false
+    },
+    {
+      "text": "разрешите взлет",
+      "production_host_assertions": "PASS",
+      "response": false
+    },
+    {
+      "text": "какой диспетчер сейчас управляет моим полетом",
+      "production_host_assertions": "PASS",
+      "response": false
+    },
+    {
+      "text": "какой мой текущий вкус или оригинал",
+      "production_host_assertions": "PASS",
+      "response": false
+    },
+    {
+      "text": "что то сегодня полет идет тяжело",
+      "production_host_assertions": "PASS",
+      "route": "CONVERSATION",
+      "conversation": 1,
+      "planner": 0,
+      "tools": 0
+    }
+  ],
+  "historical_matcher_comparison": [
+    {
+      "ref": "5c5c831",
+      "text": "какой мой текущий курс и координаты",
+      "default_ia6_ownship_match": true,
+      "bounded_voice_match": null
+    },
+    {
+      "ref": "5c5c831",
+      "text": "какой у меня курс и координаты",
+      "default_ia6_ownship_match": true,
+      "bounded_voice_match": null
+    },
+    {
+      "ref": "5c5c831",
+      "text": "какие у меня координаты",
+      "default_ia6_ownship_match": false,
+      "bounded_voice_match": null
+    },
+    {
+      "ref": "5c5c831",
+      "text": "какой мой курс",
+      "default_ia6_ownship_match": false,
+      "bounded_voice_match": null
+    },
+    {
+      "ref": "ba43a2c",
+      "text": "какой мой текущий курс и координаты",
+      "default_ia6_ownship_match": true,
+      "bounded_voice_match": true
+    },
+    {
+      "ref": "ba43a2c",
+      "text": "какой у меня курс и координаты",
+      "default_ia6_ownship_match": true,
+      "bounded_voice_match": false
+    },
+    {
+      "ref": "ba43a2c",
+      "text": "какие у меня координаты",
+      "default_ia6_ownship_match": false,
+      "bounded_voice_match": false
+    },
+    {
+      "ref": "ba43a2c",
+      "text": "какой мой курс",
+      "default_ia6_ownship_match": false,
+      "bounded_voice_match": false
+    },
+    {
+      "ref": "57a563a",
+      "text": "какой мой текущий курс и координаты",
+      "default_ia6_ownship_match": true,
+      "bounded_voice_match": true
+    },
+    {
+      "ref": "57a563a",
+      "text": "какой у меня курс и координаты",
+      "default_ia6_ownship_match": true,
+      "bounded_voice_match": false
+    },
+    {
+      "ref": "57a563a",
+      "text": "какие у меня координаты",
+      "default_ia6_ownship_match": false,
+      "bounded_voice_match": false
+    },
+    {
+      "ref": "57a563a",
+      "text": "какой мой курс",
+      "default_ia6_ownship_match": false,
+      "bounded_voice_match": false
+    },
+    {
+      "ref": "3f364bd",
+      "text": "какой мой текущий курс и координаты",
+      "default_ia6_ownship_match": true,
+      "bounded_voice_match": true
+    },
+    {
+      "ref": "3f364bd",
+      "text": "какой у меня курс и координаты",
+      "default_ia6_ownship_match": true,
+      "bounded_voice_match": false
+    },
+    {
+      "ref": "3f364bd",
+      "text": "какие у меня координаты",
+      "default_ia6_ownship_match": false,
+      "bounded_voice_match": false
+    },
+    {
+      "ref": "3f364bd",
+      "text": "какой мой курс",
+      "default_ia6_ownship_match": false,
+      "bounded_voice_match": false
+    },
+    {
+      "ref": "333ca5e",
+      "text": "какой мой текущий курс и координаты",
+      "default_ia6_ownship_match": true,
+      "bounded_voice_match": true
+    },
+    {
+      "ref": "333ca5e",
+      "text": "какой у меня курс и координаты",
+      "default_ia6_ownship_match": true,
+      "bounded_voice_match": false
+    },
+    {
+      "ref": "333ca5e",
+      "text": "какие у меня координаты",
+      "default_ia6_ownship_match": false,
+      "bounded_voice_match": false
+    },
+    {
+      "ref": "333ca5e",
+      "text": "какой мой курс",
+      "default_ia6_ownship_match": false,
+      "bounded_voice_match": false
+    },
+    {
+      "ref": "f0c9e36",
+      "text": "какой мой текущий курс и координаты",
+      "default_ia6_ownship_match": true,
+      "bounded_voice_match": true
+    },
+    {
+      "ref": "f0c9e36",
+      "text": "какой у меня курс и координаты",
+      "default_ia6_ownship_match": true,
+      "bounded_voice_match": false
+    },
+    {
+      "ref": "f0c9e36",
+      "text": "какие у меня координаты",
+      "default_ia6_ownship_match": false,
+      "bounded_voice_match": false
+    },
+    {
+      "ref": "f0c9e36",
+      "text": "какой мой курс",
+      "default_ia6_ownship_match": false,
+      "bounded_voice_match": false
+    },
+    {
+      "ref": "c444860",
+      "text": "какой мой текущий курс и координаты",
+      "default_ia6_ownship_match": true,
+      "bounded_voice_match": true
+    },
+    {
+      "ref": "c444860",
+      "text": "какой у меня курс и координаты",
+      "default_ia6_ownship_match": true,
+      "bounded_voice_match": false
+    },
+    {
+      "ref": "c444860",
+      "text": "какие у меня координаты",
+      "default_ia6_ownship_match": false,
+      "bounded_voice_match": false
+    },
+    {
+      "ref": "c444860",
+      "text": "какой мой курс",
+      "default_ia6_ownship_match": false,
+      "bounded_voice_match": false
+    },
+    {
+      "ref": "d324529",
+      "text": "какой мой текущий курс и координаты",
+      "default_ia6_ownship_match": true,
+      "bounded_voice_match": true
+    },
+    {
+      "ref": "d324529",
+      "text": "какой у меня курс и координаты",
+      "default_ia6_ownship_match": true,
+      "bounded_voice_match": false
+    },
+    {
+      "ref": "d324529",
+      "text": "какие у меня координаты",
+      "default_ia6_ownship_match": false,
+      "bounded_voice_match": false
+    },
+    {
+      "ref": "d324529",
+      "text": "какой мой курс",
+      "default_ia6_ownship_match": false,
+      "bounded_voice_match": false
+    }
+  ]
+}
