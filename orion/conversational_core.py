@@ -23,16 +23,40 @@ def normalized(text: str) -> str:
     return " ".join(text.casefold().replace("ё", "е").split())
 
 
-_INPUT = re.compile(
-    r"(?:(?:что-то )?(?:сегодня )?полет (?:тяжело идет|идет тяжело)|"
-    r"сегодня (?:как-то )?(?:непросто|тяжело) летится|"
-    r"(?:что-то )?я сегодня не в форме|что-то сегодня все идет тяжеловато|"
-    r"сегодня как-то все тяжеловато|давно я нормально не летал|что-то сегодня не мой день)[.!]?"
+# Meaning-bearing constituents remain ordered and must consume the entire input.
+# Only the three bounded discourse/time modifiers below may move between them.
+# This is a local social class recognizer, not UNKNOWN -> Conversation.
+_SOCIAL_CLAUSE = re.compile(
+    r"(?:полет (?:тяжело идет|идет тяжело)|"
+    r"полеты (?:тяжело идут|идут тяжело)|"
+    r"(?:непросто|тяжело) летится|"
+    r"я не в форме|все идет тяжеловато|все тяжеловато|"
+    r"давно я нормально не летал[а]?|не мой день)"
 )
+_DISCOURSE_MODIFIERS = frozenset({"чтото", "както", "сегодня"})
 
 
 def eligible_conversation(text: str) -> bool:
-    return len(text) <= 500 and _INPUT.fullmatch(normalized(text)) is not None
+    """Recognize bounded ASR variation without rewriting the submitted source.
+
+    Retain negation, pronouns, inflection and every unknown word. Quotes,
+    questions, symbols and multiple sentences are not silently discarded.
+    Hyphen/space loss is supported only for the known discourse particles.
+    """
+    if not text or len(text) > 500:
+        return False
+    value = normalized(text)
+    value = re.sub(r"[.!]+$", "", value)
+    value = re.sub(r"\b(что|как)(?:[-‐‑–]| )?то\b", r"\1то", value)
+    if re.fullmatch(r"[а-я]+(?:[ ,]+[а-я]+)*", value) is None:
+        return False
+    tokens = value.replace(",", " ").split()
+    # Removing at most one occurrence of each *non-operational* modifier allows
+    # mild word-order variation, not a bag-of-words match of meaningful content.
+    if any(tokens.count(modifier) > 1 for modifier in _DISCOURSE_MODIFIERS):
+        return False
+    clause = " ".join(token for token in tokens if token not in _DISCOURSE_MODIFIERS)
+    return _SOCIAL_CLAUSE.fullmatch(clause) is not None
 
 
 def admit_social_text(text: str) -> bool:

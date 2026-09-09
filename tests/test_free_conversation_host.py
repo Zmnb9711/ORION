@@ -24,12 +24,14 @@ from test_free_conversation_policy import FIFTH_RAW
 from test_full_voice import StreamingFakeRadio
 from test_hybrid_aircraft import PURE, MIXED, FREE, NOW, Gateway, utterance
 from test_level0_event_contract import sequence
+from test_conversation_stt_routing import STT_FINALS
 
 
 @pytest.mark.parametrize("mode", ["success", "provider_failure", "invalid_candidate", "tts_failure",
     "observer_failure", "inactive", "stop_provider"])
-def test_normal_host_conversation_then_core_no_fallback(monkeypatch, tmp_path, mode):
-    inputs = [utterance(SOCIAL[0]), utterance(SOCIAL[1]), utterance(PURE)]
+@pytest.mark.parametrize("source", [SOCIAL[0], *STT_FINALS[:5]])
+def test_normal_host_conversation_then_core_no_fallback(monkeypatch, tmp_path, mode, source):
+    inputs = [utterance(source), utterance(SOCIAL[1]), utterance(PURE)]
     stop, first = threading.Event(), threading.Event()
     adapter = StreamingFakeRadio(first)
     router = RadioRouter(default_transport_id="srs")
@@ -167,6 +169,7 @@ def test_normal_host_conversation_then_core_no_fallback(monkeypatch, tmp_path, m
 @pytest.mark.parametrize("text", [PURE, MIXED, FREE, "Какой мой текущий курс и координаты?",
     "Как дела? И какой у меня самолёт?", "какой мой текущий вкус или оригинал", "Привет, разрешите взлёт.",
     "Можно взлетать?", "Разрешите посадку.", "Куда мне поворачивать?", "Какую цель атаковать?",
+    "Сегодня тяжело летится какой у меня курс?", "Что-то не мой день можно садиться?",
     "Когда впервые полетел F/A-18?", "Что-то сегодня полёт тяжело идёт. Разрешите посадку."])
 def test_known_and_unhandled_routes_never_instantiate_conversation(monkeypatch, tmp_path, text):
     from test_hybrid_host import test_gate10_normal_host_coexistence_and_single_owner as run_existing

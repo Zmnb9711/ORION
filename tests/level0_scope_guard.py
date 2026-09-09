@@ -2,7 +2,8 @@
 
 The four committed additions are grandfathered ONLY up to the immutable SHA.
 They are not a working-tree allowlist. Candidate envelope is explicitly scoped
-below; Core admission/eligibility and all other Core symbols remain frozen.
+below; the separately authorized STT input correction is bounded to eligibility.
+The c444860 differential test freezes output policy and all other Core symbols.
 """
 import ast
 from pathlib import Path
@@ -21,11 +22,14 @@ CURRENT_SCOPE = {"orion/yandex_realtime_text_conversation.py", "orion/conversati
 def assert_candidate_core_scope(before: str, after: str):
     original, current = ast.parse(before), ast.parse(after)
     # The 2026-09-09 user explicitly replaced phrase admission and extended the
-    # closed input slice. Ledger, binding, expiry and exact text remain frozen.
+    # closed input slice. On 2026-09-10 only STT eligibility was authorized.
+    # Ledger, binding, expiry and exact text remain frozen. The independent
+    # c444860 differential in test_conversation_stt_routing freezes output too.
     def policy_node(n):
         return (isinstance(n, ast.Expr) and isinstance(n.value, ast.Constant)
-            or isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id in {"_INPUT", "_CLAUSES"} for t in n.targets)
-            or isinstance(n, ast.FunctionDef) and n.name == "admit_social_text")
+            or isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id in {
+                "_INPUT", "_CLAUSES", "_SOCIAL_CLAUSE", "_DISCOURSE_MODIFIERS"} for t in n.targets)
+            or isinstance(n, ast.FunctionDef) and n.name in {"admit_social_text", "eligible_conversation"})
     original.body = [n for n in original.body if not policy_node(n)]
     current.body = [n for n in current.body if not policy_node(n)]
     additions = [n for n in current.body if isinstance(n, ast.FunctionDef) and n.name == "normalize_candidate_envelope"]
