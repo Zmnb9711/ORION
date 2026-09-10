@@ -1,5 +1,43 @@
 # ORION Project Memory
 
+## Mandatory architecture and current recovery — 2026-09-10
+
+**READ BEFORE ORION CHANGES:**
+[Mandatory Natural-Language architecture contract](architecture/ORION_NATURAL_LANGUAGE_ARCHITECTURE_CONTRACT.md)
+— **`ORION_NATURAL_LANGUAGE_FIRST_CONTRACT_V1`**.
+This is the single mandatory architecture source of truth approved by the user.
+Astra/Codex must cite its path/marker and state compliance with each relevant
+invariant before editing; any conflict requires STOP and an explicit user
+architecture decision (sections 17–19). Root `AGENTS.md` makes this a startup rule.
+The contract may not be weakened or silently superseded without user approval.
+
+Read the [current governance/recovery history](history/2026-09-10-natural-language-architecture-contract.md)
+for actual branch state, evidence and the earlier EOD checkpoint. Runtime/source
+is `codex/ia-aircraft-interpretation` at
+`2c58b3752ad79a639db6e406e2eeb1927b21086d`; the contract is recorded on the isolated
+docs branch `codex/natural-language-architecture-contract-20260910`.
+
+- Aircraft Natural Language → AI Interpreter → typed aircraft.identity → Core
+  authoritative DCS fact → TTS → SRS: FIELD PASS; user heard the Hornet response.
+  Interpreter user path ~602 ms; separate isolation ~266 ms.
+- Latest six-turn General Free Conversation: FIELD FAIL. Conversation=0,
+  Interpreter=5, Planner=0. Only «как дела» among conversational turns answered,
+  using a local Hybrid constant; the aircraft turn separately answered. Four
+  ordinary conversational turns ended not_applicable → UNSUPPORTED and silence.
+  Root cause is narrow/template-gated Conversation admission, not Yandex/TTS/SRS.
+- Earlier bounded Conversation FIELD PASS is real but does not prove general
+  free dialogue. The current product is not yet target ORION.
+- Open natural input, AI semantic ingress after fast-path miss, Core truth/action
+  authority, ORION-owned context, mixed/multi-capability turns, selective Planner,
+  low latency and production-host preservation are mandatory target invariants.
+  Phrase-list expansion as the main NLU solution requires STOP.
+
+Older notices below are preserved as historical implementation/scope records.
+Their bounded eligibility, no-fallback, Guard OFF, pending-field, old branch or
+next-step statements cannot override this contract or disable its pre-flight.
+This is documentation/governance only; no runtime behavior or executable gate
+is implemented by this checkpoint.
+
 ## Recovery-line checkpoint — 2026-09-09 bounded free Conversation
 
 This notice scopes the older memory below: for this task, the isolated recovery
