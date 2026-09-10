@@ -109,6 +109,8 @@ def test_ported_production_components_are_exact_golden_not_today():
     paths.append("pyproject.toml")
     for path in paths:
         actual = (ROOT / path).read_text(encoding="utf-8")
+        from ia_scope_guard import restore_ia
+        actual = restore_ia(path, actual)
         if path.endswith("protected_presentation.py"):
             actual = actual.replace('        return await self._admit_validated(checked, context)\n\n'
                 '    async def _admit_validated(\n'

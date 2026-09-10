@@ -5,13 +5,14 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import time
 from collections import OrderedDict, deque
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from threading import RLock
 from typing import Annotated, Literal, Protocol, Self
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from pydantic import (
     BaseModel,
@@ -45,6 +46,10 @@ from orion.planner_contracts import (
 from orion.ownship_report import ownship_semantics_from_tool_result
 from orion.tool_gateway import ToolGateway
 from orion.tool_gateway_contracts import ToolCall, ExecutionContext
+from orion.aircraft_interpretation import (
+    AircraftAdmission, AircraftInterpreter, AircraftProposal, InterpretationRequest,
+    eligible_aircraft_interpretation, source_hash,
+)
 
 POLICY_VERSION = "ia6.router-policy.v1"
 OWNERSHIP_CAPABILITY = CapabilityId("world.ownship.read")
@@ -194,6 +199,105 @@ class InteractionRouter:
         self._max_replay_entries = max_replay_entries
         self._diagnostics: deque[InteractionRouterDiagnostic] = deque(maxlen=500)
         self._lock = RLock()
+        self._interpretation_turns: set[UUID] = set()
+        self._aircraft_grants: dict[UUID, AircraftAdmission] = {}
+
+    def _interpretation_request(self, identity, text, language, cancellation, provider, budget):
+        if not eligible_aircraft_interpretation(text, language) or cancellation.cancelled:
+            return None
+        with self._lock:
+            if identity in self._interpretation_turns or len(self._interpretation_turns) >= 64:
+                return None
+            self._interpretation_turns.add(identity)
+        return InterpretationRequest(interaction_id=identity, operation_id=uuid4(),
+            source_text=text, source_sha256=source_hash(text),
+            deadline=self._clock() + timedelta(seconds=budget), expected_provider=provider)
+
+    def _admit_interpretation(self, request, proposal, cancellation, emit):
+        # Common Core authority for sync development adapter and warm async owner.
+        proposal = AircraftProposal.model_validate(proposal.model_dump(), strict=True)
+        if (proposal.request != request or proposal.provider_id != request.expected_provider
+                or request.source_sha256 != source_hash(request.source_text)):
+            raise ValueError("interpretation_source_binding")
+        if cancellation.cancelled or self._clock() >= request.deadline:
+            raise ValueError("interpretation_cancelled_or_expired")
+        emit("proposal", structured_result=proposal.intent.model_dump())
+        if proposal.intent.capability != "aircraft.identity":
+            emit("admission", status="not_applicable")
+            return None
+        gateway = self._bounded_ownship_gateway
+        if gateway is None or not any(d.name == "orion.world.ownship.get" and d.version == "1.0"
+                and d.capability == OWNERSHIP_CAPABILITY for d in gateway.definitions()):
+            raise ValueError("interpretation_capability_unavailable")
+        grant = AircraftAdmission(request=request, response_id=proposal.response_id)
+        with self._lock:
+            if cancellation.cancelled or self._clock() >= request.deadline:
+                raise ValueError("interpretation_cancelled_or_expired")
+            self._aircraft_grants[request.operation_id] = grant
+        emit("admission", status="accepted", capability=str(grant.capability))
+        return grant
+
+    @staticmethod
+    def _interpretation_observer(identity, observe):
+        def emit(event, **fields):
+            try:
+                observe(event, turn_id=str(identity), **fields)
+            except Exception:
+                pass
+        return emit
+
+    def interpret_aircraft(self, *, identity: UUID, text: str, language: str,
+                          provider_factory: Callable[[], AircraftInterpreter],
+                          cancellation: PlannerCancellationToken,
+                          observe: Callable[..., None] = lambda *_a, **_k: None) -> AircraftAdmission | None:
+        """Development sync seam; does not change route()/execute()."""
+        from orion.aircraft_interpretation import INTERPRETER_PROVIDER, InterpretationCleanupError
+        emit = self._interpretation_observer(identity, observe)
+        request = self._interpretation_request(identity, text, language, cancellation, INTERPRETER_PROVIDER, 10)
+        if request is None:
+            return None
+        try:
+            proposal = provider_factory().interpret(request, cancellation)
+            return self._admit_interpretation(request, proposal, cancellation, emit)
+        except Exception as exc:
+            emit("failed", failure_category=type(exc).__name__, failure_stage="interpretation")
+            if isinstance(exc, InterpretationCleanupError):
+                raise
+            return None
+
+    async def interpret_aircraft_warm(self, utterance, owner, cancellation, *,
+                                     observe=lambda *_a, **_k: None):
+        """Only an unresolved whole-source turn; never routes or executes tools."""
+        from orion.aircraft_interpretation import WARM_INTERPRETER_PROVIDER
+        from orion.conversational_contracts import ConversationCleanupError
+        started = time.perf_counter()
+        emit = self._interpretation_observer(utterance.interaction_id, observe)
+        request = self._interpretation_request(utterance.interaction_id, utterance.text,
+            utterance.input_language, cancellation, WARM_INTERPRETER_PROVIDER, 1)
+        if request is None:
+            return None
+        try:
+            proposal = await owner.interpret(request, cancellation)
+            # Provider parse, Core validation and publication share the strict 1s;
+            # the owner's independently owned isolation task is NOT awaited here.
+            grant = self._admit_interpretation(request, proposal, cancellation, emit)
+            emit("core_admission_complete", user_path_ms=(time.perf_counter()-started)*1000,
+                 status="accepted" if grant else "not_applicable")
+            return grant
+        except Exception as exc:
+            emit("failed", failure_category=type(exc).__name__, failure_stage="interpretation")
+            if isinstance(exc, ConversationCleanupError):
+                raise
+            return None
+
+    def consume_aircraft_admission(self, grant: AircraftAdmission, identity: UUID,
+                                  text: str, cancellation: PlannerCancellationToken) -> bool:
+        """Single-use in-process Core authority, not a plausible provider receipt."""
+        with self._lock:
+            issued = self._aircraft_grants.pop(grant.request.operation_id, None)
+            return (issued is grant and not cancellation.cancelled and self._clock() < grant.request.deadline
+                    and identity == grant.request.interaction_id and text == grant.request.source_text
+                    and source_hash(text) == grant.request.source_sha256)
 
     def route(
         self,

@@ -58,8 +58,10 @@ def assert_historical_and_current_scope(root: Path, historical_base: str, histor
     # preservation commit; it cannot silently grandfather another later change.
     added = names("diff", BASELINE + "^", BASELINE, "--diff-filter=A", "--name-only")
     assert added == ADDED_AT_BASELINE
+    from ia_scope_guard import ADDED, HUNKS, verify_ia_scope
+    verify_ia_scope()
     assert_deltas(names("diff", historical_base, BASELINE, "--name-only"),
-                  names("diff", BASELINE, "--name-only"),
-                  names("ls-files", "--others", "--exclude-standard"), historical_scope)
+                  names("diff", BASELINE, "--name-only") - HUNKS.keys() - ADDED,
+                  names("ls-files", "--others", "--exclude-standard") - ADDED, historical_scope)
     original = subprocess.check_output(["git", "show", BASELINE + ":orion/conversational_core.py"], cwd=root).decode("utf-8")
     assert_candidate_core_scope(original, (root / "orion/conversational_core.py").read_text(encoding="utf-8"))

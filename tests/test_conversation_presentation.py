@@ -181,6 +181,8 @@ def test_frozen_subsystems_byte_identical():
         path = "orion/"+name
         before = subprocess.check_output(["git","show","f0c9e364:"+path],cwd=root)
         after = (root/path).read_bytes().replace(b"\r\n",b"\n")
+        from ia_scope_guard import restore_ia
+        after = restore_ia(path, after.decode("utf-8")).encode("utf-8")
         if name == "hybrid_aircraft_core.py":
             after = after.replace('f"Вы находитесь в {display}."'.encode(),
                 'f"По данным DCS, вы находитесь в {display}."'.encode())

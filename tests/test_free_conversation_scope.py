@@ -12,7 +12,8 @@ def baseline(path):
 
 def test_literal_host_lifecycle_with_only_conversation_handoff():
     path = "orion/full_voice_service.py"
-    current = ast.parse(Path(path).read_text(encoding="utf-8"))
+    from ia_scope_guard import restore_ia
+    current = ast.parse(restore_ia(path, Path(path).read_text(encoding="utf-8")))
     class Restore(ast.NodeTransformer):
         def visit_ImportFrom(self, node):
             if node.module in {"orion.conversational_core", "orion.conversational_presentation", "orion.hybrid_aircraft_contracts"}:

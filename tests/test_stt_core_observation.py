@@ -108,7 +108,7 @@ def test_actual_host_control_and_data_trace_identical_to_fallback(monkeypatch, t
                                 "SrsTransportDiagnostics": lambda *a, **kw: None,
                                 "build_tool_gateway": lambda **kw: None}.items():
                 patch.setitem(namespace, name, value)
-            request = NS(api_key="fixture", eam_password=NS(get_secret_value=lambda: "fixture"),
+            request = NS(api_key="fixture", folder_id="fixture", eam_password=NS(get_secret_value=lambda: "fixture"),
                          host="127.0.0.1", port=5002, bot_name="fixture", frequency_hz=251000000, modulation=0)
             async def run():
                 try:

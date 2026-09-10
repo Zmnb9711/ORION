@@ -14,6 +14,8 @@ from orion.conversational_presentation import ConversationVoice
 from orion.communication_contracts import CommunicationDomain, CommunicationPriority
 from orion.hybrid_aircraft_contracts import HybridRoute
 from orion.hybrid_aircraft_core import HybridAircraftCore
+from orion.interaction_router import InteractionRouter
+from orion.yandex_warm_aircraft_interpreter import WarmYandexAircraftInterpreter
 from orion.informational_presentation import InformationalPresentation, InformationalStreamingTts
 from orion.full_voice_srs import FullVoiceSrsEndpoint
 from orion.full_voice_stt import NativeSpeechKitTurns
@@ -99,6 +101,14 @@ class FullVoiceService(YandexSrsLiveService):
             except Exception:
                 pass  # The existing explicit evidence session is observation-only.
 
+        def observe_interpreter(event, **fields):
+            # Reuse existing bounded scalar projection; distinguish user and
+            # barrier latency without provider bodies or a new evidence owner.
+            observe_conversation("failed" if "failed" in event else "routing",
+                route_source="INTERPRETER_" + event.upper(),
+                completion_ms=fields.get("user_path_ms", fields.get("isolation_ms")),
+                **{key: fields[key] for key in ("turn_id", "monotonic", "status", "failure_category") if key in fields})
+
         password = request.eam_password.get_secret_value()
         diagnostics = SrsTransportDiagnostics(session_id, secrets=(request.api_key, password))
         endpoint = cast(FullVoiceSrsEndpoint, self._endpoint_factory(SrsRadioConfig(
@@ -110,12 +120,17 @@ class FullVoiceService(YandexSrsLiveService):
         informational: InformationalPresentation | None = None
         hybrid: HybridAircraftCore | None = None
         hybrid_active = False
+        interpreter = None
+        interpreter_warmup = None
         consumed = False
         try:
             # The existing Core already owns ingress and this WorldModel. Only
             # the field CLI's RecoveryLiveWorld ownership is omitted here.
             gateway = build_tool_gateway(world=world_model)
             core = FullVoiceCore(gateway)
+            def no_interpreter_planner():
+                raise RuntimeError("interpreter_cannot_call_planner")
+            interpretation_router = InteractionRouter(provider_factory=no_interpreter_planner, bounded_ownship_gateway=gateway)
             await asyncio.to_thread(endpoint.connect_radio)
             endpoint.start()
             if endpoint.radio_router is None:
@@ -127,6 +142,10 @@ class FullVoiceService(YandexSrsLiveService):
             entity = RadioEntityRef(entity_id="recovery.controlled.ownship", operational_callsign=runtime.bot_name,
                                     coalition={1: "red", 2: "blue"}.get(runtime.coalition))
             self._set(state=YandexSrsState.STREAMING, phase="streaming", message="Yandex SRS voice is running")
+            # Optional separate semantic owner, never a readiness prerequisite.
+            interpreter = WarmYandexAircraftInterpreter.configured(request.api_key, request.folder_id,
+                observe=observe_interpreter)
+            interpreter_warmup = asyncio.create_task(interpreter.prepare(), name="aircraft-interpreter-warmup")
 
             async def answer(utterance):
                 nonlocal core_worker, hybrid, informational, hybrid_active
@@ -170,6 +189,14 @@ class FullVoiceService(YandexSrsLiveService):
                                     observe=observe_slice)
                             core_worker = asyncio.create_task(asyncio.to_thread(hybrid.run, utterance, cancellation))
                             information = await asyncio.shield(core_worker)
+                            if (information.route is HybridRoute.UNSUPPORTED and information.failure is None
+                                    and not eligible_conversation(utterance.text)):
+                                grant = await interpretation_router.interpret_aircraft_warm(
+                                    utterance, interpreter, cancellation, observe=observe_interpreter)
+                                if grant is not None:
+                                    core_worker = asyncio.create_task(asyncio.to_thread(
+                                        hybrid.run_interpreted, utterance, cancellation, grant, interpretation_router))
+                                    information = await asyncio.shield(core_worker)
                             if information.finalized is not None:
                                 if stopped.is_set() or cancellation.cancelled:
                                     raise RuntimeError("turn_cancelled_before_presentation")
@@ -259,15 +286,24 @@ class FullVoiceService(YandexSrsLiveService):
             observation.record("cancellation")
             stopped.set()
             cancellation.cancel()
-            await native.close()
-            if presentation is not None:
-                await presentation.shutdown()
-            information_owner = cast(InformationalPresentation | None, informational)
-            if information_owner is not None:
-                await information_owner.shutdown()
-            await asyncio.to_thread(endpoint.stop)
-            if core_worker is not None:
-                await asyncio.gather(core_worker, return_exceptions=True)
+            try:
+                await native.close()
+                if presentation is not None:
+                    await presentation.shutdown()
+                information_owner = cast(InformationalPresentation | None, informational)
+                if information_owner is not None:
+                    await information_owner.shutdown()
+                await asyncio.to_thread(endpoint.stop)
+                if core_worker is not None:
+                    await asyncio.gather(core_worker, return_exceptions=True)
+            finally:
+                if interpreter is not None:
+                    await interpreter.shutdown()
+                if interpreter_warmup is not None:
+                    results = await asyncio.gather(interpreter_warmup, return_exceptions=True)
+                    for warmup_result in results:
+                        if isinstance(warmup_result, Exception):
+                            raise warmup_result
 
 
 full_voice_service = FullVoiceService(endpoint_factory=FullVoiceSrsEndpoint)

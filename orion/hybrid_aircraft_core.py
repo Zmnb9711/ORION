@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 import re
 from threading import RLock
 import time
-from typing import Callable, Protocol
+from typing import Callable, Literal, Protocol, cast
 from uuid import UUID
 
 from orion.flight_context import aircraft_display_name
@@ -92,7 +92,8 @@ def recognize_local_decomposition(text: str) -> HybridAircraftDecomposition | No
             start_offset, end_offset = tokens[index].start(), tokens[end-1].end()
             if canonical(text[start_offset:end_offset]) != form:
                 continue
-            candidate = partition(end, (*spans, SourceSpan(start=start_offset, end=end_offset, act=act)))
+            candidate = partition(end, (*spans, SourceSpan(start=start_offset, end=end_offset,
+                act=cast(Literal["GREETING", "THANKS_ACKNOWLEDGEMENT", "SOCIAL_WELLBEING_QUERY", "AIRCRAFT_IDENTITY_QUERY"], act))))
             if candidate is not None:
                 return candidate
         return None
@@ -230,10 +231,28 @@ class HybridAircraftCore:
             executed = self._completed.get(finalized.plan.interaction_id)
             return executed is not None and executed[1].finalized == finalized
 
-    def _run(self, utterance, cancellation):
+    def run_interpreted(self, utterance, cancellation, grant, router) -> HybridResult:
+        """Single-use Core admission enters the existing factual tail, not grammar.
+
+        The original FINAL stays intact. No synthetic recognized phrase, provider
+        fact or unrestricted ToolResult enters presentation.
+        """
+        with self._lock:
+            previous = self._completed.get(utterance.interaction_id)
+            if (previous is None or previous[0] != utterance
+                    or previous[1].route is not HybridRoute.UNSUPPORTED
+                    or previous[1].failure is not None
+                    or not router.consume_aircraft_admission(
+                        grant, utterance.interaction_id, utterance.text, cancellation)):
+                return HybridResult(HybridRoute.UNSUPPORTED, failure="interpretation_admission")
+            result = self._run(utterance, cancellation, interpreted=True)
+            self._completed[utterance.interaction_id] = (utterance, result)
+            return result
+
+    def _run(self, utterance, cancellation, *, interpreted=False):
         identity, text = utterance.interaction_id, utterance.text
         deadline = self.clock() + timedelta(seconds=15)
-        route = classify_aircraft_identity_query(text)
+        route = HybridRoute.AIRCRAFT_IDENTITY if interpreted else classify_aircraft_identity_query(text)
         stage = "routing"
         count = 0
         self._emit(stage, turn_id=str(identity), route=route.value, provider_call_count=0,

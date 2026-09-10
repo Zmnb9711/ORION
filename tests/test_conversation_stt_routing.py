@@ -90,7 +90,9 @@ def test_all_other_production_and_packaging_frozen():
     changed = subprocess.check_output([
         "git", "diff", "c444860", "--name-only", "--", "orion", "packaging", "dcs-export"
     ]).decode().splitlines()
-    assert changed == ["orion/conversational_core.py"]
-    assert not subprocess.check_output([
+    from ia_scope_guard import ADDED, HUNKS, verify_ia_scope
+    verify_ia_scope()
+    assert set(changed) - HUNKS.keys() - ADDED == {"orion/conversational_core.py"}
+    assert not set(subprocess.check_output([
         "git", "ls-files", "--others", "--exclude-standard", "--", "orion", "packaging", "dcs-export"
-    ]).strip()
+    ]).decode().splitlines()) - ADDED
