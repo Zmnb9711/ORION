@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Callable
 
 from orion.bounded_radio_stream import BoundedPcmStream
 from orion.protected_presentation import (
@@ -22,6 +23,13 @@ class StreamingProtectedPresentation(ProtectedPresentationService):
         self.streaming_tts = tts
         self.marks: dict[str, float | int] = {}
         self._streams: dict[str, BoundedPcmStream] = {}
+        self.observe_diagnostic: Callable[..., None] = lambda _event, **_fields: None
+
+    def _diagnostic(self, event, **fields):
+        try:
+            self.observe_diagnostic(event, monotonic=time.monotonic(), **fields)
+        except Exception:
+            pass  # Evidence is not a condition of an accepted transmission.
 
     async def _run(self, finalized, context, operation) -> PresentationResult:
         tx = str(context.tx_correlation_id)
@@ -32,11 +40,14 @@ class StreamingProtectedPresentation(ProtectedPresentationService):
         result = PresentationResult(tx, "failed", True, PresentationFailure.TTS_ERROR)
 
         async def produce() -> None:
+            self._diagnostic("tts_producer_start", tx_id=tx)
             resampler = StreamingPcm16Resampler(48000, 44100)
             self.marks["tts_started"] = time.monotonic()
             total = 0
             try:
                 async for chunk in self.streaming_tts.stream(finalized.text):
+                    if "tts_first_pcm" not in self.marks:
+                        self._diagnostic("tts_first_pcm", tx_id=tx)
                     self.marks.setdefault("tts_first_pcm", time.monotonic())
                     total += len(chunk)
                     normalized = resampler.process(chunk)
@@ -48,7 +59,9 @@ class StreamingProtectedPresentation(ProtectedPresentationService):
                     await asyncio.to_thread(stream.feed, tail)
                 self.marks["tts_pcm_bytes"] = total
                 stream.finish()
-            except BaseException:
+            except BaseException as exc:
+                self._diagnostic("tts_stream_abort", tx_id=tx, error_class=type(exc).__name__,
+                                 stream_abort_reason="protected_tts_failed_or_cancelled", tts_pcm_bytes=total)
                 stream.abort("protected_tts_failed_or_cancelled")
                 raise
             finally:
@@ -95,6 +108,8 @@ class StreamingProtectedPresentation(ProtectedPresentationService):
             self.marks["presentation_terminal"] = time.monotonic()
             self.marks["pcm_buffer_high_water"] = stream.high_water
             operation.result = result
+            self._diagnostic("presentation_terminal", tx_id=tx, status=result.state,
+                             adapter_failure_code=result.failure.value if result.failure else None)
         return result
 
     async def cancel(self, tx: str) -> PresentationResult:

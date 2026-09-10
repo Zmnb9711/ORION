@@ -1,5 +1,25 @@
 # ORION Project Memory
 
+## General stabilization / fact surface / META — 2026-09-11
+
+Current implementation continuation on `codex/general-natural-language-ingress-tranche1`,
+parent `7b6981a9eb56ddc455c8a166842f867725152f41`. Read the
+[implementation/evidence record](general-stabilization-fact-surface-20260911.md)
+and [recovery history](history/2026-09-11-general-stabilization-fact-surface.md)
+alongside the canonical contract below. Existing dirty Gate A/B work was preserved.
+Gate A live length/recovery continuation PASS: hard400/soft200, no retry/truncation.
+Gate B inventory134records/7exposed typed selectors, one coalesced Gateway read;
+fuel/speed/rawmodule/contact/mission gaps explicitly not exposed. Minimal heading
+quality bit distinguishes realzero from missing source. Output-only spoken
+coordinates and separate user-authorized personalcontext added; no input grammar.
+Initial B META-to-allfacts collision preserved as failure evidence; separately
+authorized META_REQUEST now uses Core registry metadata with zero fact reads.
+STATE_SUMMARY uses fixed4-fact projection, never catalog-wide automatic expansion.
+Six-case provider continuation PASS469–766ms;3259offlinePASS/4knownFAIL/3SKIP,
+static/frozenhost PASS. No new FIELD PASS, TTS/SRS/Launcher redesign, or installation.
+One normal committed-source installer after gates; exact identity/smokes external.
+Blind user-selected field validation remains pending; no prepared user test phrases.
+
 ## General ingress implementation tranche — 2026-09-10
 
 Read [the implementation/evidence record](general-natural-language-ingress-tranche1-20260910.md)

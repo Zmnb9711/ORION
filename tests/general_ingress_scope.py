@@ -4,6 +4,11 @@ The 2026-09-10 tranche explicitly authorizes replacing terminal whitelist misses
 These hashes freeze the reviewed integration. Historical tests run on the exact
 2c58 preservation source only AFTER verifying current complete-file identity.
 An additional edit inside any approved file fails just like an outside edit.
+
+The stabilization Gate A revision adds bounded owner recovery/context and exact
+Test Session terminal diagnostics. The two streaming files gain observation-only
+hooks, not synthesis/radio behavior. Their complete hashes are checked before
+restoration too; functional request/PCM/host replay remains a separate test gate.
 """
 import hashlib
 import json
@@ -13,7 +18,8 @@ import subprocess
 ROOT = Path(__file__).resolve().parents[1]
 BASE = '2c58b3752ad79a639db6e406e2eeb1927b21086d'
 HASHES = json.loads(Path(__file__).with_name('general_ingress_hashes.json').read_text(encoding='utf-8'))
-ADDED = {'orion/general_semantic_contracts.py','orion/general_semantic_core.py','orion/general_semantic_voice.py'}
+ADDED = {'orion/general_semantic_contracts.py','orion/general_semantic_core.py','orion/general_semantic_voice.py',
+         'orion/general_fact_registry.py','orion/general_fact_presentation.py','orion/personal_context.py'}
 CHANGED = HASHES.keys() - ADDED
 SCOPE = set(HASHES)
 

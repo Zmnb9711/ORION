@@ -424,7 +424,7 @@ function LuaExportAfterNextFrame()
     local payload = string.format(
         '{"protocol_version":"0.3","source":"dcs-export","sequence":%d,"model_time_s":%s,"state":{' ..
         '"aircraft_type":%s,"position":{"latitude":%.8f,"longitude":%.8f,"altitude_m":%.2f,"altitude_agl_m":%s},' ..
-        '"heading_deg":%.2f,"true_airspeed_mps":%.2f,"vertical_speed_mps":%.2f,' ..
+        '"heading_deg":%.2f,"heading_valid":%s,"true_airspeed_mps":%.2f,"vertical_speed_mps":%.2f,' ..
         '"attitude":%s,"velocity_vector":{"x_mps":%.6f,"y_mps":%.6f,"z_mps":%.6f},' ..
         '"airframe":%s,"propulsion":%s,"fuel":%s,"navigation":%s,"payload":%s,"ew":%s,"sensors":%s,' ..
         '"capabilities":%s,"cockpit_state":%s,"diagnostics":%s}}',
@@ -436,6 +436,7 @@ function LuaExportAfterNextFrame()
         selfData.LatLongAlt.Alt,
         jsonNumber(agl),
         heading,
+        jsonBoolean(type(selfData.Heading) == "number"),
         trueAirspeed,
         verticalSpeed,
         attitudeJson,

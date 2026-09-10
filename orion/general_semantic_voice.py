@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+import asyncio
 import time
 
 from orion.communication_contracts import CommunicationDomain, CommunicationPriority
 from orion.conversational_contracts import ConversationCleanupError
-from orion.general_semantic_core import FinalizedGeneralText, GeneralSemanticCore, DialoguePlan, FactPlan, UnavailablePlan
+from orion.general_semantic_core import FinalizedGeneralText, GeneralSemanticCore, DialoguePlan, FactPlan
 from orion.informational_presentation import InformationalStreamingTts
 from orion.protected_presentation import PresentationFailure, PresentationResult, tx_correlation
 from orion.protected_streaming_presentation import StreamingProtectedPresentation
@@ -55,6 +56,11 @@ class GeneralSemanticVoice:
         self.turn_id = None
         self.presentation = GeneralPresentation(InformationalStreamingTts(api_key,
             observe=lambda text: self.emit("tts_input", tts_input=text)), endpoint.radio_router, core=self.core)
+        def diagnostic(stage, **fields):
+            fields.pop("monotonic", None)
+            self.emit("delivery_diagnostic", diagnostic_stage=stage, **fields)
+        self.presentation.observe_diagnostic = diagnostic
+        self.presentation.streaming_tts.observe_diagnostic = diagnostic
 
     def emit(self, event, **fields):
         try:
@@ -111,15 +117,20 @@ class GeneralSemanticVoice:
             radio_entity=self.entity, target_frequency_hz=251000000, modulation=RadioModulation.AM)
         self.endpoint.response_valid_until = time.monotonic() + (plan.deadline-self.clock()).total_seconds()
         previous_marks, packet_before = self.endpoint.tx_marks, self.endpoint.packet_id
-        result = await self.interpreter._bounded(self.presentation.present(finalized, context), 40., cancellation, cleanup_budget=.6)
+        try:
+            result = await self.interpreter._bounded(self.presentation.present(finalized, context), 40., cancellation, cleanup_budget=.6)
+        except BaseException as exc:
+            self.core.context.accept(finalized, delivery="cancelled" if isinstance(exc, asyncio.CancelledError) or cancellation.cancelled else "failed",
+                                     tts_started="tts_started" in self.presentation.marks)
+            raise
         marks = self.endpoint.tx_marks if self.endpoint.tx_marks is not previous_marks else {}
         self.emit("response_terminal", status=result.state, frames=self.endpoint.packet_id-packet_before,
             failure_category=result.failure.value if result.failure else None,
             **{key: self.presentation.marks.get(key) for key in ("tts_started", "tts_first_pcm", "tts_completed", "tts_pcm_bytes")},
             **{key: marks.get(key) for key in ("radio_first_frame", "radio_completed")})
-        if (result.state == "completed" and not cancellation.cancelled
-                and not (isinstance(plan, UnavailablePlan) and plan.reason in {"PROVIDER_UNAVAILABLE", "ADMISSION_REJECTED"})):
-            self.core.context.accept(finalized)
+        self.core.context.accept(finalized,
+            delivery="cancelled" if cancellation.cancelled else result.state if result.state in {"completed", "failed", "cancelled"} else "unknown",
+            tts_started="tts_started" in self.presentation.marks)
 
     async def shutdown(self):
         self.core.context.reset()

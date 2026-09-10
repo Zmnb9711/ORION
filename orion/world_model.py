@@ -120,9 +120,11 @@ class WorldModelFacade:
             generated_at=now,
             aircraft=self._value_fact("ownship.aircraft", identity, freshness, **common),
             position=self._value_fact("ownship.position", position, freshness, **common),
-            heading_deg=self._value_fact(
+            heading_deg=(self._value_fact(
                 "ownship.heading_deg", state.heading_deg, freshness, unit="deg", **common
-            ),
+            ) if state.heading_valid is True or (state.heading_valid is None and state.heading_deg != 0)
+              else self._missing_fact("ownship.heading_deg", missing_status,
+                  WorldFactReason.VALUE_NOT_EXPORTED, unit="deg", **common)),
             attitude=(
                 self._value_fact("ownship.attitude", attitude, freshness, **common)
                 if attitude is not None

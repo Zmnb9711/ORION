@@ -45,6 +45,7 @@ class AircraftState(BaseModel):
     callsign: str | None = None
     position: Position
     heading_deg: float = Field(ge=0, lt=360)
+    heading_valid: bool | None = Field(default=None, strict=True)
     true_airspeed_mps: float = Field(ge=0)
     vertical_speed_mps: float = 0
     fuel_fraction: float | None = Field(default=None, ge=0, le=1)

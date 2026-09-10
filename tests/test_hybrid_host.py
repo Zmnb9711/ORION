@@ -27,6 +27,10 @@ from test_full_voice import StreamingFakeRadio
 @pytest.mark.parametrize("mode", ["active", "inactive", "broken", "stop_local"])
 def test_gate10_normal_host_coexistence_and_single_owner(monkeypatch, tmp_path, text, expected, calls, mode,
         *, general_kind=None, expected_reads=None, capture=None):
+    if text == "Какой это самолёт?" and general_kind is None:
+        # Gate A: local ambiguity now abstains into general semantics. With the
+        # offline unavailable owner this is one truthful response, not silence.
+        expected, general_kind, expected_reads = True, "TRUTHFUL_UNAVAILABLE", 0
     if mode == "stop_local" and text not in {MIXED, FREE}:
         pytest.skip("Pure/frozen routes do not invoke local decomposition")
     u = utterance(text)

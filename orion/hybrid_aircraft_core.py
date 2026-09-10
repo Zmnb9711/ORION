@@ -255,7 +255,7 @@ class HybridAircraftCore:
         with self._lock:
             prior = self._completed.get(utterance.interaction_id)
             result = grant.proposal.result
-            if (prior is None or prior[0] != utterance or prior[1].route is not HybridRoute.UNSUPPORTED
+            if (prior is None or prior[0] != utterance or prior[1].route not in {HybridRoute.UNSUPPORTED, HybridRoute.AMBIGUOUS}
                 or prior[1].failure is not None or not isinstance(result, FactRequest)
                 or result.capabilities != ("aircraft.identity",)
                 or not router.consume_general_admission(grant, utterance.interaction_id, utterance.text, cancellation)):

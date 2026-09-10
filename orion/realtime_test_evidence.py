@@ -293,7 +293,7 @@ class RealtimeTestEvidenceRecorder:
             if event not in {"physical_turn_end", "routing", "connect_started", "connect_complete",
                 "session.created", "session.updated", "connected", "request_sent", "first_token",
                 "text_complete", "terminal_text", "normalized_candidate", "candidate_complete", "closed",
-                "candidate", "admission", "tts_input", "response_terminal", "failed", "selected_fact"}:
+                "candidate", "admission", "tts_input", "response_terminal", "failed", "selected_fact", "delivery_diagnostic"}:
                 return
             safe: dict[str, object] = {
                 "timestamp": datetime.now(UTC).isoformat(timespec="milliseconds"),
@@ -301,12 +301,19 @@ class RealtimeTestEvidenceRecorder:
                 "event": "conversation_slice." + event,
             }
             text_bounds = {"source_text": 500, "raw_terminal_text": 4096, "normalized_candidate": 4096,
-                           "candidate_text": 300, "finalized_text": 300, "tts_input": 300}
+                           "candidate_text": 400, "finalized_text": 400, "tts_input": 400, "parsed_terminal": 4096}
+            if fields.get("route_source") == "GENERAL_SEMANTIC":
+                # Multi-fact final text has its own existing 1000-character cap.
+                # Dialogue validity remains400 in its typed plan, not the recorder.
+                text_bounds.update(finalized_text=1000, tts_input=1000)
             scalar = {"turn_id", "tx_id", "route", "route_source", "source_sha256", "provider_response_id",
                 "conversation_provider_call_count", "planner_call_count", "tool_gateway_call_count",
                 "status", "failure_stage", "failure_category", "monotonic", "connect_ms", "first_token_ms",
                 "completion_ms", "frames", "tts_started", "tts_first_pcm", "tts_completed", "tts_pcm_bytes",
                 "radio_first_frame", "radio_completed",
+                "provider_session_id", "new_provider_session_id", "semantic_kind", "validation_type", "validation_path",
+                "error_class", "recovery_count", "recovery_budget_ms", "recovery_ms",
+                "diagnostic_stage", "tts_request_id", "rpc_code", "stream_abort_reason", "adapter_failure_code",
                 "response_kind", "semantic_provider_operations", "dialogue_role_selected",
                 "separate_conversation_provider_operations", "planner_operations", "core_fact_reads",
                 "semantic_user_path_ms", "context_revision", "context_bytes", "catalog_version",

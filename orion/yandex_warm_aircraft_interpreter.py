@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 import time
 import re
+from pydantic import ValidationError
 
 from orion.aircraft_interpretation import (
     AircraftProposal, InterpretationRequest, WARM_INTERPRETER_PROVIDER, parse_intent, source_hash,
@@ -46,6 +47,7 @@ class InterpreterState(StrEnum):
     BUSY = "busy"
     ISOLATING = "isolating"
     DEGRADED = "degraded"
+    RECOVERING = "recovering"
     STOPPED = "stopped"
 
 
@@ -59,6 +61,7 @@ class WarmYandexAircraftInterpreter(TextConversationProvider):
     def __init__(self, factory, *, observe=lambda _event, **_fields: None, general: bool = False):
         super().__init__(factory, observe=observe)
         self.instructions = provider_instructions() if general else INSTRUCTIONS
+        self.general = general
         self.state = InterpreterState.COLD
         self.transport = None
         self.session_id = None
@@ -66,6 +69,9 @@ class WarmYandexAircraftInterpreter(TextConversationProvider):
         self._owner_task = None
         self._isolation_task = None
         self._isolation_error = None
+        self._recovery_task = None
+        self._recovery_error = None
+        self.recovery_count = 0
         self._closing = False
         self.last_failure = None
 
@@ -77,7 +83,7 @@ class WarmYandexAircraftInterpreter(TextConversationProvider):
         raise ConversationFailure("interpreter_has_no_conversation_role")
 
     async def prepare(self):
-        if self.state is not InterpreterState.COLD or self._closing:
+        if self.state not in {InterpreterState.COLD, InterpreterState.RECOVERING} or self._closing:
             return False
         self.state = InterpreterState.CONNECTING
         self._owner_task = asyncio.current_task()
@@ -150,6 +156,7 @@ class WarmYandexAircraftInterpreter(TextConversationProvider):
         operation = _TextOperation(request.source_text)
         operation.session_id, operation.updated = self.session_id, True
         fields = {"turn_id": str(request.interaction_id), "operation_id": str(request.operation_id),
+                  "provider_session_id": self.session_id,
                   "interpretation_provider_call_count": 1, "conversation_provider_call_count": 0,
                   "planner_provider_call_count": 0}
         self.emit("interpretation_started", **fields)
@@ -159,7 +166,7 @@ class WarmYandexAircraftInterpreter(TextConversationProvider):
                 "item": {"type": "message", "object": "realtime.item", "role": "user",
                     "content": [{"type": "input_text", "text": request.source_text}]}}), limit-time.monotonic(), cancellation)
             await self._bounded(self.transport.send({"type": "response.create", "event_id": "ia-response-"+identity,
-                "response": {"instructions": provider_instructions(request.context) if general else INSTRUCTIONS,
+                "response": {"instructions": provider_instructions(request.context, request.personal_context) if general else INSTRUCTIONS,
                              "output_modalities": ["text"]}}), limit-time.monotonic(), cancellation)
             first = False
             for _ in range(256):
@@ -178,10 +185,16 @@ class WarmYandexAircraftInterpreter(TextConversationProvider):
                     first = True
                     self.emit("first_text", first_text_ms=(time.monotonic()-started)*1000, **fields)
                 if text is not None:
+                    fields["provider_response_id"] = operation.response_id
                     self.emit("text_terminal", terminal_ms=(time.monotonic()-started)*1000, **fields)
                     if general:
                         self._observe_terminal(text, **fields)
-                    intent = parse_semantic(text) if general else parse_intent(text)
+                    if general:
+                        intent = parse_semantic(text)
+                        self.emit("parsed_terminal", parsed_terminal=intent.model_dump_json(),
+                                  semantic_kind=intent.kind, **fields)
+                    else:
+                        intent = parse_intent(text)
                     if general and dialogue_budget and not isinstance(intent, Dialogue):
                         raise ConversationFailure("semantic_budget_kind_mismatch")
                     self.emit("typed_result", structured_result=intent.model_dump(), **fields)
@@ -216,6 +229,17 @@ class WarmYandexAircraftInterpreter(TextConversationProvider):
                 core_admission_included=False, **fields)
             return result
         except BaseException as exc:
+            if general and isinstance(exc, ValueError):
+                errors = exc.errors(include_url=False, include_context=False, include_input=False) if isinstance(exc, ValidationError) else []
+                if not errors:
+                    self.emit("validation_failed", error_class=type(exc).__name__,
+                              validation_type="duplicate_key" if str(exc) == "semantic_duplicate_key" else "invalid_envelope",
+                              validation_path="$", **fields)
+                for error in errors[:8]:
+                    # No input, message, exception repr or provider body is logged.
+                    path = ".".join(str(part) for part in error["loc"])
+                    self.emit("validation_failed", error_class=type(exc).__name__,
+                              validation_type=error["type"], validation_path=path[:160], **fields)
             if isinstance(exc, ConversationFailure) and str(exc) == "timeout":
                 exc = ConversationFailure("INTERPRETER_LATENCY_GATE_FAILED")
             self.last_failure = str(exc) if isinstance(exc, ConversationFailure) else type(exc).__name__
@@ -223,11 +247,40 @@ class WarmYandexAircraftInterpreter(TextConversationProvider):
             self.emit("interpretation_failed", failure_category=self.last_failure,
                       total_ms=(time.monotonic()-started)*1000, **fields)
             await self._close_transport()
+            if general and not cancellation.cancelled and not isinstance(exc, (asyncio.CancelledError, ConversationCleanupError)):
+                self._schedule_recovery(fields)
             raise exc
         finally:
             if self.state is not InterpreterState.ISOLATING:
                 self.busy = False
             self._owner_task = None
+
+    def _schedule_recovery(self, fields):
+        """One fresh handshake per failure episode; never replay a user operation."""
+        if self._closing or (self._recovery_task is not None and not self._recovery_task.done()):
+            return
+        self.state = InterpreterState.RECOVERING
+        self.recovery_count += 1
+        self._recovery_task = asyncio.create_task(self._recover(dict(fields)), name="orion-semantic-recovery")
+
+    async def _recover(self, fields):
+        started = time.monotonic()
+        self.emit("recovery_started", recovery_count=self.recovery_count, recovery_budget_ms=3000, **fields)
+        try:
+            ready = await self.prepare()
+            self.emit("recovery_ready" if ready else "recovery_failed",
+                      recovery_count=self.recovery_count, recovery_ms=(time.monotonic()-started)*1000,
+                      new_provider_session_id=self.session_id, failure_category=None if ready else self.last_failure, **fields)
+        except BaseException as exc:
+            self._recovery_error = exc
+            self.emit("recovery_failed", failure_category="recovery_cancelled_or_cleanup_failed", **fields)
+            raise
+
+    async def wait_recovery(self):
+        """Test/control-plane observer only; user turns never wait on rewarming."""
+        if self._recovery_task is not None:
+            await asyncio.shield(self._recovery_task)
+        return self.state is InterpreterState.READY
 
     async def _isolate(self, operation, identity, pending, cancellation, fields):
         """Owned control plane; no semantic output or auto-reconnect on failure.
@@ -271,6 +324,8 @@ class WarmYandexAircraftInterpreter(TextConversationProvider):
                       isolation_ms=(time.monotonic()-started)*1000, **fields)
             try:
                 await self._close_transport()
+                if self.general and not cancellation.cancelled and not isinstance(exc, (asyncio.CancelledError, ConversationCleanupError)):
+                    self._schedule_recovery(fields)
             except BaseException as close_error:
                 self._isolation_error = close_error
                 self.last_failure = "interpreter_close_failed"
@@ -302,7 +357,7 @@ class WarmYandexAircraftInterpreter(TextConversationProvider):
 
     async def shutdown(self):
         self._closing = True
-        for task in (self._owner_task, self._isolation_task):
+        for task in (self._owner_task, self._isolation_task, self._recovery_task):
             if task is not None and task is not asyncio.current_task() and not task.done():
                 task.cancel()
                 done, _ = await asyncio.wait({task}, timeout=.5)
@@ -315,6 +370,8 @@ class WarmYandexAircraftInterpreter(TextConversationProvider):
         await self._close_transport()
         if isinstance(self._isolation_error, ConversationCleanupError):
             raise self._isolation_error
+        if isinstance(self._recovery_error, ConversationCleanupError):
+            raise self._recovery_error
         if self.owned:
             raise ConversationCleanupError("interpreter_tasks_remaining")
         self.busy = False

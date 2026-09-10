@@ -103,12 +103,15 @@ class FullVoiceService(YandexSrsLiveService):
                 pass  # The existing explicit evidence session is observation-only.
 
         def observe_interpreter(event, **fields):
-            # Reuse existing bounded scalar projection; distinguish user and
-            # barrier latency without provider bodies or a new evidence owner.
+            # The recorder itself enforces explicit Test Session mode and bounds.
+            # Forward terminal text slots, never arbitrary provider event bodies.
             observe_conversation("failed" if "failed" in event else "routing",
                 route_source="INTERPRETER_" + event.upper(),
                 completion_ms=fields.get("user_path_ms", fields.get("isolation_ms")),
-                **{key: fields[key] for key in ("turn_id", "monotonic", "status", "failure_category") if key in fields})
+                **{key: fields[key] for key in ("turn_id", "monotonic", "status", "failure_category",
+                    "operation_id", "provider_session_id", "provider_response_id", "new_provider_session_id",
+                    "raw_terminal_text", "normalized_candidate", "parsed_terminal", "semantic_kind",
+                    "validation_type", "validation_path", "error_class", "recovery_count", "recovery_budget_ms", "recovery_ms") if key in fields})
 
         password = request.eam_password.get_secret_value()
         diagnostics = SrsTransportDiagnostics(session_id, secrets=(request.api_key, password))
@@ -223,7 +226,7 @@ class FullVoiceService(YandexSrsLiveService):
                                     radio_first_frame=marks.get("radio_first_frame"), radio_completed=marks.get("radio_completed"))
                                 if outcome.state != "completed":
                                     fail("informational_presentation_not_completed")
-                            elif information.route is HybridRoute.UNSUPPORTED and information.failure is None:
+                            elif information.route in {HybridRoute.UNSUPPORTED, HybridRoute.AMBIGUOUS} and information.failure is None:
                                 # Whole-source eligibility, never generic unsupported fallback.
                                 # This owner receives no gateway, WorldModel or Planner.
                                 if eligible_conversation(utterance.text):

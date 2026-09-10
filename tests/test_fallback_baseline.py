@@ -26,6 +26,20 @@ def test_launcher_core_srs_lifecycle_is_literal_baseline():
     for path in files:
         actual = path.read_text(encoding="utf-8")
         baseline = source(BASE, path.relative_to(ROOT).as_posix())
+        if path.name == "world_model.py":
+            # Gate B source-quality fix, NOT lifecycle: verify the exact whole
+            # file with only this heading projection changed, then compare old.
+            old = ('            heading_deg=self._value_fact(\n'
+                   '                "ownship.heading_deg", state.heading_deg, freshness, unit="deg", **common\n'
+                   '            ),\n')
+            new = ('            heading_deg=(self._value_fact(\n'
+                   '                "ownship.heading_deg", state.heading_deg, freshness, unit="deg", **common\n'
+                   '            ) if state.heading_valid is True or (state.heading_valid is None and state.heading_deg != 0)\n'
+                   '              else self._missing_fact("ownship.heading_deg", missing_status,\n'
+                   '                  WorldFactReason.VALUE_NOT_EXPORTED, unit="deg", **common)),\n')
+            assert baseline.count(old) == 1
+            assert actual == baseline.replace(old, new)
+            actual = baseline
         if path.name == "yandex_srs_live_core.py":
             # Separately authorized truthful STOP only. Prove the exact method
             # delta before restoring it for the whole-file baseline comparison.

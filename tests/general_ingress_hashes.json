@@ -1,11 +1,19 @@
 {
-  "orion/full_voice_service.py": "58028a50ff1e8c6a33f4086443d104b7089d9c32115bb4dde6c657e70f3129c2",
-  "orion/hybrid_aircraft_core.py": "e815a99fa663a79d0955640b361036d21bba2dc32823340465017d2e1cdc4a85",
+  "orion/full_voice_service.py": "9d00fff209a21f498bb3f6f9f8b21f16d7c06d6774f8c6d03fe50e1273483564",
+  "orion/hybrid_aircraft_core.py": "2d341e6295fcc1aaa7dca199e3da504706d261a04db69c29c79c369208f061f1",
   "orion/interaction_router.py": "b7b2f67b4b90849d3a96c02406123132692a665e851611c60abe08a223808e9c",
   "orion/protected_presentation.py": "4970f9134c640631e8dcaad6157620f2150187e4d74c91e4f0091748418972fb",
-  "orion/realtime_test_evidence.py": "2d962b4ae735760c131b2c96518f08e45d47c6ff1700930466e3bf5bc960032f",
-  "orion/yandex_warm_aircraft_interpreter.py": "e2d4417f3b70163a353a478d711b8fd192dc897fcdacc1f6e1cfa566b23b95c7",
-  "orion/general_semantic_contracts.py": "72b55d52102ceee6ae65e3e84e2e310d47c46ce625b728486c505665df2511c2",
-  "orion/general_semantic_core.py": "5d887e8b74a117ac4c9b17c940f055fcf547a58d9a62c87f898fa4ad97c4a374",
-  "orion/general_semantic_voice.py": "490f7716525eacd7c1be1cdc55c056ec8437bf93303e4802c28d3e99da6c0f5c"
+  "orion/realtime_test_evidence.py": "b6f94d88ecf56acf72ac055bf1ad55fc0b94174f90c9fd2127c0658b6a6fb4ab",
+  "orion/yandex_warm_aircraft_interpreter.py": "bd169567dcc0eca708edb22c348e9e605e274de73b79327f754758f154c4e022",
+  "orion/general_semantic_contracts.py": "9909ab34bb624aff2c65b30e252415cddd232c05e22f91b465508e8f6e293fea",
+  "orion/general_semantic_core.py": "fd2af3df77ab6561188194a3d90488fa4c8724c23a544a090a41ca6a00bfe86d",
+  "orion/general_semantic_voice.py": "56ced1f606b0de790da17f09b22d50e92395fefa38a29af8d0faa1a037345b0c",
+  "orion/protected_streaming_tts.py": "05173587efa5e11534de85cbf0bc0b118d10abf3e5a1c51bb00cccdf6335dd56",
+  "orion/protected_streaming_presentation.py": "b9f42915197d112b6efb5056ccd757ebcff0b1a252a9baacabeb55f2891d9c9e",
+  "orion/general_fact_registry.py": "94baba80f1bac94189bb2e0648d64b218c08a37e6d68991039c312d61d803102",
+  "orion/general_fact_presentation.py": "09838b151a2a698667c5bb571b97c3c2c48a149176339e3b468e13f55799f595",
+  "orion/personal_context.py": "d4d2f6fe97d9aca78931d4ac29d9fdce03245efd26566a8515f01108a0053674",
+  "orion/models.py": "ad106695643dd9c79e82341b9c36907add908d74ee53b173957d7f118123af0c",
+  "orion/world_model.py": "fea89cda7ef8f37ecb3957c79f6070b63eb1e72fb3eb624ed0220b0ad9b00ec3",
+  "dcs-export/Export.lua": "4494627024f36ad69e7288a9c3d5949c4635dc5717830cc52d4d3c4c5d3b3f28"
 }
