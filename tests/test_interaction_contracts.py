@@ -351,6 +351,7 @@ def test_only_approved_architecture_boundaries_import_ia0_contracts() -> None:
             consumers.append(path.name)
     assert sorted(consumers) == [
         "communication_contracts.py",
+        "general_semantic_core.py",
         "interaction_router.py",
         "interaction_router_api.py",
         "planner.py",

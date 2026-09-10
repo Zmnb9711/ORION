@@ -1,5 +1,20 @@
 # ORION Project Memory
 
+## General ingress implementation tranche — 2026-09-10
+
+Read [the implementation/evidence record](general-natural-language-ingress-tranche1-20260910.md)
+alongside the canonical contract below. Branch
+`codex/general-natural-language-ingress-tranche1` integrates runtime 2c58 and its
+direct policy child 7d0. Clean unresolved input now reaches one general Yandex
+semantic operation: generated DIALOGUE or typed Core aircraft/position/heading
+selectors. Explicit minimal context is ORION-owned; SRS/STT/TTS/Launcher frozen.
+One three-operation provider gate PASS (594/469/547ms; isolation separate).
+These are OFFLINE/HOST/PROVIDER levels, NOT a new FIELD PASS. General conversation
+remains historically FIELD FAILED until a blind physical session proves otherwise.
+Position/heading are not field validated. New MIXED/reasoning/domain execution
+remain NOT IMPLEMENTED. Build/commit receipts are external to avoid self-reference;
+no installation or push is part of this tranche.
+
 ## Mandatory architecture and current recovery — 2026-09-10
 
 **READ BEFORE ORION CHANGES:**

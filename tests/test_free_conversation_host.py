@@ -175,7 +175,12 @@ def test_known_and_unhandled_routes_never_instantiate_conversation(monkeypatch, 
     from test_hybrid_host import test_gate10_normal_host_coexistence_and_single_owner as run_existing
     def forbidden(*a, **k): raise AssertionError("Conversation entered a known/unsupported route")
     monkeypatch.setattr(host, "ConversationVoice", forbidden)
-    run_existing(monkeypatch, tmp_path, text, text in {PURE, MIXED, FREE, "Какой мой текущий курс и координаты?"}, 0, "inactive")
+    known = text in {PURE, MIXED, FREE, "Какой мой текущий курс и координаты?"}
+    # General ingress now truthfully reports its offline provider unavailability;
+    # it still must never invoke the old narrow Conversation owner or a tool.
+    run_existing(monkeypatch, tmp_path, text, True, 0, "inactive",
+        general_kind=None if known else "TRUTHFUL_UNAVAILABLE",
+        expected_reads=None if known else 0)
 
 
 def test_evidence_explicit_bounded_exact_and_existing_export(tmp_path):

@@ -91,8 +91,9 @@ def test_all_other_production_and_packaging_frozen():
         "git", "diff", "c444860", "--name-only", "--", "orion", "packaging", "dcs-export"
     ]).decode().splitlines()
     from ia_scope_guard import ADDED, HUNKS, verify_ia_scope
+    from general_ingress_scope import SCOPE
     verify_ia_scope()
-    assert set(changed) - HUNKS.keys() - ADDED == {"orion/conversational_core.py"}
+    assert set(changed) - HUNKS.keys() - ADDED - SCOPE == {"orion/conversational_core.py"}
     assert not set(subprocess.check_output([
         "git", "ls-files", "--others", "--exclude-standard", "--", "orion", "packaging", "dcs-export"
-    ]).decode().splitlines()) - ADDED
+    ]).decode().splitlines()) - ADDED - SCOPE

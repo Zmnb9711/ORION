@@ -8,8 +8,11 @@ from dataclasses import dataclass
 from enum import StrEnum
 import hashlib
 import json
-from typing import Callable, Protocol
+from typing import Callable, Protocol, TYPE_CHECKING
 from uuid import UUID
+
+if TYPE_CHECKING:
+    from orion.general_semantic_core import FinalizedGeneralText
 
 from orion.communication_contracts import (
     CommunicationProfileId,
@@ -231,7 +234,7 @@ class ProtectedPresentationService:
         return await self._admit_validated(checked, context)
 
     async def _admit_validated(
-        self, checked: FinalizedCommunicationText, context: RadioContext
+        self, checked: FinalizedCommunicationText | FinalizedGeneralText, context: RadioContext
     ) -> PresentationResult:
         """Internal operation mechanics; caller must complete typed admission first."""
         tx = str(context.tx_correlation_id)
@@ -302,11 +305,13 @@ class ProtectedPresentationService:
 
     async def _run(
         self,
-        finalized: FinalizedCommunicationText,
+        finalized: FinalizedCommunicationText | FinalizedGeneralText,
         context: RadioContext,
         operation: _Operation,
     ) -> PresentationResult:
         tx = str(context.tx_correlation_id)
+        if not isinstance(finalized, FinalizedCommunicationText):
+            return _failure(tx, PresentationFailure.INVALID_FINALIZED_TEXT)
         self._emit("presentation_started", tx)
         result = _failure(tx, PresentationFailure.TTS_ERROR)
         try:

@@ -89,6 +89,7 @@ def main():
                     lambda code: (_ for _ in ()).throw(AssertionError(code)))
                 self.tx_frames = self.tx_transmissions = 0
                 self.tx_marks = {}
+                self.packet_id = 0  # Existing endpoint property used by general presentation metrics.
                 self.released = False
 
             def connect_radio(self): trace.append("radio_connect")
@@ -188,6 +189,17 @@ def main():
                 assert not report["failures"]
             else:
                 import orion.full_voice_service as host
+                # External semantic transport is optional and OFFLINE here.
+                # Preserve the real owner interface/bounded presentation helper.
+                from orion.yandex_warm_aircraft_interpreter import WarmYandexAircraftInterpreter
+                from orion.conversational_contracts import ConversationFailure
+                class OfflineSemantic(WarmYandexAircraftInterpreter):
+                    @classmethod
+                    def configured(cls, *args, **kwargs): return cls(no_network, **kwargs)
+                    async def prepare(self): return False
+                    async def interpret_general(self, request, cancellation):
+                        raise ConversationFailure('offline_optional_unavailable')
+                patch.setattr(host, 'WarmYandexAircraftInterpreter', OfflineSemantic)
                 from orion.realtime_test_evidence import RealtimeTestEvidenceRecorder
                 observation = RealtimeTestEvidenceRecorder(output)
                 observation.start(provider="yandex", transport="srs")

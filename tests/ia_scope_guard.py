@@ -17,6 +17,8 @@ ADDED = {"orion/aircraft_interpretation.py", "orion/yandex_aircraft_interpreter.
 
 
 def restore_ia(path, text):
+    from general_ingress_scope import restore_general
+    text = restore_general(path, text)
     if path not in HUNKS:
         return text
     for hunk in reversed(HUNKS[path]):
@@ -28,11 +30,13 @@ def restore_ia(path, text):
 
 
 def verify_ia_scope():
+    from general_ingress_scope import SCOPE, verify_general_scope
+    verify_general_scope()
     for path in HUNKS:
         restore_ia(path, (ROOT/path).read_text(encoding="utf-8"))
     changed = set(subprocess.check_output(["git", "diff", BASE, "--name-only", "--",
         "orion", "packaging", "dcs-export"], cwd=ROOT).decode().splitlines())
     untracked = set(subprocess.check_output(["git", "ls-files", "--others", "--exclude-standard", "--",
         "orion", "packaging", "dcs-export"], cwd=ROOT).decode().splitlines())
-    assert changed <= HUNKS.keys() | ADDED
-    assert untracked <= ADDED
+    assert changed - SCOPE <= HUNKS.keys() | ADDED
+    assert untracked - SCOPE <= ADDED

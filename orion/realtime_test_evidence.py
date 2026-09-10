@@ -293,7 +293,7 @@ class RealtimeTestEvidenceRecorder:
             if event not in {"physical_turn_end", "routing", "connect_started", "connect_complete",
                 "session.created", "session.updated", "connected", "request_sent", "first_token",
                 "text_complete", "terminal_text", "normalized_candidate", "candidate_complete", "closed",
-                "candidate", "admission", "tts_input", "response_terminal", "failed"}:
+                "candidate", "admission", "tts_input", "response_terminal", "failed", "selected_fact"}:
                 return
             safe: dict[str, object] = {
                 "timestamp": datetime.now(UTC).isoformat(timespec="milliseconds"),
@@ -306,7 +306,12 @@ class RealtimeTestEvidenceRecorder:
                 "conversation_provider_call_count", "planner_call_count", "tool_gateway_call_count",
                 "status", "failure_stage", "failure_category", "monotonic", "connect_ms", "first_token_ms",
                 "completion_ms", "frames", "tts_started", "tts_first_pcm", "tts_completed", "tts_pcm_bytes",
-                "radio_first_frame", "radio_completed"}
+                "radio_first_frame", "radio_completed",
+                "response_kind", "semantic_provider_operations", "dialogue_role_selected",
+                "separate_conversation_provider_operations", "planner_operations", "core_fact_reads",
+                "semantic_user_path_ms", "context_revision", "context_bytes", "catalog_version",
+                "operation_id", "selected_capabilities", "fact_key", "fact_value", "fact_unit",
+                "fact_source", "fact_authority", "fact_generation", "fact_age_seconds", "fact_observed_at", "call_id"}
             for key, value in fields.items():
                 if key in text_bounds:
                     if not isinstance(value, str) or not 0 < len(value) <= text_bounds[key]:

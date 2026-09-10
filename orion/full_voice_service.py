@@ -11,6 +11,7 @@ from orion.full_voice_capture import RadioTurnEventKind
 from orion.full_voice_core import FullVoiceCore
 from orion.conversational_core import eligible_conversation
 from orion.conversational_presentation import ConversationVoice
+from orion.general_semantic_voice import GeneralSemanticVoice
 from orion.communication_contracts import CommunicationDomain, CommunicationPriority
 from orion.hybrid_aircraft_contracts import HybridRoute
 from orion.hybrid_aircraft_core import HybridAircraftCore
@@ -122,6 +123,7 @@ class FullVoiceService(YandexSrsLiveService):
         hybrid_active = False
         interpreter = None
         interpreter_warmup = None
+        general_owners: list[GeneralSemanticVoice] = []
         consumed = False
         try:
             # The existing Core already owns ingress and this WorldModel. Only
@@ -144,7 +146,7 @@ class FullVoiceService(YandexSrsLiveService):
             self._set(state=YandexSrsState.STREAMING, phase="streaming", message="Yandex SRS voice is running")
             # Optional separate semantic owner, never a readiness prerequisite.
             interpreter = WarmYandexAircraftInterpreter.configured(request.api_key, request.folder_id,
-                observe=observe_interpreter)
+                observe=observe_interpreter, general=True)
             interpreter_warmup = asyncio.create_task(interpreter.prepare(), name="aircraft-interpreter-warmup")
 
             async def answer(utterance):
@@ -189,15 +191,10 @@ class FullVoiceService(YandexSrsLiveService):
                                     observe=observe_slice)
                             core_worker = asyncio.create_task(asyncio.to_thread(hybrid.run, utterance, cancellation))
                             information = await asyncio.shield(core_worker)
-                            if (information.route is HybridRoute.UNSUPPORTED and information.failure is None
-                                    and not eligible_conversation(utterance.text)):
-                                grant = await interpretation_router.interpret_aircraft_warm(
-                                    utterance, interpreter, cancellation, observe=observe_interpreter)
-                                if grant is not None:
-                                    core_worker = asyncio.create_task(asyncio.to_thread(
-                                        hybrid.run_interpreted, utterance, cancellation, grant, interpretation_router))
-                                    information = await asyncio.shield(core_worker)
                             if information.finalized is not None:
+                                if information.route is HybridRoute.FREE_ONLY:
+                                    observe_conversation("routing", turn_id=str(identity), route="LOCAL_SOCIAL",
+                                        conversation_provider_call_count=0, planner_call_count=0, tool_gateway_call_count=0)
                                 if stopped.is_set() or cancellation.cancelled:
                                     raise RuntimeError("turn_cancelled_before_presentation")
                                 if informational is None:
@@ -237,8 +234,26 @@ class FullVoiceService(YandexSrsLiveService):
                                     finally:
                                         await conversation.shutdown()
                                 else:
-                                    observe_conversation("routing", turn_id=str(identity), route="UNSUPPORTED",
-                                        conversation_provider_call_count=0, planner_call_count=0, tool_gateway_call_count=0)
+                                    if not general_owners:
+                                        def observe_general(event, **fields):
+                                            observe_conversation({"request": "routing", "admitted": "admission"}.get(event, event),
+                                                route_source="GENERAL_SEMANTIC", **fields)
+                                        general_owners.append(GeneralSemanticVoice(request.api_key, gateway, interpretation_router,
+                                            interpreter, endpoint, entity, session_id, observe=observe_general,
+                                            clock=lambda: datetime.now(UTC)))
+                                    # State-owner metadata only: never provider facts or a competing store.
+                                    from orion.live_telemetry_store import live_telemetry
+                                    from orion.mission_store import mission_store
+                                    state = live_telemetry.snapshot()
+                                    mission = mission_store.get()
+                                    try:
+                                        test_session_id = realtime_test_evidence.status().test_session_id
+                                    except Exception:
+                                        test_session_id = None  # Optional evidence cannot cancel voice.
+                                    epoch = repr((test_session_id,
+                                        mission.mission_id if mission else None,
+                                        state.telemetry.state.aircraft_type if state.telemetry else None))
+                                    await general_owners[0].run(utterance, hybrid, cancellation, epoch=epoch)
                 except Exception:
                     fail("turn_processing_failed")
                 finally:
@@ -297,13 +312,19 @@ class FullVoiceService(YandexSrsLiveService):
                 if core_worker is not None:
                     await asyncio.gather(core_worker, return_exceptions=True)
             finally:
-                if interpreter is not None:
-                    await interpreter.shutdown()
-                if interpreter_warmup is not None:
-                    results = await asyncio.gather(interpreter_warmup, return_exceptions=True)
-                    for warmup_result in results:
-                        if isinstance(warmup_result, Exception):
-                            raise warmup_result
+                try:
+                    for general_owner in general_owners:
+                        await general_owner.shutdown()
+                finally:
+                    try:
+                        if interpreter is not None:
+                            await interpreter.shutdown()
+                    finally:
+                        if interpreter_warmup is not None:
+                            results = await asyncio.gather(interpreter_warmup, return_exceptions=True)
+                            for warmup_result in results:
+                                if isinstance(warmup_result, Exception):
+                                    raise warmup_result
 
 
 full_voice_service = FullVoiceService(endpoint_factory=FullVoiceSrsEndpoint)

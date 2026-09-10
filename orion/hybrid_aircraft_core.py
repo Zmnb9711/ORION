@@ -249,6 +249,21 @@ class HybridAircraftCore:
             self._completed[utterance.interaction_id] = (utterance, result)
             return result
 
+    def run_semantic_identity(self, utterance, cancellation, grant, router) -> HybridResult:
+        """General Core grant enters the same identity tail with the exact FINAL."""
+        from orion.general_semantic_contracts import FactRequest
+        with self._lock:
+            prior = self._completed.get(utterance.interaction_id)
+            result = grant.proposal.result
+            if (prior is None or prior[0] != utterance or prior[1].route is not HybridRoute.UNSUPPORTED
+                or prior[1].failure is not None or not isinstance(result, FactRequest)
+                or result.capabilities != ("aircraft.identity",)
+                or not router.consume_general_admission(grant, utterance.interaction_id, utterance.text, cancellation)):
+                return HybridResult(HybridRoute.UNSUPPORTED, failure="semantic_identity_admission")
+            completed = self._run(utterance, cancellation, interpreted=True)
+            self._completed[utterance.interaction_id] = (utterance, completed)
+            return completed
+
     def _run(self, utterance, cancellation, *, interpreted=False):
         identity, text = utterance.interaction_id, utterance.text
         deadline = self.clock() + timedelta(seconds=15)

@@ -22,10 +22,11 @@ from test_full_voice import StreamingFakeRadio
 
 
 @pytest.mark.parametrize("text,expected,calls", [(MIXED, True, 0), (PURE, True, 0), (FREE, True, 0),
-    ("какой мой текущий курс и координаты", True, 0), ("какой мой текущий вкус или оригинал", False, 0),
+    ("какой мой текущий курс и координаты", True, 0),
     ("Какой это самолёт?", False, 0)])
 @pytest.mark.parametrize("mode", ["active", "inactive", "broken", "stop_local"])
-def test_gate10_normal_host_coexistence_and_single_owner(monkeypatch, tmp_path, text, expected, calls, mode):
+def test_gate10_normal_host_coexistence_and_single_owner(monkeypatch, tmp_path, text, expected, calls, mode,
+        *, general_kind=None, expected_reads=None, capture=None):
     if mode == "stop_local" and text not in {MIXED, FREE}:
         pytest.skip("Pure/frozen routes do not invoke local decomposition")
     u = utterance(text)
@@ -104,6 +105,10 @@ def test_gate10_normal_host_coexistence_and_single_owner(monkeypatch, tmp_path, 
         @classmethod
         def now(cls, tz=None): return NOW
     monkeypatch.setattr(host, "datetime", Clock)
+    from orion.interaction_router import InteractionRouter
+    monkeypatch.setattr(host, "InteractionRouter", lambda **kwargs: InteractionRouter(clock=lambda: NOW, **kwargs))
+    import orion.yandex_warm_aircraft_interpreter as warm
+    monkeypatch.setattr(warm, "datetime", Clock)
     monkeypatch.setattr(host, "NativeSpeechKitTurns", Native)
     monkeypatch.setattr(host, "GrpcSpeechKitStreamingPort", lambda: None)
     monkeypatch.setattr(host, "SrsTransportDiagnostics", lambda *a, **k: None)
@@ -124,12 +129,12 @@ def test_gate10_normal_host_coexistence_and_single_owner(monkeypatch, tmp_path, 
         assert bool(hybrid_invoked) != owns
         accepted = expected and mode != "stop_local"
         assert len(tts_texts) == len(adapter.transmit_calls) == int(accepted)
-        assert len(gateway.calls) == int(accepted and text != FREE)
+        assert len(gateway.calls) == (expected_reads if expected_reads is not None else int(accepted and text != FREE))
         assert service.status().state != "error"
         if mode == "active":
             events = list(recorder._events)
             assert any(e.get("transcript") == text for e in events)
-            if accepted and not owns:
+            if accepted and not owns and general_kind is None:
                 finalized = next(e["finalized_text"] for e in events if e["event"] == "aircraft_slice.local_composition")
                 assert finalized == tts_texts[0]
                 assert any(e.get("tts_input") == finalized for e in events)
@@ -140,9 +145,15 @@ def test_gate10_normal_host_coexistence_and_single_owner(monkeypatch, tmp_path, 
                 if text not in {PURE}:
                     accepted_event = next(e for e in events if e["event"] == "aircraft_slice.decomposition_validation" and e["status"] == "accepted")
                     assert accepted_event["decomposition_source"] == "LOCAL" and accepted_event["provider_call_count"] == 0
-                if text != FREE:
+                if gateway.calls:
                     fact = next(e["aircraft"] for e in events if e["event"] == "aircraft_slice.authoritative_read")
                     assert fact["aircraft_type"] == "FA-18C_hornet" and fact["source"] == "dcs_export"
+            if general_kind is not None:
+                admitted = [e for e in events if e.get("response_kind") == general_kind]
+                assert len(admitted) == 1 and admitted[0]["finalized_text"] == tts_texts[0]
+        if capture is not None:
+            capture.append({"texts": tts_texts, "calls": gateway.calls, "events": list(recorder._events),
+                            "tx_count": len(adapter.transmit_calls)})
             if owns: assert next(e for e in events if e.get("route") == "FROZEN_OWNSHIP")["provider_call_count"] == 0
         if mode == "inactive": assert not recorder._events
         if mode == "stop_local": assert entered.is_set() and not tts_texts

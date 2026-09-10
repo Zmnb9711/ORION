@@ -1,0 +1,11 @@
+{
+  "orion/full_voice_service.py": "58028a50ff1e8c6a33f4086443d104b7089d9c32115bb4dde6c657e70f3129c2",
+  "orion/hybrid_aircraft_core.py": "e815a99fa663a79d0955640b361036d21bba2dc32823340465017d2e1cdc4a85",
+  "orion/interaction_router.py": "b7b2f67b4b90849d3a96c02406123132692a665e851611c60abe08a223808e9c",
+  "orion/protected_presentation.py": "4970f9134c640631e8dcaad6157620f2150187e4d74c91e4f0091748418972fb",
+  "orion/realtime_test_evidence.py": "2d962b4ae735760c131b2c96518f08e45d47c6ff1700930466e3bf5bc960032f",
+  "orion/yandex_warm_aircraft_interpreter.py": "e2d4417f3b70163a353a478d711b8fd192dc897fcdacc1f6e1cfa566b23b95c7",
+  "orion/general_semantic_contracts.py": "72b55d52102ceee6ae65e3e84e2e310d47c46ce625b728486c505665df2511c2",
+  "orion/general_semantic_core.py": "5d887e8b74a117ac4c9b17c940f055fcf547a58d9a62c87f898fa4ad97c4a374",
+  "orion/general_semantic_voice.py": "490f7716525eacd7c1be1cdc55c056ec8437bf93303e4802c28d3e99da6c0f5c"
+}

@@ -24,6 +24,7 @@ from pydantic import (
 )
 
 from orion.communication_contracts import CommunicationContext, CommunicationDomain
+from orion.general_semantic_contracts import SemanticRequest, SemanticProposal, SemanticAdmission, Dialogue, CATALOG_VERSION
 from orion.interaction_contracts import (
     CapabilityId,
     ContextReference,
@@ -201,6 +202,44 @@ class InteractionRouter:
         self._lock = RLock()
         self._interpretation_turns: set[UUID] = set()
         self._aircraft_grants: dict[UUID, AircraftAdmission] = {}
+        self._general_grants: dict[UUID, SemanticAdmission] = {}
+        self._general_used: set[UUID] = set()
+
+    def admit_general(self, request: SemanticRequest, proposal: SemanticProposal,
+                      cancellation: PlannerCancellationToken, *, context_revision: int) -> SemanticAdmission:
+        from orion.aircraft_interpretation import source_hash
+        with self._lock:
+            if type(proposal) is not SemanticProposal:
+                raise ValueError("semantic_typed_proposal_required")
+            checked = SemanticProposal.model_validate(proposal.model_dump(), strict=True)
+            now = self._now()
+            if (checked != proposal or checked.request != request
+                or request.source_sha256 != source_hash(request.source_text)
+                or request.catalog_version != CATALOG_VERSION
+                or request.context.revision != context_revision
+                or checked.provider_id != request.expected_provider
+                or cancellation.cancelled or now >= request.deadline or now < request.created_at
+                or (not isinstance(checked.result, Dialogue) and (now-request.created_at).total_seconds() > 1)
+                or request.interaction_id in self._general_used or len(self._general_used) >= 64):
+                raise ValueError("semantic_admission_rejected")
+            grant = SemanticAdmission(proposal=checked)
+            self._general_used.add(request.interaction_id)
+            self._general_grants[request.interaction_id] = grant
+            return grant
+
+    def consume_general_admission(self, grant: SemanticAdmission, identity: UUID, text: str,
+                                  cancellation: PlannerCancellationToken) -> bool:
+        from orion.aircraft_interpretation import source_hash
+        with self._lock:
+            if not isinstance(grant, SemanticAdmission):
+                return False
+            request = grant.proposal.request
+            if (self._general_grants.get(identity) is not grant or cancellation.cancelled
+                or request.interaction_id != identity or request.source_text != text
+                or request.source_sha256 != source_hash(text) or self._now() >= request.deadline):
+                return False
+            del self._general_grants[identity]
+            return True
 
     def _interpretation_request(self, identity, text, language, cancellation, provider, budget):
         if not eligible_aircraft_interpretation(text, language) or cancellation.cancelled:

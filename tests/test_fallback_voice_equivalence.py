@@ -60,6 +60,14 @@ def test_actual_field_and_launcher_hosts_preserve_golden_turn_results(replays):
                 # All other captured control/data-path fields compare exactly.
                 expected = {**expected, "trace": [t for t in expected["trace"] if not t.startswith("world_")]}
                 actual = {**actual, "trace": [t for t in actual["trace"] if not t.startswith("world_")]}
+                if expected['core_status'] == ['unsupported']:
+                    # Authorized tranche change: the OLD Core still rejects;
+                    # general ingress now voices truthful provider unavailability.
+                    # RX/STT/EOU, Core facts, lifecycle and supported TX stay exact.
+                    assert actual['tts_texts'] == ['Сейчас недоступна обработка естественной речи.']
+                    assert actual['tx_count'] == 1
+                    for key in ('tts_texts','tx_count','entity','frequency'):
+                        expected.pop(key); actual.pop(key)
                 assert actual == expected
 
 
@@ -70,7 +78,7 @@ def test_golden_supported_and_unsupported_gates_are_not_widened(replays):
             supported = index in (0, 2, 4)
             assert row["core_status"] == ["completed" if supported else "unsupported"]
             assert row["terminal"] == ("completed" if supported else "unsupported")
-            assert row["tx_count"] == len(row["tts_texts"]) == int(supported)
+            assert row["tx_count"] == len(row["tts_texts"]) == 1
             assert row["eou_count"] == 1
             if supported:
                 assert row["tts_texts"] == [row["finalized"][0]["text"]]
@@ -78,6 +86,7 @@ def test_golden_supported_and_unsupported_gates_are_not_widened(replays):
                 assert len(row["finalized"][0]["values"]) == 3
             else:
                 assert row["finalized"][0]["tool_count"] == 0
+                assert row['tts_texts'] == ['Сейчас недоступна обработка естественной речи.']
 
 
 def test_replayed_final_fixtures_match_saved_successful_field_hashes(replays):

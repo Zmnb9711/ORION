@@ -11,12 +11,17 @@ import asyncio
 from datetime import UTC, datetime
 from enum import StrEnum
 import time
+import re
 
 from orion.aircraft_interpretation import (
     AircraftProposal, InterpretationRequest, WARM_INTERPRETER_PROVIDER, parse_intent, source_hash,
 )
 from orion.conversational_contracts import ConversationCleanupError, ConversationFailure
 from orion.planner import PlannerCancellationToken
+from orion.general_semantic_contracts import (
+    Dialogue, SemanticRequest, SemanticProposal, PROVIDER_ID,
+    parse_semantic, provider_instructions,
+)
 from orion.yandex_realtime_text_conversation import (
     AiohttpConversationTransport, TextConversationProvider, _TextOperation, _identifier,
 )
@@ -51,8 +56,9 @@ class WarmYandexAircraftInterpreter(TextConversationProvider):
     session, user history or mutable state is shared with Conversation.
     Failed isolation closes the connection and cannot silently reconnect/retry.
     """
-    def __init__(self, factory, *, observe=lambda _event, **_fields: None):
+    def __init__(self, factory, *, observe=lambda _event, **_fields: None, general: bool = False):
         super().__init__(factory, observe=observe)
+        self.instructions = provider_instructions() if general else INSTRUCTIONS
         self.state = InterpreterState.COLD
         self.transport = None
         self.session_id = None
@@ -84,7 +90,7 @@ class WarmYandexAircraftInterpreter(TextConversationProvider):
             await self._bounded(self.transport.connect(), limit-time.monotonic())
             self.emit("socket_connected")
             await self._bounded(self.transport.send({"type": "session.update", "session": {
-                "instructions": INSTRUCTIONS, "output_modalities": ["text"]}}), limit-time.monotonic())
+                "instructions": self.instructions, "output_modalities": ["text"]}}), limit-time.monotonic())
             handshake = _TextOperation("")
             for _ in range(16):
                 event = await self._bounded(self.transport.receive(), limit-time.monotonic())
@@ -110,9 +116,24 @@ class WarmYandexAircraftInterpreter(TextConversationProvider):
             self._owner_task = None
 
     async def interpret(self, request: InterpretationRequest, cancellation: PlannerCancellationToken) -> AircraftProposal:
+        result = await self._interpret(request, cancellation)
+        if not isinstance(result, AircraftProposal):
+            raise ConversationFailure("interpreter_result_type")
+        return result
+
+    async def interpret_general(self, request: SemanticRequest, cancellation: PlannerCancellationToken) -> SemanticProposal:
+        result = await self._interpret(request, cancellation)
+        if not isinstance(result, SemanticProposal):
+            raise ConversationFailure("semantic_result_type")
+        return result
+
+    async def _interpret(self, request: InterpretationRequest | SemanticRequest,
+                         cancellation: PlannerCancellationToken) -> AircraftProposal | SemanticProposal:
         if self.state is not InterpreterState.READY or self._closing or self.transport is None:
             raise ConversationFailure("interpreter_not_warm")
-        if (request.expected_provider != WARM_INTERPRETER_PROVIDER
+        general = isinstance(request, SemanticRequest)
+        expected = PROVIDER_ID if general else WARM_INTERPRETER_PROVIDER
+        if (request.expected_provider != expected
                 or request.source_sha256 != source_hash(request.source_text)
                 or request.interaction_id in self.used or len(self.used) >= 64):
             raise ConversationFailure("interpreter_request_binding")
@@ -124,6 +145,8 @@ class WarmYandexAircraftInterpreter(TextConversationProvider):
         self.operation_count += 1
         started = time.monotonic()
         limit = started + min(1.0, (request.deadline-datetime.now(UTC)).total_seconds())
+        dialogue_limit = started + min(12.0, (request.deadline-datetime.now(UTC)).total_seconds())
+        dialogue_budget = False
         operation = _TextOperation(request.source_text)
         operation.session_id, operation.updated = self.session_id, True
         fields = {"turn_id": str(request.interaction_id), "operation_id": str(request.operation_id),
@@ -136,17 +159,31 @@ class WarmYandexAircraftInterpreter(TextConversationProvider):
                 "item": {"type": "message", "object": "realtime.item", "role": "user",
                     "content": [{"type": "input_text", "text": request.source_text}]}}), limit-time.monotonic(), cancellation)
             await self._bounded(self.transport.send({"type": "response.create", "event_id": "ia-response-"+identity,
-                "response": {"instructions": INSTRUCTIONS, "output_modalities": ["text"]}}), limit-time.monotonic(), cancellation)
+                "response": {"instructions": provider_instructions(request.context) if general else INSTRUCTIONS,
+                             "output_modalities": ["text"]}}), limit-time.monotonic(), cancellation)
             first = False
             for _ in range(256):
                 event = await self._bounded(self.transport.receive(), limit-time.monotonic(), cancellation)
                 text = operation.feed(event)
+                # This wire-prefix check ONLY selects a time budget. It never
+                # admits content or dispatches a role. Full strict terminal
+                # parsing must agree. No user-language matching is performed.
+                if general and not dialogue_budget and re.match(
+                        r'^\s*(?:```(?:json)?\s*)?\{\s*"kind"\s*:\s*"DIALOGUE"\s*[,}]', operation.text):
+                    if time.monotonic() >= limit:
+                        raise ConversationFailure("semantic_role_deadline")
+                    dialogue_budget = True
+                    limit = dialogue_limit
                 if event.get("type") == "response.output_text.delta" and not first:
                     first = True
                     self.emit("first_text", first_text_ms=(time.monotonic()-started)*1000, **fields)
                 if text is not None:
                     self.emit("text_terminal", terminal_ms=(time.monotonic()-started)*1000, **fields)
-                    intent = parse_intent(text)
+                    if general:
+                        self._observe_terminal(text, **fields)
+                    intent = parse_semantic(text) if general else parse_intent(text)
+                    if general and dialogue_budget and not isinstance(intent, Dialogue):
+                        raise ConversationFailure("semantic_budget_kind_mismatch")
                     self.emit("typed_result", structured_result=intent.model_dump(), **fields)
                     break
             else:
@@ -156,8 +193,12 @@ class WarmYandexAircraftInterpreter(TextConversationProvider):
                 raise ConversationFailure("interpreter_item_inventory")
             if operation.response_id is None:
                 raise ConversationFailure("interpreter_response_identity_missing")
-            result = AircraftProposal(request=request, provider_id=WARM_INTERPRETER_PROVIDER,
-                response_id=operation.response_id, intent=intent)
+            if isinstance(request, SemanticRequest):
+                parsed = parse_semantic(text)
+                result = SemanticProposal(request=request, response_id=operation.response_id, result=parsed)
+            else:
+                result = AircraftProposal(request=request, provider_id=WARM_INTERPRETER_PROVIDER,
+                    response_id=operation.response_id, intent=parse_intent(text))
             if cancellation.cancelled:
                 raise ConversationFailure("cancelled")
             if time.monotonic() >= limit:
