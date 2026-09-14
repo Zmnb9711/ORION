@@ -142,9 +142,11 @@ def test_exact_step1_production_scope_and_no_new_language_templates():
     root = Path(__file__).resolve().parents[1]
     base = 'be413a802fe4d84ac140db248219b3e450cbb8b4'
     paths = {'orion/full_voice_service.py', 'orion/hybrid_aircraft_core.py'}
-    changed = set(subprocess.check_output(['git', 'diff', base, '--name-only', '--',
+    step1 = '4b5a46959c241eec6ef8391ee52de4da93f3dc0f'
+    changed = set(subprocess.check_output(['git', 'diff', base, step1, '--name-only', '--',
         'orion', 'dcs-export', 'packaging'], cwd=root).decode().splitlines())
     assert changed == paths
+    assert not subprocess.check_output(['git', 'diff', step1, '--', *sorted(paths)], cwd=root)
     assert not subprocess.check_output(['git', 'ls-files', '--others', '--exclude-standard', '--',
         'orion', 'dcs-export', 'packaging'], cwd=root).strip()
     for path in paths:

@@ -182,7 +182,7 @@ class InteractionContext:
         if plan.request.context.revision != self.revision:
             raise ValueError("context_revision_changed")
         topic = plan.capabilities[-1] if isinstance(plan, FactPlan) else "meta."+plan.topic if isinstance(plan, MetaPlan) else None
-        entry = ContextExchange(user=plan.request.source_text,
+        entry = ContextExchange(interaction_id=plan.request.interaction_id, user=plan.request.source_text,
             reply=finalized.text if not isinstance(plan, (FactPlan, MetaPlan)) else None,
             described_capabilities=plan.capabilities if isinstance(plan, MetaPlan) else (),
             topic=topic, language=plan.request.language, outcome=plan.kind,
@@ -197,6 +197,27 @@ class InteractionContext:
                 exchanges=self.exchanges).model_dump_json().encode("utf-8")) > 4096:
             self.exchanges = self.exchanges[1:]
         self.expires = self.clock() + timedelta(seconds=300)
+
+    def update_delivery(self, finalized: FinalizedGeneralText, *,
+                        delivery: Literal["completed", "failed", "cancelled", "unknown"],
+                        tts_started: bool = False) -> None:
+        """Update an accepted Dialogue, never re-admit semantics or infer hearing.
+
+        An expired/reset/evicted exchange is not resurrected by a late delivery.
+        This metadata update does not advance the semantic context revision.
+        """
+        if not isinstance(finalized.plan, DialoguePlan) or self.clock() >= self.expires:
+            return
+        identity = finalized.plan.request.interaction_id
+        fingerprint = source_hash(finalized.text)
+        self.exchanges = tuple(
+            entry.model_copy(update={"delivery": delivery, "tts_started": tts_started})
+            if entry.interaction_id == identity and entry.response_fingerprint == fingerprint
+            and entry.delivery == "pending" else entry
+            for entry in self.exchanges)
+        while len(ContextProjection(revision=self.revision, session_id=self.session_id,
+                exchanges=self.exchanges).model_dump_json().encode("utf-8")) > 4096:
+            self.exchanges = self.exchanges[1:]
 
 
 class GeneralSemanticCore:

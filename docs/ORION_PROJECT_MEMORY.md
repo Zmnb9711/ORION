@@ -1,5 +1,26 @@
 # ORION Project Memory — current state only
 
+## Latest Step 2 update — context application, 2026-09-14
+
+[Context proof and bounded repair](history/2026-09-14-context-application-proof.md):
+one override-only synthetic probe did not use the nonce; request-owned exact
+session.update/ACK binding plus cleanup restored nonce use and RU/EN continuity
+on the unchanged ten-turn gate. Same Yandex/prompt/ORION context; no provider
+switch. 3306 offline PASS, five baseline failures, one skip. Uncommitted; review
+before commit. No build, physical acceptance, TTS work or Step 3. Earlier failed
+gate below remains historical evidence, not the latest component verdict.
+
+## Current execution update — Foundation Step 2, 2026-09-14
+
+Step 1 is committed at `4b5a46959c241eec6ef8391ee52de4da93f3dc0f`; the older
+precommit labels below are historical. Step 2 role/context corrections are
+UNCOMMITTED. [Full A–U record](history/2026-09-14-foundation-step2-conversation.md).
+Offline mechanisms passed; one ten-turn current-Yandex gate had no retries and
+validated controlled recovery, but RU/EN continuation QUALITY FAILED despite
+available explicit context. Provider-side context application versus model
+behavior remains unresolved. STOP; no provider switch, commit, build or Step 3.
+TTS/SRS/facts and physical product FIELD FAIL unchanged. User data preserved.
+
 ## Current execution update — 2026-09-14 Foundation Step 1
 
 Governance is committed at `be413a802fe4d84ac140db248219b3e450cbb8b4` on

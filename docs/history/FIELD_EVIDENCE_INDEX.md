@@ -1,5 +1,13 @@
 # ORION field evidence index
 
+[2026-09-14 context application supplement](2026-09-14-context-application-proof.md):
+synthetic provider-only nonce proof after adapter correction and recovered RU/EN
+continuity in the same ten developer turns. Not a physical field/acoustic PASS.
+
+2026-09-14: [Step 2 provider-only record](2026-09-14-foundation-step2-conversation.md).
+Ten developer text turns, no audio/physical I/O: structural/recovery proof but
+RU/EN continuity QUALITY FAIL. This is NOT a new field session or acoustic PASS.
+
 Updated 2026-09-14. Historical classification; no new tests.
 Current product verdict: FIELD FAIL. [Current state](../ORION_PROJECT_MEMORY.md).
 Foundation Step 1 on governance `be413a8`: [offline routing record](2026-09-14-foundation-step1-routing.md).

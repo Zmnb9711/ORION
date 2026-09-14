@@ -40,7 +40,13 @@ class Wire:
         self.sent.append(value)
         kind = value["type"]
         if kind == "session.update":
-            for e in events()[:2]: self.queue.put_nowait(e)
+            initial = not getattr(self, 'session_updates', 0)
+            self.session_updates = getattr(self, 'session_updates', 0) + 1
+            for e in events()[:2] if initial else events()[1:2]:
+                if e['type'] == 'session.updated':
+                    e['event_id'] = 'session-update-'+str(self.session_updates)
+                    e['session']['instructions'] = value['session']['instructions']
+                self.queue.put_nowait(e)
         elif kind == "conversation.item.create":
             assert not self.items, "previous server context was not deleted"
             self.source = value["item"]["content"][0]["text"]

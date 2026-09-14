@@ -162,6 +162,16 @@ class WarmYandexAircraftInterpreter(TextConversationProvider):
         self.emit("interpretation_started", **fields)
         try:
             identity = str(request.operation_id)
+            if general:
+                context_started = time.monotonic()
+                instructions = provider_instructions(request.context, request.personal_context)
+                await self._bounded(self.transport.send({"type": "session.update",
+                    "event_id": "context-"+identity, "session": {"instructions": instructions}}),
+                    limit-time.monotonic(), cancellation)
+                ack = await self._bounded(self.transport.receive(), limit-time.monotonic(), cancellation)
+                self._context_ack(ack, instructions, operation)
+                self.emit("context_applied_ack", instructions_sha256=source_hash(instructions),
+                    context_binding_ms=(time.monotonic()-context_started)*1000, **fields)
             await self._bounded(self.transport.send({"type": "conversation.item.create", "event_id": "ia-item-"+identity,
                 "item": {"type": "message", "object": "realtime.item", "role": "user",
                     "content": [{"type": "input_text", "text": request.source_text}]}}), limit-time.monotonic(), cancellation)
@@ -222,7 +232,7 @@ class WarmYandexAircraftInterpreter(TextConversationProvider):
             self.state = InterpreterState.ISOLATING
             self._isolation_error = None
             self._isolation_task = asyncio.create_task(
-                self._isolate(operation, identity, pending, cancellation, fields),
+                self._isolate(operation, identity, pending, cancellation, fields, reset_instructions=general),
                 name="orion-interpreter-isolation")
             self.emit("interpretation_complete", user_path_ms=(time.monotonic()-started)*1000,
                 connect_count=self.connect_count, operation_count=self.operation_count, result_count=self.result_count,
@@ -282,7 +292,18 @@ class WarmYandexAircraftInterpreter(TextConversationProvider):
             await asyncio.shield(self._recovery_task)
         return self.state is InterpreterState.READY
 
-    async def _isolate(self, operation, identity, pending, cancellation, fields):
+    def _context_ack(self, event, instructions, operation):
+        session = event.get("session") if isinstance(event, dict) else None
+        if (not isinstance(event, dict) or event.get("type") != "session.updated"
+            or not isinstance(session, dict) or session.get("id") != self.session_id
+            or session.get("instructions") != instructions):
+            raise ConversationFailure("CONTEXT_ACK_MISMATCH")
+        eid = _identifier(event.get("event_id"))
+        if eid in operation.seen:
+            raise ConversationFailure("CONTEXT_ACK_REPLAY")
+        operation.seen.add(eid)
+
+    async def _isolate(self, operation, identity, pending, cancellation, fields, *, reset_instructions=False):
         """Owned control plane; no semantic output or auto-reconnect on failure.
 
         500 ms is a bounded first-slice allowance (~2x observed 239 ms ACK RTT),
@@ -298,8 +319,17 @@ class WarmYandexAircraftInterpreter(TextConversationProvider):
             for item_id in pending:
                 await self._bounded(transport.send({"type": "conversation.item.delete",
                     "event_id": "ia-delete-"+identity+"-"+str(item_id), "item_id": item_id}), limit-time.monotonic(), cancellation)
-            while pending:
+            if reset_instructions:
+                await self._bounded(transport.send({"type": "session.update",
+                    "event_id": "context-clear-"+identity, "session": {"instructions": self.instructions}}),
+                    limit-time.monotonic(), cancellation)
+            while pending or reset_instructions:
                 event = await self._bounded(transport.receive(), limit-time.monotonic(), cancellation)
+                if reset_instructions and event.get("type") == "session.updated":
+                    self._context_ack(event, self.instructions, operation)
+                    reset_instructions = False
+                    self.emit("context_cleared_ack", **fields)
+                    continue
                 eid = _identifier(event.get("event_id"))
                 if (event.get("type") != "conversation.item.deleted" or eid in operation.seen
                         or event.get("item_id") not in pending):

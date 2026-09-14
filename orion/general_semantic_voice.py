@@ -82,6 +82,11 @@ class GeneralSemanticVoice:
             proposal = await self.interpreter.interpret_general(request, cancellation)
         except ConversationCleanupError:
             raise
+        except ValueError as exc:
+            if cancellation.cancelled:
+                return
+            self.emit("failed", failure_stage="semantic_validation", failure_category=type(exc).__name__)
+            finalized = self.core.unavailable(request, "ADMISSION_REJECTED")
         except Exception as exc:
             if cancellation.cancelled:
                 return
@@ -98,6 +103,10 @@ class GeneralSemanticVoice:
         if cancellation.cancelled:
             return
         plan = finalized.plan
+        # Semantic success belongs to ORION before any fallible audio delivery.
+        dialogue = isinstance(plan, DialoguePlan)
+        if dialogue:
+            self.core.context.accept(finalized, delivery="pending")
         self.emit("admitted", response_kind=plan.kind, finalized_text=finalized.text,
             semantic_provider_operations=self.interpreter.operation_count-operations_before,
             dialogue_role_selected=int(isinstance(plan, DialoguePlan)), separate_conversation_provider_operations=0,
@@ -120,7 +129,8 @@ class GeneralSemanticVoice:
         try:
             result = await self.interpreter._bounded(self.presentation.present(finalized, context), 40., cancellation, cleanup_budget=.6)
         except BaseException as exc:
-            self.core.context.accept(finalized, delivery="cancelled" if isinstance(exc, asyncio.CancelledError) or cancellation.cancelled else "failed",
+            record_delivery = self.core.context.update_delivery if dialogue else self.core.context.accept
+            record_delivery(finalized, delivery="cancelled" if isinstance(exc, asyncio.CancelledError) or cancellation.cancelled else "failed",
                                      tts_started="tts_started" in self.presentation.marks)
             raise
         marks = self.endpoint.tx_marks if self.endpoint.tx_marks is not previous_marks else {}
@@ -128,7 +138,8 @@ class GeneralSemanticVoice:
             failure_category=result.failure.value if result.failure else None,
             **{key: self.presentation.marks.get(key) for key in ("tts_started", "tts_first_pcm", "tts_completed", "tts_pcm_bytes")},
             **{key: marks.get(key) for key in ("radio_first_frame", "radio_completed")})
-        self.core.context.accept(finalized,
+        record_delivery = self.core.context.update_delivery if dialogue else self.core.context.accept
+        record_delivery(finalized,
             delivery="cancelled" if cancellation.cancelled else result.state if result.state in {"completed", "failed", "cancelled"} else "unknown",
             tts_started="tts_started" in self.presentation.marks)
 

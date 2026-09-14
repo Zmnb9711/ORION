@@ -1,5 +1,19 @@
 # ORION contradiction log
 
+[Context application supplement](2026-09-14-context-application-proof.md), uncommitted:
+actual override contained nonce but provider asked for reference clarification.
+Exact session.update/ACK binding of unchanged context then produced the new nonce
+and restored referents on the same RU/EN gate. Local application boundary, not
+proven Yandex inferiority. Earlier uncertainty remains valid for its old captures;
+do not relabel the old first probe's post-provider Core timing error as cloud error.
+
+Step 2, 2026-09-14 (uncommitted parent `4b5a469`): open role and explicit
+two-exchange projection do not establish effective model continuity. One bounded
+gate returned disconnected RU/EN follow-ups despite relevant local context.
+Provider instruction application versus model/prompt behavior is unresolved;
+do not infer Qwen superiority or fix by hidden history. [Record](2026-09-14-foundation-step2-conversation.md).
+No field/quality PASS; no Step 3. Older precommit statuses below are historical.
+
 Updated 2026-09-14. Draft governance; no runtime change.
 Sources and identifiers: [Foundation audit](2026-09-14-foundation-recovery-audit.md).
 Conflicts remain visible; old reports are not rewritten to erase them.

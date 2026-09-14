@@ -1,5 +1,14 @@
 # ORION history index
 
+Latest supplement: [Step 2 context application proof](2026-09-14-context-application-proof.md).
+Exact session-context ACK/clear correction; nonce and unchanged RU/EN gate
+continuity demonstrated. Same provider/prompt; uncommitted, no field/build/Step 3.
+
+Latest: [Foundation Step 2](2026-09-14-foundation-step2-conversation.md), parent
+`4b5a469` (committed Step 1). Uncommitted role/context correction; offline PASS,
+one Yandex gate QUALITY FAIL in RU/EN continuity. No commit/build/Step 3.
+Earlier Step 1 precommit notices below are preserved historical status.
+
 Current update: governance committed at `be413a802fe4d84ac140db248219b3e450cbb8b4`.
 [Foundation Step 1](2026-09-14-foundation-step1-routing.md) is a separately
 authorized, uncommitted routing-only change. Offline real-host/fake-I/O proof;
