@@ -28,7 +28,7 @@ def request():
 
 @pytest.mark.parametrize("bad", [
     '{"kind":"DIALOGUE","text":42}',
-    '{"kind":"CAPABILITY_GAP","need":"invalid"}',
+    '{"kind":"CAPABILITY_GAP","need":[]}',
     '{"kind":"FACT_REQUEST","capabilities":["unknown"]}',
     '{"kind":"DIALOGUE","kind":"DIALOGUE","text":"x"}',
     'not json',

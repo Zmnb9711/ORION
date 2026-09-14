@@ -1,5 +1,11 @@
 # ORION history index
 
+Latest: [Foundation Step 4 safe fact surface](2026-09-14-foundation-step4-fact-surface.md),
+parent `8ddc042`. 233 classified records/10 exposed facts; explicit source quality
+for TAS/vertical/AGL; no fabricated fuel normalization. Eight-operation Yandex
+semantic gate PASS, offline/host proofs, no new field/build acceptance. Decision A,
+authorized single commit/push; stop before Step 5. Earlier status labels historical.
+
 Latest: [Foundation Step 3 delivery](2026-09-14-foundation-step3-tts-delivery.md),
 parent `152a2f22` (committed Step 2). Proven client envelope defect plus explicit
 generator cleanup; original partial failure identified as SRS RX origin/collision

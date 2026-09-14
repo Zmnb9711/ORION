@@ -9,7 +9,7 @@ from orion.general_fact_presentation import spoken_coordinates, unit_word
 from orion.general_semantic_contracts import FactRequest, SemanticProposal, StateSummary, parse_semantic, provider_instructions
 from orion.general_semantic_core import FactPlan, UnavailablePlan
 from orion.live_telemetry_store import LiveTelemetryStore
-from orion.models import AircraftState, Attitude, Position, TelemetryEnvelope
+from orion.models import AircraftState, Attitude, Position, TelemetryEnvelope, SourceQuality
 from orion.planner import PlannerCancellationToken
 from orion.tool_gateway import build_tool_gateway
 from orion.world_model import WorldModelFacade
@@ -20,7 +20,8 @@ def fixture(*, aircraft="FA-18C_hornet", attitude=None, age=0, transform=None):
     core, hybrid, u, request, _ = make()
     store = LiveTelemetryStore()
     store.set(TelemetryEnvelope(state=AircraftState(
-        aircraft_type=aircraft, position=Position(latitude=-42.123456, longitude=62.765432, altitude_m=1234.56),
+        aircraft_type=aircraft, position=Position(latitude=-42.123456, longitude=62.765432, altitude_m=1234.56, altitude_agl_m=234.5),
+        source_quality=SourceQuality(true_airspeed=True, vertical_speed=True, altitude_agl=True),
         heading_deg=103.74, true_airspeed_mps=125, attitude=attitude or Attitude(pitch_deg=4.5, bank_deg=-12, yaw_deg=90),
         fuel={"INJECTED_EXTRA_TELEMETRY":999}, payload={"NEVER_SPEAK":999},
     )), received_at=request.created_at-timedelta(seconds=age))
@@ -182,7 +183,8 @@ def test_normal_full_voice_host_all_catalog_facts(monkeypatch, tmp_path, selecti
     # The old host harness is retained; only its external source gateway is replaced.
     store = LiveTelemetryStore()
     store.set(TelemetryEnvelope(state=AircraftState(aircraft_type="FA-18C_hornet",
-        position=Position(latitude=42.1, longitude=43.2, altitude_m=1234.56), heading_deg=103.74,
+        position=Position(latitude=42.1, longitude=43.2, altitude_m=1234.56, altitude_agl_m=234.5), heading_deg=103.74,
+        source_quality=SourceQuality(true_airspeed=True, vertical_speed=True, altitude_agl=True),
         true_airspeed_mps=100, attitude=Attitude(pitch_deg=3, bank_deg=-4, yaw_deg=90))), received_at=NOW)
     real = build_tool_gateway(world=WorldModelFacade(telemetry=store, clock=lambda: NOW), clock=lambda: NOW)
     class Gateway:
@@ -237,7 +239,7 @@ def test_every_aircraft_model_top_level_field_was_audited():
         "vertical_speed_mps", "fuel_fraction", "fuel", "attitude", "velocity_vector", "airframe", "propulsion",
         "navigation", "radios", "payload", "warnings", "ew", "sensors", "capabilities", "cockpit_state",
         "diagnostics", "timestamp"}
-    assert set(AircraftState.model_fields) == audited
+    assert set(AircraftState.model_fields) == audited | {"source_quality"}
 
 
 def test_runtime_permission_rejection_cannot_become_a_fact():

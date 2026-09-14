@@ -26,7 +26,9 @@ def test_heading_quality_does_not_replace_missing_with_north(heading, valid, sta
 def test_export_change_is_only_heading_quality_metadata():
     import subprocess
     root = Path(__file__).resolve().parents[1]
-    current = (root/"dcs-export/Export.lua").read_text(encoding="utf-8")
+    from general_ingress_scope import verify_general_scope
+    verify_general_scope()  # Actual exporter also executes in Step 4's Lua replay.
+    current = subprocess.check_output(['git','show','8ddc042:dcs-export/Export.lua'],cwd=root).decode()
     restored = current.replace('"heading_deg":%.2f,"heading_valid":%s,', '"heading_deg":%.2f,').replace(
         '        jsonBoolean(type(selfData.Heading) == "number"),\n', '')
     baseline = subprocess.check_output(['git','show','7b6981a:dcs-export/Export.lua'],cwd=root).decode()
@@ -44,7 +46,9 @@ def test_heading_quality_must_be_boolean():
 def test_telemetry_model_delta_is_one_optional_quality_field():
     import subprocess
     root = Path(__file__).resolve().parents[1]
-    current = (root/"orion/models.py").read_text(encoding="utf-8")
+    from general_ingress_scope import verify_general_scope
+    verify_general_scope()
+    current = subprocess.check_output(['git','show','8ddc042:orion/models.py'],cwd=root).decode()
     line = '    heading_valid: bool | None = Field(default=None, strict=True)\n'
     assert current.count(line) == 1
     assert current.replace(line, '') == subprocess.check_output(['git','show','7b6981a:orion/models.py'],cwd=root).decode()

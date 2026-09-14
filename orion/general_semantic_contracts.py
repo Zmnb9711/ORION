@@ -50,7 +50,15 @@ class Clarification(SemanticModel):
 
 class CapabilityGap(SemanticModel):
     kind: Literal["CAPABILITY_GAP"]
-    need: Literal["fuel", "speed", "altitude", "systems", "contacts", "weather", "navigation", "other"]
+    # Untrusted descriptive metadata, never a fact ID, tool path or spoken value.
+    need: str = Field(min_length=1, max_length=160)
+
+    @field_validator("need")
+    @classmethod
+    def bounded_description(cls, value: str) -> str:
+        if not value.strip() or any(ord(char) < 32 for char in value):
+            raise ValueError("capability_gap_description_invalid")
+        return value
 
 
 class Mixed(SemanticModel):
@@ -188,7 +196,8 @@ def provider_instructions(context: ContextProjection | None = None, personal_con
         "STATE_SUMMARY: only kind, for a broad current aircraft overview or all available current data. "
         "Never enumerate the catalog for an overview: Core selects its fixed bounded summary policy. "
         "CLARIFICATION: {kind:CLARIFICATION,slot:object|meaning|reference|action}. "
-        "CAPABILITY_GAP: {kind:CAPABILITY_GAP,need:fuel|speed|altitude|systems|contacts|weather|navigation|other}. "
+        "CAPABILITY_GAP: {kind:CAPABILITY_GAP,need:string}, a short description of the unavailable need, 1-160 characters. "
+        "This description grants no tool access and supplies no simulator value. "
         "MIXED: {kind:MIXED,facts:FACT_REQUEST object,dialogue:DIALOGUE object}; "
         "REASONING_REQUEST or DOMAIN_REQUEST: only kind. These three variants are not implemented yet. "
         "General knowledge, explanations and opinions about other entities are DIALOGUE, "

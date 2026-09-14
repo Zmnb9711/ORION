@@ -34,7 +34,9 @@ def spoken_coordinates(latitude: float, longitude: float) -> str:
 
 LABELS = {"altitude": "Геометрическая высота над уровнем моря", "pitch": "Угол тангажа",
           "bank": "Угол крена", "yaw": "Угол рыскания по ADI", "heading": "Текущий курс",
-          "position": "Координаты", "identity": "Тип самолёта"}
+          "position": "Координаты", "identity": "Тип самолёта",
+          "agl": "Геометрическая высота над поверхностью", "tas": "Истинная воздушная скорость",
+          "vertical_speed": "Вертикальная скорость"}
 
 
 def scalar_text(value: float, presentation: str) -> str:
@@ -43,10 +45,14 @@ def scalar_text(value: float, presentation: str) -> str:
     if presentation == "heading":
         # Preserve the previously proven value/precision, no reference-frame rewrite.
         return "Текущий курс " + format(Decimal(str(value)), "f") + " градусов."
-    altitude = presentation == "altitude"
+    altitude = presentation in {"altitude", "agl"}
     rounded = Decimal(str(value)).quantize(Decimal("1" if altitude else ".1"), rounding=ROUND_HALF_UP)
     rounded = abs(rounded) if rounded == 0 else rounded  # no negative spoken zero
     number = format(rounded, "f")
+    if presentation in {"tas", "vertical_speed"}:
+        if rounded < 0:
+            number = "минус " + format(abs(rounded), "f")
+        return f"{LABELS[presentation]} {number} метра в секунду."
     forms = ("метр", "метра", "метров") if altitude else ("градус", "градуса", "градусов")
     word = unit_word(int(rounded), forms) if rounded == int(rounded) else forms[1]
     return f"{LABELS[presentation]} {number} {word}."

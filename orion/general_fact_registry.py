@@ -10,12 +10,13 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class Exposure(StrEnum):
-    EXPOSED_AUTHORITATIVE = "EXPOSED_AUTHORITATIVE"
-    EXPOSED_DERIVED = "EXPOSED_DERIVED"
-    KNOWN_BUT_NOT_EXPOSED = "KNOWN_BUT_NOT_EXPOSED"
-    RAW_ONLY = "RAW_ONLY"
+    # Primary status is independent of source/authority/module properties.
+    EXPOSED_AUTHORITATIVE = "FOUNDATION_EXPOSED"
+    EXPOSED_DERIVED = "FOUNDATION_EXPOSED"
+    KNOWN_BUT_NOT_EXPOSED = "AVAILABLE_BUT_NOT_CONNECTED"
+    RAW_ONLY = "SEMANTICS_UNCERTAIN"
     SEMANTICS_UNCERTAIN = "SEMANTICS_UNCERTAIN"
-    SOURCE_UNRELIABLE = "SOURCE_UNRELIABLE"
+    SOURCE_UNRELIABLE = "SEMANTICS_UNCERTAIN"
     RESTRICTED = "RESTRICTED"
     UNAVAILABLE = "UNAVAILABLE"
 
@@ -29,7 +30,7 @@ class FactDefinition(BaseModel):
     unit: str | None = None
     source: str = "dcs_export"
     authority: str = "authoritative"
-    freshness_seconds: int = 5
+    freshness_seconds: int = Field(default=5, gt=0, le=30)
     generation_semantics: str = "One Core live-telemetry generation and receive timestamp."
     tool: str | None = "orion.world.ownship.get"
     version: str = "1.0"
@@ -43,7 +44,7 @@ class FactDefinition(BaseModel):
     exposure: Exposure
     reason: str
     applicability: tuple[str, ...] = ()  # Empty = common contract, not universal availability.
-    presentation: Literal["identity", "position", "heading", "altitude", "pitch", "bank", "yaw"] | None = None
+    presentation: Literal["identity", "position", "heading", "altitude", "pitch", "bank", "yaw", "agl", "tas", "vertical_speed"] | None = None
     minimum: float | None = None
     maximum: float | None = None
 
@@ -55,7 +56,8 @@ class FactDefinition(BaseModel):
 def _fact(identity, meaning, field, key, raw, leaves, presentation, *, unit=None,
           value_type: Literal["identity", "position", "number", "raw"] = "number", source_unit=None, minimum=None, maximum=None):
     return FactDefinition(capability=identity, meaning=meaning, snapshot_field=field, world_key=key,
-        raw_field=raw, normalized_field="state.aircraft_type" if field == "aircraft" else "state."+field,
+        raw_field=raw, normalized_field="state.aircraft_type" if field == "aircraft" else
+            "state.position.altitude_agl_m" if field == "altitude_agl_m" else "state."+field,
         leaves=tuple(leaves), presentation=presentation,
         unit=unit, source_unit=source_unit, value_type=value_type, minimum=minimum, maximum=maximum,
         namespace="aircraft" if identity.startswith("aircraft.") else "ownship",
@@ -86,6 +88,15 @@ _SAFE = (
     _fact("ownship.yaw", "Current ADI yaw angle normalized to 0..360 degrees; no magnetic/track equivalence asserted.",
           "attitude", "ownship.attitude", "LoGetADIPitchBankYaw third return, degrees modulo360",
           ("ownship.attitude.yaw_deg",), "yaw", unit="deg", minimum=0, maximum=360),
+    _fact("ownship.true_airspeed", "Current true airspeed in metres per second; not indicated or ground speed.",
+          "true_airspeed_mps", "ownship.true_airspeed_mps", "LoGetTrueAirSpeed with source_quality.true_airspeed=true",
+          ("ownship.true_airspeed_mps",), "tas", unit="m/s", source_unit="m/s", minimum=0),
+    _fact("ownship.vertical_speed", "Current signed vertical speed in metres per second; positive climb, negative descent.",
+          "vertical_speed_mps", "ownship.vertical_speed_mps", "LoGetVerticalVelocity with source_quality.vertical_speed=true",
+          ("ownship.vertical_speed_mps",), "vertical_speed", unit="m/s", source_unit="m/s"),
+    _fact("ownship.altitude_agl", "Current geometric height above local ground in metres, not radar or barometric altitude.",
+          "altitude_agl_m", "ownship.altitude_agl_m", "LoGetAltitudeAboveGroundLevel with source_quality.altitude_agl=true (no clamp)",
+          ("ownship.altitude_agl_m",), "agl", unit="m", source_unit="m", minimum=0),
 )
 
 
@@ -104,15 +115,9 @@ def _blocked(identity, status, raw, normalized, reason, *, source="dcs_export", 
 _BLOCKED = (
     _blocked("ownship.fuel_fraction", Exposure.SEMANTICS_UNCERTAIN, "LoGetEngineInfo fuel_internal/external",
         "state.fuel versus state.fuel_fraction", "Exporter sends module_dependent internal_raw/external_raw, not fraction. No trustworthy normalization/denominator or per-module validation."),
-    _blocked("ownship.true_airspeed", Exposure.SOURCE_UNRELIABLE, "LoGetTrueAirSpeed or vector magnitude",
-        "state.true_airspeed_mps", "Failure fallback changes air-relative speed into ground-vector magnitude, without a quality flag."),
     _blocked("ownship.ground_speed", Exposure.SOURCE_UNRELIABLE, "LoGetVectorVelocity x/z",
         "WorldModel.ground_speed_mps", "Derived hypot(x,z) is correct, but exporter substitutes zero for missing vector components without quality flags.",
         source="world_model_geometry", authority="derived"),
-    _blocked("ownship.vertical_speed", Exposure.SOURCE_UNRELIABLE, "LoGetVerticalVelocity or vy",
-        "state.vertical_speed_mps", "Fallback vy may itself be synthesized zero; source validity is not retained."),
-    _blocked("ownship.altitude_agl", Exposure.KNOWN_BUT_NOT_EXPOSED, "LoGetAltitudeAboveGroundLevel",
-        "state.position.altitude_agl_m", "Source negative values are silently clamped to zero; validity/normalization cannot be distinguished at Core boundary."),
     _blocked("aircraft.callsign", Exposure.UNAVAILABLE, "not in exporter packet", "state.callsign",
         "Model accepts callsign, current generic exporter does not populate it; do not substitute Bridge/SRS identity."),
     _blocked("ownship.radio", Exposure.RAW_ONLY, "capabilities.radios=not_yet_mapped", "state.radios",
@@ -183,7 +188,84 @@ _LEAF_AUDIT = (
         "TelemetryEnvelope and Core receive metadata", "Quality/transport metadata, not user flight-state facts; diagnostics are opt-in argument changes, not speech."),
 )
 
-FACTS = (*_SAFE, *_BLOCKED, *_LEAF_AUDIT)
+_METADATA_AUDIT = (
+    *(_blocked("ownship.source_quality."+leaf, Exposure.KNOWN_BUT_NOT_EXPOSED,
+        "Direct API return validated BEFORE fallback/clamp", "state.source_quality."+leaf,
+        "Internal source admission metadata, not a selectable flight measurement.")
+      for leaf in ("true_airspeed", "vertical_speed", "altitude_agl")),
+    *(_blocked("ownship.envelope."+leaf, Exposure.KNOWN_BUT_NOT_EXPOSED,
+        "TelemetryEnvelope / LiveTelemetryStore", leaf,
+        "Transport, clock or owner metadata; used for provenance, not spoken flight facts.")
+      for leaf in ("protocol_version", "source", "sequence", "captured_at", "model_time_s",
+                   "state.timestamp", "last_received_at", "generation", "state.heading_valid")),
+    *(_blocked("ownship.capabilities."+leaf, Exposure.KNOWN_BUT_NOT_EXPOSED,
+        "Export.lua tableStatus/eitherTableStatus", "state.capabilities."+leaf,
+        "Domain/table presence, NOT per-leaf validity or authorization; never a flight-state value.")
+      for leaf in ("identity", "kinematics", "airframe", "propulsion", "fuel", "navigation", "radios",
+                   "payload", "ew", "sensors", "cockpit", "mission_world")),
+    *(_blocked("ownship.velocity_vector."+leaf, Exposure.SOURCE_UNRELIABLE,
+        "LoGetVectorVelocity component or synthesized zero", "state.velocity_vector."+leaf,
+        "First unsafe boundary: Export replaces missing component with zero without source quality.")
+      for leaf in ("x_mps", "y_mps", "z_mps")),
+    *(_blocked("ownship.cockpit.metadata."+leaf, Exposure.KNOWN_BUT_NOT_EXPOSED,
+        "HornetCockpitState / calibrated profile", "state.cockpit_state."+leaf,
+        "Mapping identity/quality, not physical state; WorldModel currently calls decoder without an ID mapping.",
+        source="fa18c_cockpit", authority="observed")
+      for leaf in ("aircraft_id", "mapping_version", "mapping_validated")),
+    *(_blocked("ownship.cockpit."+leaf, Exposure.RESTRICTED,
+        "Optional HornetCockpitState mission/requested inputs", "HornetCockpitState."+leaf,
+        "Desired/mission-assigned value is not measured cockpit state; not exported by current packet.",
+        source="fa18c_cockpit", authority="observed")
+      for leaf in ("mission_tacan_channel", "mission_tacan_band", "requested_tacan_channel", "requested_tacan_band",
+                   "mission_comm1_preset", "mission_comm1_frequency", "requested_comm1_preset", "requested_comm1_frequency",
+                   "mission_comm2_preset", "mission_comm2_frequency", "requested_comm2_preset", "requested_comm2_frequency")),
+    _blocked("ownship.cockpit.sensor_of_interest", Exposure.UNAVAILABLE, "HornetCockpitState optional injected field",
+        "HornetCockpitState.sensor_of_interest", "Not emitted by Export or selected by current WorldModel facade.",
+        source="fa18c_cockpit", authority="observed"),
+    *(_blocked("ownship.navigation."+leaf, Exposure.UNAVAILABLE, "WorldModel.ownship_navigation",
+        "OwnshipNavigationSnapshot."+leaf, "Facade explicitly returns VALUE_NOT_EXPORTED; no substitute from model knowledge.")
+      for leaf in ("terrain_elevation_m", "nearest_airfield", "route")),
+    _blocked("ownship.navigation.formatted_coordinates", Exposure.KNOWN_BUT_NOT_EXPOSED,
+        "WorldModel._format_coordinates", "OwnshipNavigationSnapshot.formatted_coordinates",
+        "Derived display-only duplicate of selected position; speech uses precision-safe spoken_coordinates.",
+        source="world_model_geometry", authority="derived"),
+    *(_blocked("mission.units."+leaf, Exposure.KNOWN_BUT_NOT_EXPOSED,
+        "MissionUnit / MissionPosition", "MissionSnapshot.units."+leaf,
+        "Mission truth, not observed contacts. Unit name/ID targeting and multi-source permissions are not Foundation ownship selectors.", source="mission_store")
+      for leaf in ("unit_id", "name", "updated_at", "position.latitude", "position.longitude", "position.altitude_m")),
+    *(_blocked("mission.geometry."+leaf, Exposure.KNOWN_BUT_NOT_EXPOSED,
+        "WorldModel._range_bearing", "RangeBearingGeometry."+leaf,
+        "Deterministic two-source geometry to a mission unit, not observed range; source/target admission remains separate.",
+        source="world_model_geometry", authority="derived")
+      for leaf in ("range_m", "bearing_true_deg", "vertical_separation_m")),
+    _blocked("mission.geometry.closure_mps", Exposure.UNAVAILABLE, "WorldModel.geometry_to_unit",
+        "GeometryToUnitSnapshot.closure_mps", "Explicit VALUE_NOT_EXPORTED; cannot infer relative velocity.",
+        source="world_model_geometry", authority="derived"),
+    *(_blocked("mission.bridge.units."+leaf, Exposure.KNOWN_BUT_NOT_EXPOSED,
+        "MissionBridgeSnapshot → CoalitionRadioDirectory", "CoalitionRadioUnit."+leaf,
+        "Mission-supplied directory metadata, not cockpit tuning or sensor observation; not a Foundation ownship binding.", source="mission_bridge")
+      for leaf in ("unit_id", "callsign", "recipient_type", "unit_type", "coalition", "frequency_mhz", "modulation",
+                   "preset", "point.x_m", "point.z_m", "tacan_channel", "tacan_band", "aar_available", "available")),
+    *(_blocked("mission.bridge.landmarks."+leaf, Exposure.KNOWN_BUT_NOT_EXPOSED,
+        "MissionBridgeSnapshot → CoalitionRadioDirectory", "MissionLandmark."+leaf,
+        "Mission directory, not inferred geographic truth; no Foundation ownship binding.", source="mission_bridge")
+      for leaf in ("landmark_id", "name", "point.x_m", "point.z_m", "aliases")),
+    *(_blocked("mission.bridge.presets."+leaf, Exposure.KNOWN_BUT_NOT_EXPOSED,
+        "MissionBridgeSnapshot → NavigationChannelDirectory", "NavigationPresetChannel."+leaf,
+        "Assigned channel data is not current cockpit radio; source-specific binding/admission is separate.", source="mission_bridge")
+      for leaf in ("preset_id", "system", "owner_type", "owner_id", "owner_name", "channel", "frequency_mhz",
+                   "frequency_khz", "modulation", "callsign", "purpose", "aircraft_type", "available")),
+    *(_blocked("mission.bridge.metadata."+leaf, Exposure.KNOWN_BUT_NOT_EXPOSED,
+        "MissionBridgeTelemetryStore", "MissionBridgeState."+leaf,
+        "Source liveness/order/count metadata; heartbeat is NOT a new observation of each retained field.", source="mission_bridge")
+      for leaf in ("connected", "stale", "last_sequence", "last_received_at", "age_seconds", "stale_after_seconds",
+                   "unit_count", "landmark_count", "preset_channel_count")),
+    _blocked("ownship.diagnostics.argument_changes", Exposure.RESTRICTED, "diagnosticsJson optional argument scanner",
+        "state.diagnostics", "Opt-in bounded diagnostic raw argument values, not AI facts; must not leak into speech.",
+        source="fa18c_cockpit", authority="observed"),
+)
+
+FACTS = (*_SAFE, *_BLOCKED, *_LEAF_AUDIT, *_METADATA_AUDIT)
 REGISTRY = MappingProxyType({item.capability: item for item in FACTS})
 CATALOG = tuple(item for item in FACTS if item.exposed)
 CATALOG_VERSION = "orion.facts." + hashlib.sha256(
@@ -195,7 +277,9 @@ def require_exposed(identity: str) -> FactDefinition:
     item = REGISTRY.get(identity)
     if item is None or not item.exposed:
         raise ValueError("fact_not_exposed")
-    if not item.tool or not item.presentation or not item.leaves:
+    if (not item.tool or not item.presentation or not item.leaves or not item.world_key
+        or not item.snapshot_field or not item.permission or not item.source or not item.authority
+        or item.value_type == "number" and not item.unit):
         raise ValueError("fact_registry_incomplete")
     return item
 

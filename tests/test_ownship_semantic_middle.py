@@ -15,7 +15,7 @@ from orion.full_voice_stt import FinalizedUserUtterance, NativeSpeechKitTurns
 from orion.interaction_router import InteractionRoute
 from orion.interaction_contracts import InteractionRequest
 from orion.live_telemetry_store import LiveTelemetryStore
-from orion.models import AircraftState, Position, TelemetryEnvelope
+from orion.models import AircraftState, Position, TelemetryEnvelope, SourceQuality
 from orion.ownship_report import ownship_semantics_from_tool_result, map_ownship_report
 from orion.ownship_phraseology import KEYS, render_ownship_report
 from orion.planner import PlannerCancellationToken
@@ -43,6 +43,7 @@ def controlled(extra):
         aircraft_type="EXTRA_AIRCRAFT_DO_NOT_SPEAK", callsign="EXTRA_CALLSIGN",
         heading_deg=37.125, position=Position(latitude=-42.1, longitude=41.2, altitude_m=extra),
         true_airspeed_mps=extra, vertical_speed_mps=-extra,
+        source_quality=SourceQuality(true_airspeed=True, vertical_speed=True),
         fuel_fraction=.765, diagnostics={"say": "RAW_TELEMETRY_SENTINEL"},
         navigation={"extra_operational_value": extra},
     )), received_at=NOW-timedelta(seconds=1))

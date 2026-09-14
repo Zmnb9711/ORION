@@ -1,5 +1,13 @@
 # ORION field evidence index
 
+[Step 4, 2026-09-14](2026-09-14-foundation-step4-fact-surface.md): offline actual
+Lua exporter execution with fake sockets/sources, real Core/host replay with fake
+external I/O, and one eight-turn Yandex semantic-only session PASS. No new DCS,
+SRS TX or acoustic evidence; NOT a new physical field session. Historical filtered
+20260825 telemetry does not contain the fuel samples needed for normalization.
+Step 3 is committed at `8ddc042`; older “Step 4 not authorized” statements below
+refer to that earlier task, not the current explicit authorization.
+
 [Step 3, 2026-09-14](2026-09-14-foundation-step3-tts-delivery.md): existing ZIP
 20260910-213600 cross-correlated with original srs-radio log line340 proves
 historical partial turn first failed at `srs_collision_or_unexpected_origin`.

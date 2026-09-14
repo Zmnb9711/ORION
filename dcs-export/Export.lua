@@ -369,12 +369,15 @@ function LuaExportAfterNextFrame()
     local groundVectorSpeed = math.sqrt(vx ^ 2 + vy ^ 2 + vz ^ 2)
 
     local trueAirspeed, trueAirspeedOk = safeCall("LoGetTrueAirSpeed")
+    local trueAirspeedValid = trueAirspeedOk and type(trueAirspeed) == "number" and trueAirspeed == trueAirspeed and trueAirspeed >= 0 and trueAirspeed < math.huge
     if not trueAirspeedOk or type(trueAirspeed) ~= "number" or trueAirspeed < 0 then trueAirspeed = groundVectorSpeed end
     local verticalSpeed, verticalSpeedOk = safeCall("LoGetVerticalVelocity")
+    local verticalSpeedValid = verticalSpeedOk and type(verticalSpeed) == "number" and verticalSpeed == verticalSpeed and math.abs(verticalSpeed) < math.huge
     if not verticalSpeedOk or type(verticalSpeed) ~= "number" then verticalSpeed = vy end
 
     local heading = math.deg(selfData.Heading or 0) % 360
     local agl = select(1, safeCall("LoGetAltitudeAboveGroundLevel"))
+    local aglValid = type(agl) == "number" and agl == agl and agl >= 0 and agl < math.huge
     if type(agl) == "number" and agl < 0 then agl = 0 end
     local modelTime = select(1, safeCall("LoGetModelTime"))
     local pitch, bank, yaw, attitudeOk = safeTriple("LoGetADIPitchBankYaw")
@@ -425,6 +428,7 @@ function LuaExportAfterNextFrame()
         '{"protocol_version":"0.3","source":"dcs-export","sequence":%d,"model_time_s":%s,"state":{' ..
         '"aircraft_type":%s,"position":{"latitude":%.8f,"longitude":%.8f,"altitude_m":%.2f,"altitude_agl_m":%s},' ..
         '"heading_deg":%.2f,"heading_valid":%s,"true_airspeed_mps":%.2f,"vertical_speed_mps":%.2f,' ..
+        '"source_quality":{"true_airspeed":%s,"vertical_speed":%s,"altitude_agl":%s},' ..
         '"attitude":%s,"velocity_vector":{"x_mps":%.6f,"y_mps":%.6f,"z_mps":%.6f},' ..
         '"airframe":%s,"propulsion":%s,"fuel":%s,"navigation":%s,"payload":%s,"ew":%s,"sensors":%s,' ..
         '"capabilities":%s,"cockpit_state":%s,"diagnostics":%s}}',
@@ -439,6 +443,9 @@ function LuaExportAfterNextFrame()
         jsonBoolean(type(selfData.Heading) == "number"),
         trueAirspeed,
         verticalSpeed,
+        jsonBoolean(trueAirspeedValid),
+        jsonBoolean(verticalSpeedValid),
+        jsonBoolean(aglValid),
         attitudeJson,
         vx,
         vy,

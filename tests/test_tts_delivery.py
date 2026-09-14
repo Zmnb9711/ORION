@@ -230,9 +230,11 @@ def test_step3_exact_runtime_scope_and_request_identity():
     parent = '152a2f22c281fc31ab00daf99f4e171af88c05f9'
     paths = {'orion/protected_streaming_tts.py', 'orion/protected_streaming_presentation.py',
              'orion/bounded_radio_stream.py', 'orion/realtime_test_evidence.py'}
-    changed = set(subprocess.check_output(['git', 'diff', parent, '--name-only', '--',
+    step3 = '8ddc0422197a8adbe88209c0d7adc4c6301f42c4'
+    changed = set(subprocess.check_output(['git', 'diff', parent, step3, '--name-only', '--',
         'orion', 'packaging', 'dcs-export'], cwd=root).decode().splitlines())
     assert changed == paths
+    assert not subprocess.check_output(['git', 'diff', step3, '--', *sorted(paths)], cwd=root)
     verify_general_scope()
     text = '  Finalized exact text.\n'
     requests = protected_stream_requests(text)

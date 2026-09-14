@@ -40,12 +40,21 @@ class PropulsionState(BaseModel):
     hydraulic_pressure: dict[str, float | None] | None = None
 
 
+class SourceQuality(BaseModel):
+    """Explicit direct-source success, captured before legacy exporter fallbacks."""
+
+    true_airspeed: bool | None = Field(default=None, strict=True)
+    vertical_speed: bool | None = Field(default=None, strict=True)
+    altitude_agl: bool | None = Field(default=None, strict=True)
+
+
 class AircraftState(BaseModel):
     aircraft_type: str = Field(min_length=1)
     callsign: str | None = None
     position: Position
     heading_deg: float = Field(ge=0, lt=360)
     heading_valid: bool | None = Field(default=None, strict=True)
+    source_quality: SourceQuality | None = None
     true_airspeed_mps: float = Field(ge=0)
     vertical_speed_mps: float = 0
     fuel_fraction: float | None = Field(default=None, ge=0, le=1)

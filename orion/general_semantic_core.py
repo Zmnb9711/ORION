@@ -24,7 +24,7 @@ from orion.interaction_router import InteractionRouter
 from orion.planner import PlannerCancellationToken
 from orion.tool_gateway import ToolGateway
 from orion.tool_gateway_contracts import ExecutionContext, ToolCall, ToolReceipt, ToolResultStatus
-from orion.world_model_contracts import AircraftIdentity, WorldAttitude, WorldFact, WorldPosition, WorldFactStatus, WorldFactAuthority, WorldFactSource
+from orion.world_model_contracts import AircraftIdentity, WorldAttitude, WorldFact, WorldPosition, WorldFactStatus
 
 
 class PlanBase(SemanticModel):
@@ -360,8 +360,9 @@ class GeneralSemanticCore:
                 fact = WorldFact[WorldAttitude].model_validate_json(json.dumps(snapshot.get("attitude")), strict=True)
             else:
                 fact = WorldFact[float].model_validate_json(json.dumps(snapshot.get(definition.snapshot_field)), strict=True)
-            if (fact.key != definition.world_key or fact.source != WorldFactSource.DCS_EXPORT
-                or fact.authority != WorldFactAuthority.AUTHORITATIVE or fact.unit != definition.source_unit
+            if (definition.tool != call.name or definition.version != call.version or definition.permission != tool.capability
+                or fact.key != definition.world_key or fact.source != definition.source
+                or fact.authority != definition.authority or fact.unit != definition.source_unit
                 or fact.source not in p.sources or fact.authority not in p.authorities or fact.status not in p.fact_statuses
                 or (fact.generation is not None and fact.generation not in p.generations)):
                 raise ValueError("general_fact_authority")
@@ -372,9 +373,11 @@ class GeneralSemanticCore:
                 continue
             if (fact.observed_at is None or fact.age_seconds is None or fact.generation is None
                 or len(p.generations) != 1 or p.max_age_seconds is None or fact.age_seconds > p.max_age_seconds
-                or fact.observed_at > r.accepted_at or fact.age_seconds + (self.clock()-r.accepted_at).total_seconds() > 5):
+                or fact.observed_at > r.accepted_at
+                or fact.age_seconds + (self.clock()-r.accepted_at).total_seconds() > definition.freshness_seconds):
                 raise ValueError("general_fact_freshness")
-            expires = min(expires, fact.observed_at+timedelta(seconds=5), r.accepted_at+timedelta(seconds=5-fact.age_seconds))
+            expires = min(expires, fact.observed_at+timedelta(seconds=definition.freshness_seconds),
+                          r.accepted_at+timedelta(seconds=definition.freshness_seconds-fact.age_seconds))
             metadata = fact.model_dump(exclude={"key", "value", "unit"})
             projected: list[WorldFact[float | str]] = []
             for key in definition.leaves:

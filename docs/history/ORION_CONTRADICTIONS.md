@@ -1,5 +1,15 @@
 # ORION contradiction log
 
+[Step 4 source decisions](2026-09-14-foundation-step4-fact-surface.md): documented
+fuel kg is not sufficient to establish module fuel meaning; historical firsthand
+Hornet report contradicts that unit. Current-module denominator/internal-external
+semantics remain unproven, no inferred fraction/mass. TAS/vertical/AGL fallback
+ambiguity is corrected through explicit quality without changing legacy numeric
+packet fields. Old packets now yield unknown for these three WorldModel facts.
+Raw GS, configuration, engines and observed cockpit calibration remain separately
+classified, not silently admitted. Eight provider semantic successes are not
+live DCS value, real TX or blind Foundation acceptance. TTS latency debt remains.
+
 [Step 3 resolution/limits](2026-09-14-foundation-step3-tts-delivery.md):
 RESOURCE_EXHAUSTED is not inherently billing/quota: current single-message
 1267589>1048576 receive-limit failure reproduced and repaired. Original seven

@@ -115,6 +115,14 @@ class WorldModelFacade:
         ground_speed = None
         if vector is not None and vector.x_mps is not None and vector.z_mps is not None:
             ground_speed = hypot(vector.x_mps, vector.z_mps)
+        quality = state.source_quality
+
+        def direct_scalar(key: str, value: float | None, valid: bool | None, unit: str) -> WorldFact[float]:
+            # Old packets cannot distinguish a real zero from synthesized fallback.
+            if valid is True and value is not None:
+                return self._value_fact(key, value, freshness, unit=unit, **common)
+            return self._missing_fact(key, missing_status, WorldFactReason.INVALID_SOURCE_DATA,
+                                      unit=unit, **common)
         return OwnshipSnapshot(
             query="ownship.current_state",
             generated_at=now,
@@ -132,12 +140,11 @@ class WorldModelFacade:
                     "ownship.attitude", missing_status, WorldFactReason.VALUE_NOT_EXPORTED, **common
                 )
             ),
-            true_airspeed_mps=self._value_fact(
+            true_airspeed_mps=direct_scalar(
                 "ownship.true_airspeed_mps",
                 state.true_airspeed_mps,
-                freshness,
-                unit="m/s",
-                **common,
+                quality.true_airspeed if quality else None,
+                "m/s",
             ),
             ground_speed_mps=(
                 self._value_fact(
@@ -159,29 +166,15 @@ class WorldModelFacade:
                     **common,
                 )
             ),
-            vertical_speed_mps=self._value_fact(
+            vertical_speed_mps=direct_scalar(
                 "ownship.vertical_speed_mps",
                 state.vertical_speed_mps,
-                freshness,
-                unit="m/s",
-                **common,
+                quality.vertical_speed if quality else None,
+                "m/s",
             ),
-            altitude_agl_m=(
-                self._value_fact(
-                    "ownship.altitude_agl_m",
-                    state.position.altitude_agl_m,
-                    freshness,
-                    unit="m",
-                    **common,
-                )
-                if state.position.altitude_agl_m is not None
-                else self._missing_fact(
-                    "ownship.altitude_agl_m",
-                    missing_status,
-                    WorldFactReason.VALUE_NOT_EXPORTED,
-                    unit="m",
-                    **common,
-                )
+            altitude_agl_m=direct_scalar(
+                "ownship.altitude_agl_m", state.position.altitude_agl_m,
+                quality.altitude_agl if quality else None, "m",
             ),
             fuel_fraction=(
                 self._value_fact(
@@ -623,6 +616,8 @@ class WorldModelFacade:
     ) -> tuple[LiveTelemetrySnapshot | None, WorldFactReason | None]:
         try:
             raw = self._telemetry.snapshot()
+            if raw.telemetry is not None and raw.telemetry.source != "dcs-export":
+                return None, WorldFactReason.INVALID_SOURCE_DATA
             if raw.last_received_at is not None:
                 self._require_aware(raw.last_received_at)
             return raw, None

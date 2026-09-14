@@ -8,7 +8,7 @@ from uuid import uuid4
 import pytest
 
 from orion.general_semantic_contracts import MetaRequest, SemanticProposal, parse_semantic, provider_instructions
-from orion.general_semantic_core import FactPlan, MetaPlan, SUMMARY_CAPABILITIES
+from orion.general_semantic_core import FactPlan, MetaPlan, SUMMARY_CAPABILITIES, META_MAX_CATEGORIES
 from orion.general_fact_registry import CATALOG
 from orion.general_fact_presentation import LABELS
 from orion.planner import PlannerCancellationToken
@@ -52,8 +52,9 @@ def test_meta_has_no_dependency_on_gateway_or_telemetry(topic):
         result=MetaRequest(kind="META_REQUEST", topic=topic)), PlannerCancellationToken(), hybrid)
     assert isinstance(out.plan, MetaPlan) and core.read_count == 0 and len(out.text) <= 400
     if topic != "identity":
-        assert out.plan.capabilities == tuple(item.capability for item in CATALOG)
-        for item in CATALOG:
+        assert out.plan.capabilities == tuple(item.capability for item in CATALOG[:META_MAX_CATEGORIES])
+        assert out.plan.additional_categories == (len(CATALOG) > META_MAX_CATEGORIES)
+        for item in CATALOG[:META_MAX_CATEGORIES]:
             assert LABELS[item.presentation].lower() in out.text
     core.context.accept(out)
     context = core.context.project()
@@ -80,7 +81,7 @@ def test_summary_does_not_grow_with_registry_and_explicit_multi_still_works(monk
     assert isinstance(out.plan, FactPlan) and set(out.plan.capabilities) == set(SUMMARY_CAPABILITIES)
     assert added.capability not in out.plan.capabilities
     multi = execute(fixture(), [item.capability for item in CATALOG])
-    assert len(multi.plan.capabilities) == 7 and not multi.plan.summary
+    assert len(multi.plan.capabilities) == len(CATALOG) and not multi.plan.summary
 
 
 def test_meta_description_tracks_registry_without_independent_list(monkeypatch):

@@ -27,6 +27,11 @@ def test_launcher_core_srs_lifecycle_is_literal_baseline():
         actual = path.read_text(encoding="utf-8")
         baseline = source(BASE, path.relative_to(ROOT).as_posix())
         if path.name == "world_model.py":
+            # Step 4's complete-file fingerprint + functional source-quality
+            # tests cover the additional fact projection, not lifecycle changes.
+            from general_ingress_scope import verify_general_scope
+            verify_general_scope()
+            actual = source('8ddc0422197a8adbe88209c0d7adc4c6301f42c4', 'orion/world_model.py')
             # Gate B source-quality fix, NOT lifecycle: verify the exact whole
             # file with only this heading projection changed, then compare old.
             old = ('            heading_deg=self._value_fact(\n'

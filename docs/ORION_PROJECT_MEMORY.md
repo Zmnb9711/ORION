@@ -1,5 +1,22 @@
 # ORION Project Memory — current state only
 
+## Latest Foundation update — Step 4 safe facts, 2026-09-14
+
+Parent `8ddc0422197a8adbe88209c0d7adc4c6301f42c4` (Steps 1/2/3 committed).
+[Step 4 A–II record](history/2026-09-14-foundation-step4-fact-surface.md):
+233 inventory records, 10 exposed concepts. TAS/vertical speed/AGL require
+explicit direct-source quality, not fallback zeros. Fuel remains explicitly
+SEMANTICS_UNCERTAIN: documented kg versus historical fractional Hornet behavior,
+no trusted denominator/internal-external/module normalization. No guessed fuel.
+Bounded free-text capability gaps; existing natural coordinates and bounded
+summary preserved. One eight-operation Yandex semantic session PASS, no retries;
+fact/summary user path750–953ms including context ACK, cold1454ms separately.
+Final full regression3443 PASS/five unchanged baseline failures/one skip.
+No TTS/SRS/Launcher/provider-owner change or build.
+Decision A, one authorized commit/push after final scope/remote checks.
+Foundation NOT FIELD PASSED. Step 5 requires separate authorization.
+Older “not started/uncommitted” paragraphs below are historical checkpoint status.
+
 ## Latest Foundation update — Step 3 delivery, 2026-09-14
 
 Steps 1/2 are committed; Step 2 checkpoint is `152a2f22c281fc31ab00daf99f4e171af88c05f9`.
