@@ -15,6 +15,26 @@ from orion.radio_contracts import RadioTransmissionRequest, StreamingPcmAudio
 from orion.srs_resampler import StreamingPcm16Resampler
 
 
+def stream_failure(code: str | None, phase: str) -> dict:
+    """Closed local reason vocabulary; never log arbitrary exception prose."""
+    categories = {
+        "srs_collision_or_unexpected_origin": ("SRS_RX_GUARD", "SRS_TRANSPORT_FAILURE"),
+        "physical_evidence_unavailable": ("SRS_RX_GUARD", "SRS_TRANSPORT_FAILURE"),
+        "stream_backpressure_timeout": ("PCM_STREAM", "PCM_BACKPRESSURE_FAILURE"),
+        "stream_tx_failed": ("PCM_CONSUMER", "PCM_CONSUMER_FAILURE"),
+        "streaming_tts_empty": ("TTS", "TTS_NO_PCM"),
+        "streaming_tts_pcm_bound": ("TTS", "TTS_PARTIAL_STREAM_FAILURE"),
+        "stream_closed_or_excessive": ("PCM_STREAM", "PCM_STREAM_ERROR"),
+        "stream_cancelled": ("PRESENTATION", "CANCELLED"),
+        "radio_deadline": ("PRESENTATION", "TIMEOUT"),
+        "presentation_failed": ("PRESENTATION", "PRESENTATION_ABORT"),
+        "stream_prebuffer_timeout": ("PCM_CONSUMER", "TIMEOUT"),
+    }
+    stage, category = categories.get(code or "", (phase, "PCM_PRODUCER_FAILURE" if phase == "PCM_PRODUCER" else "UNKNOWN_DELIVERY_FAILURE"))
+    return {"failure_stage": stage, "failure_category": category,
+            "safe_error_code": code if code in categories else "unrecognized_local_error"}
+
+
 class StreamingProtectedPresentation(ProtectedPresentationService):
     """Inherits exact structured validation, dedupe and lifetime identity bounds."""
 
@@ -44,15 +64,20 @@ class StreamingProtectedPresentation(ProtectedPresentationService):
             resampler = StreamingPcm16Resampler(48000, 44100)
             self.marks["tts_started"] = time.monotonic()
             total = 0
+            phase = "TTS"
+            audio = self.streaming_tts.stream(finalized.text)
             try:
-                async for chunk in self.streaming_tts.stream(finalized.text):
+                async for chunk in audio:
                     if "tts_first_pcm" not in self.marks:
                         self._diagnostic("tts_first_pcm", tx_id=tx)
                     self.marks.setdefault("tts_first_pcm", time.monotonic())
                     total += len(chunk)
+                    self.marks["tts_pcm_bytes"] = total
+                    phase = "PCM_PRODUCER"
                     normalized = resampler.process(chunk)
                     if normalized:
                         await asyncio.to_thread(stream.feed, normalized)
+                    phase = "TTS"
                 self.marks["tts_completed"] = time.monotonic()
                 tail = resampler.process(b"", end_of_input=True)
                 if tail:
@@ -61,11 +86,18 @@ class StreamingProtectedPresentation(ProtectedPresentationService):
                 stream.finish()
             except BaseException as exc:
                 self._diagnostic("tts_stream_abort", tx_id=tx, error_class=type(exc).__name__,
-                                 stream_abort_reason="protected_tts_failed_or_cancelled", tts_pcm_bytes=total)
+                    stream_abort_reason="protected_tts_failed_or_cancelled", tts_pcm_bytes=total,
+                    **stream_failure(stream.first_abort_code or ("stream_cancelled" if isinstance(exc, asyncio.CancelledError) else str(exc)), phase))
                 stream.abort("protected_tts_failed_or_cancelled")
                 raise
             finally:
-                resampler.reset()
+                try:
+                    # A feed/consumer failure occurs outside the suspended TTS
+                    # generator. Close it explicitly; do not wait for GC to
+                    # release its gRPC call before the next independent turn.
+                    await audio.aclose()
+                finally:
+                    resampler.reset()
 
         try:
             request = RadioTransmissionRequest(
@@ -75,6 +107,9 @@ class StreamingProtectedPresentation(ProtectedPresentationService):
             operation.accepted = True  # A throwing submit may already have acted.
             submitted = self._router.submit(request)
             operation.accepted = submitted.accepted
+            self._diagnostic("radio_admission", tx_id=tx, status="accepted" if submitted.accepted else "rejected",
+                failure_stage=None if submitted.accepted else "RADIO_ADMISSION",
+                failure_category=None if submitted.accepted else "RADIO_ADMISSION_REJECTED")
             if not submitted.accepted:
                 result = PresentationResult(tx, "failed", True, PresentationFailure.RADIO_REJECTED)
                 return result
@@ -100,6 +135,7 @@ class StreamingProtectedPresentation(ProtectedPresentationService):
             stream.abort("presentation_failed")
             result = PresentationResult(tx, "failed", False, PresentationFailure.TTS_ERROR)
         finally:
+            first_abort = stream.first_abort_code
             stream.abort("presentation_terminal")
             if producer is not None:
                 producer.cancel()
@@ -109,7 +145,11 @@ class StreamingProtectedPresentation(ProtectedPresentationService):
             self.marks["pcm_buffer_high_water"] = stream.high_water
             operation.result = result
             self._diagnostic("presentation_terminal", tx_id=tx, status=result.state,
-                             adapter_failure_code=result.failure.value if result.failure else None)
+                adapter_failure_code=result.failure.value if result.failure else None,
+                **(stream_failure(first_abort, "PRESENTATION") if first_abort else {}),
+                stream_abort_reason=first_abort if first_abort in {"srs_collision_or_unexpected_origin", "physical_evidence_unavailable",
+                    "stream_backpressure_timeout", "stream_tx_failed", "stream_cancelled", "radio_deadline"} else None,
+                producer_done=producer is None or producer.done(), pcm_buffer_high_water=stream.high_water)
         return result
 
     async def cancel(self, tx: str) -> PresentationResult:

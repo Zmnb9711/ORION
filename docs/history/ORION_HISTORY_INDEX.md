@@ -1,5 +1,12 @@
 # ORION history index
 
+Latest: [Foundation Step 3 delivery](2026-09-14-foundation-step3-tts-delivery.md),
+parent `152a2f22` (committed Step 2). Proven client envelope defect plus explicit
+generator cleanup; original partial failure identified as SRS RX origin/collision
+guard. Offline3325 PASS/five baseline failures; real TTS + paced offline sink PASS.
+No physical/build acceptance or Step 4. Decision A, single authorized commit/push.
+Earlier uncommitted/failed labels below retain their historical checkpoint meaning.
+
 Latest supplement: [Step 2 context application proof](2026-09-14-context-application-proof.md).
 Exact session-context ACK/clear correction; nonce and unchanged RU/EN gate
 continuity demonstrated. Same provider/prompt; uncommitted, no field/build/Step 3.

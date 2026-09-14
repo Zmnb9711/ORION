@@ -89,6 +89,9 @@ class OfflineRpcError(Exception):
     def code(self):
         return SimpleNamespace(name="UNAVAILABLE")
 
+    def details(self):
+        return 'fixture unavailable'
+
 
 class FakeCall:
     def __init__(self, mode):
@@ -111,7 +114,7 @@ class FakeCall:
         chunks = {"normal": [b"", b"\x01\x00", b"\x02\x00"],
                   "empty": [], "odd": [b"x"], "oversize": [bytes(2880002)]}
         for data in chunks.get(self.mode, []):
-            yield SimpleNamespace(audio_chunk=SimpleNamespace(data=data))
+            yield tts_current.p.StreamSynthesisResponse(audio_chunk=tts_current.p.AudioChunk(data=data))
 
 
 class FakeGrpc:
@@ -189,6 +192,11 @@ def test_tts_serialized_requests_and_lifecycle_equal(monkeypatch, text, mode):
                 fake.metadata_names, fake.closed, [c.cancel_count for c in fake.calls], output, error)
 
     old, new = asyncio.run(one(tts_before)), asyncio.run(one(tts_current))
+    # Step 3 changes ONLY this channel limit. Keep the full requests, endpoint,
+    # auth metadata names, retry/deadline, PCM and cleanup oracle unchanged.
+    host, tls, options = new[1][0]
+    assert options == (("grpc.max_receive_message_length", 3145728), ("grpc.enable_retries", 0))
+    new[1][0] = (host, tls, (("grpc.max_receive_message_length", 1048576), ("grpc.enable_retries", 0)))
     assert new == old
     request = tts_current.p.StreamSynthesisRequest.FromString(new[0][1])
     assert request.synthesis_input.text == text

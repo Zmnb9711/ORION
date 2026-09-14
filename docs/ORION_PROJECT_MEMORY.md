@@ -1,6 +1,22 @@
 # ORION Project Memory — current state only
 
-## Latest Step 2 update — context application, 2026-09-14
+## Latest Foundation update — Step 3 delivery, 2026-09-14
+
+Steps 1/2 are committed; Step 2 checkpoint is `152a2f22c281fc31ab00daf99f4e171af88c05f9`.
+[Step 3 A–T record](history/2026-09-14-foundation-step3-tts-delivery.md):
+real TTS reproduced the local 1 MiB receive limit; finite 3 MiB envelope and
+explicit generator cleanup repaired, lower-level causes preserved safely.
+The historical partial delivery first failed at SRS RX collision/origin guard,
+NOT proven TTS backpressure; sender remains unknown. SRS behavior unchanged.
+3325 offline PASS, five unchanged baseline failures, one skip; three real TTS
+turns pass through real PCM/paced offline sink, no live SRS/acoustic acceptance.
+Decision A, one authorized Step 3 commit/push after final scope checks; no build.
+TTS first PCM1.906–2.609 sec remains latency debt. Product FIELD FAIL unchanged.
+Step 4 is NOT started and needs separate authorization. User data retained.
+The precommit/gate-failure paragraphs below are preserved historical snapshots,
+not the current commit status or renewed instructions.
+
+## Historical Step 2 update — context application, 2026-09-14
 
 [Context proof and bounded repair](history/2026-09-14-context-application-proof.md):
 one override-only synthetic probe did not use the nonce; request-owned exact

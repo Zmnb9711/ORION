@@ -9,6 +9,11 @@ The stabilization Gate A revision adds bounded owner recovery/context and exact
 Test Session terminal diagnostics. The two streaming files gain observation-only
 hooks, not synthesis/radio behavior. Their complete hashes are checked before
 restoration too; functional request/PCM/host replay remains a separate test gate.
+
+Foundation Step 3 separately authorizes a finite 3 MiB TTS receive envelope,
+explicit generator cleanup on downstream failure and safe delivery diagnostics.
+The bounded stream gains first-abort observation only; its algorithms are frozen.
+Step 3's own parent-relative scope gate supplements these complete-file hashes.
 """
 import hashlib
 import json

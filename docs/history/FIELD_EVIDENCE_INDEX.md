@@ -1,5 +1,12 @@
 # ORION field evidence index
 
+[Step 3, 2026-09-14](2026-09-14-foundation-step3-tts-delivery.md): existing ZIP
+20260910-213600 cross-correlated with original srs-radio log line340 proves
+historical partial turn first failed at `srs_collision_or_unexpected_origin`.
+New provider-only client-limit reproduction and three real TTS completions with
+actual PCM/resampling/pacing to fake radio sink; not real SRS TX or acoustics.
+No new physical session. Product FIELD FAIL remains; Step 4 not authorized.
+
 [2026-09-14 context application supplement](2026-09-14-context-application-proof.md):
 synthetic provider-only nonce proof after adapter correction and recovered RU/EN
 continuity in the same ten developer turns. Not a physical field/acoustic PASS.

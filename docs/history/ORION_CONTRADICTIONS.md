@@ -1,5 +1,16 @@
 # ORION contradiction log
 
+[Step 3 resolution/limits](2026-09-14-foundation-step3-tts-delivery.md):
+RESOURCE_EXHAUSTED is not inherently billing/quota: current single-message
+1267589>1048576 receive-limit failure reproduced and repaired. Original seven
+RPC details were not saved, so per-request attribution remains uncertain.
+Historical partial turn's first error is recovered from original SRS log:
+collision/unexpected origin, before producer abort. No proof of backpressure
+as its cause; offending packet identity unavailable, guard must remain intact.
+Separately reproduced generator-cleanup leak repaired, not retroactively assigned
+as historical first cause. TTS latency >1 sec and physical Foundation acceptance
+remain unresolved. Step 2 is committed at152a2f22; older statuses below historical.
+
 [Context application supplement](2026-09-14-context-application-proof.md), uncommitted:
 actual override contained nonce but provider asked for reference clarification.
 Exact session.update/ACK binding of unchanged context then produced the new nonce

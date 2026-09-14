@@ -18,6 +18,8 @@ class BoundedPcmStream:
         self._total = 0
         self._ended = False
         self._failure: str | None = None
+        # Observation only; later cleanup must not erase the first abort cause.
+        self.first_abort_code: str | None = None
         self.high_water = 0
 
     @property
@@ -62,6 +64,8 @@ class BoundedPcmStream:
 
     def abort(self, code: str = "stream_cancelled") -> None:
         with self._condition:
+            if self.first_abort_code is None:
+                self.first_abort_code = code
             self._failure = code
             self._buffer.clear()
             self._condition.notify_all()

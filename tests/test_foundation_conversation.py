@@ -115,9 +115,11 @@ def test_step2_runtime_scope_and_no_input_grammar():
     base = '4b5a46959c241eec6ef8391ee52de4da93f3dc0f'
     allowed = {f'orion/general_semantic_{part}.py' for part in ('contracts', 'core', 'voice')}
     allowed.add('orion/yandex_warm_aircraft_interpreter.py')
-    changed = set(subprocess.check_output(['git', 'diff', base, '--name-only', '--',
+    step2 = '152a2f22c281fc31ab00daf99f4e171af88c05f9'
+    changed = set(subprocess.check_output(['git', 'diff', base, step2, '--name-only', '--',
         'orion', 'dcs-export', 'packaging'], cwd=root).decode().splitlines())
     assert changed == allowed
+    assert not subprocess.check_output(['git', 'diff', step2, '--', *sorted(allowed)], cwd=root)
     for path in allowed:
         before = ast.parse(subprocess.check_output(['git', 'show', base+':'+path], cwd=root).decode('utf-8'))
         after = ast.parse((root/path).read_text(encoding='utf-8'))
