@@ -9,8 +9,6 @@ from typing import cast
 
 from orion.full_voice_capture import RadioTurnEventKind
 from orion.full_voice_core import FullVoiceCore
-from orion.conversational_core import eligible_conversation
-from orion.conversational_presentation import ConversationVoice
 from orion.general_semantic_voice import GeneralSemanticVoice
 from orion.communication_contracts import CommunicationDomain, CommunicationPriority
 from orion.hybrid_aircraft_contracts import HybridRoute
@@ -183,8 +181,8 @@ class FullVoiceService(YandexSrsLiveService):
                         elif result.status != "unsupported":
                             fail("core_semantics_not_completed")
                         else:
-                            # Only the existing ownship router's unsupported outcome
-                            # opens this new slice. It cannot steal a protected turn.
+                            # Only proven whole-turn fast paths may finish locally.
+                            # Keep the exact FINAL for every miss/partial/mixed turn.
                             if stopped.is_set() or cancellation.cancelled:
                                 return
                             hybrid_active = True
@@ -192,12 +190,10 @@ class FullVoiceService(YandexSrsLiveService):
                                 hybrid = HybridAircraftCore(gateway, lambda: YandexQwenPlannerProvider(
                                     YandexQwenPlannerConfig(api_key=request.api_key, folder_id=request.folder_id)),
                                     observe=observe_slice)
-                            core_worker = asyncio.create_task(asyncio.to_thread(hybrid.run, utterance, cancellation))
+                            core_worker = asyncio.create_task(asyncio.to_thread(
+                                hybrid.run, utterance, cancellation, full_turn_only=True))
                             information = await asyncio.shield(core_worker)
                             if information.finalized is not None:
-                                if information.route is HybridRoute.FREE_ONLY:
-                                    observe_conversation("routing", turn_id=str(identity), route="LOCAL_SOCIAL",
-                                        conversation_provider_call_count=0, planner_call_count=0, tool_gateway_call_count=0)
                                 if stopped.is_set() or cancellation.cancelled:
                                     raise RuntimeError("turn_cancelled_before_presentation")
                                 if informational is None:
@@ -227,36 +223,27 @@ class FullVoiceService(YandexSrsLiveService):
                                 if outcome.state != "completed":
                                     fail("informational_presentation_not_completed")
                             elif information.route in {HybridRoute.UNSUPPORTED, HybridRoute.AMBIGUOUS} and information.failure is None:
-                                # Whole-source eligibility, never generic unsupported fallback.
-                                # This owner receives no gateway, WorldModel or Planner.
-                                if eligible_conversation(utterance.text):
-                                    conversation = ConversationVoice(request.api_key, request.folder_id,
-                                        endpoint, entity, observe=observe_conversation)
-                                    try:
-                                        await conversation.run(utterance, cancellation)
-                                    finally:
-                                        await conversation.shutdown()
-                                else:
-                                    if not general_owners:
-                                        def observe_general(event, **fields):
-                                            observe_conversation({"request": "routing", "admitted": "admission"}.get(event, event),
-                                                route_source="GENERAL_SEMANTIC", **fields)
-                                        general_owners.append(GeneralSemanticVoice(request.api_key, gateway, interpretation_router,
-                                            interpreter, endpoint, entity, session_id, observe=observe_general,
-                                            clock=lambda: datetime.now(UTC)))
-                                    # State-owner metadata only: never provider facts or a competing store.
-                                    from orion.live_telemetry_store import live_telemetry
-                                    from orion.mission_store import mission_store
-                                    state = live_telemetry.snapshot()
-                                    mission = mission_store.get()
-                                    try:
-                                        test_session_id = realtime_test_evidence.status().test_session_id
-                                    except Exception:
-                                        test_session_id = None  # Optional evidence cannot cancel voice.
-                                    epoch = repr((test_session_id,
-                                        mission.mission_id if mission else None,
-                                        state.telemetry.state.aircraft_type if state.telemetry else None))
-                                    await general_owners[0].run(utterance, hybrid, cancellation, epoch=epoch)
+                                # One General entry; no separate conversational AI owner.
+                                if not general_owners:
+                                    def observe_general(event, **fields):
+                                        observe_conversation({"request": "routing", "admitted": "admission"}.get(event, event),
+                                            route_source="GENERAL_SEMANTIC", **fields)
+                                    general_owners.append(GeneralSemanticVoice(request.api_key, gateway, interpretation_router,
+                                        interpreter, endpoint, entity, session_id, observe=observe_general,
+                                        clock=lambda: datetime.now(UTC)))
+                                # State-owner metadata only: never provider facts or a competing store.
+                                from orion.live_telemetry_store import live_telemetry
+                                from orion.mission_store import mission_store
+                                state = live_telemetry.snapshot()
+                                mission = mission_store.get()
+                                try:
+                                    test_session_id = realtime_test_evidence.status().test_session_id
+                                except Exception:
+                                    test_session_id = None  # Optional evidence cannot cancel voice.
+                                epoch = repr((test_session_id,
+                                    mission.mission_id if mission else None,
+                                    state.telemetry.state.aircraft_type if state.telemetry else None))
+                                await general_owners[0].run(utterance, hybrid, cancellation, epoch=epoch)
                 except Exception:
                     fail("turn_processing_failed")
                 finally:

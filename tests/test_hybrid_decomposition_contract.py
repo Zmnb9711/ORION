@@ -182,17 +182,21 @@ def test_gate04_two_real_aircraft_spans_rejected():
 
 
 @pytest.mark.parametrize("case", ["REAL_A", "REAL_B", "SYNTHETIC_CORRECTED_B"])
-def test_gate07_exact_field_structure_through_normal_host(monkeypatch, tmp_path, case):
+def test_gate07_historical_decomposition_cannot_gate_normal_host(monkeypatch, tmp_path, case):
     import test_hybrid_host as host_test
     payload = deepcopy(RESULTS[1 if case == "REAL_B" else 0]["decomposition"])
     if case == "SYNTHETIC_CORRECTED_B": payload["classification"] = "UNSUPPORTED"
     value = legacy_fixture_structure(payload)
     monkeypatch.setattr(host_test, "Provider", lambda **kwargs: Provider(result=value, **kwargs))
-    monkeypatch.setattr(core, "recognize_local_decomposition", lambda _: value)
-    # Actual FullVoiceService/Core/ToolGateway/informational TTS request builder
-    # and RadioRouter; only PCM, STT terminal input and network endpoints are fake.
+    def forbidden(_):
+        pytest.fail('Historical decomposition entered production admission')
+    monkeypatch.setattr(core, "recognize_local_decomposition", forbidden)
+    # The old helper/schema tests above remain. Step 1 sends the full mixed
+    # source to General, regardless of a historical decomposer's candidate.
+    # Its offline-unavailable owner responds once without an aircraft read.
     host_test.test_gate10_normal_host_coexistence_and_single_owner(
-        monkeypatch, tmp_path, TEXT, case != "REAL_B", 0, "active")
+        monkeypatch, tmp_path, TEXT, True, 0, "active",
+        general_kind="TRUTHFUL_UNAVAILABLE", expected_reads=0)
 
 
 def test_gate08_fifteen_second_deadline_not_enlarged(monkeypatch):

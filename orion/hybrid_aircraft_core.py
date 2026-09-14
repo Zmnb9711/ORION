@@ -212,7 +212,8 @@ class HybridAircraftCore:
         except Exception:
             pass
 
-    def run(self, utterance: FinalizedUserUtterance, cancellation: PlannerCancellationToken) -> HybridResult:
+    def run(self, utterance: FinalizedUserUtterance, cancellation: PlannerCancellationToken,
+            *, full_turn_only: bool = False) -> HybridResult:
         with self._lock:
             previous = self._completed.get(utterance.interaction_id)
             if previous:
@@ -221,7 +222,7 @@ class HybridAircraftCore:
                 return previous[1]
             if len(self._completed) >= 64:
                 raise ValueError("hybrid_identity_capacity")
-            result = self._run(utterance, cancellation)
+            result = self._run(utterance, cancellation, full_turn_only=full_turn_only)
             self._completed[utterance.interaction_id] = (utterance, result)
             return result
 
@@ -264,7 +265,7 @@ class HybridAircraftCore:
             self._completed[utterance.interaction_id] = (utterance, completed)
             return completed
 
-    def _run(self, utterance, cancellation, *, interpreted=False):
+    def _run(self, utterance, cancellation, *, interpreted=False, full_turn_only=False):
         identity, text = utterance.interaction_id, utterance.text
         deadline = self.clock() + timedelta(seconds=15)
         route = HybridRoute.AIRCRAFT_IDENTITY if interpreted else classify_aircraft_identity_query(text)
@@ -287,6 +288,11 @@ class HybridAircraftCore:
             if route == HybridRoute.AMBIGUOUS:
                 return HybridResult(route)
             if route == HybridRoute.UNSUPPORTED:
+                # Production admission uses only the existing whole-utterance
+                # aircraft match. Register the miss for the single-use General
+                # grant, without local social/mixed decomposition or a response.
+                if full_turn_only:
+                    return HybridResult(route)
                 if not eligible_decomposition(text):
                     return HybridResult(route)
                 stage = "decomposition"

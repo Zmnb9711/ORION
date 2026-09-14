@@ -1,6 +1,6 @@
 {
-  "orion/full_voice_service.py": "9d00fff209a21f498bb3f6f9f8b21f16d7c06d6774f8c6d03fe50e1273483564",
-  "orion/hybrid_aircraft_core.py": "2d341e6295fcc1aaa7dca199e3da504706d261a04db69c29c79c369208f061f1",
+  "orion/full_voice_service.py": "6892fcdb1b0a9ac40db213bf0f38b01760740842bd89a047baa4af1017170fcc",
+  "orion/hybrid_aircraft_core.py": "54ec3edd19d0a46165978501065ee9009f89fff566b904b00c85274881787072",
   "orion/interaction_router.py": "b7b2f67b4b90849d3a96c02406123132692a665e851611c60abe08a223808e9c",
   "orion/protected_presentation.py": "4970f9134c640631e8dcaad6157620f2150187e4d74c91e4f0091748418972fb",
   "orion/realtime_test_evidence.py": "b6f94d88ecf56acf72ac055bf1ad55fc0b94174f90c9fd2127c0658b6a6fb4ab",

@@ -27,12 +27,12 @@ from test_full_voice import StreamingFakeRadio
 @pytest.mark.parametrize("mode", ["active", "inactive", "broken", "stop_local"])
 def test_gate10_normal_host_coexistence_and_single_owner(monkeypatch, tmp_path, text, expected, calls, mode,
         *, general_kind=None, expected_reads=None, capture=None):
-    if text == "Какой это самолёт?" and general_kind is None:
-        # Gate A: local ambiguity now abstains into general semantics. With the
-        # offline unavailable owner this is one truthful response, not silence.
+    if text in {MIXED, FREE, "Какой это самолёт?"} and general_kind is None:
+        # Foundation Step 1: no social/mixed local admission. The offline
+        # unavailable General owner produces one truthful response, not silence.
         expected, general_kind, expected_reads = True, "TRUTHFUL_UNAVAILABLE", 0
-    if mode == "stop_local" and text not in {MIXED, FREE}:
-        pytest.skip("Pure/frozen routes do not invoke local decomposition")
+    if mode == "stop_local" and text == "какой мой текущий курс и координаты":
+        pytest.skip("Frozen ownship does not invoke the aircraft fast path")
     u = utterance(text)
     stop = threading.Event()
     first, entered = threading.Event(), threading.Event()
@@ -48,17 +48,6 @@ def test_gate10_normal_host_coexistence_and_single_owner(monkeypatch, tmp_path, 
         monkeypatch.setattr(recorder, "record_aircraft_slice", broken)
     provider, gateway = Provider(), Gateway()
     active_token = []
-    if mode == "stop_local":
-        import orion.hybrid_aircraft_core as local
-        recognize = local.recognize_local_decomposition
-        def stopping(text):
-            entered.set(); stop.set()
-            deadline = time.monotonic() + 1
-            while not active_token[0].cancelled and time.monotonic() < deadline:
-                time.sleep(.001)
-            assert active_token[0].cancelled
-            return recognize(text)
-        monkeypatch.setattr(local, "recognize_local_decomposition", stopping)
 
     class Native:
         owner, future = None, None
@@ -95,10 +84,17 @@ def test_gate10_normal_host_coexistence_and_single_owner(monkeypatch, tmp_path, 
                 factory_calls.append(True)
                 raise AssertionError("Hybrid must not instantiate provider")
             super().__init__(gateway, forbidden, clock=lambda: NOW, **kwargs)
-        def run(self, *args):
+        def run(self, *args, **kwargs):
             hybrid_invoked.append(True)
             active_token.append(args[1])
-            return super().run(*args)
+            assert kwargs == {"full_turn_only": True}
+            if mode == "stop_local":
+                entered.set(); stop.set()
+                deadline = time.monotonic() + 1
+                while not active_token[0].cancelled and time.monotonic() < deadline:
+                    time.sleep(.001)
+                assert active_token[0].cancelled
+            return super().run(*args, **kwargs)
     class Info(InformationalPresentation):
         def __init__(self, *args, **kwargs): super().__init__(*args, clock=lambda: NOW, **kwargs)
     async def tts(self, text):

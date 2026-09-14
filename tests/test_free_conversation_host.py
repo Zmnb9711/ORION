@@ -10,20 +10,20 @@ import zipfile
 import pytest
 
 import orion.full_voice_service as host
-import orion.conversational_presentation as conversation
 from orion.conversational_core import parse_draft
 from orion.full_voice_core import FullVoiceCore
 from orion.hybrid_aircraft_core import HybridAircraftCore
 from orion.informational_presentation import InformationalPresentation
 from orion.radio_router import RadioRouter
 from orion.realtime_test_evidence import RealtimeTestEvidenceRecorder
-from orion.yandex_realtime_text_conversation import TextConversationProvider
+from orion.yandex_warm_aircraft_interpreter import WarmYandexAircraftInterpreter
+from test_general_semantic import SemanticWire
+from test_interaction_router import gateway as registered_gateway
 from orion.yandex_srs_live_core import YandexSrsStartRequest
-from test_conversation_prerequisites import Fake, SOCIAL
+from test_conversation_prerequisites import SOCIAL
 from test_free_conversation_policy import FIFTH_RAW
 from test_full_voice import StreamingFakeRadio
 from test_hybrid_aircraft import PURE, MIXED, FREE, NOW, Gateway, utterance
-from test_level0_event_contract import sequence
 from test_conversation_stt_routing import STT_FINALS
 
 
@@ -43,6 +43,7 @@ def test_normal_host_conversation_then_core_no_fallback(monkeypatch, tmp_path, m
         def broken(*a, **k): raise PermissionError("fixture")
         monkeypatch.setattr(recorder, "record_conversation_slice", broken)
     gateway = Gateway()
+    monkeypatch.setattr(gateway, 'definitions', lambda: registered_gateway().definitions(), raising=False)
     transports, texts, owners, released = [], [], [], []
     answer_text = parse_draft(FIFTH_RAW).text
 
@@ -80,21 +81,26 @@ def test_normal_host_conversation_then_core_no_fallback(monkeypatch, tmp_path, m
             else: stop.set()
         def stop(self): router.shutdown()
 
-    class Voice(conversation.ConversationVoice):
-        def __init__(self, *a, **k):
-            super().__init__(*a, **k)
-            owners.append(self)
+    class Configured:
+        @classmethod
+        def configured(cls, *a, **k):
             def factory():
-                seq = sequence(answer_text if mode != "invalid_candidate" else "Привет\x00")
-                fake = Fake([] if mode == "provider_failure" else seq, echo_submitted=True)
-                if mode == "stop_provider":
-                    async def stopped_receive():
-                        stop.set()
-                        await asyncio.Event().wait()
-                    fake.receive = stopped_receive
+                body = json.dumps({"kind": "DIALOGUE", "text": answer_text})
+                if mode == "invalid_candidate": body = '{"kind":"INVALID_FIXTURE"}'
+                class Wire(SemanticWire):
+                    async def send(self, value):
+                        if value['type'] == 'response.create':
+                            if mode == 'provider_failure': raise OSError('fixture_provider')
+                            if mode == 'stop_provider':
+                                stop.set()
+                                return  # Cancellation interrupts the pending receive.
+                        await super().send(value)
+                fake = Wire(body)
                 transports.append(fake)
                 return fake
-            self.provider = TextConversationProvider(factory, observe=self.emit)
+            owner = WarmYandexAircraftInterpreter(factory, **k)
+            owners.append(owner)
+            return owner
 
     class Hybrid(HybridAircraftCore):
         def __init__(self, g, _factory, **kw):
@@ -112,6 +118,10 @@ def test_normal_host_conversation_then_core_no_fallback(monkeypatch, tmp_path, m
         yield bytes(48000)
 
     monkeypatch.setattr(host, "datetime", Clock)
+    from orion.interaction_router import InteractionRouter
+    monkeypatch.setattr(host, "InteractionRouter", lambda **kw: InteractionRouter(clock=lambda: NOW, **kw))
+    import orion.yandex_warm_aircraft_interpreter as warm
+    monkeypatch.setattr(warm, "datetime", Clock)
     monkeypatch.setattr(host, "NativeSpeechKitTurns", Native)
     monkeypatch.setattr(host, "GrpcSpeechKitStreamingPort", lambda: None)
     monkeypatch.setattr(host, "SrsTransportDiagnostics", lambda *a, **k: None)
@@ -119,7 +129,7 @@ def test_normal_host_conversation_then_core_no_fallback(monkeypatch, tmp_path, m
     monkeypatch.setattr(host, "FullVoiceCore", lambda g: FullVoiceCore(g, clock=lambda: NOW))
     monkeypatch.setattr(host, "HybridAircraftCore", Hybrid)
     monkeypatch.setattr(host, "InformationalPresentation", Info)
-    monkeypatch.setattr(host, "ConversationVoice", Voice)
+    monkeypatch.setattr(host, "WarmYandexAircraftInterpreter", Configured)
     monkeypatch.setattr(host, "realtime_test_evidence", recorder)
     monkeypatch.setattr(host.ProtectedStreamingTts, "stream", tts)
     service = host.FullVoiceService(endpoint_factory=Endpoint)
@@ -127,32 +137,34 @@ def test_normal_host_conversation_then_core_no_fallback(monkeypatch, tmp_path, m
     try:
         asyncio.run(asyncio.wait_for(service._voice(request, "conversation-host", stop), 4))
         assert service.status().state != "error"
-        assert all(not v.provider.owned and not v.provider.busy for v in owners)
+        assert all(not v.owned and v.state == 'stopped' for v in owners)
         assert all(f.closed == 1 for f in transports)
         if mode == "stop_provider":
             assert not texts and not adapter.transmit_calls and not gateway.calls
             return
         assert released == [u.interaction_id for u in inputs]
-        assert len(transports) == len(owners) == 2
+        assert len(owners) == 1 and owners[0].operation_count == 2
         assert len(gateway.calls) == 1  # Third turn ONLY, authoritative aircraft.
         assert texts[-1] == "Вы находитесь в F/A-18C Hornet."
         success = mode not in {"provider_failure", "invalid_candidate", "tts_failure"}
         # Existing streaming transport admits a stream before its first PCM.
         # TTS failure must send zero audio, not require different radio admission.
-        assert len(adapter.transmit_calls) == (3 if success or mode == "tts_failure" else 1)
+        assert len(adapter.transmit_calls) == 3
         if mode == "tts_failure":
             assert all(r.audio.stream.high_water == 0 for r in adapter.transmit_calls[:2])
-        assert len(texts) == (3 if success or mode == "tts_failure" else 1)
+        assert len(texts) == 3  # General failure has an existing truthful response.
         if success: assert texts[:2] == [answer_text, answer_text]
         if mode == "inactive": assert not recorder._events
         elif mode not in {"observer_failure"}:
             data = list(recorder._events)
             for u in inputs[:2]:
                 turn = [e for e in data if e.get("turn_id") == str(u.interaction_id)]
-                route = next(e for e in turn if e.get("route") == "CONVERSATION")
+                route = next(e for e in turn if e.get("route_source") == "GENERAL_SEMANTIC" and "source_text" in e)
                 assert route["source_text"] == u.text
-                assert route["planner_call_count"] == route["tool_gateway_call_count"] == 0
-                assert any(e.get("conversation_provider_call_count") == 1 for e in turn)
+                admitted = next(e for e in turn if "semantic_provider_operations" in e)
+                assert admitted["planner_operations"] == admitted["core_fact_reads"] == 0
+                assert admitted["semantic_provider_operations"] == 1
+                assert admitted["separate_conversation_provider_operations"] == 0
                 if success:
                     assert next(e["finalized_text"] for e in turn if "finalized_text" in e) == answer_text
                     assert next(e["tts_input"] for e in turn if "tts_input" in e) == answer_text
@@ -174,8 +186,9 @@ def test_normal_host_conversation_then_core_no_fallback(monkeypatch, tmp_path, m
 def test_known_and_unhandled_routes_never_instantiate_conversation(monkeypatch, tmp_path, text):
     from test_hybrid_host import test_gate10_normal_host_coexistence_and_single_owner as run_existing
     def forbidden(*a, **k): raise AssertionError("Conversation entered a known/unsupported route")
-    monkeypatch.setattr(host, "ConversationVoice", forbidden)
-    known = text in {PURE, MIXED, FREE, "Какой мой текущий курс и координаты?"}
+    import orion.conversational_presentation as conversation
+    monkeypatch.setattr(conversation, "ConversationVoice", forbidden)
+    known = text in {PURE, "Какой мой текущий курс и координаты?"}
     # General ingress now truthfully reports its offline provider unavailability;
     # it still must never invoke the old narrow Conversation owner or a tool.
     run_existing(monkeypatch, tmp_path, text, True, 0, "inactive",

@@ -2,6 +2,9 @@
 
 Updated 2026-09-14. Historical classification; no new tests.
 Current product verdict: FIELD FAIL. [Current state](../ORION_PROJECT_MEMORY.md).
+Foundation Step 1 on governance `be413a8`: [offline routing record](2026-09-14-foundation-step1-routing.md).
+Real service route with fake provider/audio/radio I/O only; NOT a new physical
+session, acoustic PASS, Conversation quality PASS or Mixed execution PASS.
 E5 means scoped physical proof; E6 means blind, continuous installed-host
 acceptance of a named capability. No current E6 general Foundation PASS exists.
 

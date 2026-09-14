@@ -17,7 +17,7 @@ from test_interaction_router import gateway
 HISTORICAL = [
     ("поговори со мной", "DIALOGUE", None),
     ("как настроение", "DIALOGUE", None),
-    ("как дела", "LOCAL_SOCIAL", None),
+    ("как дела", "DIALOGUE", None),
     ("что думаешь о сегодняшнем полете", "DIALOGUE", None),
     ("что у нас за машина", "FACT_REQUEST", "aircraft.identity"),
     ("как тебя зовут", "DIALOGUE", None),
@@ -58,11 +58,10 @@ def test_normal_host_general_replay(monkeypatch, tmp_path, source, kind, capabil
     response_kind={"DIALOGUE":"DIALOGUE_NON_AUTHORITATIVE","FACT_REQUEST":"CORE_FACT_AUTHORITATIVE",
                    "CAPABILITY_GAP":"TRUTHFUL_UNAVAILABLE","CLARIFICATION":"CLARIFICATION",
                    "DOMAIN_REQUEST":"TRUTHFUL_UNAVAILABLE"}.get(kind)
-    # LOCAL_SOCIAL has its old aircraft_slice composition and no semantic call.
     replay(monkeypatch,tmp_path,source,True,0,"active",general_kind=response_kind,
            expected_reads=int(kind=="FACT_REQUEST"),capture=captured)
     assert len(captured)==1 and captured[0]["tx_count"]==1
-    assert owners[0].operation_count==int(kind!="LOCAL_SOCIAL")
+    assert owners[0].operation_count==1
     assert not owners[0].owned and owners[0].state=="stopped"
     if response_kind:
         event=next(e for e in captured[0]["events"] if e.get("response_kind")==response_kind)
@@ -70,8 +69,6 @@ def test_normal_host_general_replay(monkeypatch, tmp_path, source, kind, capabil
         assert event["separate_conversation_provider_operations"]==0
         assert event["planner_operations"]==0
         assert event["dialogue_role_selected"]==int(kind=="DIALOGUE")
-    else:
-        assert any(e.get("route")=="LOCAL_SOCIAL" for e in captured[0]["events"])
 
 
 def test_offline_provider_unavailable_is_a_response_not_silence(monkeypatch,tmp_path):

@@ -1,5 +1,11 @@
 # ORION history index
 
+Current update: governance committed at `be413a802fe4d84ac140db248219b3e450cbb8b4`.
+[Foundation Step 1](2026-09-14-foundation-step1-routing.md) is a separately
+authorized, uncommitted routing-only change. Offline real-host/fake-I/O proof;
+no provider or field acceptance. Commit and Step 2 require user review.
+The draft labels below describe the preserved earlier governance snapshot.
+
 Updated 2026-09-14. Proposed documentation only; NOT COMMITTED.
 [Current state](../ORION_PROJECT_MEMORY.md) ·
 [Audit and sources](2026-09-14-foundation-recovery-audit.md) ·

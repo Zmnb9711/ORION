@@ -22,7 +22,7 @@ def forbidden_planner():
 @pytest.mark.parametrize("source, expected, count", [
     (A, True, 1), ("Где мы сейчас?", True, 1),
     ("Какой у меня самолёт?", True, 0),
-    ("Добрый день! В каком самолёте я нахожусь?", True, 0),
+    ("Добрый день! В каком самолёте я нахожусь?", True, 1),
     ("какой мой текущий курс и координаты", True, 0),
     ("Какой это самолёт?", True, 1), ("Можно взлетать?", True, 1),
 ])
@@ -39,6 +39,9 @@ def test_normal_host_reuses_authoritative_tail_without_stealing_routes(monkeypat
                     if source != "Можно взлетать?" else {"kind":"DOMAIN_REQUEST"})
             if source == "Какой это самолёт?":
                 body = {"kind": "CLARIFICATION", "slot": "reference"}
+            if source == "Добрый день! В каком самолёте я нахожусь?":
+                body = {"kind": "MIXED", "facts": {"kind": "FACT_REQUEST", "capabilities": ["aircraft.identity"]},
+                        "dialogue": {"kind": "DIALOGUE", "text": "A greeting fixture."}}
             owner = WarmYandexAircraftInterpreter(lambda: SemanticWire(json.dumps(body)), **kwargs)
             owners.append(owner)
             return owner
@@ -46,8 +49,8 @@ def test_normal_host_reuses_authoritative_tail_without_stealing_routes(monkeypat
     monkeypatch.setattr(host, "WarmYandexAircraftInterpreter", Configured)
     monkeypatch.setattr(Gateway, "definitions", lambda self: gateway().definitions(), raising=False)
     replay_host(monkeypatch, tmp_path, source, expected, 0, "inactive",
-                general_kind="CLARIFICATION" if source == "Какой это самолёт?" else "TRUTHFUL_UNAVAILABLE" if source == "Можно взлетать?" else ("CORE_FACT_AUTHORITATIVE" if count else None),
-                expected_reads=0 if source in {"Можно взлетать?", "Какой это самолёт?"} else None)
+                general_kind="CLARIFICATION" if source == "Какой это самолёт?" else "TRUTHFUL_UNAVAILABLE" if source in {"Можно взлетать?", "Добрый день! В каком самолёте я нахожусь?"} else ("CORE_FACT_AUTHORITATIVE" if count else None),
+                expected_reads=0 if source in {"Можно взлетать?", "Какой это самолёт?", "Добрый день! В каком самолёте я нахожусь?"} else None)
     assert len(owners) == 1 and owners[0].operation_count == count
     assert owners[0].state == "stopped" and not owners[0].owned
 

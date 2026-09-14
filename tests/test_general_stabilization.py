@@ -188,7 +188,7 @@ HISTORICAL_20 = [
     ("какие у меня координаты", "FACT_REQUEST", "ownship.position"),
     ("какой мой текущий курс", "FACT_REQUEST", "ownship.heading"),
     ("какие у меня координаты", "FACT_REQUEST", "ownship.position"),
-    ("как дела", "LOCAL_SOCIAL", None), ("расскажи что нибудь", "DIALOGUE", None),
+    ("как дела", "DIALOGUE", None), ("расскажи что нибудь", "DIALOGUE", None),
     ("меня интересует вся информация о хорнет", "DIALOGUE", None),
     ("в какой стране я нахожусь", "CAPABILITY_GAP", None),
     ("мой вопрос относится к моему текущему местоположению", "CAPABILITY_GAP", None),

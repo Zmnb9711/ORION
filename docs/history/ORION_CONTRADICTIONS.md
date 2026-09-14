@@ -4,6 +4,12 @@ Updated 2026-09-14. Draft governance; no runtime change.
 Sources and identifiers: [Foundation audit](2026-09-14-foundation-recovery-audit.md).
 Conflicts remain visible; old reports are not rewritten to erase them.
 
+Step 1 update (uncommitted, parent `be413a8`): production social/mixed admission
+has been bypassed in favor of intact General ingress. This addresses the routing
+part of C09, not Conversation quality, Mixed execution or the delivery failures.
+Old helper tests remain; old host expectations of LOCAL_SOCIAL/decomposition
+were updated to the explicitly approved routing rule. [Evidence](2026-09-14-foundation-step1-routing.md).
+
 | ID | Conflicting claims or evidence | Resolution / remaining uncertainty |
 |---|---|---|
 | C01 | Old Memory says main is the source of truth; the latest field build is 5c9ab244, while remote main is a7757a3. | Use the exact audited worktree for implementation claims. The old main-first notice is historical, not authority to switch branches. |

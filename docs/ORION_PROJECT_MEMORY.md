@@ -1,5 +1,23 @@
 # ORION Project Memory — current state only
 
+## Current execution update — 2026-09-14 Foundation Step 1
+
+Governance is committed at `be413a802fe4d84ac140db248219b3e450cbb8b4` on
+`codex/general-natural-language-ingress-tranche1` in `ORION-level0-conversation`.
+The earlier draft/commit/next-task notices below are the preserved governance
+snapshot, not the current authorization. The user approved the Foundation plan
+and Step 1 routing implementation ONLY. [Step 1 record](history/2026-09-14-foundation-step1-routing.md).
+
+Step 1 is uncommitted: ownship and pure-aircraft full-turn fast paths remain;
+all clean misses/partial/social/mixed input reaches one General entry intact.
+Local social/mixed helpers remain in code, not production language admission.
+Mixed execution, Conversation quality/context recovery, fact expansion and TTS
+repair are NOT implemented by this step. Current product FIELD FAIL is unchanged.
+No provider, build, install, DCS/SRS/PTT or new acoustic proof. Await user review
+before commit or Step 2; do not start the next step automatically. Original user
+data bytes are preserved; tests appended events (retained, not discarded).
+The user profile and canonical contract are byte-identical.
+
 Updated 2026-09-14. Governance/recovery proposal in worktree; NOT COMMITTED.
 This file is an index of current truth, not a history archive.
 
