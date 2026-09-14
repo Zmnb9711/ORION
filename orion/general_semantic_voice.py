@@ -7,7 +7,7 @@ import time
 
 from orion.communication_contracts import CommunicationDomain, CommunicationPriority
 from orion.conversational_contracts import ConversationCleanupError
-from orion.general_semantic_core import FinalizedGeneralText, GeneralSemanticCore, DialoguePlan, FactPlan
+from orion.general_semantic_core import FinalizedGeneralText, GeneralSemanticCore, DialoguePlan, FactPlan, MixedPlan
 from orion.informational_presentation import InformationalStreamingTts
 from orion.protected_presentation import PresentationFailure, PresentationResult, tx_correlation
 from orion.protected_streaming_presentation import StreamingProtectedPresentation
@@ -75,6 +75,7 @@ class GeneralSemanticVoice:
         request = self.core.request(utterance, epoch=epoch)
         self.emit("request", source_text=request.source_text, source_sha256=request.source_sha256,
             context_revision=request.context.revision, context_bytes=len(request.context.model_dump_json().encode("utf-8")),
+            context_projection=request.context.model_dump_json(),
             catalog_version=request.catalog_version, operation_id=str(request.operation_id))
         started = time.monotonic()
         operations_before = self.interpreter.operation_count
@@ -104,22 +105,21 @@ class GeneralSemanticVoice:
             return
         plan = finalized.plan
         # Semantic success belongs to ORION before any fallible audio delivery.
-        dialogue = isinstance(plan, DialoguePlan)
-        if dialogue:
-            self.core.context.accept(finalized, delivery="pending")
+        self.core.context.accept(finalized, delivery="pending")
+        factual = plan.factual if isinstance(plan, MixedPlan) else plan
         self.emit("admitted", response_kind=plan.kind, finalized_text=finalized.text,
             semantic_provider_operations=self.interpreter.operation_count-operations_before,
-            dialogue_role_selected=int(isinstance(plan, DialoguePlan)), separate_conversation_provider_operations=0,
+            dialogue_role_selected=int(isinstance(plan, (DialoguePlan, MixedPlan))), separate_conversation_provider_operations=0,
             planner_operations=0, core_fact_reads=self.core.read_count,
             semantic_user_path_ms=(time.monotonic()-started)*1000,
-            selected_capabilities=",".join(plan.capabilities) if isinstance(plan, FactPlan) else "")
-        if isinstance(plan, FactPlan):
-            for fact in plan.facts:
+            selected_capabilities=",".join(factual.capabilities) if isinstance(factual, FactPlan) else "")
+        if isinstance(factual, FactPlan):
+            for fact in factual.facts:
                 self.emit("selected_fact", fact_key=fact.key, fact_value=fact.value, fact_unit=fact.unit,
                     fact_source=fact.source.value, fact_authority=fact.authority.value,
                     fact_generation=fact.generation, fact_age_seconds=fact.age_seconds,
                     fact_observed_at=fact.observed_at.isoformat() if fact.observed_at else None,
-                    call_id=plan.receipt.call_id if plan.receipt else None)
+                    call_id=factual.receipt.call_id if factual.receipt else None)
         context = RadioContext(tx_correlation_id=tx_correlation(utterance.interaction_id),
             interaction_id=utterance.interaction_id, turn_id=self.turn_id, session_id="recovery-full-voice",
             source_domain=CommunicationDomain.GENERAL, communication_priority=CommunicationPriority.ROUTINE,
@@ -129,8 +129,7 @@ class GeneralSemanticVoice:
         try:
             result = await self.interpreter._bounded(self.presentation.present(finalized, context), 40., cancellation, cleanup_budget=.6)
         except BaseException as exc:
-            record_delivery = self.core.context.update_delivery if dialogue else self.core.context.accept
-            record_delivery(finalized, delivery="cancelled" if isinstance(exc, asyncio.CancelledError) or cancellation.cancelled else "failed",
+            self.core.context.update_delivery(finalized, delivery="cancelled" if isinstance(exc, asyncio.CancelledError) or cancellation.cancelled else "failed",
                                      tts_started="tts_started" in self.presentation.marks)
             raise
         marks = self.endpoint.tx_marks if self.endpoint.tx_marks is not previous_marks else {}
@@ -138,10 +137,10 @@ class GeneralSemanticVoice:
             failure_category=result.failure.value if result.failure else None,
             **{key: self.presentation.marks.get(key) for key in ("tts_started", "tts_first_pcm", "tts_completed", "tts_pcm_bytes")},
             **{key: marks.get(key) for key in ("radio_first_frame", "radio_completed")})
-        record_delivery = self.core.context.update_delivery if dialogue else self.core.context.accept
-        record_delivery(finalized,
+        self.core.context.update_delivery(finalized,
             delivery="cancelled" if cancellation.cancelled else result.state if result.state in {"completed", "failed", "cancelled"} else "unknown",
             tts_started="tts_started" in self.presentation.marks)
+        self.emit("context_delivery", context_projection=self.core.context.project(self.core.context.epoch).model_dump_json())
 
     async def shutdown(self):
         self.core.context.reset()

@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 import json
 
 import pytest
+from orion.aircraft_interpretation import source_hash
 
 from orion.conversational_contracts import ConversationFailure
 from orion.general_semantic_contracts import (
@@ -72,7 +73,7 @@ def test_semantic_timeout_recovery_and_no_retry():
         wires = [Wire("generation_stall"), SemanticWire(GOOD)]
         owner = WarmYandexAircraftInterpreter(lambda: wires[owner.connect_count], general=True)
         assert await owner.prepare()
-        with pytest.raises(ConversationFailure, match="LATENCY"):
+        with pytest.raises(ConversationFailure, match="SEMANTIC_OPERATION_TIMEOUT"):
             await owner.interpret_general(request(), PlannerCancellationToken())
         assert owner.operation_count == 1
         assert await owner.wait_recovery()
@@ -129,7 +130,8 @@ def test_context_keeps_semantics_separate_from_delivery(result, delivery):
     assert entry.semantic_understood and entry.response_admitted
     if isinstance(result, FactRequest):
         assert entry.topic == "ownship.position" and entry.core_fact_produced
-        assert entry.reply is None and entry.response_fingerprint is None
+        # Step 5 correlates delivery for facts too; only a hash, never fact prose.
+        assert entry.reply is None and entry.response_fingerprint == source_hash(final.text)
         assert "42.1" not in provider_instructions(core.context.project())
     else:
         assert entry.reply == final.text and entry.response_fingerprint

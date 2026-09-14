@@ -293,7 +293,7 @@ class RealtimeTestEvidenceRecorder:
             if event not in {"physical_turn_end", "routing", "connect_started", "connect_complete",
                 "session.created", "session.updated", "connected", "request_sent", "first_token",
                 "text_complete", "terminal_text", "normalized_candidate", "candidate_complete", "closed",
-                "candidate", "admission", "tts_input", "response_terminal", "failed", "selected_fact", "delivery_diagnostic"}:
+                "candidate", "admission", "tts_input", "response_terminal", "failed", "selected_fact", "delivery_diagnostic", "context_delivery"}:
                 return
             safe: dict[str, object] = {
                 "timestamp": datetime.now(UTC).isoformat(timespec="milliseconds"),
@@ -306,6 +306,7 @@ class RealtimeTestEvidenceRecorder:
                 # Multi-fact final text has its own existing 1000-character cap.
                 # Dialogue validity remains400 in its typed plan, not the recorder.
                 text_bounds.update(finalized_text=1000, tts_input=1000)
+                text_bounds.update(context_projection=4096)
             scalar = {"turn_id", "tx_id", "route", "route_source", "source_sha256", "provider_response_id",
                 "conversation_provider_call_count", "planner_call_count", "tool_gateway_call_count",
                 "status", "failure_stage", "failure_category", "monotonic", "connect_ms", "first_token_ms",

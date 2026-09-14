@@ -234,7 +234,8 @@ def test_step3_exact_runtime_scope_and_request_identity():
     changed = set(subprocess.check_output(['git', 'diff', parent, step3, '--name-only', '--',
         'orion', 'packaging', 'dcs-export'], cwd=root).decode().splitlines())
     assert changed == paths
-    assert not subprocess.check_output(['git', 'diff', step3, '--', *sorted(paths)], cwd=root)
+    # Step 5 extends only the opt-in evidence projection, not TTS/stream behavior.
+    assert not subprocess.check_output(['git', 'diff', step3, '--', *sorted(paths - {'orion/realtime_test_evidence.py'})], cwd=root)
     verify_general_scope()
     text = '  Finalized exact text.\n'
     requests = protected_stream_requests(text)

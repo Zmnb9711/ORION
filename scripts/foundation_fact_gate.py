@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from scripts.foundation_conversation_gate import ALLOWED
 from orion.full_voice_stt import FinalizedUserUtterance
 from orion.general_fact_registry import CATALOG, CATALOG_VERSION, provider_catalog
-from orion.general_semantic_contracts import provider_instructions
+from orion.general_semantic_contracts import SemanticProposal, parse_semantic, provider_instructions
 from orion.general_semantic_core import GeneralSemanticCore
 from orion.hybrid_aircraft_core import HybridAircraftCore
 from orion.interaction_router import InteractionRouter
@@ -43,6 +43,10 @@ CASES = (
     ('meta', 'Какие категории данных ты можешь получать из симулятора?', 'META_REQUEST', ()),
     ('unseen_form', 'Сколько метров сейчас отделяет наш борт по высоте от поверхности под ним?', 'FACT_REQUEST', ('ownship.altitude_agl',)),
 )
+# Optional explicitly labelled offline accepted history for a bounded referent
+# gate. No preceding provider operations are hidden or counted as live evidence.
+PRECEDING = {}
+WIRE_TIMELINE = False
 
 
 async def evaluate(factory, save):
@@ -55,7 +59,9 @@ async def evaluate(factory, save):
     def observe(event, **fields):
         target = report['events'] if current is None else current['events']
         if len(target) < 128:
-            clean = {k:v for k,v in fields.items() if k in ALLOWED and isinstance(v, (str, int, float, bool, type(None)))
+            allowed = ALLOWED | {'context_binding_ms', 'instructions_sha256', 'generation_ms',
+                                 'generation_first_text_ms', 'latency_target_exceeded', 'wire_type', 'total_ms'}
+            clean = {k:v for k,v in fields.items() if k in allowed and isinstance(v, (str, int, float, bool, type(None)))
                      and (not isinstance(v, str) or len(v.encode()) <= 4096)}
             target.append({'event':event, 'monotonic':time.monotonic(), **clean})
 
@@ -63,6 +69,26 @@ async def evaluate(factory, save):
         raise AssertionError('Planner forbidden in fact gate')
 
     owner = factory(observe)
+    if WIRE_TIMELINE:
+        underlying_factory = owner.factory
+        class TimelinePort:
+            def __init__(self): self.port = underlying_factory()
+            async def connect(self): return await self.port.connect()
+            async def send(self, value):
+                observe('wire_send_start', wire_type=value.get('type'))
+                result = await self.port.send(value)
+                observe('wire_send_done', wire_type=value.get('type'))
+                return result
+            async def receive(self):
+                result = await self.port.receive()
+                observe('wire_received', wire_type=result.get('type'))
+                return result
+            async def close(self):
+                observe('wire_close_start')
+                result = await self.port.close()
+                observe('wire_close_done')
+                return result
+        owner.factory = TimelinePort
     store = LiveTelemetryStore()
     gateway = build_tool_gateway(world=WorldModelFacade(telemetry=store))
     router = InteractionRouter(provider_factory=no_planner)
@@ -73,7 +99,9 @@ async def evaluate(factory, save):
             report['failure'] = 'handshake_failed'
             return report
         with patch('orion.general_semantic_core.load_personal_context', PersonalContext):
-            for name, text, expected, capabilities in CASES:
+            for case in CASES:
+                name, text, expected, capabilities = case[:4]
+                language = case[4] if len(case) > 4 else 'ru-RU'
                 now = datetime.now(UTC)
                 store.set(TelemetryEnvelope(state=AircraftState(aircraft_type='FA-18C_hornet',
                     position=Position(latitude=41.2, longitude=43.3, altitude_m=1234, altitude_agl_m=200),
@@ -81,10 +109,28 @@ async def evaluate(factory, save):
                     attitude=Attitude(pitch_deg=4, bank_deg=2, yaw_deg=104),
                     source_quality=SourceQuality(true_airspeed=True, vertical_speed=True, altitude_agl=True))), received_at=now)
                 utterance = FinalizedUserUtterance(uuid4(), text, 1, 2, 1.9, 2.1, 2.2, 2.3,
-                    now, now, 'developer-text-no-stt', 0, 0, 'ru-RU')
+                    now, now, 'developer-text-no-stt', 0, 0, language)
+                preceding = []
+                if name in PRECEDING:
+                    core.context.reset()
+                    for seed_text, body in PRECEDING[name]:
+                        seed = FinalizedUserUtterance(uuid4(), seed_text, 1, 2, 1.9, 2.1, 2.2, 2.3,
+                            now, now, 'offline-context-fixture-no-stt', 0, 0, language)
+                        seed_request = core.request(seed)
+                        proposal = SemanticProposal(request=seed_request, response_id='offline-seed',
+                            result=parse_semantic(json.dumps(body)))
+                        final_seed = core.execute(seed, proposal, PlannerCancellationToken(), hybrid)
+                        core.context.accept(final_seed, delivery='unknown')
+                        preceding.append({'scope':'OFFLINE accepted fixture, not provider output',
+                            'request':seed_request.model_dump(mode='json'), 'semantic':body,
+                            'plan':final_seed.plan.model_dump(mode='json'),
+                            'context_after':core.context.project().model_dump(mode='json')})
                 request = core.request(utterance)
                 current = {'case':name, 'request':request.model_dump(mode='json'), 'expected_kind':expected,
                            'events':[], 'status':'started'}
+                if preceding:
+                    current['preceding_offline'] = preceding
+                    current['provider_instructions'] = provider_instructions(request.context, request.personal_context)
                 report['turns'].append(current)
                 before = owner.operation_count
                 started = time.monotonic()
@@ -94,7 +140,8 @@ async def evaluate(factory, save):
                     current['parsed'] = proposal.result.model_dump(mode='json')
                     if proposal.result.kind != expected:
                         raise ValueError('unexpected_semantic_kind')
-                    if capabilities and set(current['parsed'].get('capabilities', ())) != set(capabilities):
+                    selection = current['parsed'].get('facts', current['parsed'])
+                    if capabilities and set(selection.get('capabilities', ())) != set(capabilities):
                         raise ValueError('unexpected_fact_selection')
                     started = time.monotonic()
                     final = core.execute(utterance, proposal, PlannerCancellationToken(), hybrid)

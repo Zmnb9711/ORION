@@ -49,8 +49,8 @@ def test_normal_host_reuses_authoritative_tail_without_stealing_routes(monkeypat
     monkeypatch.setattr(host, "WarmYandexAircraftInterpreter", Configured)
     monkeypatch.setattr(Gateway, "definitions", lambda self: gateway().definitions(), raising=False)
     replay_host(monkeypatch, tmp_path, source, expected, 0, "inactive",
-                general_kind="CLARIFICATION" if source == "Какой это самолёт?" else "TRUTHFUL_UNAVAILABLE" if source in {"Можно взлетать?", "Добрый день! В каком самолёте я нахожусь?"} else ("CORE_FACT_AUTHORITATIVE" if count else None),
-                expected_reads=0 if source in {"Можно взлетать?", "Какой это самолёт?", "Добрый день! В каком самолёте я нахожусь?"} else None)
+                general_kind="CLARIFICATION" if source == "Какой это самолёт?" else "MIXED" if source == "Добрый день! В каком самолёте я нахожусь?" else "TRUTHFUL_UNAVAILABLE" if source == "Можно взлетать?" else ("CORE_FACT_AUTHORITATIVE" if count else None),
+                expected_reads=0 if source in {"Можно взлетать?", "Какой это самолёт?"} else None)
     assert len(owners) == 1 and owners[0].operation_count == count
     assert owners[0].state == "stopped" and not owners[0].owned
 

@@ -215,7 +215,8 @@ def test_step4_scope_and_earlier_voice_contracts_frozen():
     paths = {'dcs-export/Export.lua', 'orion/models.py', 'orion/world_model.py',
              'orion/general_fact_registry.py', 'orion/general_fact_presentation.py',
              'orion/general_semantic_contracts.py', 'orion/general_semantic_core.py'}
-    changed = set(subprocess.check_output(['git','diff',PARENT,'--name-only','--','orion','dcs-export','packaging'], cwd=ROOT).decode().splitlines())
+    step4 = '31546f9f191b060571cba32998c8cf232b345506'
+    changed = set(subprocess.check_output(['git','diff',PARENT,step4,'--name-only','--','orion','dcs-export','packaging'], cwd=ROOT).decode().splitlines())
     assert changed == paths
     assert not subprocess.check_output(['git','ls-files','--others','--exclude-standard','--','orion','dcs-export','packaging'], cwd=ROOT).strip()
     assert not subprocess.check_output(['git','diff',PARENT,'--','docs/architecture/ORION_NATURAL_LANGUAGE_ARCHITECTURE_CONTRACT.md'], cwd=ROOT)

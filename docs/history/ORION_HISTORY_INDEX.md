@@ -1,5 +1,23 @@
 # ORION history index
 
+Latest: [Step5 deadline domains and referent PASS](2026-09-15-foundation-step5-deadline.md).
+Bounded ACK500ms + generation1s, ordinary total1.5s; same schema/provider/registry.
+RU/EN4/4 provider follow-ups correct, no retries;3486 offline passes/five baseline
+failures. Pre-field candidate A, authorized one build/install; no physical PASS.
+
+Latest: [Step 5 referent contract correction](2026-09-15-foundation-step5-referent.md).
+Explicit derived last factual referent/order,11 generic tests,3478 full-suite
+passes/five baseline failures. One authorized live RU follow-up timed out1000ms
+after context ACK/first text; no terminal, EN not run. No retry/build/commit.
+End-to-end referent root cause remains unknown; preserve earlier failures.
+
+Latest: [Foundation Step 5 integration](2026-09-15-foundation-step5-integration.md),
+parent31546f9, UNCOMMITTED. Actual-host Mixed/context/RU-EN/recovery offline proof;
+first live Mixed result failed nested schema validation. Prompt structure clarified,
+strict admission retained. One explicitly authorized additional session: RU/EN Mixed
+and RU follow-up pass, EN follow-up selects older pitch instead of latest TAS.
+Context ACK present; exact internal provider cause unknown. Gate FAIL, no build/field.
+
 Latest: [Foundation Step 4 safe fact surface](2026-09-14-foundation-step4-fact-surface.md),
 parent `8ddc042`. 233 classified records/10 exposed facts; explicit source quality
 for TAS/vertical/AGL; no fabricated fuel normalization. Eight-operation Yandex

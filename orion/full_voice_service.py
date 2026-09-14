@@ -7,6 +7,7 @@ import queue
 import time
 from typing import cast
 
+from orion.aircraft_interpretation import source_hash
 from orion.full_voice_capture import RadioTurnEventKind
 from orion.full_voice_core import FullVoiceCore
 from orion.general_semantic_voice import GeneralSemanticVoice
@@ -156,8 +157,32 @@ class FullVoiceService(YandexSrsLiveService):
                 if identity is None:
                     fail("turn_owner_lost")
                     return
+                fast_context = None
+                fast_text = None
+                fast_outcome = None
+                fast_presentation = None
                 try:
                     if utterance is not None:
+                        # One context owner also observes admitted fast paths. No
+                        # model operation, new readiness gate or competing store.
+                        if not general_owners:
+                            def observe_general(event, **fields):
+                                observe_conversation({"request": "routing", "admitted": "admission"}.get(event, event),
+                                    route_source="GENERAL_SEMANTIC", **fields)
+                            general_owners.append(GeneralSemanticVoice(request.api_key, gateway, interpretation_router,
+                                interpreter, endpoint, entity, session_id, observe=observe_general,
+                                clock=lambda: datetime.now(UTC)))
+                        from orion.live_telemetry_store import live_telemetry
+                        from orion.mission_store import mission_store
+                        state = live_telemetry.snapshot()
+                        mission = mission_store.get()
+                        try:
+                            test_session_id = realtime_test_evidence.status().test_session_id
+                        except Exception:
+                            test_session_id = None
+                        epoch = repr((test_session_id, mission.mission_id if mission else None,
+                            state.telemetry.state.aircraft_type if state.telemetry else None))
+                        general_owners[0].core.context.project(epoch)
                         core_worker = asyncio.create_task(asyncio.to_thread(core.run, utterance, cancellation))
                         result = await asyncio.shield(core_worker)
                         finalized = result.finalized
@@ -175,8 +200,12 @@ class FullVoiceService(YandexSrsLiveService):
                                 - (now - r.receipt.completed_at).total_seconds()
                                 for r in result.tool_results if r.provenance is not None)
                             endpoint.response_valid_until = time.monotonic() + remaining
+                            fast_context, fast_text = general_owners[0].core.context, finalized.text
+                            fast_presentation = presentation
+                            fast_context.accept_fast_path(utterance, ("ownship.heading", "ownship.position"), fast_text, epoch=epoch)
                             outcome = await presentation.present(finalized, context)
-                            if outcome.state != "completed":
+                            fast_outcome = outcome
+                            if not outcome.terminal:
                                 fail("protected_presentation_not_completed")
                         elif result.status != "unsupported":
                             fail("core_semantics_not_completed")
@@ -209,7 +238,11 @@ class FullVoiceService(YandexSrsLiveService):
                                     target_frequency_hz=251000000, modulation=RadioModulation.AM)
                                 previous_marks = endpoint.tx_marks
                                 packet_before = endpoint.packet_id
+                                fast_context, fast_text = general_owners[0].core.context, information.finalized.text
+                                fast_presentation = informational
+                                fast_context.accept_fast_path(utterance, ("aircraft.identity",), fast_text, epoch=epoch)
                                 outcome = await informational.present(information.finalized, context)
+                                fast_outcome = outcome
                                 marks = endpoint.tx_marks if endpoint.tx_marks is not previous_marks else {}
                                 observe_slice("response_terminal", turn_id=str(identity), tx_id=tx_correlation(identity),
                                     status=outcome.state, frames=endpoint.packet_id - packet_before,
@@ -220,33 +253,21 @@ class FullVoiceService(YandexSrsLiveService):
                                     tts_completed=informational.marks.get("tts_completed"),
                                     tts_pcm_bytes=informational.marks.get("tts_pcm_bytes"),
                                     radio_first_frame=marks.get("radio_first_frame"), radio_completed=marks.get("radio_completed"))
-                                if outcome.state != "completed":
+                                if not outcome.terminal:
                                     fail("informational_presentation_not_completed")
                             elif information.route in {HybridRoute.UNSUPPORTED, HybridRoute.AMBIGUOUS} and information.failure is None:
                                 # One General entry; no separate conversational AI owner.
-                                if not general_owners:
-                                    def observe_general(event, **fields):
-                                        observe_conversation({"request": "routing", "admitted": "admission"}.get(event, event),
-                                            route_source="GENERAL_SEMANTIC", **fields)
-                                    general_owners.append(GeneralSemanticVoice(request.api_key, gateway, interpretation_router,
-                                        interpreter, endpoint, entity, session_id, observe=observe_general,
-                                        clock=lambda: datetime.now(UTC)))
-                                # State-owner metadata only: never provider facts or a competing store.
-                                from orion.live_telemetry_store import live_telemetry
-                                from orion.mission_store import mission_store
-                                state = live_telemetry.snapshot()
-                                mission = mission_store.get()
-                                try:
-                                    test_session_id = realtime_test_evidence.status().test_session_id
-                                except Exception:
-                                    test_session_id = None  # Optional evidence cannot cancel voice.
-                                epoch = repr((test_session_id,
-                                    mission.mission_id if mission else None,
-                                    state.telemetry.state.aircraft_type if state.telemetry else None))
                                 await general_owners[0].run(utterance, hybrid, cancellation, epoch=epoch)
-                except Exception:
+                except Exception as exc:
+                    observe_conversation("failed", turn_id=str(identity), route_source="FOUNDATION_HOST",
+                                         failure_stage="turn_processing", error_class=type(exc).__name__)
                     fail("turn_processing_failed")
                 finally:
+                    if fast_context is not None and fast_text is not None:
+                        fast_context.record_delivery(identity, source_hash(fast_text),
+                            delivery="completed" if fast_outcome is not None and fast_outcome.state == "completed" else
+                                     "cancelled" if fast_outcome is not None and fast_outcome.state == "cancelled" else "failed",
+                            tts_started=fast_presentation is not None and "tts_started" in fast_presentation.marks)
                     hybrid_active = False
                     self._set(output_chunks=endpoint.tx_frames)
                     if not stopped.is_set():

@@ -80,10 +80,10 @@ def test_complete_final_reaches_one_general_owner(monkeypatch, tmp_path, source,
             await original_run(self, final, hybrid, cancellation, **kwargs)
     monkeypatch.setattr(GeneralSemanticVoice, 'run', observe_run)
     expected_kind = {'DIALOGUE': 'DIALOGUE_NON_AUTHORITATIVE', 'FACT_REQUEST': 'CORE_FACT_AUTHORITATIVE',
-                     'MIXED': 'TRUTHFUL_UNAVAILABLE', 'CLARIFICATION': 'CLARIFICATION'}[kind]
+                     'MIXED': 'MIXED', 'CLARIFICATION': 'CLARIFICATION'}[kind]
     captured = []
     replay(monkeypatch, tmp_path, source, True, 0, 'active', general_kind=expected_kind,
-           expected_reads=int(kind == 'FACT_REQUEST'), capture=captured)
+           expected_reads=int(kind in {'FACT_REQUEST', 'MIXED'}), capture=captured)
     assert len(entries) == len(requests) == len(owners) == 1
     assert entries[0].text == requests[0].source_text == source
     assert requests[0].interaction_id == entries[0].interaction_id
@@ -94,9 +94,9 @@ def test_complete_final_reaches_one_general_owner(monkeypatch, tmp_path, source,
     assert captured[0]['tx_count'] == len(captured[0]['texts']) == 1
     assert not any(e.get('route') == 'LOCAL_SOCIAL' for e in captured[0]['events'])
     if kind == 'MIXED':
-        # Routing only, explicitly NOT a new Mixed implementation.
-        assert not captured[0]['calls']
-        assert 'A fixture conversational fragment.' not in captured[0]['texts'][0]
+        # Step 5 executes the existing typed Mixed through the same General owner.
+        assert len(captured[0]['calls']) == 1
+        assert 'A fixture conversational fragment.' in captured[0]['texts'][0]
         assert any(e.get('semantic_kind') == 'MIXED' for e in captured[0]['events'])
 
 
@@ -146,12 +146,13 @@ def test_exact_step1_production_scope_and_no_new_language_templates():
     changed = set(subprocess.check_output(['git', 'diff', base, step1, '--name-only', '--',
         'orion', 'dcs-export', 'packaging'], cwd=root).decode().splitlines())
     assert changed == paths
-    assert not subprocess.check_output(['git', 'diff', step1, '--', *sorted(paths)], cwd=root)
+    step4 = '31546f9f191b060571cba32998c8cf232b345506'
+    assert not subprocess.check_output(['git', 'diff', step1, step4, '--', *sorted(paths)], cwd=root)
     assert not subprocess.check_output(['git', 'ls-files', '--others', '--exclude-standard', '--',
         'orion', 'dcs-export', 'packaging'], cwd=root).strip()
     for path in paths:
         before = ast.parse(subprocess.check_output(['git', 'show', base+':'+path], cwd=root).decode('utf-8'))
-        after = ast.parse((root/path).read_text(encoding='utf-8'))
+        after = ast.parse(subprocess.check_output(['git', 'show', step4+':'+path], cwd=root).decode('utf-8'))
         def strings(tree):
             return {n.value for n in ast.walk(tree) if isinstance(n, ast.Constant) and isinstance(n.value, str)}
         assert not strings(after) - strings(before), 'New production literal / phrase policy'

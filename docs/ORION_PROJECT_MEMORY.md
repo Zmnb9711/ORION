@@ -1,5 +1,47 @@
 # ORION Project Memory — current state only
 
+## Latest Step 5 pre-field candidate — 2026-09-15
+
+[Deadline/remaining referent gate](history/2026-09-15-foundation-step5-deadline.md):
+mandatory context ACK had consumed the inherited1s generation allowance. General
+now bounds ACK500ms + generation1000ms, total ordinary1500ms; Dialogue/Mixed12s,
+isolation500ms unchanged. Legacy aircraft-only timing unchanged. RU/EN generic
+referent gate4/4 PASS, one connection/no retries;1032/750/812/812ms total, not audio.
+Final regression3486 PASS/five baseline failures/one skip; static checks PASS.
+Decision A: authorized pre-field candidate commit/push→one build/install/readiness.
+No physical Foundation PASS. Receipts: ORION-Builds/foundation-step5-20260915.
+Earlier stops below are preserved historical outcomes, superseded only by this
+bounded evidence and current authorization, not erased.
+
+## Latest Step 5 continuation — referent contract, 2026-09-15
+
+[Referent report](history/2026-09-15-foundation-step5-referent.md): old context had
+correct accepted TAS but implicit exchange ordering/no explicit latest factual
+referent. Added derived generic typed referent and provider-neutral recency
+instructions; no values, new owner, phrases or provider change. Full regression
+3478 PASS/five unchanged baseline failures/one skip. Authorized bounded follow-up
+gate stopped on its FIRST RU operation at1000ms, INTERPRETER_LATENCY_GATE_FAILED;
+context ACK and first text781ms, no terminal selection. EN NOT RUN; zero retries.
+Original stale selection's complete cause and live fix remain unproven. STOP,
+no commit/build/install/field PASS. Previous stop authorizations/results below
+are historical; none are erased or relabelled PASS.
+
+## Latest Foundation update — Step 5 integration, 2026-09-15
+
+Parent `31546f9f191b060571cba32998c8cf232b345506`; Step 5 is authorized and
+UNCOMMITTED. [Integration/pre-field record](history/2026-09-15-foundation-step5-integration.md).
+Mixed, route-wide explicit context and deterministic RU/EN output integrated;
+actual-host offline matrix and3467 tests pass with five unchanged baseline failures.
+The one pre-build Yandex session stopped at its first Mixed terminal: missing
+nested facts.kind and dialogue string instead of object. No Core read/audio.
+Prompt nested schema made explicit without relaxing validation. The user-authorized
+additional four-operation session passed RU/EN Mixed schema and RU follow-up, but
+EN follow-up chose older ownship.pitch instead of latest ownship.true_airspeed
+despite the acknowledged explicit context. Gate FAIL: unexpected_fact_selection;
+stopped before that turn's Core execution. Both reports preserved; no retries.
+Pre-field C/BLOCKING DEFECT; no further live authorization, commit/build/install or PTT.
+Foundation NOT FIELD PASSED. Older next-step/commit notices below are historical.
+
 ## Latest Foundation update — Step 4 safe facts, 2026-09-14
 
 Parent `8ddc0422197a8adbe88209c0d7adc4c6301f42c4` (Steps 1/2/3 committed).

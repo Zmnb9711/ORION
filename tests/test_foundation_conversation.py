@@ -122,9 +122,10 @@ def test_step2_runtime_scope_and_no_input_grammar():
     # Step 4 changes only fact admission/metadata and CapabilityGap; Step 2's
     # wire owner, voice/context lifecycle remain byte-for-byte frozen.
     frozen = {'orion/general_semantic_voice.py', 'orion/yandex_warm_aircraft_interpreter.py'}
-    assert not subprocess.check_output(['git', 'diff', step2, '--', *sorted(frozen)], cwd=root)
+    step4 = '31546f9f191b060571cba32998c8cf232b345506'
+    assert not subprocess.check_output(['git', 'diff', step2, step4, '--', *sorted(frozen)], cwd=root)
     before_core = ast.parse(subprocess.check_output(['git', 'show', step2+':orion/general_semantic_core.py'], cwd=root).decode('utf-8'))
-    after_core = ast.parse((root/'orion/general_semantic_core.py').read_text(encoding='utf-8'))
+    after_core = ast.parse(subprocess.check_output(['git', 'show', step4+':orion/general_semantic_core.py'], cwd=root).decode('utf-8'))
     for name in ('InteractionContext', 'DialoguePlan'):
         assert ast.dump(next(n for n in before_core.body if isinstance(n, ast.ClassDef) and n.name == name)) == ast.dump(
             next(n for n in after_core.body if isinstance(n, ast.ClassDef) and n.name == name))

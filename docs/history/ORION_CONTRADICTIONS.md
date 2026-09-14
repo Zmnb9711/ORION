@@ -1,5 +1,30 @@
 # ORION contradiction log
 
+[Step5 deadline resolution](2026-09-15-foundation-step5-deadline.md): the1s
+no-context-ACK generation limit had become a total bind+generation cutoff.
+Bounded separation is proven by valid1032ms total /750ms generation; all four
+RU/EN referents correct. Prior timeout is not provider-quality evidence; prior
+wrong selection remains historical. This does not prove all model behavior or
+meet the <1s audible-response objective. User blind Foundation PASS still required.
+
+[Step 5 referent correction](2026-09-15-foundation-step5-referent.md): the old
+context did preserve TAS but did not explicitly specify ordering/latest factual
+referent. Correcting that representation does not prove why the original model
+selected pitch. New explicit-context gate timed out before terminal output;
+neither referent correctness nor a provider-quality defect is established.
+Do not relabel INTERPRETER_LATENCY_GATE_FAILED as stale selection or FIELD FAIL.
+
+[Step 5](2026-09-15-foundation-step5-integration.md): a semantically appropriate
+Mixed/fact selection does not imply schema validity. Live terminal failed nested
+discriminator/object requirements despite correct selected fact. Prompt structure
+clarified; no parser relaxation or provider-reliability claim. The additionally
+authorized session proves RU/EN Mixed schema acceptance, but its EN follow-up
+selects older pitch instead of latest TAS. Explicit context was acknowledged;
+this proves incorrect referent selection, not its internal provider cause.
+The developer gate, not production semantic validation, stopped execution of
+that wrong yet structurally valid selection. Offline host counts do not close
+this gap or establish blind acceptance. Both failed gates remain preserved.
+
 [Step 4 source decisions](2026-09-14-foundation-step4-fact-surface.md): documented
 fuel kg is not sufficient to establish module fuel meaning; historical firsthand
 Hornet report contradicts that unit. Current-module denominator/internal-external

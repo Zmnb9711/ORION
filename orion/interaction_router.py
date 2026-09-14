@@ -24,7 +24,7 @@ from pydantic import (
 )
 
 from orion.communication_contracts import CommunicationContext, CommunicationDomain
-from orion.general_semantic_contracts import SemanticRequest, SemanticProposal, SemanticAdmission, Dialogue, CATALOG_VERSION
+from orion.general_semantic_contracts import SemanticRequest, SemanticProposal, SemanticAdmission, Dialogue, Mixed, CATALOG_VERSION, SEMANTIC_SHORT_TOTAL_SECONDS
 from orion.interaction_contracts import (
     CapabilityId,
     ContextReference,
@@ -219,7 +219,7 @@ class InteractionRouter:
                 or request.context.revision != context_revision
                 or checked.provider_id != request.expected_provider
                 or cancellation.cancelled or now >= request.deadline or now < request.created_at
-                or (not isinstance(checked.result, Dialogue) and (now-request.created_at).total_seconds() > 1)
+                or (not isinstance(checked.result, (Dialogue, Mixed)) and (now-request.created_at).total_seconds() > SEMANTIC_SHORT_TOTAL_SECONDS)
                 or request.interaction_id in self._general_used or len(self._general_used) >= 64):
                 raise ValueError("semantic_admission_rejected")
             grant = SemanticAdmission(proposal=checked)

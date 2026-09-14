@@ -1,5 +1,23 @@
 # ORION field evidence index
 
+[Step5 deadline/referent gate](2026-09-15-foundation-step5-deadline.md): one real
+Yandex session4/4 RU/EN follow-ups correct after OFFLINE accepted histories, no
+retry/audio/DCS/SRS. Total750–1032ms; generation469–750ms, ACK281–296ms. Not a
+physical session or audibility claim. Pre-field build/install now authorized.
+
+[Step 5 referent continuation](2026-09-15-foundation-step5-referent.md): offline
+typed recency correction, one bounded live semantic operation after two OFFLINE
+accepted Core fixture turns. RU timeout1000ms, first text781ms; no terminal
+selection, no EN run, retries or audio. Not semantic/field PASS; no build/install.
+
+[Step 5 integration](2026-09-15-foundation-step5-integration.md), uncommitted:
+real-host/fake-I-O replay only; one provider Mixed terminal rejected before Core
+for missing facts.kind/string dialogue. No new physical evidence, TX or acoustic
+PASS. One additional user-authorized semantic session passed RU/EN Mixed schema
+and RU follow-up; EN follow-up selected the wrong older topic despite explicit
+context ACK. Failed turn stopped by gate before Core. Four operations/no retries,
+zero owned tasks afterward. No Step 5 build/install or physical acceptance.
+
 [Step 4, 2026-09-14](2026-09-14-foundation-step4-fact-surface.md): offline actual
 Lua exporter execution with fake sockets/sources, real Core/host replay with fake
 external I/O, and one eight-turn Yandex semantic-only session PASS. No new DCS,

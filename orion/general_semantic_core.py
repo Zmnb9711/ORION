@@ -12,10 +12,10 @@ from orion.aircraft_interpretation import source_hash
 from orion.full_voice_stt import FinalizedUserUtterance
 from orion.general_semantic_contracts import (
     CATALOG, Capability, CapabilityGap, Clarification, ContextExchange, ContextProjection,
-    DIALOGUE_MAX_CHARS, Dialogue, FactRequest, MetaRequest, SemanticModel, SemanticProposal, SemanticRequest, StateSummary,
+    DIALOGUE_MAX_CHARS, Dialogue, FactRequest, MetaRequest, Mixed, SemanticModel, SemanticProposal, SemanticRequest, StateSummary,
 )
 from orion.general_fact_registry import require_exposed
-from orion.general_fact_presentation import LABELS, scalar_text, spoken_coordinates
+from orion.general_fact_presentation import LABELS, EN_LABELS, scalar_text, spoken_coordinates
 from orion.personal_context import load_personal_context
 from orion.hybrid_aircraft_core import HybridAircraftCore
 from orion.hybrid_aircraft_contracts import AircraftIdentityQueryResult
@@ -74,11 +74,18 @@ class ClarificationPlan(PlanBase):
 
 class UnavailablePlan(PlanBase):
     kind: Literal["TRUTHFUL_UNAVAILABLE"] = "TRUTHFUL_UNAVAILABLE"
+    capabilities: tuple[Capability, ...] = ()
     reason: Literal["CAPABILITY_NOT_EXPOSED", "FACT_UNKNOWN", "FACT_STALE", "SOURCE_UNAVAILABLE",
                     "RESTRICTED", "NOT_IMPLEMENTED", "PROVIDER_UNAVAILABLE", "ADMISSION_REJECTED"]
 
 
-ResponsePlan = Annotated[DialoguePlan | MetaPlan | FactPlan | ClarificationPlan | UnavailablePlan, Field(discriminator="kind")]
+class MixedPlan(PlanBase):
+    kind: Literal["MIXED"] = "MIXED"
+    dialogue: DialoguePlan
+    factual: FactPlan | UnavailablePlan
+
+
+ResponsePlan = Annotated[DialoguePlan | MetaPlan | FactPlan | MixedPlan | ClarificationPlan | UnavailablePlan, Field(discriminator="kind")]
 
 
 class FinalizedGeneralText(SemanticModel):
@@ -89,14 +96,28 @@ class FinalizedGeneralText(SemanticModel):
 def render_general(plan: ResponsePlan, now: datetime) -> str:
     if now >= plan.deadline:
         raise ValueError("general_plan_expired")
+    english = plan.request.language.startswith("en")
+    labels_by_language = EN_LABELS if english else LABELS
+    if isinstance(plan, MixedPlan):
+        if (plan.dialogue.request != plan.request or plan.factual.request != plan.request
+            or plan.deadline > min(plan.dialogue.deadline, plan.factual.deadline)):
+            raise ValueError("mixed_plan_binding")
+        return render_general(plan.dialogue, now) + " " + render_general(plan.factual, now)
     if isinstance(plan, DialoguePlan):
         if any(ord(char) < 32 and char not in "\t\r\n" for char in plan.text):
             raise ValueError("dialogue_control_character")
         return plan.text
     if isinstance(plan, MetaPlan):
         if plan.topic == "identity":
-            return "Я ORION, разговорный помощник в DCS."
-        labels = [LABELS[require_exposed(key).presentation].lower() for key in plan.capabilities]  # type: ignore[index]
+            return "I am ORION, a conversational assistant in DCS." if english else "Я ORION, разговорный помощник в DCS."
+        labels = [labels_by_language[require_exposed(key).presentation].lower() for key in plan.capabilities]  # type: ignore[index]
+        if english:
+            description = "The current catalog includes: " + ", ".join(labels) + "." if labels else "No data categories are currently exposed."
+            if plan.additional_categories:
+                description += " This is part of the catalog."
+            if plan.topic == "help":
+                description = "You can converse or ask for current data in your own words. " + description
+            return description + " Actual value availability is checked when requested."
         description = ("В текущем каталоге есть: " + ", ".join(labels) + ".") if labels else "В текущем каталоге нет доступных категорий данных."
         if plan.additional_categories:
             description += " Это часть категорий каталога."
@@ -104,11 +125,23 @@ def render_general(plan: ResponsePlan, now: datetime) -> str:
             description = "Можно общаться или запрашивать текущие данные своими словами. " + description
         return description + " Наличие актуальных значений проверяется отдельно при запросе."
     if isinstance(plan, ClarificationPlan):
+        if english:
+            return {"object": "Which object do you mean?", "meaning": "What would you like to know?",
+                    "reference": "What does your question refer to?", "action": "Which action do you mean?"}[plan.slot]
         return {"object": "Уточните, о каком объекте вы спрашиваете.",
                 "meaning": "Уточните, что именно вы хотите узнать.",
                 "reference": "Уточните, к чему относится ваш вопрос.",
                 "action": "Уточните, какое действие вы имеете в виду."}[plan.slot]
     if isinstance(plan, UnavailablePlan):
+        if english:
+            return {"CAPABILITY_NOT_EXPOSED": "I cannot safely obtain those data through my currently available capabilities.",
+                    "FACT_UNKNOWN": "The requested current data are unknown.",
+                    "FACT_STALE": "The data are stale; I cannot report a current value.",
+                    "SOURCE_UNAVAILABLE": "The current data source is unavailable.",
+                    "RESTRICTED": "Access to those data is restricted.",
+                    "NOT_IMPLEMENTED": "I cannot carry out that request yet.",
+                    "PROVIDER_UNAVAILABLE": "Natural-language processing is currently unavailable.",
+                    "ADMISSION_REJECTED": "I could not safely process that request."}[plan.reason]
         return {"CAPABILITY_NOT_EXPOSED": "Пока не могу получить эти данные через доступные мне возможности.",
                 "FACT_UNKNOWN": "Запрошенные текущие данные неизвестны.",
                 "FACT_STALE": "Данные устарели. Сейчас не могу сообщить актуальное значение.",
@@ -118,6 +151,14 @@ def render_general(plan: ResponsePlan, now: datetime) -> str:
                 "PROVIDER_UNAVAILABLE": "Сейчас недоступна обработка естественной речи.",
                 "ADMISSION_REJECTED": "Не удалось безопасно обработать этот запрос."}[plan.reason]
     if plan.aircraft is not None:
+        if english:
+            from orion.hybrid_aircraft_core import safe_aircraft_name
+            if plan.aircraft.fact_status != WorldFactStatus.KNOWN or plan.aircraft.aircraft_type is None:
+                return "The current aircraft type is unavailable."
+            display = safe_aircraft_name(plan.aircraft.aircraft_type)
+            if display is None:
+                raise ValueError("aircraft_name_invalid")
+            return "You are in " + display + "."
         from orion.hybrid_aircraft_core import render_informational
         from orion.hybrid_aircraft_contracts import InformationalResponsePlan
         return render_informational(InformationalResponsePlan(interaction_id=plan.request.interaction_id,
@@ -134,25 +175,29 @@ def render_general(plan: ResponsePlan, now: datetime) -> str:
         if capability in missing:
             reason_text = {"FACT_UNKNOWN":"неизвестно", "FACT_STALE":"данные устарели",
                            "SOURCE_UNAVAILABLE":"источник недоступен", "RESTRICTED":"доступ ограничен"}[missing[capability]]
-            parts.append(f"{LABELS[presentation]}: {reason_text}.")
+            if english:
+                reason_text = {"FACT_UNKNOWN":"unknown", "FACT_STALE":"stale data",
+                               "SOURCE_UNAVAILABLE":"source unavailable", "RESTRICTED":"restricted"}[missing[capability]]
+            parts.append(f"{labels_by_language[presentation]}: {reason_text}.")
         elif presentation == "position":
             lat, lon = (values[key] for key in definition.leaves)
             if not isinstance(lat, float) or not isinstance(lon, float):
                 raise ValueError("position_missing")
-            parts.append("Координаты: " + spoken_coordinates(lat, lon) + ".")
+            parts.append(("Coordinates: " if english else "Координаты: ") + spoken_coordinates(lat, lon, plan.request.language) + ".")
         elif presentation == "identity":
             raw = values[definition.leaves[0]]
             display = safe_aircraft_name(raw) if isinstance(raw, str) else None
             if display is None:
                 raise ValueError("aircraft_name_invalid")
-            parts.append("Вы находитесь в " + display + ".")
+            parts.append(("You are in " if english else "Вы находитесь в ") + display + ".")
         else:
             value = values[definition.leaves[0]]
             if not isinstance(value, float):
                 raise ValueError("numeric_fact_missing")
-            parts.append(scalar_text(value, presentation))
+            parts.append(scalar_text(value, presentation, plan.request.language))
     if plan.summary:
-        parts.append("Это ограниченная сводка доступных параметров, не полная оценка состояния самолёта.")
+        parts.append("This is a limited parameter summary, not a full aircraft assessment." if english else
+                     "Это ограниченная сводка доступных параметров, не полная оценка состояния самолёта.")
     return " ".join(parts)
 
 
@@ -181,16 +226,35 @@ class InteractionContext:
         plan = finalized.plan
         if plan.request.context.revision != self.revision:
             raise ValueError("context_revision_changed")
-        topic = plan.capabilities[-1] if isinstance(plan, FactPlan) else "meta."+plan.topic if isinstance(plan, MetaPlan) else None
+        factual = plan.factual if isinstance(plan, MixedPlan) else plan
+        capabilities = factual.capabilities if isinstance(factual, (FactPlan, UnavailablePlan)) else ()
+        topic = capabilities[-1] if capabilities else "meta."+plan.topic if isinstance(plan, MetaPlan) else None
         entry = ContextExchange(interaction_id=plan.request.interaction_id, user=plan.request.source_text,
-            reply=finalized.text if not isinstance(plan, (FactPlan, MetaPlan)) else None,
+            reply=plan.dialogue.text if isinstance(plan, MixedPlan) else finalized.text if not isinstance(plan, (FactPlan, MetaPlan)) else None,
+            requested_capabilities=capabilities,
             described_capabilities=plan.capabilities if isinstance(plan, MetaPlan) else (),
             topic=topic, language=plan.request.language, outcome=plan.kind,
             clarification_slot=plan.slot if isinstance(plan, ClarificationPlan) else None,
             unavailable_reason=plan.reason if isinstance(plan, UnavailablePlan) else None,
             semantic_understood=not (isinstance(plan, UnavailablePlan) and plan.reason in {"PROVIDER_UNAVAILABLE", "ADMISSION_REJECTED"}),
-            core_fact_produced=isinstance(plan, FactPlan), delivery=delivery, tts_started=tts_started,
-            response_fingerprint=source_hash(finalized.text) if not isinstance(plan, FactPlan) else None)
+            core_fact_produced=isinstance(factual, FactPlan), delivery=delivery, tts_started=tts_started,
+            response_fingerprint=source_hash(finalized.text))
+        self._append(entry)
+
+    def accept_fast_path(self, utterance: FinalizedUserUtterance, capabilities: tuple[str, ...],
+                         text: str, *, epoch: str | None) -> None:
+        """Observe an already admitted fast-path answer; no grant, value or new read."""
+        self.project(epoch)
+        for capability in capabilities:
+            require_exposed(capability)
+        if any(entry.interaction_id == utterance.interaction_id for entry in self.exchanges):
+            raise ValueError("context_duplicate_fast_path")
+        self._append(ContextExchange(interaction_id=utterance.interaction_id, user=utterance.text,
+            language=utterance.input_language, topic=capabilities[-1], requested_capabilities=capabilities,
+            outcome="CORE_FACT_AUTHORITATIVE", core_fact_produced=True, delivery="pending",
+            response_fingerprint=source_hash(text)))
+
+    def _append(self, entry: ContextExchange) -> None:
         self.exchanges = (*self.exchanges, entry)[-2:]
         self.revision += 1
         while len(ContextProjection(revision=self.revision, session_id=self.session_id,
@@ -201,15 +265,19 @@ class InteractionContext:
     def update_delivery(self, finalized: FinalizedGeneralText, *,
                         delivery: Literal["completed", "failed", "cancelled", "unknown"],
                         tts_started: bool = False) -> None:
-        """Update an accepted Dialogue, never re-admit semantics or infer hearing.
+        """Update an accepted response, never re-admit semantics or infer hearing.
 
         An expired/reset/evicted exchange is not resurrected by a late delivery.
         This metadata update does not advance the semantic context revision.
         """
-        if not isinstance(finalized.plan, DialoguePlan) or self.clock() >= self.expires:
+        self.record_delivery(finalized.plan.request.interaction_id, source_hash(finalized.text),
+                             delivery=delivery, tts_started=tts_started)
+
+    def record_delivery(self, identity: UUID, fingerprint: str, *,
+                        delivery: Literal["completed", "failed", "cancelled", "unknown"],
+                        tts_started: bool = False) -> None:
+        if self.clock() >= self.expires:
             return
-        identity = finalized.plan.request.interaction_id
-        fingerprint = source_hash(finalized.text)
         self.exchanges = tuple(
             entry.model_copy(update={"delivery": delivery, "tts_started": tts_started})
             if entry.interaction_id == identity and entry.response_fingerprint == fingerprint
@@ -283,6 +351,14 @@ class GeneralSemanticCore:
                 plan = self._facts(request, result, cancellation)
                 if isinstance(proposal.result, StateSummary) and isinstance(plan, FactPlan):
                     plan = plan.model_copy(update={"summary": True})
+            elif isinstance(result, Mixed):
+                factual = self._facts(request, result.facts, cancellation)
+                if not isinstance(factual, (FactPlan, UnavailablePlan)):
+                    raise ValueError("mixed_fact_plan_required")
+                dialogue = DialoguePlan(request=request, deadline=request.deadline,
+                                        text=result.dialogue.text, response_id=proposal.response_id)
+                plan = MixedPlan(request=request, deadline=min(dialogue.deadline, factual.deadline),
+                                 dialogue=dialogue, factual=factual)
             elif isinstance(result, Clarification):
                 plan = ClarificationPlan(request=request, deadline=request.deadline, slot=result.slot)
             else:
@@ -401,6 +477,7 @@ class GeneralSemanticCore:
             selected.extend(projected)
         if not selected:
             return UnavailablePlan.model_validate({"request": request.model_dump(), "deadline": request.deadline,
-                                                   "reason": unavailable[0].reason if unavailable else "FACT_UNKNOWN"})
+                                                   "reason": unavailable[0].reason if unavailable else "FACT_UNKNOWN",
+                                                   "capabilities": ordered})
         return FactPlan(request=request, deadline=expires, capabilities=ordered, facts=tuple(selected), receipt=r,
                         unavailable=tuple(unavailable))
